@@ -396,6 +396,15 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
+ * The one-line Game Top-up hint (`hint.*` locale key) appended to the end of a
+ * screen's own bubble text, or "" while game_topup_flow_v2_enabled is OFF — so
+ * the flag-off text stays byte-identical. Never a separate message.
+ */
+async function gameHintLine(ctx: MyContext, key: string): Promise<string> {
+  return (await isGameTopupFlowV2Enabled(prisma)) ? `\n${t(ctx, key)}` : "";
+}
+
+/**
  * First step of the "🛍 Products" entry point — the two-bucket group picker
  * (Category.group). Clears any category/group/product scope left over from a
  * previous browse session so a fresh entry never resumes mid-category.
@@ -495,7 +504,8 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
     await browseCategoryEntry(ctx, categories[0]!.id, ckb.cb("browse", "grps"));
     return;
   }
-  await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }), ckb.categoryPickerKb(categories, ctx.session.lang));
+  const gameListHint = group === CategoryGroup.GAME_TOPUP ? await gameHintLine(ctx, "hint.game_list") : "";
+  await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }) + gameListHint, ckb.categoryPickerKb(categories, ctx.session.lang));
 }
 
 /**
@@ -612,7 +622,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     // variant picker, a no-op loop, since this category has >1 variant.
     await smartEdit(
       ctx,
-      t(ctx, "browse.choose_variant"),
+      t(ctx, "browse.choose_variant") + (await gameHintLine(ctx, "hint.variant")),
       ckb.gameVariantPickerKb(variants, categoryId, effectiveBackTarget, ctx.session.lang),
     );
     return;
@@ -694,7 +704,7 @@ async function enterGameVariant(
     await ctx.reply(t(ctx, "browse.use_numbers"), {
       reply_markup: ckb.gamePickerPersistentKb(regions.length, ctx.session.lang),
     });
-    await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
+    await smartEdit(ctx, t(ctx, "browse.choose_region") + (await gameHintLine(ctx, "hint.region")), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
   // No region picker was shown, so the server picker's Back skips straight to
@@ -794,7 +804,8 @@ async function enterGameRegion(
     await ctx.reply(t(ctx, "browse.use_numbers"), {
       reply_markup: ckb.gamePickerPersistentKb(servers.length, ctx.session.lang),
     });
-    await smartEdit(ctx, t(ctx, "browse.choose_server"), ckb.gameServerPickerKb(servers, categoryId, serverBackTarget, ctx.session.lang));
+    // The picker only renders with the flag ON, so the hint needs no re-check.
+    await smartEdit(ctx, `${t(ctx, "browse.choose_server")}\n${t(ctx, "hint.server")}`, ckb.gameServerPickerKb(servers, categoryId, serverBackTarget, ctx.session.lang));
     return;
   }
   await enterGameServer(ctx, categoryId, gameVariant, gameRegion, servers.length === 1 && !mixed ? servers[0]! : undefined);
@@ -969,13 +980,30 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   delete sc(ctx).variantId;
 
   // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
-  const itemLines = pageProducts.map((p, i) => `${i + 1}. ${esc(p.name)}`);
+  const isGameProduct = (p: (typeof pageProducts)[number]) => p.category.group === CategoryGroup.GAME_TOPUP;
+  const gameFlowV2 = await isGameTopupFlowV2Enabled(prisma);
+  const showFrom = gameFlowV2 && pageProducts.some(isGameProduct);
+  // One rate lookup per render; every price string goes through the buyer's
+  // language-aware formatter (never hand-formatted).
+  const prices = showFrom
+    ? ctxPriceFormatter(ctx, await getCanonicalRateContext(prisma).then((r) => (r.rate ? new Decimal(r.rate) : null)))
+    : null;
+  const isReseller = ctx.session.dbUser?.role === UserRole.RESELLER;
+  const itemLines = pageProducts.map((p, i) => {
+    const line = `${i + 1}. ${esc(p.name)}`;
+    if (!prices || !isGameProduct(p)) return line;
+    // Stock is intentionally ignored (same as the storefront cards): From is the
+    // cheapest active priced pack, even if it is currently out of stock.
+    const unitPrices = p.denominations.map((d) => effectiveUnitPrice(d, isReseller)).filter((price) => price.gt(0));
+    if (!unitPrices.length) return line;
+    return `${line} — ${t(ctx, "browse.product_from_price", { price: prices.price(Decimal.min(...unitPrices)) })}`;
+  });
 
   const text = t(ctx, "browse.list_decorated", {
     page: page + 1,
     total: totalPages,
     items: itemLines.join("\n"),
-  });
+  }) + (gameFlowV2 && pageProducts.some(isGameProduct) ? `\n${t(ctx, "hint.packs")}` : "");
 
   // No per-product inline buttons: the user picks the number shown in the
   // caption (handleProductNumber resolves it against browseEntries), either
@@ -1294,7 +1322,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const { pages } = presentCanonicalCatalog(products, { locale: lang, intro });
   const pageIndex = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pages.length - 1);
   const page = pages[pageIndex]!;
-  const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "");
+  const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "") + (await gameHintLine(ctx, "hint.packs"));
   // Remembered so the denomination detail's Back returns to this same page.
   sc(ctx).productPage = pageIndex;
   await render(text, ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length));

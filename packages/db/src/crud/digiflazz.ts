@@ -88,8 +88,9 @@ import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdm
 // time, only inside functions.
 import {
   getPricingPolicy,
-  getCategoryRule,
-  getCategoryRuleMap,
+  readCategoryRule,
+  readCategoryRules,
+  UNREADABLE_CATEGORY_RULE,
   PricingPolicyUnreadableError,
   PRICING_ROUNDING_KEY,
 } from "./pricingPolicy";
@@ -2339,6 +2340,10 @@ export interface DigiflazzPriceContext {
   roundingReadable: boolean;
   /** categoryId → that category's own rule; a missing id inherits the global rule. */
   categoryRules: Map<number, MarkupRule>;
+  /** Names of loaded categories whose stored rule cannot be read. Non-empty
+   * stops the context from pricing anything, like an unreadable global rule
+   * (pricing review: never fall back to the global rule silently). */
+  unreadableCategories: string[];
 }
 
 /** Load the pricing context once. With `onlyCategoryId`, only that one
@@ -2347,12 +2352,16 @@ export interface DigiflazzPriceContext {
 export async function loadDigiflazzPriceContext(db: Db, onlyCategoryId?: number | null): Promise<DigiflazzPriceContext> {
   const policy = await getPricingPolicy(db);
   let categoryRules: Map<number, MarkupRule>;
+  let unreadableCategories: string[] = [];
   if (onlyCategoryId === undefined) {
-    categoryRules = await getCategoryRuleMap(db);
+    ({ rules: categoryRules, unreadable: unreadableCategories } = await readCategoryRules(db));
   } else {
     categoryRules = new Map();
-    const rule = onlyCategoryId === null ? null : await getCategoryRule(db, onlyCategoryId);
-    if (rule && onlyCategoryId !== null) categoryRules.set(onlyCategoryId, rule);
+    if (onlyCategoryId !== null) {
+      const { rule, name } = await readCategoryRule(db, onlyCategoryId);
+      if (rule === UNREADABLE_CATEGORY_RULE) unreadableCategories = [name ?? String(onlyCategoryId)];
+      else if (rule) categoryRules.set(onlyCategoryId, rule);
+    }
   }
   return {
     markupSettings: policy.globalRaw,
@@ -2360,15 +2369,17 @@ export async function loadDigiflazzPriceContext(db: Db, onlyCategoryId?: number 
     rounding: policy.rounding,
     roundingReadable: policy.roundingReadable,
     categoryRules,
+    unreadableCategories,
   };
 }
 
 /** Which stored policy piece stops the context from pricing anything, or
  * null when it can price. Callers treat both like the long-standing
  * unreadable-markup case: never guess a price from them. */
-export function digiflazzPriceContextProblem(ctx: DigiflazzPriceContext): "markup" | "rounding" | null {
+export function digiflazzPriceContextProblem(ctx: DigiflazzPriceContext): "markup" | "rounding" | "category" | null {
   if (ctx.globalRule === null) return "markup";
   if (!ctx.roundingReadable) return "rounding";
+  if (ctx.unreadableCategories.length > 0) return "category";
   return null;
 }
 
@@ -2383,6 +2394,7 @@ export function digiflazzPriceContextProblem(ctx: DigiflazzPriceContext): "marku
 export function digiflazzSellPrice(ctx: DigiflazzPriceContext, cost: Decimal, categoryId: number | null): Decimal {
   if (ctx.globalRule === null) throw new InvalidDigiflazzMarkupError();
   if (!ctx.roundingReadable) throw new PricingPolicyUnreadableError("rounding");
+  if (ctx.unreadableCategories.length > 0) throw new PricingPolicyUnreadableError("category", ctx.unreadableCategories);
   const categoryRule = categoryId === null ? null : (ctx.categoryRules.get(categoryId) ?? null);
   const { rule } = resolveRule(categoryRule, ctx.globalRule);
   return applyRounding(applyMarkupRule(cost, rule), ctx.rounding);
@@ -3350,6 +3362,20 @@ async function resyncDigiflazzCatalogWithOutcome(
       details:
         "The Digiflazz catalog sync could not read the price rounding policy, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please save the rounding policy again on the Pricing & Margins page.",
     });
+  } else if (pricingProblem === "category") {
+    const names = priceContext.unreadableCategories.map((n) => `"${n}"`).join(", ");
+    logger.error(
+      { unreadableCategoryCount: priceContext.unreadableCategories.length },
+      `The Digiflazz catalog sync could not read the stored markup rule of ${priceContext.unreadableCategories.length} category or categories, so it kept every current sell price instead of repricing (only lifting a price the new supplier cost had overtaken up to that cost); costs and availability were still updated. Prices will keep drifting from the intended margin until an admin removes or saves those category rules again.`,
+    );
+    await logAdminAction(db, {
+      adminId: null,
+      action: "digiflazz_markup_unreadable",
+      targetType: "product",
+      targetId: null,
+      details:
+        `The Digiflazz catalog sync could not read the markup rule of category ${names}, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please remove or save that category rule again on the Pricing & Margins page.`,
+    });
   } else if (result.updated > 0 || result.deactivated > 0 || result.added > 0 || result.reactivated > 0) {
     const parts = [
       result.updated > 0 ? `updated ${result.updated} price(s)` : null,
@@ -3395,6 +3421,8 @@ async function resyncDigiflazzCatalogWithOutcome(
       : {
           error: pricingProblem === "rounding"
             ? "Pricing rounding policy is unreadable; prices were not repriced"
+            : pricingProblem === "category"
+            ? "A category markup rule is unreadable; prices were not repriced"
             : "Digiflazz markup setting is unreadable; prices were not repriced",
         }),
   });

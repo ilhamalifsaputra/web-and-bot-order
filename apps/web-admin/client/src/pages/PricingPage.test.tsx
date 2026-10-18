@@ -70,6 +70,34 @@ describe("PricingPage", () => {
     expect(screen.queryByRole("button", { name: "Edit Apps" })).not.toBeInTheDocument();
     expect(apiPost).not.toHaveBeenCalled();
   });
+  it("shows a Premium Apps row as manual pricing, with no Digiflazz count, rule badge or editor", async () => {
+    renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
+    const row = screen.getAllByRole("row").find(r => within(r).queryByText("Apps"))!;
+    expect(within(row).getByText("Harga manual")).toBeInTheDocument();
+    expect(within(row).queryByText(/SKU Digiflazz/)).not.toBeInTheDocument();
+    expect(within(row).queryByText(/Inherited|Default global/)).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+  });
+  it("binds Apply now to the previewed policy and reports SKUs a price check blocked", async () => {
+    const IMPACT = {
+      eligibleCount: 3, changedCount: 1, policyFingerprint: "a".repeat(32),
+      sample: [{ denominationId: 7, productName: "ML", name: "86 Diamonds", oldPrice: "20000", newPrice: "22000", cost: "20000" }],
+      blockedCount: 1,
+      blocked: [{ denominationId: 8, productName: "ML", name: "172 Diamonds", oldPrice: "115000", newPrice: "108000", cost: "100000", resellerPrice: "110000", reason: "reseller_above_price" }],
+    };
+    vi.mocked(apiPost).mockImplementation(async (path: string) =>
+      path === "/api/pricing/reprice/preview" ? IMPACT
+        : path === "/api/pricing/reprice/apply" ? { eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 0, blockedCount: 1 }
+        : path.endsWith("/preview") ? PREVIEW : {});
+    renderPage(); await screen.findByText("Rp115.000");
+    await userEvent.click(screen.getByRole("button", { name: "Lihat dampak & terapkan" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/1 SKU tidak diubah/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/172 Diamonds/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/di bawah harga reseller/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Terapkan sekarang" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/pricing/reprice/apply", { scope: "all", policyFingerprint: "a".repeat(32) }));
+  });
   it("saves and removes category overrides", async () => {
     renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
     await userEvent.click(screen.getByRole("button", { name: /^edit\s*games$/i }));

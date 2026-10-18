@@ -112,7 +112,8 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     const context = await loadDigiflazzPriceContext(prisma);
     const problem = digiflazzPriceContextProblem(context);
     if (problem) return reply.code(400).send({ error: problem === "markup"
-      ? new InvalidDigiflazzMarkupError().message : new PricingPolicyUnreadableError("rounding").message });
+      ? new InvalidDigiflazzMarkupError().message
+      : new PricingPolicyUnreadableError(problem, context.unreadableCategories).message });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const targetId = body.categoryId == null ? null : Number(body.categoryId);
     if (targetId !== null && (!Number.isSafeInteger(targetId) || targetId <= 0 ||

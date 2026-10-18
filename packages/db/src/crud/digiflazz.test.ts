@@ -5716,6 +5716,21 @@ describe("Digiflazz pricing — category rules and rounding (Pricing & Margins)"
     expect((await prisma.denomination.findFirstOrThrow({ where: { productId: p2, supplierSku: "j2" } })).priceOverridden).toBe(true);
   });
 
+  it("Minor 2: an unreadable category rule is handled like an unreadable markup: no repricing, import protected, admins told which category", async () => {
+    await setGlobalPercent("10");
+    const cat = await createCategory(prisma, "Voucher Junk");
+    const productId = await importBrand("Brand Junk", cat.id, [row("k1", "11000", "10000")]);
+    await prisma.category.update({ where: { id: cat.id }, data: { markupType: "weird", markupValue: "10" } });
+    expect(await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000), cat.id)).toBe(true);
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "k1", brand: "Brand Junk", price: new Decimal(10500) })]);
+    await resyncDigiflazzCatalog(prisma);
+    const k1 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "k1" } });
+    expect(k1.price.toString()).toBe("11000"); // not repriced from the global 10% (11550)
+    expect(k1.costPrice!.toString()).toBe("10500");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "digiflazz_markup_unreadable" } });
+    expect(audit?.details).toContain('"Voucher Junk"');
+  });
+
   describe("I1: the circuit breaker judges supplier movement, not a policy change", () => {
     async function sixAutoSkus(catId: number, brand: string, prefix: string, cost: string, price: string) {
       return importBrand(brand, catId, Array.from({ length: 6 }, (_, i) => row(`${prefix}${i}`, price, cost)));

@@ -26,11 +26,15 @@ import {
   PricingPolicyUnreadableError,
   RepriceBusyError,
   RepriceLeaseLostError,
+  RepricePolicyChangedError,
+  RepriceAuditFailedError,
   getPricingPolicy,
   setGlobalPricing,
   setCategoryRule,
   clearCategoryRule,
   getCategoryRuleMap,
+  getCategoryRule,
+  listPricingCategories,
   computeRepriceImpact,
   applyReprice,
 } from "./pricingPolicy";
@@ -279,6 +283,21 @@ describe("category rules", () => {
     expect(await audits()).toHaveLength(0);
   });
 
+  it("I2: refuses a rule on a Premium Apps or legacy no-group category, but still lets an old rule there be cleared", async () => {
+    const premium = await makeCategory("Netflix", CategoryGroup.PREMIUM_APPS);
+    const legacy = await prisma.category.create({ data: { name: "Legacy", slug: "legacy-i2", group: null } });
+    for (const cat of [premium, legacy]) {
+      await expect(setCategoryRule(prisma, adminId, cat.id, { markupType: "percent", markupValue: d("10") })).rejects.toThrow(
+        /Game Top Up/,
+      );
+    }
+    expect(await audits()).toHaveLength(0);
+    // A rule stored before this check (or by direct SQL) can still be removed.
+    await prisma.category.update({ where: { id: premium.id }, data: { markupType: "percent", markupValue: "10" } });
+    expect((await clearCategoryRule(prisma, adminId, premium.id)).changed).toBe(true);
+    expect((await prisma.category.findUniqueOrThrow({ where: { id: premium.id } })).markupType).toBeNull();
+  });
+
   it("requires type and value together, a known type and a value of zero or more", async () => {
     const cat = await makeCategory("PUBG");
     const bad = [
@@ -299,6 +318,24 @@ describe("category rules", () => {
     const row = await prisma.category.findUniqueOrThrow({ where: { id: cat.id } });
     expect(row.markupType).toBeNull();
     expect(await audits()).toHaveLength(0);
+  });
+});
+
+describe("listPricingCategories", () => {
+  it("counts unarchived Digiflazz-routed SKUs per category, across several products", async () => {
+    const game = await makeCategory("Count Game");
+    const empty = await makeCategory("Count Empty");
+    await makeSku(game.id, { cost: "1", price: "1" });
+    await makeSku(game.id, { cost: "1", price: "1" });
+    await makeSku(game.id, { cost: "1", price: "1", source: null }); // legacy null source counts
+    await makeSku(game.id, { cost: "1", price: "1", archived: true });
+    await makeSku(game.id, { cost: "1", price: "1", source: "kokinpay" });
+    await makeSku(game.id, { cost: "1", price: "1", supplierSku: null });
+    const rows = await listPricingCategories(prisma);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(game.id)!.skuCount).toBe(3);
+    expect(byId.get(empty.id)!.skuCount).toBe(0);
+    expect(byId.get(game.id)).toMatchObject({ name: "Count Game", group: CategoryGroup.GAME_TOPUP, markupType: null });
   });
 });
 
@@ -369,7 +406,7 @@ describe("applyReprice", () => {
   it("writes only changed prices, never touches excluded rows, audits once and is idempotent", async () => {
     const s = await seedRepriceCatalog();
     const first = await applyReprice(prisma, adminId, "all");
-    expect(first).toEqual({ eligibleCount: 3, updatedCount: 2, unchangedCount: 1, skippedCount: 0 });
+    expect(first).toEqual({ eligibleCount: 3, updatedCount: 2, unchangedCount: 1, skippedCount: 0, blockedCount: 0 });
     expect((await priceOf(s.a.id)).toString()).toBe("120000");
     expect((await priceOf(s.b.id)).toString()).toBe("110000");
     expect((await priceOf(s.g.id)).toString()).toBe("55000");
@@ -387,7 +424,7 @@ describe("applyReprice", () => {
     expect(rows[0]!.details).toBe("Repriced 2 Digiflazz items from the current pricing rules; 1 was already up to date.");
 
     const second = await applyReprice(prisma, adminId, "all");
-    expect(second).toEqual({ eligibleCount: 3, updatedCount: 0, unchangedCount: 3, skippedCount: 0 });
+    expect(second).toEqual({ eligibleCount: 3, updatedCount: 0, unchangedCount: 3, skippedCount: 0, blockedCount: 0 });
     rows = await audits("pricing_reprice");
     expect(rows[1]!.details).toBe("Checked 3 Digiflazz items against the current pricing rules; 3 were already up to date.");
   });
@@ -428,7 +465,7 @@ describe("applyReprice", () => {
         await prisma.denomination.update({ where: { id: s.a.id }, data: { priceOverridden: true } });
       },
     });
-    expect(res).toEqual({ eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 1 });
+    expect(res).toEqual({ eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 1, blockedCount: 0 });
     expect((await priceOf(s.a.id)).toString()).toBe("100000");
     expect((await priceOf(s.g.id)).toString()).toBe("55000");
     expect((await audits("pricing_reprice"))[0]!.details).toBe(
@@ -498,6 +535,109 @@ describe("applyReprice", () => {
         }
       },
     });
+  });
+
+  describe("I4: the same price checks as the admin form", () => {
+    it("never prices a SKU whose cost is 0 (it would be sold at Rp0): not eligible in preview or apply", async () => {
+      await setGlobalPricing(prisma, adminId, { markupType: "percent", markupValue: d("10") });
+      const cat = await makeCategory("Zero Cost");
+      const zero = await makeSku(cat.id, { cost: "0", price: "500" });
+      const normal = await makeSku(cat.id, { cost: "1000", price: "1000" });
+      const impact = await computeRepriceImpact(prisma, "all");
+      expect(impact.eligibleCount).toBe(1);
+      expect(impact.sample.map((r) => r.denominationId)).toEqual([normal.id]);
+      const res = await applyReprice(prisma, adminId, "all");
+      expect(res).toMatchObject({ eligibleCount: 1, updatedCount: 1, blockedCount: 0 });
+      expect((await priceOf(zero.id)).toString()).toBe("500");
+      expect((await priceOf(normal.id)).toString()).toBe("1100");
+    });
+
+    it("skips and reports a SKU whose reseller price would end above the new retail price; preview and apply agree", async () => {
+      await setGlobalPricing(prisma, adminId, { markupType: "percent", markupValue: d("15") });
+      const cat = await makeCategory("Reseller Gap");
+      await setCategoryRule(prisma, adminId, cat.id, { markupType: "percent", markupValue: d("8") });
+      const gap = await makeSku(cat.id, { cost: "100000", price: "115000" });
+      await prisma.denomination.update({ where: { id: gap.id }, data: { resellerPrice: "110000" } });
+      const ok = await makeSku(cat.id, { cost: "50000", price: "57500" });
+      await prisma.auditLog.deleteMany();
+
+      const impact = await computeRepriceImpact(prisma, cat.id);
+      expect(impact).toMatchObject({ eligibleCount: 2, changedCount: 1, blockedCount: 1 });
+      expect(impact.sample.map((r) => r.denominationId)).toEqual([ok.id]);
+      expect(impact.blocked).toEqual([
+        expect.objectContaining({ denominationId: gap.id, reason: "reseller_above_price" }),
+      ]);
+      expect(impact.blocked[0]!.newPrice.toString()).toBe("108000");
+
+      const res = await applyReprice(prisma, adminId, cat.id);
+      expect(res).toEqual({ eligibleCount: 2, updatedCount: 1, unchangedCount: 0, skippedCount: 0, blockedCount: 1 });
+      expect((await priceOf(gap.id)).toString()).toBe("115000");
+      expect((await priceOf(ok.id)).toString()).toBe("54000");
+      expect((await audits("pricing_reprice"))[0]!.details).toBe(
+        'Repriced 1 Digiflazz item in category "Reseller Gap" from the current pricing rules; 0 were already up to date. 1 item was left at its current price because the new price failed a price check (below Rp1, or below its reseller price).',
+      );
+    });
+
+    it("skips a SKU whose new price would be below Rp1", async () => {
+      await setGlobalPricing(prisma, adminId, { markupType: null, markupValue: d("0") });
+      const cat = await makeCategory("Tiny");
+      const tiny = await makeSku(cat.id, { cost: "0.5", price: "1" });
+      const impact = await computeRepriceImpact(prisma, "all");
+      expect(impact).toMatchObject({ eligibleCount: 1, changedCount: 0, blockedCount: 1 });
+      expect(impact.blocked[0]!.reason).toBe("price_below_minimum");
+      const res = await applyReprice(prisma, adminId, "all");
+      expect(res.blockedCount).toBe(1);
+      expect((await priceOf(tiny.id)).toString()).toBe("1");
+    });
+  });
+
+  it("refuses with RepricePolicyChangedError when the policy changed after the preview, and applies when it matches", async () => {
+    const s = await seedRepriceCatalog();
+    const preview = await computeRepriceImpact(prisma, "all");
+    expect(preview.policyFingerprint).toMatch(/^[0-9a-f]{32}$/);
+    await setCategoryRule(prisma, adminId, s.plain.id, { markupType: "percent", markupValue: d("30") });
+    await expect(
+      applyReprice(prisma, adminId, "all", new Date(), { expectedPolicyFingerprint: preview.policyFingerprint }),
+    ).rejects.toBeInstanceOf(RepricePolicyChangedError);
+    expect((await priceOf(s.a.id)).toString()).toBe("100000");
+    expect(await audits("pricing_reprice")).toHaveLength(0);
+    // The lease was never taken.
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
+    await prisma.setting.update({ where: { key: DIGIFLAZZ_CATALOG_SYNC_LEASE_KEY }, data: { value: "" } });
+
+    const fresh = await computeRepriceImpact(prisma, "all");
+    expect(fresh.policyFingerprint).not.toBe(preview.policyFingerprint);
+    const res = await applyReprice(prisma, adminId, "all", new Date(), { expectedPolicyFingerprint: fresh.policyFingerprint });
+    expect(res.updatedCount).toBeGreaterThan(0);
+  });
+
+  it("the low-margin warning does not change the fingerprint (it never changes a price)", async () => {
+    await seedRepriceCatalog();
+    const before = (await computeRepriceImpact(prisma, "all")).policyFingerprint;
+    await setGlobalPricing(prisma, adminId, { lowMarginWarnPct: d("5") });
+    expect((await computeRepriceImpact(prisma, "all")).policyFingerprint).toBe(before);
+  });
+
+  it("fails loudly with RepriceAuditFailedError when the final audit row cannot be written after every batch committed", async () => {
+    const s = await seedRepriceCatalog();
+    await expect(applyReprice(prisma, 2147483647, "all")).rejects.toBeInstanceOf(RepriceAuditFailedError);
+    // The prices stay as applied; the lease is released.
+    expect((await priceOf(s.a.id)).toString()).toBe("120000");
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
+  });
+
+  it.each([
+    { markupType: "weird", markupValue: "10" },
+    { markupType: "percent", markupValue: "-5" },
+    { markupType: "flat", markupValue: null },
+  ])("Minor 2: an unreadable category rule %j stops preview and apply with the typed error instead of using the global rule", async (bad) => {
+    const s = await seedRepriceCatalog();
+    await prisma.category.update({ where: { id: s.ruled.id }, data: bad });
+    await expect(getCategoryRule(prisma, s.ruled.id)).rejects.toBeInstanceOf(PricingPolicyUnreadableError);
+    await expect(computeRepriceImpact(prisma, "all")).rejects.toThrow(/Ruled Game/);
+    await expect(applyReprice(prisma, adminId, "all")).rejects.toBeInstanceOf(PricingPolicyUnreadableError);
+    expect((await priceOf(s.a.id)).toString()).toBe("100000");
+    expect((await priceOf(s.g.id)).toString()).toBe("50000");
   });
 
   it("refuses with PricingPolicyUnreadableError on an unreadable global markup and changes nothing", async () => {

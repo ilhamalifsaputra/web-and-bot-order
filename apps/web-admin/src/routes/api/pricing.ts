@@ -4,11 +4,12 @@ import { isRoundingPolicy, resolveDenominationPrice, grossProfit, grossMarginPct
 import {
   prisma, getPricingPolicy, getCategoryRule, setGlobalPricing, setCategoryRule, clearCategoryRule,
   computeRepriceImpact, applyReprice, PricingValidationError, PricingPolicyUnreadableError,
-  RepriceBusyError, RepriceLeaseLostError, validateGlobalPricingInput, DIGIFLAZZ_SUPPLIER_SCOPE,
+  RepriceBusyError, RepriceLeaseLostError, RepricePolicyChangedError, RepriceAuditFailedError, validateGlobalPricingInput, listPricingCategories,
   type GlobalPricingInput, type RepriceScope,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { exactFields, readMoneyField, readPercentField } from "../../lib/moneyField";
+import { isServerAutoPriced } from "../../lib/catalogPricing";
 
 function input(body: Record<string, unknown>): GlobalPricingInput {
   const exact = exactFields(body);
@@ -55,15 +56,16 @@ export default async function pricingApiRoutes(app: FastifyInstance): Promise<vo
   });
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof PricingValidationError || err instanceof PricingPolicyUnreadableError) return reply.code(400).send({ error: err.message });
-    if (err instanceof RepriceBusyError || err instanceof RepriceLeaseLostError) return reply.code(409).send({ error: err.message });
+    if (err instanceof RepriceBusyError || err instanceof RepriceLeaseLostError || err instanceof RepricePolicyChangedError) {
+      return reply.code(409).send({ error: err.message });
+    }
+    // Already logged at error level by applyReprice; the prices are live.
+    if (err instanceof RepriceAuditFailedError) return reply.code(500).send({ error: err.message });
     throw err;
   });
   app.get("/api/pricing", { preHandler: currentAdmin }, async (req) => {
-    const policy = await getPricingPolicy(prisma);
-    const categories = await prisma.category.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, group: true, markupType: true, markupValue: true } });
-    return { policy, isOwner: req.admin!.role === "super", categories: await Promise.all(categories.map(async c => ({
-      ...c, skuCount: await prisma.denomination.count({ where: { AND: [DIGIFLAZZ_SUPPLIER_SCOPE, { product: { categoryId: c.id }, supplierSku: { not: null }, isArchived: false }] } }),
-    }))) };
+    const [policy, categories] = await Promise.all([getPricingPolicy(prisma), listPricingCategories(prisma)]);
+    return { policy, isOwner: req.admin!.role === "super", categories };
   });
   app.post("/api/pricing/global", { preHandler: csrfProtect }, async req =>
     setGlobalPricing(prisma, req.admin!.userId, input((req.body ?? {}) as Record<string, unknown>)));
@@ -90,7 +92,8 @@ export default async function pricingApiRoutes(app: FastifyInstance): Promise<vo
     return { rows: costs.map(raw => {
       const cost = denomination ? (raw === null ? null : new Decimal(String(raw))) : readMoneyField(raw, "IDR", { exact: exactFields(body).has("costs") });
       if (!denomination && cost === null) throw new PricingValidationError("Enter a valid sample cost.");
-      const manual = denomination ? denomination.priceOverridden || denomination.autoDeliverySource !== "digiflazz" || denomination.product.category.group !== "GAME_TOPUP" : false;
+      // What the resync / Apply now will do to this SKU (pricing review I2).
+      const manual = denomination ? denomination.priceOverridden || !isServerAutoPriced(denomination) : false;
       const resolved = resolveDenominationPrice({ cost, currentPrice: denomination ? new Decimal(denomination.price) : new Decimal(0), priceOverridden: manual,
         categoryRule, globalRule: rule, rounding: draft.rounding ?? stored.rounding,
         lowMarginWarnPct: draft.lowMarginWarnPct === undefined ? stored.lowMarginWarnPct : draft.lowMarginWarnPct });
@@ -99,6 +102,14 @@ export default async function pricingApiRoutes(app: FastifyInstance): Promise<vo
   });
   app.post("/api/pricing/reprice/preview", { preHandler: csrfProtect }, async req =>
     computeRepriceImpact(prisma, scope((req.body ?? {}) as Record<string, unknown>)));
-  app.post("/api/pricing/reprice/apply", { preHandler: csrfProtect }, async req =>
-    applyReprice(prisma, req.admin!.userId, scope((req.body ?? {}) as Record<string, unknown>)));
+  app.post("/api/pricing/reprice/apply", { preHandler: csrfProtect }, async req => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const fingerprint = body.policyFingerprint;
+    // Apply is bound to the policy the admin previewed (a policy saved in
+    // between is refused with 409 instead of applying prices nobody saw).
+    if (typeof fingerprint !== "string" || !/^[0-9a-f]{32}$/.test(fingerprint)) {
+      throw new PricingValidationError("Open the impact preview before applying prices.");
+    }
+    return applyReprice(prisma, req.admin!.userId, scope(body), new Date(), { expectedPolicyFingerprint: fingerprint });
+  });
 }

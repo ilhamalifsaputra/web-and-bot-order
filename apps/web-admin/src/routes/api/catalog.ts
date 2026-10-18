@@ -40,7 +40,7 @@ import {
   InvalidDigiflazzMarkupError,
   PricingPolicyUnreadableError,
   getPricingPolicy,
-  getCategoryRule,
+  readCategoryRule,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { catalogPricing } from "../../lib/catalogPricing";
@@ -1024,8 +1024,10 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const product = await getCatalogProductWithDenominations(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const [pricingPolicy, categoryRule] = await Promise.all([
-      getPricingPolicy(prisma), getCategoryRule(prisma, product.categoryId),
+    // readCategoryRule: an unreadable category rule must not break the page;
+    // catalogPricing reports it as an unreadable policy instead.
+    const [pricingPolicy, { rule: categoryRule }] = await Promise.all([
+      getPricingPolicy(prisma), readCategoryRule(prisma, product.categoryId),
     ]);
     const now = new Date();
     const denomStats = await Promise.all(

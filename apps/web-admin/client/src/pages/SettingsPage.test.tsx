@@ -224,6 +224,23 @@ describe("SettingsPage", () => {
     expect(document.getElementById("settings-other")).toBeNull();
   });
 
+  it("renders the Game Top-up flow v2 switch with its help text", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        ...SETTINGS_DATA,
+        fields: [
+          ...SETTINGS_DATA.fields,
+          { key: "game_topup_flow_v2_enabled", label: "Game Top-up flow v2 (server picker, hints, search)", secret: false, hasValue: false, value: "", needsRestart: false, kind: "boolean", checked: false },
+        ],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    render(<SettingsPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Game Top-up flow v2 (server picker, hints, search)")).toBeInTheDocument();
+    expect(screen.getByText(/server picker, hints and search in the Telegram bot/)).toBeInTheDocument();
+  });
+
   it("shows loading state while fetching", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValueOnce(new Promise(() => {}));
     render(<SettingsPage />, { wrapper: Wrapper });

@@ -454,6 +454,43 @@ describe("pricing family separation", () => {
     expect(screen.queryByText("Estimasi margin")).not.toBeInTheDocument();
     expect(screen.queryByText("Harga hasil aturan")).not.toBeInTheDocument();
   });
+  const gameDetail = (denom: Record<string, unknown>, p: Record<string, unknown>) => ({
+    product: { ...PRODUCT_DETAIL.product, category: { id: 1, name: "Games", group: "GAME_TOPUP" }, denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], price: "11000", priceOverridden: false, autoDeliverySource: "digiflazz", supplierSku: "game86", deliveryType: "manual_with_info", additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS), ...denom }] },
+    statsByDenom: { 10: { pricing: { ...pricing, ...p } } },
+  });
+  it("V2: a Game SKU waiting for its first HPP shows one story: automatic, waiting for HPP, not a disabled selected option", async () => {
+    vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } :
+      gameDetail({ costPrice: null }, { source: "manual_no_cost", costPrice: null, calculatedPrice: null, grossMarginPct: null, grossProfit: null, pendingReprice: false }));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    const select = await screen.findByRole("combobox", { name: "Mode harga" });
+    expect(select).toHaveTextContent("Otomatis · menunggu HPP");
+    expect(screen.getAllByText("Menunggu HPP").length).toBeGreaterThan(0);
+    await userEvent.setup({ pointerEventsCheck: 0 }).click(select);
+    expect(screen.getByRole("option", { name: "Otomatis · menunggu HPP" })).not.toHaveAttribute("data-disabled");
+  });
+  it("I3: an unrelated save after the page data refetched with a repriced SKU sends no pricing mode and marks price/cost as untouched prefills", async () => {
+    let current = gameDetail({}, {});
+    vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } : current);
+    vi.mocked(apiPatch).mockResolvedValue({ id: 10 });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const LocalWrapper = ({ children }: { children: React.ReactNode }) => (
+      <MemoryRouter initialEntries={["/catalog/42/denominations/10/edit"]}><QueryClientProvider client={qc}><Routes>
+        <Route path="/catalog/:productId/denominations/:denomId/edit" element={children} />
+        <Route path="/catalog/:productId" element={<div>product-detail-page</div>} />
+      </Routes></QueryClientProvider></MemoryRouter>);
+    render(<DenominationEditPage />, { wrapper: LocalWrapper });
+    await screen.findByRole("combobox", { name: "Mode harga" });
+    // The hourly sync repriced the SKU; the page's query refetches in the background.
+    current = gameDetail({ price: "12000", costPrice: "10500" }, { effectivePrice: "12000", costPrice: "10500" });
+    await qc.invalidateQueries({ queryKey: ["catalog", "42"] });
+    await waitFor(() => expect(vi.mocked(apiGet).mock.calls.filter(c => c[0] === "/api/catalog/42").length).toBeGreaterThan(1));
+    fireEvent.change(screen.getByDisplayValue("Netflix 1 Month"), { target: { value: "Renamed" } });
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalled());
+    const sent = vi.mocked(apiPatch).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("pricingMode");
+    expect(sent.exact_fields).toEqual(expect.arrayContaining(["price", "costPrice"]));
+  });
   it("shows automatic/manual controls for Game Top Up and preserves mode on unrelated save", async () => {
     vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } : {
       product: { ...PRODUCT_DETAIL.product, category: { id: 1, name: "Games", group: "GAME_TOPUP" }, denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], price: "11000", priceOverridden: false, autoDeliverySource: "digiflazz", supplierSku: "game86", deliveryType: "manual_with_info", additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS) }] }, statsByDenom: { 10: { pricing } } });

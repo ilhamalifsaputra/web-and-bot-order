@@ -8,6 +8,7 @@ import { StatusBadge } from "@/components/shared/StatusBadge";
 import { UrgencyDot } from "@/components/shared/UrgencyDot";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Link } from "react-router-dom";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1194,7 +1195,7 @@ function SettingsDigiflazzTopUpGame({ digiflazzVisible, digiflazzFields, fieldQu
     <Card id="settings-digiflazz">
       <CardHeader>
         <CardTitle as="h2">Digiflazz (Top Up Game)</CardTitle>
-        <a href="/pricing" className="text-sm text-pine underline">Markup &amp; pricing ? Pricing &amp; Margins</a>
+        <p className="text-sm text-ink-soft">Markup &amp; harga dipindah ke <Link to="/pricing" className="text-pine underline">Pricing &amp; Margins</Link></p>
       </CardHeader>
       <CardContent className="divide-y divide-line">
         {digiflazzFields.map((field) => (

@@ -924,5 +924,9 @@ it("keeps provider credentials but moves markup controls to Pricing & Margins", 
   expect(await screen.findByText("Digiflazz username")).toBeInTheDocument();
   expect(screen.queryByText("Digiflazz markup type")).not.toBeInTheDocument();
   expect(screen.queryByText("Digiflazz markup value")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Markup & pricing/ })).toHaveAttribute("href", "/pricing");
+  // Visual review V4: a clean sentence (no mangled "?" arrow) with an in-app link.
+  const link = screen.getByRole("link", { name: "Pricing & Margins" });
+  expect(link).toHaveAttribute("href", "/pricing");
+  expect(link.parentElement).toHaveTextContent("Markup & harga dipindah ke Pricing & Margins");
+  expect(link.parentElement!.textContent).not.toContain("?");
 });

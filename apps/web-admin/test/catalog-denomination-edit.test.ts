@@ -887,6 +887,49 @@ describe("pricing mode and unchanged-price regression", () => {
     expect(row.price.toString()).toBe("11500");
     expect(row.priceOverridden).toBe(false);
   });
+  describe("I3: a stale edit form never pins an old price as manual", () => {
+    async function loadedAt100k() {
+      const ctx = await automaticSku();
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "15");
+      await prisma.denomination.update({ where: { id: ctx.denom.id }, data: { price: "100000", costPrice: "87000", priceOverridden: false } });
+      // What the edit form loaded (and sends back untouched).
+      const stale = { ...ctx.body, price: "100000", costPrice: "87000", exact_fields: ["price", "costPrice"] };
+      // The hourly sync / Apply now then reprices the SKU from a new cost.
+      await prisma.denomination.update({ where: { id: ctx.denom.id }, data: { price: "115000", costPrice: "100000" } });
+      return { ...ctx, stale };
+    }
+
+    it("an admin who only renames keeps the repriced price, the fresh cost and automatic status", async () => {
+      const { denom, stale } = await loadedAt100k();
+      const res = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...stale, name: "Renamed only" });
+      expect(res.statusCode, res.body).toBe(200);
+      const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+      expect(row.name).toBe("Renamed only");
+      expect(row.price.toString()).toBe("115000");
+      expect(row.costPrice!.toString()).toBe("100000");
+      expect(row.priceOverridden).toBe(false);
+    });
+
+    it("a genuine price edit on the same stale page still sets the manual flag", async () => {
+      const { denom, stale } = await loadedAt100k();
+      const res = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...stale, price: "120000", exact_fields: ["costPrice"] });
+      expect(res.statusCode, res.body).toBe(200);
+      const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+      expect(row.price.toString()).toBe("120000");
+      expect(row.priceOverridden).toBe(true);
+    });
+
+    it("a typed price equal to the rule price for the typed cost stays automatic", async () => {
+      const { denom, stale } = await loadedAt100k();
+      // 90.000 × 1.15 = 103.500
+      const res = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...stale, price: "103.500", costPrice: "90.000", exact_fields: [] });
+      expect(res.statusCode, res.body).toBe(200);
+      const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+      expect(row.price.toString()).toBe("103500");
+      expect(row.priceOverridden).toBe(false);
+    });
+  });
+
   it("refuses automatic without cost and on a Premium Apps SKU", async () => {
     const { denom, body, category } = await automaticSku();
     expect((await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...body, costPrice: null, pricingMode: "auto" })).statusCode).toBe(400);

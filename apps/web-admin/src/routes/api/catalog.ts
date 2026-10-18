@@ -743,7 +743,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     let price = parsePrice(body, "price");
     if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
-    const costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
+    let costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
     if (body.costPrice != null && costPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Cost price") });
     }
@@ -859,6 +859,18 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       priceOverridden = false;
     } else if (pricingMode === "manual") {
       priceOverridden = true;
+    } else if (
+      autoDeliverySource === existing.autoDeliverySource &&
+      exactFields(body).has("price") && exactFields(body).has("costPrice")
+    ) {
+      // Pricing review I3: price and cost are the form's untouched prefills
+      // (exact_fields). The hourly sync or Apply now may have repriced the SKU
+      // (and refreshed its cost) since the page loaded, so comparing the
+      // stale prefill against the current row would pin the OLD price as a
+      // manual override. Nothing about pricing was edited: keep the row's
+      // current price, cost and pricing mode.
+      price = new Decimal(existing.price.toString());
+      costPrice = existing.costPrice === null ? null : new Decimal(existing.costPrice.toString());
     } else if (autoDeliverySource === "digiflazz") {
       const costChanged = costPrice === null ? existing.costPrice !== null
         : existing.costPrice === null || !costPrice.equals(existing.costPrice);

@@ -294,13 +294,19 @@ Nyala, bot menampilkan untuk Game Top-up saja: picker **Server** setelah Region
 (dilewati bila cakupan campuran atau server kurang dari dua), akhiran
 `From <harga>` pada daftar produk, satu baris hint `hint.*` per layar, dan
 `/search` (berperingkat, label layanan, halaman, "Search again"; alias dari
-tabel `detection_aliases` yang bawaannya **kosong**). Mati = perilaku lama
-persis; Premium Apps tidak pernah terpengaruh.
+tabel `detection_aliases` yang bawaannya **kosong**). Mati = perilaku bot lama,
+dengan satu pengecualian: begitu ada produk yang "Game Server"-nya terisi,
+label SKU di bot memuat server tersebut, karena qualifier kanonis tidak di
+bawah flag (sudah diterima owner). Storefront tidak terpengaruh (server
+disembunyikan di sana). Premium Apps tidak pernah terpengaruh.
 
-Flag ini **belum ada di halaman web-admin → Settings** (tidak ada di whitelist
-`EDITABLE`). Nyalakan/matikan dengan mengubah baris `settings` langsung, mis.
+Flag ini adalah toggle di **web-admin → Settings** ("Game Top-up flow v2
+(server picker, hints, search)"); perubahannya lewat jalur audit (`setting_set`).
+Bot mengambil perubahan dalam sekitar 30 detik (cache TTL `getSetting`), tanpa
+restart. Cadangan bila web-admin tidak bisa dipakai: ubah baris `settings`
+langsung, mis.
 `INSERT INTO settings (key, value, updated_at) VALUES ('game_topup_flow_v2_enabled', 'true', now()) ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = now();`
-(`'false'` untuk mematikan). Ini tidak lewat audit admin; catat sendiri.
+(`'false'` untuk mematikan). Jalur SQL ini melewati audit log; catat sendiri.
 
 Urutan deploy untuk rilis yang menambah kolom `products.game_server`:
 

@@ -108,7 +108,6 @@ Tidak ada tabel baru. Draft tetap di `session.scratch` (Postgres-backed, TTL 24 
 |---|---|
 | `gameServerEntries` | snapshot daftar server untuk indeks callback |
 | `resolvedGameServer` | server terpilih |
-| `gameServerDimensionSkipped` | level dilewati |
 | `reviewPriceTotal` | total (string Decimal) yang ditampilkan di layar review, untuk `expectedTotal` |
 
 Aturan:
@@ -242,7 +241,7 @@ Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm t
 
 ## 13. Hasil Phase 2
 
-Semua perilaku baru di bawah ini berada di balik `game_topup_flow_v2_enabled` (`DEFAULT_OFF`, `packages/core/src/booleanSettings.ts`; dibaca lewat `isGameTopupFlowV2Enabled(db)`). Mati = perilaku lama. Kolom, crud, field admin, dan kontrak kanonis bukan perilaku bot dan tidak di bawah flag.
+Semua perilaku baru di bawah ini berada di balik `game_topup_flow_v2_enabled` (`DEFAULT_OFF`, `packages/core/src/booleanSettings.ts`; dibaca lewat `isGameTopupFlowV2Enabled(db)`). Mati = perilaku bot lama, kecuali qualifier server: kolom, crud, field admin, dan kontrak kanonis tidak di bawah flag, jadi begitu ada produk dengan Game Server terisi, label SKU di bot memuat server tersebut walau flag mati (sudah diterima owner). Storefront menyembunyikan server (API storefront mengosongkan `gameServer`). Level Server dilewati bila cakupan campuran, dideteksi per ketukan lewat `countCategoryProductsWithoutGameServer`, bukan lewat kunci scratch.
 
 Selesai:
 - Kolom `Product.gameServer` (migrasi `20261013090000_add_product_game_server`), crud `listCategoryGameServers` dan `countCategoryProductsWithoutGameServer`, field admin "Game Server" (hanya Game Top-up; nilai tersimpan dipertahankan saat field tersembunyi), dan `gameServer` sebagai qualifier kontrak kanonis (urutan region, server, variant).

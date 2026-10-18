@@ -90,6 +90,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // neither leaks into a later typed message on an unrelated screen.
   ctx.session.awaitingQtyDenomId = undefined;
   ctx.session.awaitingTopupCurrency = undefined;
+  delete ctx.session.scratch.searchAwaiting;
   const body = truncateText(text);
 
   // Reply keyboards can't attach to an edit — only edit when the markup is
@@ -164,6 +165,7 @@ export async function renderMenu(
 ): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
   ctx.session.awaitingTopupCurrency = undefined;
+  delete ctx.session.scratch.searchAwaiting;
   const body = truncateText(text);
 
   if (photo && body.length <= MAX_CAPTION_LEN) {
@@ -297,6 +299,7 @@ export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Mar
   if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
   ctx.session.awaitingQtyDenomId = undefined;
   ctx.session.awaitingTopupCurrency = undefined;
+  delete ctx.session.scratch.searchAwaiting;
   ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup);
 }
 

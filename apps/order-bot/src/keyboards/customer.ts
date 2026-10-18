@@ -16,7 +16,7 @@ import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtBalance, formatIdrFor, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
-import { LIST_LABEL_MAX_CHARS, buttonNameBudget, visualWidth } from "@app/core/buttonLimits";
+import { LIST_LABEL_MAX_CHARS, MAX_LABEL_WIDTH, buttonNameBudget, visualWidth } from "@app/core/buttonLimits";
 import type { CatalogButton } from "../util/canonicalPresenter";
 
 export const CB_PREFIX = "v1";
@@ -605,6 +605,44 @@ export function searchResultsKb(products: Array<{ id: number; name: string }>, l
   ]);
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);
+}
+
+/** One /search hit as stored in the session snapshot: `serviceKey` is the service's locale key (its short tag). */
+export interface SearchHit {
+  id: number;
+  name: string;
+  serviceKey: string;
+}
+
+/**
+ * Game Top Up search results (flag-gated): `<name> · <service tag>` per hit, the
+ * name cut so the whole label stays within MAX_LABEL_WIDTH, then Prev/Next
+ * (`search:page:<n>`), Search again and Menu, each on its own row. `hits` is the
+ * current page's slice of the snapshot.
+ */
+export function gameSearchResultsKb(hits: SearchHit[], page: number, totalPages: number, lang: string): InlineKeyboard {
+  const rows: Btn[][] = hits.map((h) => {
+    const tag = coreT(h.serviceKey, lang);
+    const suffix = ` · ${tag}`;
+    return [{ text: `${clipToCells(h.name, MAX_LABEL_WIDTH - visualWidth(suffix))}${suffix}`, data: cb("browse", "pick", h.id) }];
+  });
+  if (totalPages > 1) {
+    const nav: Btn[] = [];
+    if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("search", "page", page - 1) });
+    if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: cb("search", "page", page + 1) });
+    rows.push(nav);
+  }
+  rows.push([{ text: coreT("search.again_btn", lang), data: cb("search", "again") }]);
+  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  return ik(rows);
+}
+
+/** Search prompt / empty state: Search again (re-arms the prompt) and Menu. */
+export function gameSearchEmptyKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("search.again_btn", lang), data: cb("search", "again") }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
 }
 
 /** Inline keyboard for the Produk Populer list — one `browse:pick` button per product + Menu row. */

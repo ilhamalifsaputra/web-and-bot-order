@@ -263,6 +263,13 @@ const dispatchRestock: DomainDispatcher = async (ctx, parts) => {
   if (parts[2] === "sub") await customer.subscribeRestock(ctx, parseInt(parts[3]!, 10));
 };
 
+const dispatchSearch: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "page") await customer.searchPage(ctx, Number(parts[3]));
+  else if (action === "again") await customer.searchAgain(ctx);
+  else await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+};
+
 const dispatchPage: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "faq") await staticPages.showFaq(ctx);
@@ -300,6 +307,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   qty: dispatchQty,
   ref: dispatchRef,
   restock: dispatchRestock,
+  search: dispatchSearch,
   ticket: dispatchTicket,
   topup: dispatchTopup,
   voucher: dispatchVoucher,
@@ -343,6 +351,11 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
   // amount on an unrelated screen.
   if (!(domain === "topup" && parts[2] === "currency")) {
     ctx.session.awaitingTopupCurrency = undefined;
+  }
+  // And for the Game Top Up search prompt: only "Search again" arms it (it sets
+  // the flag itself after rendering), so any other tap ends the mode.
+  if (!(domain === "search" && parts[2] === "again")) {
+    delete ctx.session.scratch.searchAwaiting;
   }
 
   const dispatcher = DOMAIN_ROUTES[domain!];

@@ -531,6 +531,7 @@
   "search.no_query": "Usage: <code>/search &lt;keyword&gt;</code>\n\nExample: <code>/search netflix</code>",
   "search.no_results": "No products found for <b>{query}</b>. Try a different keyword.",
   "search.results": "<b>Results for \"{query}\"</b> ({count} found):",
+  "search.again_btn": "🔎 Search again",
   "start.dashboard": "<b>Hello {name} |</b>\n<i>{now}</i>\n\n<b>User Info :</b>\n└ ID : <code>{tg_id}</code>\n└ Username : {username}\n└ Transactions : <b>{spent}</b>\n\n<b>Shortcuts :</b>\n/start – Start bot\n/listproduk – View product list\n/language – Change language",
   "start.menu_hint": "Choose an option below:",
   "start.welcome": "Welcome, {name}.\n\nExplore the available digital products and choose a service from the menu below.",

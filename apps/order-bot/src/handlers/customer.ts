@@ -21,7 +21,7 @@ import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
-import { CUSTOMER_SERVICES } from "@app/core/services";
+import { CUSTOMER_SERVICES, serviceForCategoryGroup } from "@app/core/services";
 import {
   prisma,
   ownsTransactionMessageAt,
@@ -178,6 +178,13 @@ interface BrowseScratch {
    * must NOT apply the gameVariant/gameRegion filter, or the labelled
    * products would vanish. Deleted on every non-mixed path. */
   gameVariantDimensionSkipped?: boolean;
+  /** True only between the "Search again" prompt and the next typed text: that
+   * text is the Game Top Up search query. Cleared by every screen render
+   * (smartEdit/menuAnchor/renderMenu) and every other callback tap, so it can
+   * never swallow a reply-keyboard label or a later unrelated message. */
+  searchAwaiting?: boolean;
+  /** The last Game Top Up search's hits (JSON-safe), paged by `search:page:<n>`. */
+  searchSnapshot?: { query: string; hits: ckb.SearchHit[] };
   productId?: number;
   /** 0-based picker page browseProduct last rendered for `productId`. */
   productPage?: number;
@@ -1097,6 +1104,18 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   // label set of every supported language (the keyboard is localized, so a
   // literal English compare would miss Indonesian labels). null → not a button.
   const action = ckb.matchPersistentLabel(text);
+
+  // Game Top Up search prompt ("Search again"): the next free text is the query.
+  // A reply-keyboard label or a bare number (numbered-list input) is never the
+  // query; those end the mode and fall through to their normal handling.
+  if (sc(ctx).searchAwaiting) {
+    delete sc(ctx).searchAwaiting;
+    if (action === null && text !== "" && !/^\d{1,4}$/.test(text)) {
+      await consumeInput(ctx);
+      await runGameSearch(ctx, text);
+      return;
+    }
+  }
 
   // Manual quantity input mode — only divert free text, never a menu button.
   const qtyDenomId = ctx.session.awaitingQtyDenomId;
@@ -2099,9 +2118,84 @@ export async function currencyCommand(ctx: MyContext): Promise<void> {
   await showCurrencyMenu(ctx);
 }
 
+/** Most hits a Game Top Up search keeps in its snapshot (PAGE_SIZE per page). */
+const GAME_SEARCH_LIMIT = 50;
+/** A typed query is cut to this many characters before searching. */
+const SEARCH_QUERY_MAX_CHARS = 100;
+
+async function renderGameSearchPage(ctx: MyContext, page: number): Promise<void> {
+  const lang = ctx.session.lang;
+  const snap = sc(ctx).searchSnapshot!;
+  const totalPages = Math.max(1, Math.ceil(snap.hits.length / PAGE_SIZE));
+  const slice = snap.hits.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  await menuAnchor(
+    ctx,
+    `${t(ctx, "search.results", { query: esc(snap.query), count: snap.hits.length })}\n${t(ctx, "hint.search")}`,
+    ckb.gameSearchResultsKb(slice, page, totalPages, lang),
+  );
+}
+
+/** Flag-ON search: Game Top Up only, ranked + alias-aware, paged from a snapshot. */
+async function runGameSearch(ctx: MyContext, rawQuery: string): Promise<void> {
+  const lang = ctx.session.lang;
+  const query = rawQuery.trim().slice(0, SEARCH_QUERY_MAX_CHARS);
+  const products = await searchCatalog(prisma, query, "bot", GAME_SEARCH_LIMIT, {
+    groups: [CategoryGroup.GAME_TOPUP],
+    aliases: true,
+  });
+  if (!products.length) {
+    delete sc(ctx).searchSnapshot;
+    await menuAnchor(
+      ctx,
+      `${t(ctx, "search.no_results", { query: esc(query) })}\n${t(ctx, "hint.search_empty")}`,
+      ckb.gameSearchEmptyKb(lang),
+    );
+    return;
+  }
+  sc(ctx).searchSnapshot = {
+    query,
+    hits: products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      serviceKey: serviceForCategoryGroup(p.category.group as CategoryGroup | null).translationKey,
+    })),
+  };
+  await renderGameSearchPage(ctx, 0);
+}
+
+/** `search:page:<n>` — Prev/Next over the stored snapshot; a missing or short one is a stale screen. */
+export async function searchPage(ctx: MyContext, page: number): Promise<void> {
+  const snap = sc(ctx).searchSnapshot;
+  const totalPages = snap ? Math.max(1, Math.ceil(snap.hits.length / PAGE_SIZE)) : 0;
+  if (!snap || !Number.isInteger(page) || page < 0 || page >= totalPages) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  await renderGameSearchPage(ctx, page);
+}
+
+/** `search:again` — turn the bubble into the search prompt and arm the next typed text as the query. */
+export async function searchAgain(ctx: MyContext): Promise<void> {
+  if (!(await isGameTopupFlowV2Enabled(prisma))) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  await smartEdit(ctx, t(ctx, "hint.search"), ckb.backToMain(ctx.session.lang));
+  sc(ctx).searchAwaiting = true;
+}
+
 export async function searchCommand(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const query = (typeof ctx.match === "string" ? ctx.match : "").trim();
+  if (await isGameTopupFlowV2Enabled(prisma)) {
+    if (!query) {
+      await menuAnchor(ctx, `${t(ctx, "search.no_query")}\n${t(ctx, "hint.search")}`, ckb.backToMain(lang));
+      sc(ctx).searchAwaiting = true;
+      return;
+    }
+    await runGameSearch(ctx, query);
+    return;
+  }
   if (!query) {
     await smartEdit(ctx, t(ctx, "search.no_query"), ckb.backToMain(lang));
     return;

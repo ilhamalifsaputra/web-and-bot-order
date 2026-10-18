@@ -531,6 +531,7 @@
   "search.no_query": "Cara pakai: <code>/search &lt;kata kunci&gt;</code>\n\nContoh: <code>/search netflix</code>",
   "search.no_results": "Tidak ada produk untuk <b>{query}</b>. Coba kata kunci lain.",
   "search.results": "<b>Hasil untuk \"{query}\"</b> ({count} ditemukan):",
+  "search.again_btn": "🔎 Cari lagi",
   "start.dashboard": "<b>Halo {name} |</b>\n<i>{now}</i>\n\n<b>Info Pengguna :</b>\n└ ID : <code>{tg_id}</code>\n└ Username : {username}\n└ Transaksi : <b>{spent}</b>\n\n<b>Shortcut :</b>\n/start – Mulai bot\n/listproduk – Lihat daftar produk\n/language – Ganti bahasa",
   "start.menu_hint": "Pilih menu di bawah:",
   "start.welcome": "Selamat datang, {name}.\n\nJelajahi produk digital yang tersedia dan pilih layanan dari menu di bawah.",

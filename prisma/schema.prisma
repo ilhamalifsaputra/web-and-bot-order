@@ -269,6 +269,10 @@ model Product {
   /// Independent of the Digiflazz Product-name "(Region)" suffix, which does
   /// not backfill this field.
   gameRegion              String?  @map("game_region")
+  /// Admin-set free-text server/zone label (e.g. "Asia - Indonesia"). null =
+  /// no server distinction, so the bot skips the server picker. Independent of
+  /// the Digiflazz import: never auto-filled from a SKU or brand name.
+  gameServer              String?  @map("game_server")
   sortOrder               Int      @default(0) @map("sort_order")
   isActive                Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the

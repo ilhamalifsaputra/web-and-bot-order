@@ -96,6 +96,12 @@ describe("ButtonLabelInput", () => {
     expect(counter()).toHaveTextContent("0/16");
   });
 
+  it("hints the server button budget (two per row, 18 cells)", () => {
+    render(<Harness kind="gameServer" />);
+    expect(screen.getByText(/Shown on the Telegram server button/)).toBeInTheDocument();
+    expect(counter()).toHaveTextContent("0/18");
+  });
+
   it("passes input props through (placeholder, className) so pages keep their layout", () => {
     render(<ButtonLabelInput kind="gameRegion" aria-label="Region" placeholder="e.g. Global" className="mt-1" value="" onChange={() => {}} />);
     expect(screen.getByPlaceholderText("e.g. Global")).toHaveClass("mt-1");

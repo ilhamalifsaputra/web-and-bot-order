@@ -396,7 +396,7 @@ describe("ProductDetailPage", () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const withGameFields = {
       ...PRODUCT_DETAIL,
-      product: { ...PRODUCT_DETAIL.product, gameVariant: "Diamonds", gameVariantEmoji: "💎", gameRegion: "Global" },
+      product: { ...PRODUCT_DETAIL.product, gameVariant: "Diamonds", gameVariantEmoji: "💎", gameRegion: "Global", gameServer: "Asia" },
     };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
@@ -409,6 +409,8 @@ describe("ProductDetailPage", () => {
 
     await user.click(screen.getByRole("button", { name: /edit product/i }));
     expect(screen.getByPlaceholderText(/e\.g\. diamonds/i)).toHaveValue("Diamonds");
+    expect(screen.getByPlaceholderText(/e\.g\. asia/i)).toHaveValue("Asia");
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. asia/i), { target: { value: " Europe " } });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
@@ -421,6 +423,7 @@ describe("ProductDetailPage", () => {
       gameVariant: "Diamonds",
       gameVariantEmoji: "💎",
       gameRegion: "Global",
+      gameServer: "Europe",
     });
   });
 
@@ -610,7 +613,7 @@ describe("ProductDetailPage category-specific settings", () => {
   it.each(["PREMIUM_APPS", null])("hides game settings for Premium Apps including legacy categories (group %s)", async (group) => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const category = { id: 2, name: "Creative", group, isActive: true };
-    const detail = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, category, gameVariant: "Diamonds", gameRegion: "Global" } };
+    const detail = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, category, gameVariant: "Diamonds", gameRegion: "Global", gameServer: "Asia" } };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const body = String(input) === "/api/catalog"
         ? { categories: [category], products: [] }
@@ -619,7 +622,7 @@ describe("ProductDetailPage category-specific settings", () => {
     });
     render(<ProductDetailPage />, { wrapper: Wrapper });
     await user.click(await screen.findByRole("button", { name: /edit product/i }));
-    for (const label of ["Game Variant", "Game Variant Emoji", "Game Region"]) {
+    for (const label of ["Game Variant", "Game Variant Emoji", "Game Region", "Game Server"]) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(screen.queryByRole("combobox", { name: /ikon currency/i })).not.toBeInTheDocument();
@@ -627,7 +630,7 @@ describe("ProductDetailPage category-specific settings", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/products/1", expect.objectContaining({ method: "PATCH" })));
     const patch = fetchSpy.mock.calls.find(([url, init]) => url === "/api/catalog/products/1" && init?.method === "PATCH")!;
-    expect(JSON.parse(String(patch[1]?.body))).toMatchObject({ gameVariant: "Diamonds", gameRegion: "Global" });
+    expect(JSON.parse(String(patch[1]?.body))).toMatchObject({ gameVariant: "Diamonds", gameRegion: "Global", gameServer: "Asia" });
   });
 
   it("updates the game settings immediately when the selected category changes", async () => {
@@ -644,9 +647,11 @@ describe("ProductDetailPage category-specific settings", () => {
     render(<ProductDetailPage />, { wrapper: Wrapper });
     await user.click(await screen.findByRole("button", { name: /edit product/i }));
     expect(screen.getByText("Game Variant")).toBeInTheDocument();
+    expect(screen.getByText("Game Server")).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Category" }));
     await user.click(await screen.findByRole("option", { name: "Apps" }));
     expect(screen.queryByText("Game Variant")).not.toBeInTheDocument();
+    expect(screen.queryByText("Game Server")).not.toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Category" }));
     await user.click(await screen.findByRole("option", { name: "Games" }));
     expect(screen.getByText("Game Variant")).toBeInTheDocument();
@@ -654,9 +659,9 @@ describe("ProductDetailPage category-specific settings", () => {
 });
 
 describe("ProductDetailPage Telegram button hints", () => {
-  it("hints Name, Game Variant and Game Region in the edit form, and an over-budget name still saves", async () => {
+  it("hints Name, Game Variant, Game Region and Game Server in the edit form, and an over-budget name still saves", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const detail = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, gameVariant: "Diamonds", gameVariantEmoji: "💎", gameRegion: "Global" } };
+    const detail = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, gameVariant: "Diamonds", gameVariantEmoji: "💎", gameRegion: "Global", gameServer: "Asia" } };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       const body = url.startsWith("/api/catalog/1") && !init?.method ? detail : { ok: true };
@@ -666,9 +671,9 @@ describe("ProductDetailPage Telegram button hints", () => {
     await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: /edit product/i }));
 
-    // CapCut Pro = 10 cells of 30; Diamonds = 8 of 15 (a variant emoji is set); Global = 6 of 18.
-    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["10/30", "8/15", "6/18"]);
-    expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(3);
+    // CapCut Pro = 10 cells of 30; Diamonds = 8 of 15 (a variant emoji is set); Global = 6 of 18; Asia = 4 of 18.
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["10/30", "8/15", "6/18", "4/18"]);
+    expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(4);
 
     const longName = "CapCut Pro Supplier Name That Is Far Too Long For One Button";
     const nameInput = screen.getByDisplayValue("CapCut Pro");

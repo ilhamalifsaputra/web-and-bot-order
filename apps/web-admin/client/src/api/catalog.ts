@@ -39,6 +39,7 @@ export interface ProductRow {
   gameVariant: string | null;
   gameVariantEmoji: string | null;
   gameRegion: string | null;
+  gameServer: string | null;
 }
 
 export interface CatalogData {

@@ -2076,6 +2076,7 @@ describe("catalog JSON API — create product", () => {
       gameVariant: "Diamonds",
       gameVariantEmoji: "💎",
       gameRegion: "Global",
+      gameServer: "  SEA  ",
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { id: number };
@@ -2083,6 +2084,7 @@ describe("catalog JSON API — create product", () => {
     expect(product!.gameVariant).toBe("Diamonds");
     expect(product!.gameVariantEmoji).toBe("💎");
     expect(product!.gameRegion).toBe("Global");
+    expect(product!.gameServer).toBe("SEA");
   });
 
   it("defaults gameVariant, gameVariantEmoji and gameRegion to null when omitted", async () => {
@@ -2096,6 +2098,7 @@ describe("catalog JSON API — create product", () => {
     expect(product!.gameVariant).toBeNull();
     expect(product!.gameVariantEmoji).toBeNull();
     expect(product!.gameRegion).toBeNull();
+    expect(product!.gameServer).toBeNull();
   });
 
   it("rejects missing name with 400", async () => {
@@ -3255,12 +3258,14 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
         gameVariant: "UC",
         gameVariantEmoji: "🔫",
         gameRegion: "Indonesia",
+        gameServer: "Asia",
       });
       expect(res.statusCode).toBe(200);
       const updated = await getCatalogProduct(prisma, seed.catalogProductId);
       expect(updated!.gameVariant).toBe("UC");
       expect(updated!.gameVariantEmoji).toBe("🔫");
       expect(updated!.gameRegion).toBe("Indonesia");
+      expect(updated!.gameServer).toBe("Asia");
     });
 
     it("clears gameVariant, gameVariantEmoji and gameRegion when omitted", async () => {
@@ -3268,6 +3273,7 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
         gameVariant: "UC",
         gameVariantEmoji: "🔫",
         gameRegion: "Indonesia",
+        gameServer: "Asia",
       });
       const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
       const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
@@ -3278,6 +3284,7 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       expect(updated!.gameVariant).toBeNull();
       expect(updated!.gameVariantEmoji).toBeNull();
       expect(updated!.gameRegion).toBeNull();
+      expect(updated!.gameServer).toBeNull();
     });
 
     it("rejects an unknown categoryId with 400", async () => {

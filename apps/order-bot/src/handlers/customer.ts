@@ -22,7 +22,6 @@ import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderTy
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { CUSTOMER_SERVICES } from "@app/core/services";
-import { resolveBooleanSetting } from "@app/core";
 import {
   prisma,
   ownsTransactionMessageAt,
@@ -55,6 +54,7 @@ import {
   soldCountForDenomination,
   soldCountForProduct,
   getSetting,
+  isGameTopupFlowV2Enabled,
   getCanonicalRateContext,
   setSetting,
   searchCatalog,
@@ -172,9 +172,6 @@ interface BrowseScratch {
    * only when a server level was resolved (picked, or the single server of a
    * scope where every product has one). Absent means no server filter. */
   resolvedGameServer?: string | null;
-  /** Set true when the server level was evaluated and not shown (0/1 servers,
-   * or a mixed scope where some products have no server). */
-  gameServerDimensionSkipped?: boolean;
   /** Set true by browseCategoryEntry when the active category is a mixed
    * GAME_TOPUP category (some products carry a gameVariant, some don't):
    * the variant/region pickers are skipped entirely and browseProductsFlat
@@ -198,15 +195,7 @@ const sc = (ctx: MyContext) => ctx.session.scratch as BrowseScratch & Record<str
 function clearGameServerScratch(ctx: MyContext): void {
   delete sc(ctx).gameServerEntries;
   delete sc(ctx).resolvedGameServer;
-  delete sc(ctx).gameServerDimensionSkipped;
   delete sc(ctx).gameRegionBackTarget;
-}
-
-/** Feature flag for the Game Top-up flow v2 (Server level). Off unless an admin
- * turns it on; read once where the region -> server decision is made. */
-async function isGameTopupFlowV2Enabled(): Promise<boolean> {
-  const raw = await getSetting(prisma, "game_topup_flow_v2_enabled");
-  return resolveBooleanSetting("game_topup_flow_v2_enabled", raw, { smtpSecure: false }) === true;
 }
 
 function requireUser(ctx: MyContext) {
@@ -777,9 +766,10 @@ async function enterGameRegion(
   // A new region means any earlier server choice no longer applies.
   delete sc(ctx).gameServerEntries;
   delete sc(ctx).resolvedGameServer;
-  delete sc(ctx).gameServerDimensionSkipped;
 
-  if (!(await isGameTopupFlowV2Enabled())) {
+  // Served from getSetting's short per-client TTL cache, so a tap with the flag
+  // OFF costs no database round trip.
+  if (!(await isGameTopupFlowV2Enabled(prisma))) {
     await enterGameServer(ctx, categoryId, gameVariant, gameRegion, undefined);
     return;
   }
@@ -807,7 +797,6 @@ async function enterGameRegion(
     await smartEdit(ctx, t(ctx, "browse.choose_server"), ckb.gameServerPickerKb(servers, categoryId, serverBackTarget, ctx.session.lang));
     return;
   }
-  sc(ctx).gameServerDimensionSkipped = true;
   await enterGameServer(ctx, categoryId, gameVariant, gameRegion, servers.length === 1 && !mixed ? servers[0]! : undefined);
 }
 

@@ -104,7 +104,6 @@ type Scratch = {
   gameRegionEntries?: unknown[];
   gameServerEntries?: string[];
   resolvedGameServer?: string | null;
-  gameServerDimensionSkipped?: boolean;
 };
 
 describe("Server level, flag ON", () => {
@@ -215,13 +214,50 @@ describe("Server level, flag ON", () => {
     expect(s.gameServerEntries).toBeUndefined();
   });
 
-  it("Back from the server picker skips the region picker when the region step was skipped", async () => {
+  it("Back from the server picker goes straight to the category picker when the region step was skipped", async () => {
     const cat = await freeFireOneRegion();
     await createCategory(prisma, { name: "Free Fire Sibling", group: CategoryGroup.GAME_TOPUP });
     const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
     await routeCallback(entry.ctx);
+    expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_server"))).toBe(true);
     const all = buttons(entry.sink);
-    expect(all[all.length - 1]!.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    const backData = all[all.length - 1]!.callback_data;
+    expect(backData).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+
+    const back = tapCtx(entry.ctx, { callbackData: backData });
+    await routeCallback(back.ctx);
+    // The region picker never existed, so it must not be reopened.
+    expect(sentIncludes(back.sink, t(back.ctx, "browse.choose_region"))).toBe(false);
+    expect(sentIncludes(back.sink, t(back.ctx, "browse.choose_server"))).toBe(false);
+    const names = buttons(back.sink).map((b) => b.text).join("|");
+    expect(names).toContain("Free Fire One");
+    expect(names).toContain("Free Fire Sibling");
+    expect(calls(back.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(back.sink, "reply")).toHaveLength(0);
+    expect(calls(back.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(back.sink, "deleteMessage")).toHaveLength(0);
+  });
+
+  it("the picked server filter persists across product pages", async () => {
+    const cat = await createCategory(prisma, { name: "Paged Server Game", group: CategoryGroup.GAME_TOPUP });
+    for (let i = 1; i <= 12; i++) await product(cat.id, `PG Item ${String(i).padStart(2, "0")}`, { gameRegion: "Asia", gameServer: "S1" });
+    await product(cat.id, "PG Other Server", { gameRegion: "Asia", gameServer: "S2" });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx); // one region -> server picker
+    const pick = tapCtx(entry.ctx, { callbackData: `v1:browse:gsrv:${cat.id}:0` });
+    await routeCallback(pick.ctx);
+    expect((pick.ctx.session.scratch as Scratch).resolvedGameServer).toBe("S1");
+    expect(sentIncludes(pick.sink, "PG Item 01")).toBe(true);
+    expect(sentIncludes(pick.sink, "PG Item 12")).toBe(false); // page 2
+
+    const next = tapCtx(pick.ctx, { callbackData: "v1:browse:page:1" });
+    await routeCallback(next.ctx);
+    expect(sentIncludes(next.sink, "PG Item 11")).toBe(true);
+    expect(sentIncludes(next.sink, "PG Item 12")).toBe(true);
+    expect(sentIncludes(next.sink, "PG Other Server")).toBe(false);
+    expect((next.ctx.session.scratch as Scratch).resolvedGameServer).toBe("S1");
+    expect(calls(next.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(next.sink, "deleteMessage")).toHaveLength(0);
   });
 
   it("a region with no servers skips the server level and filters exactly like today", async () => {
@@ -233,7 +269,6 @@ describe("Server level, flag ON", () => {
     expect(sentIncludes(tap.sink, "FF Delta")).toBe(true); // single product collapses
     expect(sentIncludes(tap.sink, t(tap.ctx, "browse.choose_server"))).toBe(false);
     const s = tap.ctx.session.scratch as Scratch;
-    expect(s.gameServerDimensionSkipped).toBe(true);
     expect(s.resolvedGameServer ?? null).toBeNull();
   });
 
@@ -248,7 +283,6 @@ describe("Server level, flag ON", () => {
     expect(sentIncludes(sink, "SS Two")).toBe(true);
     const s = ctx.session.scratch as Scratch;
     expect(s.resolvedGameServer).toBe("Only");
-    expect(s.gameServerDimensionSkipped).toBe(true);
   });
 
   it("a mixed scope (some products without a server) skips the level and hides nothing", async () => {
@@ -261,7 +295,6 @@ describe("Server level, flag ON", () => {
     expect(sentIncludes(sink, t(ctx, "browse.choose_server"))).toBe(false);
     for (const name of ["MX Served A", "MX Served B", "MX Plain"]) expect(sentIncludes(sink, name)).toBe(true);
     const s = ctx.session.scratch as Scratch;
-    expect(s.gameServerDimensionSkipped).toBe(true);
     expect(s.resolvedGameServer ?? null).toBeNull();
   });
 
@@ -300,7 +333,6 @@ describe("Server level, flag ON", () => {
     const s = ctx.session.scratch as Scratch;
     expect(s.gameServerEntries).toBeUndefined();
     expect(s.resolvedGameServer).toBeUndefined();
-    expect(s.gameServerDimensionSkipped).toBeUndefined();
   });
 
   it("server scratch is cleared when browsing leaves the game flow", async () => {
@@ -314,12 +346,10 @@ describe("Server level, flag ON", () => {
     let s = groups.ctx.session.scratch as Scratch;
     expect(s.gameServerEntries).toBeUndefined();
     expect(s.resolvedGameServer).toBeUndefined();
-    expect(s.gameServerDimensionSkipped).toBeUndefined();
 
     // Leaving through a non-game category must clear a resolved server too.
     (groups.ctx.session.scratch as Record<string, unknown>).resolvedGameServer = "Server 2";
     (groups.ctx.session.scratch as Record<string, unknown>).gameServerEntries = ["x"];
-    (groups.ctx.session.scratch as Record<string, unknown>).gameServerDimensionSkipped = true;
     const app = await createCategory(prisma, { name: "Apps", group: CategoryGroup.PREMIUM_APPS });
     await product(app.id, "Some App");
     const appTap = tapCtx(groups.ctx, { callbackData: `v1:browse:cat:${app.id}` });
@@ -327,7 +357,6 @@ describe("Server level, flag ON", () => {
     s = appTap.ctx.session.scratch as Scratch;
     expect(s.gameServerEntries).toBeUndefined();
     expect(s.resolvedGameServer).toBeUndefined();
-    expect(s.gameServerDimensionSkipped).toBeUndefined();
   });
 });
 
@@ -346,10 +375,12 @@ describe("Server level, flag OFF", () => {
     const s = tap.ctx.session.scratch as Scratch;
     expect(s.gameServerEntries).toBeUndefined();
     expect(s.resolvedGameServer).toBeUndefined();
-    expect(s.gameServerDimensionSkipped).toBeUndefined();
     expect(s.activeNumberedScreen).toBe("products");
     // The same call budget as the pre-server flow: one companion keyboard
     // resend (the digit keyboard) plus the list itself.
+    expect(calls(tap.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(tap.sink, "reply")).toHaveLength(1);
+    expect(calls(tap.sink, "editMessageText")).toHaveLength(1);
     expect(calls(tap.sink, "deleteMessage")).toHaveLength(0);
   });
 });

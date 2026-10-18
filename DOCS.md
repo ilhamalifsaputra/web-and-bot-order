@@ -285,6 +285,42 @@ di-stamp ke `@app/core/runtime`):
 > sendiri. Setting yang "perlu restart" hanya menempel di proses yang dibaca
 > ulang; di deploy multi-proses, restart **proses yang relevan**, bukan hanya web.
 
+### Flag `game_topup_flow_v2_enabled` (alur katalog Game Top-up v2)
+
+Setting boolean di tabel `settings`, **default mati** (`DEFAULT_OFF` di
+`packages/core/src/booleanSettings.ts`; hanya nilai `true` yang menyalakan,
+dibaca `isGameTopupFlowV2Enabled` di `packages/db/src/crud/settings.ts`).
+Nyala, bot menampilkan untuk Game Top-up saja: picker **Server** setelah Region
+(dilewati bila cakupan campuran atau server kurang dari dua), akhiran
+`From <harga>` pada daftar produk, satu baris hint `hint.*` per layar, dan
+`/search` (berperingkat, label layanan, halaman, "Search again"; alias dari
+tabel `detection_aliases` yang bawaannya **kosong**). Mati = perilaku lama
+persis; Premium Apps tidak pernah terpengaruh.
+
+Flag ini **belum ada di halaman web-admin → Settings** (tidak ada di whitelist
+`EDITABLE`). Nyalakan/matikan dengan mengubah baris `settings` langsung, mis.
+`INSERT INTO settings (key, value, updated_at) VALUES ('game_topup_flow_v2_enabled', 'true', now()) ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = now();`
+(`'false'` untuk mematikan). Ini tidak lewat audit admin; catat sendiri.
+
+Urutan deploy untuk rilis yang menambah kolom `products.game_server`:
+
+1. Backup dulu (`deploy/backup/backup.sh`).
+2. Terapkan skema (`pnpm prisma db push` atau migrasi
+   `20261013090000_add_product_game_server`) dan restart order-bot **sebelum**
+   kode baru berjalan; kebalikannya menghasilkan `P2022 column ... does not
+   exist`. Di Docker, entrypoint menjaga urutan ini.
+3. Nyalakan flag hanya setelah admin mengisi "Game Server" pada produk yang
+   butuh.
+4. Admin **hard-refresh** web-admin setelah deploy. Bundle SPA lama yang masih
+   ter-cache mengirim PATCH produk tanpa `gameServer`, dan itu mengosongkan
+   nilai tersimpan (sama seperti `gameRegion` sekarang).
+
+Rollback: mematikan flag cukup untuk mengembalikan perilaku bot, tetapi
+mengganti ke image lama **tidak** aman — `db push` image lama ingin men-drop
+kolom baru dan menolak tanpa `--accept-data-loss`, sehingga container tidak
+start. Rollback sebenarnya adalah restore dump pra-deploy; lihat
+[docs/MIGRATIONS.md](docs/MIGRATIONS.md#cara-rollback-migrasi).
+
 Key rahasia (`tokopay_secret`, `bot_token`, `notif_bot_token`, `bybit_api_key`,
 `bybit_api_secret`, `web_cookie_secret`) ditangani **write-only**: tak di-echo,
 `(hidden)` di tabel, audit `key=(updated)` tanpa nilai.

@@ -37,8 +37,8 @@ interface CanonicalProduct {
   rawNameProvenance: "supplier" | "legacy_name";
   displayName: string; // derives from variant plus residual
   variant: CanonicalVariant;
-  qualifiers: string[]; // product.gameRegion + gameVariant, both preserved
-  product: { id: number; name: string; gameVariant: string | null; gameRegion: string | null };
+  qualifiers: string[]; // product.gameRegion, gameServer, gameVariant (that order); all preserved
+  product: { id: number; name: string; gameVariant: string | null; gameRegion: string | null; gameServer: string | null };
   category: { id: number; name: string; group: string | null };
   priceIDR: CanonicalMoney; // always IDR
   displayPrice: CanonicalMoney;
@@ -71,7 +71,7 @@ interface CanonicalProductInput {
   };
   product: {
     id: number; name: string; digiflazzBrand?: string | null;
-    gameVariant?: string | null; gameRegion?: string | null;
+    gameVariant?: string | null; gameRegion?: string | null; gameServer?: string | null;
     isActive: boolean; isArchived?: boolean;
   };
   category: { id: number; name: string; group?: string | null; isActive: boolean };
@@ -80,7 +80,7 @@ interface CanonicalProductInput {
 function canonicalProduct(input: CanonicalProductInput, context: CanonicalProductContext): CanonicalProduct;
 ```
 
-quantity/duration/bonus harus positive safe integer. Status harus konsisten dengan purchasable; displayName harus berasal dari variant. USD display harus mempunyai conversion. Residual mempertahankan token yang belum dikenali atau berbeda dari field editable. Qualifier produk tidak menimpa token variant; semua tetap tampil, termasuk konflik.
+quantity/duration/bonus harus positive safe integer. Status harus konsisten dengan purchasable; displayName harus berasal dari variant. USD display harus mempunyai conversion. Residual mempertahankan token yang belum dikenali atau berbeda dari field editable. Qualifier produk tidak menimpa token variant; semua tetap tampil, termasuk konflik. Urutan qualifier: `gameRegion`, `gameServer`, `gameVariant`. `gameServer` (`Product.gameServer`, kolom nullable, label teks bebas yang diisi admin, hanya untuk Game Top-up) diperlakukan sama seperti `gameRegion`: `null`/kosong tidak menghasilkan qualifier dan output `product.gameServer` bernilai `null`; nilai yang sudah tertulis di nama SKU tidak diulang untuk produk game.
 
 Existing USD display tetap kebijakan konversi IDR per USDT, bukan klaim settlement USD. `getCanonicalRateContext` di DB membaca existing `getUsdIdrRate` (termasuk aturan staleness), source setting/config dan timestamp sekali per screen/request. `asOf` berasal dari `usd_idr_rate_updated_at` hanya bila sumbernya saved setting dan timestamp valid; jika sumber config, timestamp tidak diketahui dan bernilai null. Pure caller tanpa provenance memakai `caller`. Rate invalid/missing mengikuti fallback IDR dan notice existing.
 
@@ -104,7 +104,7 @@ Aturan resolver (`packages/core/src/productAvailability.ts`, `@app/core/productA
         "displayName": "86 Diamonds + 8 Bonus Global",
         "variant": { "type": "amount", "quantity": 86, "unit": "Diamonds", "residual": ["Global"], "bonus": { "quantity": 8, "unit": "Diamonds", "label": "Bonus" } },
         "qualifiers": ["Indonesia"],
-        "product": { "id": 1, "name": "Mobile Legends", "gameVariant": null, "gameRegion": "Indonesia" },
+        "product": { "id": 1, "name": "Mobile Legends", "gameVariant": null, "gameRegion": "Indonesia", "gameServer": null },
         "category": { "id": 1, "name": "Canonical", "group": null },
         "priceIDR": { "currency": "IDR", "amountMinor": "21000", "scale": 0 },
         "displayPrice": { "currency": "IDR", "amountMinor": "21000", "scale": 0 },
@@ -131,7 +131,7 @@ Aturan resolver (`packages/core/src/productAvailability.ts`, `@app/core/productA
         "displayName": "86 Diamonds + 8 Bonus Global",
         "variant": { "type": "amount", "quantity": 86, "unit": "Diamonds", "residual": ["Global"], "bonus": { "quantity": 8, "unit": "Diamonds", "label": "Bonus" } },
         "qualifiers": ["Indonesia"],
-        "product": { "id": 1, "name": "Mobile Legends", "gameVariant": null, "gameRegion": "Indonesia" },
+        "product": { "id": 1, "name": "Mobile Legends", "gameVariant": null, "gameRegion": "Indonesia", "gameServer": null },
         "category": { "id": 1, "name": "Canonical", "group": null },
         "priceIDR": { "currency": "IDR", "amountMinor": "21000", "scale": 0 },
         "displayPrice": { "currency": "IDR", "amountMinor": "21000", "scale": 0 },

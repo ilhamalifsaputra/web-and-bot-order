@@ -12,11 +12,13 @@ import { routeCallback } from "../src/handlers/callbacks";
 import { ctxPriceFormatter } from "../src/util/format";
 import { t } from "../src/util/i18n";
 import { Decimal } from "@app/core/money";
+import { serviceForCategoryGroup } from "@app/core/services";
 
 // Game Top-up `From` price label and one-line hints (Phase 2, Task 5), gated by
 // game_topup_flow_v2_enabled. Fixtures are built in-test.
 
 const FLAG = "game_topup_flow_v2_enabled";
+const EXPECTED_SKU_SENDS = 1;
 const HINT_KEYS = ["hint.game_list", "hint.variant", "hint.region", "hint.server", "hint.packs"] as const;
 
 let sample: SampleData;
@@ -167,6 +169,22 @@ describe("From price, flag ON", () => {
     expect(bubbleText(usd.sink)).not.toContain("Rp16");
   });
 
+  it("USD buyer without an FX rate: IDR From price plus the rate notice, same call counts", async () => {
+    const cat = await gameCategory();
+    await product(cat.id, "NoRate Game", [16000]);
+    await product(cat.id, "Zz NoRate Filler", [90000]);
+    const { ctx, sink } = await openList(cat.id, { lang: "en", preferredCurrency: "USD" });
+    const text = bubbleText(sink);
+    expect(text).toContain("1. NoRate Game — from Rp16,000");
+    expect(text).not.toContain("$");
+    expect(text).toContain(ctxPriceFormatter(ctx, null).rateNotice("en").trim());
+    expect(text.indexOf(t(ctx, "currency.rate_unavailable"))).toBeLessThan(text.indexOf(t(ctx, "hint.game_list")));
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+  });
+
   it("never shows From for Premium Apps", async () => {
     const cat = await createCategory(prisma, { name: "Hint Premium Apps", group: CategoryGroup.PREMIUM_APPS });
     await product(cat.id, "App One", [15000, 20000]);
@@ -184,13 +202,14 @@ describe("hints, flag ON", () => {
     await setSetting(prisma, FLAG, "true");
   });
 
-  it("product list: hint.packs rides on the same bubble with unchanged call counts", async () => {
+  it("product list: hint.game_list (not hint.packs) rides on the same bubble with unchanged call counts", async () => {
     const cat = await gameCategory();
     await product(cat.id, "List Game A", [15000]);
     await product(cat.id, "List Game B", [20000]);
     const { ctx, sink } = await openList(cat.id);
     const text = bubbleText(sink);
-    expect(text.endsWith(t(ctx, "hint.packs"))).toBe(true);
+    expect(text.endsWith(t(ctx, "hint.game_list"))).toBe(true);
+    expect(text).not.toContain(t(ctx, "hint.packs"));
     expect(calls(sink, "sendMessage")).toHaveLength(0);
     expect(calls(sink, "reply")).toHaveLength(1); // digit keyboard resend, as before
     expect(calls(sink, "editMessageText")).toHaveLength(1);
@@ -244,7 +263,7 @@ describe("hints, flag ON", () => {
     await customer.browseProduct(g.ctx, game.product.id);
     const gameText = [...calls(g.sink, "editMessageText"), ...calls(g.sink, "sendMessage"), ...calls(g.sink, "reply")].map((c) => String(c.args[0])).join("\n");
     expect(gameText).toContain(t(g.ctx, "hint.packs"));
-    expect(g.sink.filter((c) => ["sendMessage", "reply", "deleteMessage"].includes(c.method)).length).toBeLessThanOrEqual(1);
+    expect(g.sink.filter((c) => ["sendMessage", "reply", "deleteMessage"].includes(c.method)).length).toBe(EXPECTED_SKU_SENDS);
 
     const premiumCat = await createCategory(prisma, { name: "Hint Apps", group: CategoryGroup.PREMIUM_APPS });
     const app = await product(premiumCat.id, "Sku App", [15000, 20000]);
@@ -287,5 +306,42 @@ describe("flag OFF", () => {
     const p = await prisma.product.findFirstOrThrow({ where: { name: "LO A" } });
     await customer.browseProduct(sku.ctx, p.id);
     for (const key of HINT_KEYS) expect(sentIncludes(sku.sink, t(sku.ctx, key))).toBe(false);
+  });
+
+  it("category list and region picker are byte-identical to the old text with exact call counts", async () => {
+    await gameCategory("Off One");
+    await gameCategory("Off Two");
+    const list = customerCtx({}, { callbackData: `v1:browse:grp:${CategoryGroup.GAME_TOPUP}` });
+    await routeCallback(list.ctx);
+    const groupLabel = t(list.ctx, serviceForCategoryGroup(CategoryGroup.GAME_TOPUP).translationKey);
+    expect(bubbleText(list.sink)).toBe(t(list.ctx, "browse.category_picker_title", { group: groupLabel }));
+    expect(calls(list.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(list.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(list.sink, "reply")).toHaveLength(0);
+    expect(calls(list.sink, "deleteMessage")).toHaveLength(0);
+
+    const cat = await gameCategory("Region Off");
+    await product(cat.id, "RO A", [15000], { gameRegion: "Asia" });
+    await product(cat.id, "RO B", [15000], { gameRegion: "EU" });
+    const region = await openList(cat.id);
+    expect(bubbleText(region.sink)).toBe(t(region.ctx, "browse.choose_region"));
+    expect(calls(region.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(region.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(region.sink, "reply")).toHaveLength(1);
+    expect(calls(region.sink, "deleteMessage")).toHaveLength(0);
+  });
+
+  // The server picker only renders with the flag ON (pickGameRegion skips straight
+  // to the product list otherwise), so there is no flag-off server text to pin.
+  it("never reaches the server picker: a region tap lands on the product list with no hint", async () => {
+    const cat = await gameCategory("Server Off");
+    await product(cat.id, "SO A", [15000], { gameRegion: "Asia", gameServer: "S1" });
+    await product(cat.id, "SO B", [15000], { gameRegion: "Asia", gameServer: "S2" });
+    await product(cat.id, "SO C", [15000], { gameRegion: "EU", gameServer: "S1" });
+    const regionStep = await openList(cat.id);
+    const tap = tapCtx(regionStep.ctx, {}, { callbackData: `v1:browse:greg:${cat.id}:0` });
+    await routeCallback(tap.ctx);
+    expect(bubbleText(tap.sink)).not.toContain(t(tap.ctx, "browse.choose_server"));
+    for (const key of HINT_KEYS) expect(sentIncludes(tap.sink, t(tap.ctx, key))).toBe(false);
   });
 });

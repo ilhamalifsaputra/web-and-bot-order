@@ -982,13 +982,15 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
   const isGameProduct = (p: (typeof pageProducts)[number]) => p.category.group === CategoryGroup.GAME_TOPUP;
   const gameFlowV2 = await isGameTopupFlowV2Enabled(prisma);
-  const showFrom = gameFlowV2 && pageProducts.some(isGameProduct);
+  const hasGameProducts = pageProducts.some(isGameProduct);
+  const showFrom = gameFlowV2 && hasGameProducts;
   // One rate lookup per render; every price string goes through the buyer's
   // language-aware formatter (never hand-formatted).
   const prices = showFrom
     ? ctxPriceFormatter(ctx, await getCanonicalRateContext(prisma).then((r) => (r.rate ? new Decimal(r.rate) : null)))
     : null;
   const isReseller = ctx.session.dbUser?.role === UserRole.RESELLER;
+  let renderedFrom = false;
   const itemLines = pageProducts.map((p, i) => {
     const line = `${i + 1}. ${esc(p.name)}`;
     if (!prices || !isGameProduct(p)) return line;
@@ -996,6 +998,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     // cheapest active priced pack, even if it is currently out of stock.
     const unitPrices = p.denominations.map((d) => effectiveUnitPrice(d, isReseller)).filter((price) => price.gt(0));
     if (!unitPrices.length) return line;
+    renderedFrom = true;
     return `${line} — ${t(ctx, "browse.product_from_price", { price: prices.price(Decimal.min(...unitPrices)) })}`;
   });
 
@@ -1003,7 +1006,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     page: page + 1,
     total: totalPages,
     items: itemLines.join("\n"),
-  }) + (gameFlowV2 && pageProducts.some(isGameProduct) ? `\n${t(ctx, "hint.packs")}` : "");
+  }) +
+    // Same Rp fallback notice the SKU picker appends, only when a From was rendered.
+    (renderedFrom && prices ? prices.rateNotice(lang) : "") +
+    (gameFlowV2 && hasGameProducts ? `\n${t(ctx, "hint.game_list")}` : "");
 
   // No per-product inline buttons: the user picks the number shown in the
   // caption (handleProductNumber resolves it against browseEntries), either

@@ -915,8 +915,6 @@ export interface SearchCatalogOptions {
   aliases?: boolean | KnowledgeBase;
 }
 
-/** Rows read before ranking, so an exact or prefix match is not cut off by `take` in name order. */
-const RANKED_SEARCH_FETCH_CAP = 200;
 const MAX_SEARCH_TERMS = 4;
 
 function collapseSearchText(text: string): string {
@@ -948,26 +946,13 @@ export function expandSearchTerms(query: string, kb: KnowledgeBase | undefined):
   return terms.slice(0, MAX_SEARCH_TERMS);
 }
 
-/** 0 exact name, 1 name prefix, 2 name substring, 3 description only (best over all terms). */
-function searchRank(name: string, terms: string[]): number {
-  const n = collapseSearchText(name).toLowerCase();
-  let best = 3;
-  for (const term of terms) {
-    const q = term.toLowerCase();
-    if (n === q) return 0;
-    if (n.startsWith(q)) best = Math.min(best, 1);
-    else if (n.includes(q)) best = Math.min(best, 2);
-  }
-  return best;
-}
-
 /**
  * Search products by name/description (products only — variants are chosen in
  * product detail). Returns active products with ≥1 active denomination, each
  * with its active denominations price-asc, capped at `limit`. A plain call sorts
  * by name; with `options` the result is restricted to `options.groups`, matches
  * detection aliases, and is ranked exact name, name prefix, name substring, then
- * description-only (ties by name) from one bounded query.
+ * description-only (ties by name) from at most four bounded queries.
  */
 export async function searchCatalog(
   db: Db,
@@ -990,32 +975,43 @@ export async function searchCatalog(
   };
   const aliasKb = options?.aliases === true ? await loadKnowledgeBase(db) : options?.aliases || undefined;
   const terms = options ? expandSearchTerms(q, aliasKb) : [q];
-  const where: Prisma.ProductWhereInput = {
+  const baseWhere: Prisma.ProductWhereInput = {
     isActive: true,
     isArchived: false,
     category: { is: categoryWhere },
     denominations: { some: { isActive: true, price: { gt: 0 } } },
-    OR: terms.flatMap((term) => [
-      { name: { contains: term, mode: "insensitive" as const } },
-      { description: { contains: term, mode: "insensitive" as const } },
-    ]),
   };
+  const nameOrDescription = terms.flatMap((term) => [
+    { name: { contains: term, mode: "insensitive" as const } },
+    { description: { contains: term, mode: "insensitive" as const } },
+  ]);
   const include = {
     category: true,
     denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }] },
   };
-  if (!options) return db.product.findMany({ where, include, orderBy: { name: "asc" }, take: limit });
-  const rows = await db.product.findMany({
-    where,
-    include,
-    orderBy: [{ name: "asc" }, { id: "asc" }],
-    take: Math.max(limit, RANKED_SEARCH_FETCH_CAP),
-  });
-  return rows
-    .map((row, index) => ({ row, index, rank: searchRank(row.name, terms) }))
-    .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .slice(0, limit)
-    .map((x) => x.row);
+  if (!options) {
+    return db.product.findMany({ where: { ...baseWhere, OR: nameOrDescription }, include, orderBy: { name: "asc" }, take: limit });
+  }
+  // One bounded query per rank tier (at most four, whatever the alias count),
+  // each ordered by name, so a best match is never lost behind a name-ordered window.
+  const tiers: Prisma.ProductWhereInput[] = [
+    { OR: terms.map((term) => ({ name: { equals: term, mode: "insensitive" as const } })) },
+    { OR: terms.map((term) => ({ name: { startsWith: term, mode: "insensitive" as const } })) },
+    { OR: terms.map((term) => ({ name: { contains: term, mode: "insensitive" as const } })) },
+    { OR: nameOrDescription },
+  ];
+  const found: Awaited<ReturnType<typeof db.product.findMany<{ include: typeof include }>>> = [];
+  for (const tier of tiers) {
+    if (found.length >= limit) break;
+    const rows = await db.product.findMany({
+      where: { ...baseWhere, AND: [tier, { id: { notIn: found.map((row) => row.id) } }] },
+      include,
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      take: limit - found.length,
+    });
+    found.push(...rows);
+  }
+  return found;
 }
 
 /**

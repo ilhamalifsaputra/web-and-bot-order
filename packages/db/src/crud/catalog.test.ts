@@ -963,6 +963,24 @@ describe("searchCatalog options (Game Top-up search)", () => {
     expect(hits.map((x) => x.id)).toEqual([exact.id, prefixA.id, prefixB.id, sub.id, descOnly.id]);
   });
 
+  it("still ranks the exact and prefix matches first when far more than 200 products match", async () => {
+    const tag = `zzq${Math.random().toString(36).slice(2, 8)}`;
+    const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
+    // 205 name-substring matches that sort before the exact/prefix matches in plain name order.
+    for (let i = 0; i < 205; i += 1) {
+      await gameProduct(cat, `Aa ${tag} ${String(i).padStart(3, "0")}`);
+    }
+    const prefix = await gameProduct(cat, `${tag} Zulu`);
+    const exact = await gameProduct(cat, tag.toUpperCase());
+
+    const hits = await searchCatalog(prisma, tag, "bot", 5, { groups: ["GAME_TOPUP"] });
+    expect(hits.map((x) => x.id).slice(0, 2)).toEqual([exact.id, prefix.id]);
+    expect(hits).toHaveLength(5);
+    // The no-options path is unchanged: plain name order, so the exact match is cut off.
+    const plain = await searchCatalog(prisma, tag, "bot", 5);
+    expect(plain.map((x) => x.id)).not.toContain(exact.id);
+  }, 120_000);
+
   it("collapses inner whitespace in the query", async () => {
     const tag = `Ws${Math.random().toString(36).slice(2, 8)}`;
     const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
@@ -1002,6 +1020,19 @@ describe("expandSearchTerms", () => {
   it("dedupes terms", () => {
     const k = kb([{ alias: "ff", expandsTo: "ff" }]);
     expect(expandSearchTerms("ff", k)).toEqual(["ff"]);
+  });
+
+  it("dedupes counterparts case-insensitively across entries", () => {
+    const k = kb([
+      { alias: "ml", expandsTo: "Mobile Legends" },
+      { alias: "ML", expandsTo: "mobile legends" },
+    ]);
+    expect(expandSearchTerms("ml", k)).toEqual(["ml", "Mobile Legends"]);
+  });
+
+  it("caps the terms at four, keeping the query first and entries in order", () => {
+    const k = kb(["a", "b", "c", "d", "e"].map((x) => ({ alias: "ml", expandsTo: `Game ${x}` })));
+    expect(expandSearchTerms("ml", k)).toEqual(["ml", "Game a", "Game b", "Game c"]);
   });
 });
 

@@ -15,7 +15,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { CategoryGroup, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
+import { CategoryGroup, type CategoryGroup as CategoryGroupType, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
@@ -29,6 +29,8 @@ import { forgetDigiflazzAutoDeactivatedIds } from "./digiflazzAutoDeactivated";
 import { logAdminAction } from "./audit";
 import { activeServiceGroups, isServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
+import { normalize as normalizeDetection, type KnowledgeBase } from "@app/core/detection";
+import { loadKnowledgeBase } from "./detectionKnowledge";
 
 // ---- Slugs ----
 
@@ -905,15 +907,80 @@ export async function listNewestCatalogProducts(db: Db, channel: ServiceChannel,
   return products.sort((a, b) => recency(b) - recency(a)).slice(0, limit);
 }
 
+/** Options for the Game Top-up search; a plain call keeps the original behavior. */
+export interface SearchCatalogOptions {
+  /** Only these category groups (intersected with the channel's active services; a null group counts as PREMIUM_APPS). */
+  groups?: CategoryGroupType[];
+  /** Expand the query through detection aliases: `true` loads them from the DB, or pass a ready knowledge base. */
+  aliases?: boolean | KnowledgeBase;
+}
+
+/** Rows read before ranking, so an exact or prefix match is not cut off by `take` in name order. */
+const RANKED_SEARCH_FETCH_CAP = 200;
+const MAX_SEARCH_TERMS = 4;
+
+function collapseSearchText(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * The terms a search looks for: the query (trimmed, inner whitespace collapsed)
+ * plus, when its detection-normalized form equals an alias or its expansion, the
+ * counterpart. Pure — the knowledge base is a parameter.
+ */
+export function expandSearchTerms(query: string, kb: KnowledgeBase | undefined): string[] {
+  const primary = collapseSearchText(query);
+  if (!primary) return [];
+  const terms = [primary];
+  if (kb) {
+    const key = normalizeDetection(primary);
+    for (const entry of kb.aliases) {
+      const counterpart =
+        normalizeDetection(entry.alias) === key
+          ? entry.expandsTo
+          : normalizeDetection(entry.expandsTo) === key
+            ? entry.alias
+            : null;
+      const term = counterpart === null ? "" : collapseSearchText(counterpart);
+      if (term && !terms.some((x) => x.toLowerCase() === term.toLowerCase())) terms.push(term);
+    }
+  }
+  return terms.slice(0, MAX_SEARCH_TERMS);
+}
+
+/** 0 exact name, 1 name prefix, 2 name substring, 3 description only (best over all terms). */
+function searchRank(name: string, terms: string[]): number {
+  const n = collapseSearchText(name).toLowerCase();
+  let best = 3;
+  for (const term of terms) {
+    const q = term.toLowerCase();
+    if (n === q) return 0;
+    if (n.startsWith(q)) best = Math.min(best, 1);
+    else if (n.includes(q)) best = Math.min(best, 2);
+  }
+  return best;
+}
+
 /**
  * Search products by name/description (products only — variants are chosen in
  * product detail). Returns active products with ≥1 active denomination, each
- * with its active denominations price-asc. Sorted by name, capped at `limit`.
+ * with its active denominations price-asc, capped at `limit`. A plain call sorts
+ * by name; with `options` the result is restricted to `options.groups`, matches
+ * detection aliases, and is ranked exact name, name prefix, name substring, then
+ * description-only (ties by name) from one bounded query.
  */
-export async function searchCatalog(db: Db, query: string, channel: ServiceChannel, limit = 24): Promise<CatalogProduct[]> {
-  const q = query.trim();
+export async function searchCatalog(
+  db: Db,
+  query: string,
+  channel: ServiceChannel,
+  limit = 24,
+  options?: SearchCatalogOptions,
+): Promise<CatalogProduct[]> {
+  const q = options ? collapseSearchText(query) : query.trim();
   if (!q) return [];
-  const groups = await activeServiceGroups(db, channel);
+  const active = await activeServiceGroups(db, channel);
+  const wanted = options?.groups;
+  const groups = wanted ? new Set([...active].filter((g) => wanted.includes(g as CategoryGroupType))) : active;
   if (groups.size === 0) return [];
   const categoryWhere: Prisma.CategoryWhereInput = {
     OR: [
@@ -921,21 +988,34 @@ export async function searchCatalog(db: Db, query: string, channel: ServiceChann
       ...(groups.has(CategoryGroup.PREMIUM_APPS) ? [{ group: null }] : []),
     ],
   };
-  return db.product.findMany({
-    where: {
-      isActive: true,
-      isArchived: false,
-      category: { is: categoryWhere },
-      denominations: { some: { isActive: true, price: { gt: 0 } } },
-      OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
-    },
-    include: {
-      category: true,
-      denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
-    },
-    orderBy: { name: "asc" },
-    take: limit,
+  const aliasKb = options?.aliases === true ? await loadKnowledgeBase(db) : options?.aliases || undefined;
+  const terms = options ? expandSearchTerms(q, aliasKb) : [q];
+  const where: Prisma.ProductWhereInput = {
+    isActive: true,
+    isArchived: false,
+    category: { is: categoryWhere },
+    denominations: { some: { isActive: true, price: { gt: 0 } } },
+    OR: terms.flatMap((term) => [
+      { name: { contains: term, mode: "insensitive" as const } },
+      { description: { contains: term, mode: "insensitive" as const } },
+    ]),
+  };
+  const include = {
+    category: true,
+    denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }] },
+  };
+  if (!options) return db.product.findMany({ where, include, orderBy: { name: "asc" }, take: limit });
+  const rows = await db.product.findMany({
+    where,
+    include,
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+    take: Math.max(limit, RANKED_SEARCH_FETCH_CAP),
   });
+  return rows
+    .map((row, index) => ({ row, index, rank: searchRank(row.name, terms) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .slice(0, limit)
+    .map((x) => x.row);
 }
 
 /**

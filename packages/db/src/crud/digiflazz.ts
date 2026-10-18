@@ -3115,14 +3115,22 @@ async function resyncDigiflazzCatalogWithOutcome(
     const item = bySku.get(denom.supplierSku!);
     if (!item) continue;
     consideredRows++;
-    const newPrice = newSellPriceFor(item, denom.price, denom.product.categoryId);
-    const oldPrice = denom.price;
-    // oldPrice.isZero() guards the ratio check below from dividing by zero:
-    // any nonzero new price on a zero old price counts as a sharp change on
+    // Pricing review I1: "sharp" is judged on the SUPPLIER's input (the cost),
+    // not on the policy's output. A legitimate admin policy change (a category
+    // rule 10% → 100%, rounding ceil_1000 on Rp1.000 SKUs) moves the sell
+    // price far without the supplier response being malformed at all;
+    // comparing sell prices made every hourly sync abort after such a change.
+    // Only a row with no stored cost yet falls back to comparing the would-be
+    // sell price with the stored one (the pre-cost behaviour).
+    const [newValue, oldValue] = denom.costPrice !== null
+      ? [quantizeMoney(item.price, 4), denom.costPrice]
+      : [newSellPriceFor(item, denom.price, denom.product.categoryId), denom.price];
+    // oldValue.isZero() guards the ratio check below from dividing by zero:
+    // any nonzero new value on a zero old value counts as a sharp change on
     // its own.
-    const sharp = oldPrice.isZero()
-      ? !newPrice.isZero()
-      : newPrice.lessThan(oldPrice.times(0.5)) || newPrice.greaterThan(oldPrice.times(1.5));
+    const sharp = oldValue.isZero()
+      ? !newValue.isZero()
+      : newValue.lessThan(oldValue.times(0.5)) || newValue.greaterThan(oldValue.times(1.5));
     if (sharp) sharpChanges++;
   }
 
@@ -3163,14 +3171,14 @@ async function resyncDigiflazzCatalogWithOutcome(
     if (abortReason.kind === "sharp_change") {
       logger.error(
         { sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows },
-        "Aborted the Digiflazz catalog sync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
+        "Aborted the Digiflazz catalog sync because too many denominations' supplier costs would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
       );
       await logAdminAction(db, {
         adminId: null,
         action: "digiflazz_catalog_resync_aborted",
         targetType: "product",
         targetId: null,
-        details: `Aborted the Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
+        details: `Aborted the Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} supplier prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
       });
     } else {
       logger.error(

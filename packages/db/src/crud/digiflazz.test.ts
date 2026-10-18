@@ -5716,6 +5716,62 @@ describe("Digiflazz pricing — category rules and rounding (Pricing & Margins)"
     expect((await prisma.denomination.findFirstOrThrow({ where: { productId: p2, supplierSku: "j2" } })).priceOverridden).toBe(true);
   });
 
+  describe("I1: the circuit breaker judges supplier movement, not a policy change", () => {
+    async function sixAutoSkus(catId: number, brand: string, prefix: string, cost: string, price: string) {
+      return importBrand(brand, catId, Array.from({ length: 6 }, (_, i) => row(`${prefix}${i}`, price, cost)));
+    }
+
+    it("a category rule raised from 10% to 100% does not abort the sync; costs and prices are updated", async () => {
+      await setGlobalPercent("10");
+      const cat = await createCategory(prisma, "Voucher Breaker A");
+      await setCategoryPercent(cat.id, "10");
+      const productId = await sixAutoSkus(cat.id, "Brand BA", "ba", "10000", "11000");
+      await setCategoryPercent(cat.id, "100");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        Array.from({ length: 6 }, (_, i) => priceListItem({ buyerSkuCode: `ba${i}`, brand: "Brand BA", price: new Decimal(10100) })),
+      );
+      const counts = await resyncDigiflazzCatalog(prisma);
+      expect(counts.updated).toBe(6);
+      expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync_aborted" } })).toBe(0);
+      const rows = await prisma.denomination.findMany({ where: { productId } });
+      expect(rows).toHaveLength(6);
+      for (const r of rows) {
+        expect(r.costPrice!.toString()).toBe("10100");
+        expect(r.price.toString()).toBe("20200");
+      }
+    });
+
+    it("switching rounding to ceil_1000 on cheap SKUs (+82%) does not abort the sync", async () => {
+      await setGlobalPercent("10");
+      const cat = await createCategory(prisma, "Voucher Breaker B");
+      const productId = await sixAutoSkus(cat.id, "Brand BB", "bb", "1000", "1100");
+      await setSetting(prisma, PRICING_ROUNDING_KEY, "ceil_1000");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        Array.from({ length: 6 }, (_, i) => priceListItem({ buyerSkuCode: `bb${i}`, brand: "Brand BB", price: new Decimal(1000) })),
+      );
+      await resyncDigiflazzCatalog(prisma);
+      expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync_aborted" } })).toBe(0);
+      for (const r of await prisma.denomination.findMany({ where: { productId } })) {
+        expect(r.price.toString()).toBe("2000");
+      }
+    });
+
+    it("a genuine supplier-wide cost swing still trips the breaker, even with no policy change", async () => {
+      await setGlobalPercent("10");
+      const cat = await createCategory(prisma, "Voucher Breaker C");
+      const productId = await sixAutoSkus(cat.id, "Brand BC", "bc", "10000", "11000");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        Array.from({ length: 6 }, (_, i) => priceListItem({ buyerSkuCode: `bc${i}`, brand: "Brand BC", price: new Decimal(25000) })),
+      );
+      await resyncDigiflazzCatalog(prisma);
+      expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync_aborted" } })).toBe(1);
+      for (const r of await prisma.denomination.findMany({ where: { productId } })) {
+        expect(r.costPrice!.toString()).toBe("10000");
+        expect(r.price.toString()).toBe("11000");
+      }
+    });
+  });
+
   it("computeDigiflazzMarkupPrice and applyDigiflazzMarkup keep their legacy results", async () => {
     await setGlobalPercent("7.5");
     expect(applyDigiflazzMarkup(new Decimal("1234.5678"), { type: "percent", value: "7.5" }).toString()).toBe("1327.160385");

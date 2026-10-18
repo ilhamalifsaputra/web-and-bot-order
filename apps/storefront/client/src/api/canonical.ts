@@ -7,7 +7,7 @@ export type CanonicalVariant =
 export interface CanonicalProduct {
   id: number; supplierSku: string | null; rawName: string; rawNameProvenance: "supplier" | "legacy_name";
   displayName: string; variant: CanonicalVariant; qualifiers: string[];
-  product: { id: number; name: string; gameVariant: string | null; gameRegion: string | null };
+  product: { id: number; name: string; gameVariant: string | null; gameRegion: string | null; gameServer: string | null };
   category: { id: number; name: string; group: string | null };
   priceIDR: CanonicalMoney; displayPrice: CanonicalMoney; formattedPrice: string; currencyFallback: boolean;
   conversion: { basis: "USDT"; direction: "IDR_PER_USDT"; rate: string; rounding: "CEIL_2DP"; source: "settings:usd_idr_rate" | "config:USDT_IDR_RATE" | "caller"; asOf: string | null } | null;

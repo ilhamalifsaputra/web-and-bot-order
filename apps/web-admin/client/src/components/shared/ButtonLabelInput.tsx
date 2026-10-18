@@ -36,6 +36,10 @@ const COPY: Record<ButtonNameKind, { where: string; over: string; fit?: string }
     where: "Shown on the Telegram region button, two per row",
     over: "Telegram clips the end of it on a phone",
   },
+  gameServer: {
+    where: "Shown on the Telegram server button, two per row",
+    over: "Telegram clips the end of it on a phone",
+  },
   denominationPlan: {
     where: "Shown on the Telegram plan button, two per row",
     fit: "so two buttons fit side by side",

@@ -62,6 +62,7 @@ describe("button limits", () => {
     expect(buttonNameBudget("gameVariant")).toBe(18);
     expect(buttonNameBudget("gameVariant", { emoji: true })).toBe(15);
     expect(buttonNameBudget("gameRegion")).toBe(18);
+    expect(buttonNameBudget("gameServer")).toBe(18);
     expect(buttonNameBudget("denominationPlan")).toBe(18);
     expect(buttonNameBudget("denominationGame", { currency: "IDR" })).toBe(24);
     expect(buttonNameBudget("denominationGame", { currency: "USD" })).toBe(24);
@@ -79,7 +80,7 @@ describe("button limits", () => {
     for (const kind of ["category", "gameVariant"] as ButtonNameKind[]) {
       expect(buttonNameBudget(kind, { emoji: true }) + EMOJI_PREFIX_CELLS).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
     }
-    for (const kind of ["gameRegion", "denominationPlan"] as ButtonNameKind[]) expect(buttonNameBudget(kind)).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
+    for (const kind of ["gameRegion", "gameServer", "denominationPlan"] as ButtonNameKind[]) expect(buttonNameBudget(kind)).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
   });
 
   it("keeps the admin client's copy byte-identical (it cannot import @app/core)", () => {

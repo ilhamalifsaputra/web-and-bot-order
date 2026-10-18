@@ -34,7 +34,7 @@ export const CanonicalProductSchema = z.object({
   displayName: text,
   variant: CanonicalVariantSchema,
   qualifiers: z.array(text),
-  product: z.object({ id: z.number().int().positive(), name: text, gameVariant: text.nullable(), gameRegion: text.nullable() }),
+  product: z.object({ id: z.number().int().positive(), name: text, gameVariant: text.nullable(), gameRegion: text.nullable(), gameServer: text.nullable() }),
   category: z.object({ id: z.number().int().positive(), name: text, group: text.nullable() }),
   priceIDR: CanonicalMoneySchema.refine((value) => value.currency === "IDR"),
   displayPrice: CanonicalMoneySchema,
@@ -60,7 +60,7 @@ export interface CanonicalProductInput {
     supplierSku?: string | null; autoDeliverySource?: string | null;
     qtyValue?: number | null; qtyUnit?: string | null; isActive: boolean; createdAt?: string | null;
   };
-  product: { id: number; name: string; digiflazzBrand?: string | null; gameVariant?: string | null; gameRegion?: string | null; isActive: boolean; isArchived?: boolean };
+  product: { id: number; name: string; digiflazzBrand?: string | null; gameVariant?: string | null; gameRegion?: string | null; gameServer?: string | null; isActive: boolean; isArchived?: boolean };
   category: { id: number; name: string; group?: string | null; isActive: boolean };
   stockAvailable?: boolean;
 }
@@ -291,14 +291,14 @@ export function canonicalProduct(input: CanonicalProductInput, context: Canonica
   const status = inactive ? "inactive" : input.stockAvailable === false ? "out_of_stock" : "available";
   const displayName = renderVariant(variant);
   // A qualifier already spelled out as a "- Garena" / "(Global)" segment of this product's own name is redundant; different ones stay.
-  const qualifiers = [input.product.gameRegion, input.product.gameVariant]
+  const qualifiers = [input.product.gameRegion, input.product.gameServer, input.product.gameVariant]
     .filter((value): value is string => !!value?.trim())
     .filter((value) => !isGame || !nameContainsQualifier(displayName, value));
   return CanonicalProductSchema.parse({
     id: denom.id, supplierSku: denom.supplierSku ?? null, rawName,
     rawNameProvenance: denom.supplierRawName != null ? "supplier" : "legacy_name",
     variant, displayName, qualifiers,
-    product: { id: input.product.id, name: input.product.name, gameVariant: input.product.gameVariant || null, gameRegion: input.product.gameRegion || null },
+    product: { id: input.product.id, name: input.product.name, gameVariant: input.product.gameVariant || null, gameRegion: input.product.gameRegion || null, gameServer: input.product.gameServer || null },
     category: { id: input.category.id, name: input.category.name, group: input.category.group || null },
     priceIDR, displayPrice, formattedPrice: formatExactMoney(displayPrice, context.locale ?? "id"),
     currencyFallback: !converted.ok, conversion, availability: { status, purchasable: status === "available" },

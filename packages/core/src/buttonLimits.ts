@@ -80,6 +80,8 @@ export type ButtonNameKind =
   | "gameVariant"
   /** Product `gameRegion` on the region picker (two per row). */
   | "gameRegion"
+  /** Product `gameServer` on the server picker (two per row). */
+  | "gameServer"
   /** Premium Apps plan name: `denominationPickerKb` (two per row, price and stock stay in the body). */
   | "denominationPlan"
   /** Game Top-Up SKU name when it is the label: `{name} · {price}` in the canonical picker (one per row). */
@@ -100,7 +102,7 @@ const priceCells = (currency?: "IDR" | "USD") => currency ? COMPACT_PRICE_CELLS[
  * Cells a name may use so that the whole button still fits. Derivations:
  *  - productList: the bot truncates at LIST_LABEL_MAX_CHARS characters; a name of at most that many cells is also
  *    at most that many characters, so it is never cut (and 30 is under MAX_LABEL_WIDTH).
- *  - category / gameVariant / gameRegion / denominationPlan: two buttons share a row, which the repo allows only up to
+ *  - category / gameVariant / gameRegion / gameServer / denominationPlan: two buttons share a row, which the repo allows only up to
  *    NARROW_LABEL_WIDTH cells; the emoji prefix, when there is one, comes out of that.
  *  - denominationGame: MAX_LABEL_WIDTH - SEPARATOR_CELLS - compact price.
  *  - qtyUnit: MAX_LABEL_WIDTH - QUANTITY_CELLS - 1 (space) - SEPARATOR_CELLS - compact price. A bonus ("1186+224")
@@ -114,6 +116,7 @@ export function buttonNameBudget(kind: ButtonNameKind, options: ButtonNameBudget
     case "category":
     case "gameVariant": return NARROW_LABEL_WIDTH - emoji;
     case "gameRegion":
+    case "gameServer":
     case "denominationPlan": return NARROW_LABEL_WIDTH;
     case "denominationGame": return MAX_LABEL_WIDTH - SEPARATOR_CELLS - priceCells(options.currency);
     case "qtyUnit": return MAX_LABEL_WIDTH - QUANTITY_CELLS - 1 - SEPARATOR_CELLS - priceCells(options.currency);

@@ -94,7 +94,7 @@ function notInProductName(product: CanonicalProduct, quals: string[]): string[] 
 }
 /** `keep`: qualifier keys that must stay spelled on the item's own label instead of being lifted (see `shapesOf`). */
 function shape(product: CanonicalProduct, keep: ReadonlySet<string> = new Set()): Shape {
-  const known = [product.product.gameRegion, product.product.gameVariant].filter((value): value is string => !!value?.trim());
+  const known = [product.product.gameRegion, product.product.gameServer, product.product.gameVariant].filter((value): value is string => !!value?.trim());
   const qualifierFor = (segment: string) => known.find((q) => tokenKey(q) !== "" && tokenKey(q) === tokenKey(segment) && !keep.has(tokenKey(q)));
   const lifted: Shape["lifted"] = [];
   const quals = [...product.qualifiers];
@@ -343,7 +343,7 @@ function catalogLabels(products: CanonicalProduct[], locale: string, sharedQuals
   const texts = () => labels.map((label) => label.text);
   const identityKey = (value: string) => collapse(value).toLowerCase();
   // A trailing "- Garena" / "(Global)" may be dropped from a button when it is the product's own qualifier or the list repeats it.
-  const qualifierKeys = new Set(products.flatMap((p) => [p.product.gameRegion, p.product.gameVariant]).filter((q): q is string => !!q?.trim()).map(tokenKey));
+  const qualifierKeys = new Set(products.flatMap((p) => [p.product.gameRegion, p.product.gameServer, p.product.gameVariant]).filter((q): q is string => !!q?.trim()).map(tokenKey));
   const trailing = new Map<string, number>();
   for (const item of items) {
     const q = trailingQualifier(collapse(item.main.slice(item.mainHead.length)));

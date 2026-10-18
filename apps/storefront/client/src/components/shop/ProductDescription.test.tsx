@@ -38,6 +38,17 @@ describe("ProductDescription", () => {
     expect(text).toHaveClass("whitespace-pre-line", "text-sm", "text-ink-soft", "mt-4");
   });
 
+  // In a real browser the clamp is removed when expanded, so scrollHeight ==
+  // clientHeight; the "Show less" control must not disappear because of that.
+  it("keeps 'Show less' visible after expanding even when the measured heights become equal", () => {
+    stubHeights(200, 60);
+    render(<ProductDescription text="A very long description" />);
+    const button = screen.getByRole("button", { name: "Read more" });
+    stubHeights(60, 60);
+    fireEvent.click(button);
+    expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("toggles between clamped and expanded when truncated", () => {
     stubHeights(200, 60);
     render(<ProductDescription text="A very long description" />);

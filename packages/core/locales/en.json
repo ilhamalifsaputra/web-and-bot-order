@@ -186,7 +186,7 @@
   "hint.variant": "Choose the game edition.",
   "hint.region": "Choose your account region.",
   "hint.server": "Choose your account server.",
-  "hint.packs": "Pick a pack; the price is final.",
+  "hint.packs": "Pick a pack to see its details.",
   "hint.search": "Type a game name, then pick a result.",
   "hint.search_empty": "No results. Try another name.",
   "browse.nav_next": "Next ▶️",

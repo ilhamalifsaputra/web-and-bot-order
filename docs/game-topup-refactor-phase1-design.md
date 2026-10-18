@@ -257,7 +257,7 @@ Selesai:
 | Variant | `hint.variant` | `Choose the game edition.` |
 | Region | `hint.region` | `Choose your account region.` |
 | Server | `hint.server` | `Choose your account server.` |
-| Paket | `hint.packs` | `Pick a pack; the price is final.` |
+| Paket | `hint.packs` | `Pick a pack to see its details.` |
 | Search | `hint.search`, `hint.search_empty` | `Type a game name, then pick a result.` |
 | Input akun (Phase 3) | belum ada | `123456789 1234` |
 

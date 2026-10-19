@@ -761,14 +761,24 @@ describe("DigiflazzSyncPage — automatic region outcome in the import toast", (
     expect(message).toContain("1 of 5 brands got an automatic region; 4 skipped (unrecognised suffix: Garena, Moonton, Riot, \u2026).");
   });
 
-  it("gives a plain count for skips that are not about a suffix, and does not count brands whose product already existed as skipped", async () => {
+  it("explains an unavailable price list, counting only reportable brands (product_exists is silent)", async () => {
     const message = await importWith({
       regions: [
         region("A", { written: false, skippedReason: "product_exists" }),
         region("B", { written: false, label: null, skippedReason: "no_price_list", suffix: null }),
       ],
     });
-    expect(message).toContain("0 of 2 brands got an automatic region; 1 skipped.");
+    expect(message).toContain("0 of 1 brands got an automatic region; 1 skipped (price list unavailable, regions not filled automatically).");
+  });
+
+  it("shows no region text for a Premium Apps / legacy category import", async () => {
+    const skipped = (brand: string) => region(brand, { written: false, label: null, skippedReason: "not_game_topup_category", suffix: null });
+    expect(await importWith({ regions: [skipped("A"), skipped("B")] })).toBe(OK_MESSAGE);
+  });
+
+  it("shows no region text when brands simply have no region suffix", async () => {
+    const skipped = (brand: string) => region(brand, { written: false, label: null, skippedReason: "no_suffix", suffix: null });
+    expect(await importWith({ regions: [skipped("A"), skipped("B")] })).toBe(OK_MESSAGE);
   });
 
   it("stays silent when the only brand without a new region already existed", async () => {

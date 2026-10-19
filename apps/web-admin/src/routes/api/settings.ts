@@ -161,7 +161,7 @@ const EDITABLE: Record<string, string> = {
   bulk_purchase_broadcast_enabled: "Bulk purchase broadcast enabled",
   bulk_purchase_broadcast_threshold: "Bulk purchase broadcast threshold (qty)",
   bulk_purchase_broadcast_template: "Bulk purchase broadcast message template",
-  game_topup_flow_v2_enabled: "Game Top-up flow v2 (server picker, hints, search)",
+  game_topup_flow_v2_enabled: "Game Top-up flow v2 (From price label, hints, search)",
   wallet_topup_min_amount_idr: "Wallet top-up min amount (IDR)",
   wallet_topup_max_amount_idr: "Wallet top-up max amount (IDR)",
   wallet_topup_min_amount_usdt: "Wallet top-up min amount (USDT)",

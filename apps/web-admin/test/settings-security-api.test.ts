@@ -245,7 +245,7 @@ describe("POST /api/settings/edit", () => {
   it("lists game_topup_flow_v2_enabled as an off-by-default switch and saves true/false with an audit entry", async () => {
     const before = await getJson("/api/settings", cookie);
     const listed = (before.json() as { fields: Array<{ key: string; kind: string; checked: boolean; label: string }> }).fields.find((f) => f.key === "game_topup_flow_v2_enabled");
-    expect(listed).toMatchObject({ kind: "boolean", checked: false, label: "Game Top-up flow v2 (server picker, hints, search)" });
+    expect(listed).toMatchObject({ kind: "boolean", checked: false, label: "Game Top-up flow v2 (From price label, hints, search)" });
 
     for (const [sent, stored] of [[true, "true"], [false, "false"]] as const) {
       const res = await postJson("/api/settings/edit", cookie, csrf, { key: "game_topup_flow_v2_enabled", value: sent });

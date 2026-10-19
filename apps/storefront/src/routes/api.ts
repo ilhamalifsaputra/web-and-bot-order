@@ -15,8 +15,7 @@ import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
-import type { CanonicalProduct, CanonicalProductContext } from "@app/core/canonicalProduct";
-import { storefrontCanonicalProduct } from "../canonicalView";
+import { canonicalProduct, type CanonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { effectiveUnitPrice } from "@app/core/flash";
 import { resolveDenominationAvailability, usesLocalInventory } from "@app/core/productAvailability";
 import { config } from "@app/core/config";
@@ -125,7 +124,7 @@ async function denominationJson(d: Denomination, product: CatalogProduct, displa
       : stock <= 0 ? "out_of_stock" : stock <= config.LOW_STOCK_THRESHOLD ? "low_stock" : "in_stock";
   return {
     id: d.id,
-    canonical: storefrontCanonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: !local || stock > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(d, isReseller).toString() }),
+    canonical: canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: !local || stock > 0 }, { ...display, effectivePriceIDR: effectiveUnitPrice(d, isReseller).toString() }),
     name: d.name,
     price: new Decimal(d.price).toString(),
     stock,

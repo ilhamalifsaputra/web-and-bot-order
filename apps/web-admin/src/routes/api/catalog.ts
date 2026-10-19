@@ -84,7 +84,7 @@ function parsePrice(body: Record<string, unknown>, key: string): Decimal | null 
 
 /**
  * A product's optional game-navigation classification (Task 8/14):
- * gameVariant / gameVariantEmoji / gameRegion / gameServer — read off a request body with
+ * gameVariant / gameVariantEmoji / gameRegion — read off a request body with
  * the same "trim, blank means null" rule storefrontDetailFields uses above.
  * Shared by product create and update so the two can't drift apart.
  */
@@ -94,7 +94,6 @@ function gameNavigationFields(body: Record<string, unknown>) {
     gameVariant: text(body.gameVariant),
     gameVariantEmoji: text(body.gameVariantEmoji),
     gameRegion: text(body.gameRegion),
-    gameServer: text(body.gameServer),
   };
 }
 

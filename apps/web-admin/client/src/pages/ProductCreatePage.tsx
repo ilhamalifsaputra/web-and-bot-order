@@ -37,7 +37,6 @@ export function ProductCreatePage() {
   const [gameVariant, setGameVariant] = useState("");
   const [gameVariantEmoji, setGameVariantEmoji] = useState("");
   const [gameRegion, setGameRegion] = useState("");
-  const [gameServer, setGameServer] = useState("");
   const [whatYouGet, setWhatYouGet] = useState("");
   const [terms, setTerms] = useState("");
   const [warrantyNote, setWarrantyNote] = useState("");
@@ -76,7 +75,6 @@ export function ProductCreatePage() {
         ...(isGame && gameVariant.trim() ? { gameVariant: gameVariant.trim() } : {}),
         ...(isGame && gameVariantEmoji.trim() ? { gameVariantEmoji: gameVariantEmoji.trim() } : {}),
         ...(isGame && gameRegion.trim() ? { gameRegion: gameRegion.trim() } : {}),
-        ...(isGame && gameServer.trim() ? { gameServer: gameServer.trim() } : {}),
         ...(whatYouGet.trim() ? { whatYouGet: whatYouGet.trim() } : {}),
         ...(terms.trim() ? { terms: terms.trim() } : {}),
         ...(warrantyNote.trim() ? { warrantyNote: warrantyNote.trim() } : {}),
@@ -235,17 +233,6 @@ export function ProductCreatePage() {
                 placeholder="e.g. Global"
                 value={gameRegion}
                 onChange={(e) => setGameRegion(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label htmlFor={`${fieldId}-game-server-5b`} className="block text-sm font-medium text-ink">Game Server</label>
-              <ButtonLabelInput id={`${fieldId}-game-server-5b`}
-                kind="gameServer"
-                className="mt-1"
-                placeholder="e.g. Asia"
-                value={gameServer}
-                onChange={(e) => setGameServer(e.target.value)}
               />
             </div>
           </>

@@ -66,13 +66,11 @@ describe("ProductCreatePage", () => {
     await user.click(await screen.findByRole("option", { name: "Games" }));
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. diamonds/i), { target: { value: "Diamonds" } });
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. global/i), { target: { value: "Global" } });
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. asia/i), { target: { value: "Asia" } });
     await user.click(screen.getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: "Apps" }));
     expect(screen.queryByText("Game Variant")).not.toBeInTheDocument();
     expect(screen.queryByText("Game Variant Emoji")).not.toBeInTheDocument();
     expect(screen.queryByText("Game Region")).not.toBeInTheDocument();
-    expect(screen.queryByText("Game Server")).not.toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText(/capcut pro/i), { target: { value: "CapCut Pro" } });
     await user.click(screen.getByRole("button", { name: /create product/i }));
     await waitFor(() => expect(apiPost).toHaveBeenCalled());
@@ -80,7 +78,6 @@ describe("ProductCreatePage", () => {
     expect(body).not.toHaveProperty("gameVariant");
     expect(body).not.toHaveProperty("gameVariantEmoji");
     expect(body).not.toHaveProperty("gameRegion");
-    expect(body).not.toHaveProperty("gameServer");
   });
 
   it("renders name input and submit button after categories load", async () => {
@@ -187,7 +184,6 @@ describe("ProductCreatePage", () => {
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. diamonds/i), { target: { value: " Diamonds " } });
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. 💎/i), { target: { value: " 💎 " } });
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. global/i), { target: { value: " Global " } });
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. asia/i), { target: { value: " Asia " } });
 
     const btn = screen.getByRole("button", { name: /create product/i });
     await waitFor(() => expect(btn).not.toBeDisabled());
@@ -197,7 +193,6 @@ describe("ProductCreatePage", () => {
       gameVariant: "Diamonds",
       gameVariantEmoji: "💎",
       gameRegion: "Global",
-      gameServer: "Asia",
     })));
   });
 
@@ -238,7 +233,6 @@ describe("ProductCreatePage", () => {
     expect(body).not.toHaveProperty("gameVariant");
     expect(body).not.toHaveProperty("gameVariantEmoji");
     expect(body).not.toHaveProperty("gameRegion");
-    expect(body).not.toHaveProperty("gameServer");
   });
 
   it("creates a new category inline via the + New category affordance", async () => {
@@ -380,7 +374,7 @@ describe("ProductCreatePage Telegram button hints", () => {
   const jsonOk = () =>
     new Response(JSON.stringify(CATALOG_DATA), { status: 200, headers: { "Content-Type": "application/json" } });
 
-  it("explains the Telegram button limit and counts cells under Name, Game Variant, Game Region and Game Server", async () => {
+  it("explains the Telegram button limit and counts cells under Name, Game Variant and Game Region", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiGet).mockResolvedValue({ ...CATALOG_DATA, categories: [{ id: 2, name: "Games", isActive: true, group: "GAME_TOPUP" }] });
     render(<ProductCreatePage />, { wrapper: Wrapper });
@@ -389,8 +383,8 @@ describe("ProductCreatePage Telegram button hints", () => {
     await user.click(screen.getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: "Games" }));
 
-    expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(4);
-    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["0/30", "0/18", "0/18", "0/18"]);
+    expect(screen.getAllByText(/Shown on the Telegram/)).toHaveLength(3);
+    expect(screen.getAllByTestId("button-label-counter").map((el) => el.textContent)).toEqual(["0/30", "0/18", "0/18"]);
 
     fireEvent.change(screen.getByPlaceholderText(/capcut pro/i), { target: { value: "Ab💎你" } });
     expect(screen.getAllByTestId("button-label-counter")[0]).toHaveTextContent("6/30");

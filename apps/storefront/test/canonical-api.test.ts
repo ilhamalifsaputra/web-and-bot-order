@@ -81,27 +81,6 @@ describe("canonical API contract", () => {
       expect(canonical.formattedPrice).toBe("Rp21.000");
     }
   });
-  it("hides the Game Server level on every storefront surface while keeping region and variant", async () => {
-    const category = await prisma.category.create({ data: { name: "Server Hidden", slug: "server-hidden-fixture" } });
-    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Server Game", gameRegion: "Indonesia", gameVariant: "Global", gameServer: "Asia" });
-    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.id } })).gameServer).toBe("Asia");
-    const denom = await createDenomination(prisma, { productId: product.id, name: "100 Gems", durationLabel: "100 Gems", type: "SHARED", price: "5000", deliveryType: "manual" });
-    const headers = { cookie: "shop_lang=id; shop_currency=IDR" };
-    for (const prefix of ["/pages/product/", "/products/"]) {
-      const body = (await app.inject({ url: `/api/v1${prefix}${product.slug}`, headers })).json();
-      const canonical = CanonicalProductSchema.parse((body.denominations ?? body.product.denominations)[0].canonical);
-      expect(canonical.product.gameServer).toBeNull();
-      expect(canonical.qualifiers).not.toContain("Asia");
-      expect(canonical.qualifiers).toEqual(expect.arrayContaining(["Indonesia", "Global"]));
-    }
-    const cookie = `shop_cart_v2=${encodeURIComponent(JSON.stringify({ v: 2, items: [{ p: denom.id, q: 1 }] }))}; shop_lang=id`;
-    for (const path of ["cart", "checkout"]) {
-      const canonical = CanonicalProductSchema.parse((await app.inject({ url: `/api/v1/${path}`, headers: { cookie } })).json().items[0].canonical);
-      expect(canonical.product.gameServer).toBeNull();
-      expect(canonical.qualifiers).not.toContain("Asia");
-      expect(canonical.qualifiers).toEqual(expect.arrayContaining(["Indonesia", "Global"]));
-    }
-  });
   it("formats preference per request with real rate confirmation and safe missing-rate fallback", async () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     const asOf = new Date().toISOString();

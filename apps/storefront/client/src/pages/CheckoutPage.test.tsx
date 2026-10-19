@@ -60,7 +60,7 @@ function canonicalMonth(id: number, parentName: string): CanonicalProduct {
   return {
     id, supplierSku: null, rawName: "1 Month", rawNameProvenance: "supplier",
     displayName: "1 Month", variant: { type: "subscription", name: "1 Month", residual: [], duration: { value: 1, unit: "month" } },
-    qualifiers: [], product: { id: id + 100, name: parentName, gameVariant: null, gameRegion: null, gameServer: null },
+    qualifiers: [], product: { id: id + 100, name: parentName, gameVariant: null, gameRegion: null },
     category: { id: 1, name: "Premium Apps", group: "PREMIUM_APPS" },
     priceIDR: { currency: "IDR", amountMinor: "79000", scale: 0 },
     displayPrice: { currency: "IDR", amountMinor: "79000", scale: 0 },

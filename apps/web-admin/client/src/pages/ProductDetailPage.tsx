@@ -79,7 +79,6 @@ interface ProductDetail {
   gameVariant: string | null;
   gameVariantEmoji: string | null;
   gameRegion: string | null;
-  gameServer: string | null;
 }
 
 interface DenomStat {
@@ -149,7 +148,6 @@ export function ProductDetailPage() {
   const [gameVariantDraft, setGameVariantDraft] = useState("");
   const [gameVariantEmojiDraft, setGameVariantEmojiDraft] = useState("");
   const [gameRegionDraft, setGameRegionDraft] = useState("");
-  const [gameServerDraft, setGameServerDraft] = useState("");
   // Storefront detail blocks — each renders as its own titled section on the
   // product page, and stays hidden there while it's blank.
   const [whatYouGetDraft, setWhatYouGetDraft] = useState("");
@@ -204,7 +202,7 @@ export function ProductDetailPage() {
   const selectedCategory = catalog?.categories?.find((c) => String(c.id) === categoryDraft);
   const isGame = (selectedCategory ?? data?.product.category)?.group === "GAME_TOPUP";
 
-  const { saveProduct } = useProductEditorSave({ setSavingProduct, setProductError, productId, nameDraft, descriptionDraft, isGame, gameVariantDraft, data, gameVariantEmojiDraft, gameRegionDraft, gameServerDraft, whatYouGetDraft, termsDraft, warrantyNoteDraft, thumbnailKindDraft, currencyIconKindDraft, categoryDraft, setEditingProduct, queryClient });
+  const { saveProduct } = useProductEditorSave({ setSavingProduct, setProductError, productId, nameDraft, descriptionDraft, isGame, gameVariantDraft, data, gameVariantEmojiDraft, gameRegionDraft, whatYouGetDraft, termsDraft, warrantyNoteDraft, thumbnailKindDraft, currencyIconKindDraft, categoryDraft, setEditingProduct, queryClient });
 
   const { toggleProductActive, toggleDenominationActive, deleteDenomination } = useProductStateActions({ setTogglingProduct, queryClient, productId, setTogglingDenom });
 
@@ -284,7 +282,7 @@ export function ProductDetailPage() {
         breadcrumb={[{ label: "Catalog", href: "/catalog" }]}
       />
 
-      <ProductDetailSummary product={product} navigate={navigate} toggleProductActive={toggleProductActive} togglingProduct={togglingProduct} editingProduct={editingProduct} setNameDraft={setNameDraft} setDescriptionDraft={setDescriptionDraft} setGameVariantDraft={setGameVariantDraft} setGameVariantEmojiDraft={setGameVariantEmojiDraft} setGameRegionDraft={setGameRegionDraft} setGameServerDraft={setGameServerDraft} setWhatYouGetDraft={setWhatYouGetDraft} setTermsDraft={setTermsDraft} setWarrantyNoteDraft={setWarrantyNoteDraft} setCategoryDraft={setCategoryDraft} setThumbnailKindDraft={setThumbnailKindDraft} setCurrencyIconKindDraft={setCurrencyIconKindDraft} setEditingProduct={setEditingProduct} />
+      <ProductDetailSummary product={product} navigate={navigate} toggleProductActive={toggleProductActive} togglingProduct={togglingProduct} editingProduct={editingProduct} setNameDraft={setNameDraft} setDescriptionDraft={setDescriptionDraft} setGameVariantDraft={setGameVariantDraft} setGameVariantEmojiDraft={setGameVariantEmojiDraft} setGameRegionDraft={setGameRegionDraft} setWhatYouGetDraft={setWhatYouGetDraft} setTermsDraft={setTermsDraft} setWarrantyNoteDraft={setWarrantyNoteDraft} setCategoryDraft={setCategoryDraft} setThumbnailKindDraft={setThumbnailKindDraft} setCurrencyIconKindDraft={setCurrencyIconKindDraft} setEditingProduct={setEditingProduct} />
 
       {editingProduct && (
         <Card className="mb-4 max-w-lg">
@@ -301,7 +299,7 @@ export function ProductDetailPage() {
             {/* Catalog-presentation classification (Fase 12 task 22) —
                 optional; only relevant for a Game Top Up category. */}
             <ProductGamePresentationFields isGame={isGame} fieldId={fieldId} thumbnailKindDraft={thumbnailKindDraft} setThumbnailKindDraft={setThumbnailKindDraft} currencyIconKindDraft={currencyIconKindDraft} setCurrencyIconKindDraft={setCurrencyIconKindDraft} />
-            <ProductGameFields isGame={isGame} fieldId={fieldId} gameVariantEmojiDraft={gameVariantEmojiDraft} gameVariantDraft={gameVariantDraft} setGameVariantDraft={setGameVariantDraft} setGameVariantEmojiDraft={setGameVariantEmojiDraft} gameRegionDraft={gameRegionDraft} setGameRegionDraft={setGameRegionDraft} gameServerDraft={gameServerDraft} setGameServerDraft={setGameServerDraft} />
+            <ProductGameFields isGame={isGame} fieldId={fieldId} gameVariantEmojiDraft={gameVariantEmojiDraft} gameVariantDraft={gameVariantDraft} setGameVariantDraft={setGameVariantDraft} setGameVariantEmojiDraft={setGameVariantEmojiDraft} gameRegionDraft={gameRegionDraft} setGameRegionDraft={setGameRegionDraft} />
 
             <div>
               <label htmlFor={`${fieldId}-what-the-buyer-gets-9`} className="text-sm font-medium text-ink">What the buyer gets</label>
@@ -354,7 +352,7 @@ export function ProductDetailPage() {
   );
 }
 
-function ProductDetailSummary({ product, navigate, toggleProductActive, togglingProduct, editingProduct, setNameDraft, setDescriptionDraft, setGameVariantDraft, setGameVariantEmojiDraft, setGameRegionDraft, setGameServerDraft, setWhatYouGetDraft, setTermsDraft, setWarrantyNoteDraft, setCategoryDraft, setThumbnailKindDraft, setCurrencyIconKindDraft, setEditingProduct }: {
+function ProductDetailSummary({ product, navigate, toggleProductActive, togglingProduct, editingProduct, setNameDraft, setDescriptionDraft, setGameVariantDraft, setGameVariantEmojiDraft, setGameRegionDraft, setWhatYouGetDraft, setTermsDraft, setWarrantyNoteDraft, setCategoryDraft, setThumbnailKindDraft, setCurrencyIconKindDraft, setEditingProduct }: {
   product: ProductDetail;
   navigate: import("react-router-dom").NavigateFunction;
   toggleProductActive: (id: number, active: boolean) => Promise<void>;
@@ -365,7 +363,6 @@ function ProductDetailSummary({ product, navigate, toggleProductActive, toggling
   setGameVariantDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   setGameVariantEmojiDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   setGameRegionDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
-  setGameServerDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   setWhatYouGetDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   setTermsDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   setWarrantyNoteDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
@@ -409,7 +406,6 @@ function ProductDetailSummary({ product, navigate, toggleProductActive, toggling
             setGameVariantDraft(product.gameVariant ?? "");
             setGameVariantEmojiDraft(product.gameVariantEmoji ?? "");
             setGameRegionDraft(product.gameRegion ?? "");
-            setGameServerDraft(product.gameServer ?? "");
             setWhatYouGetDraft(product.whatYouGet ?? "");
             setTermsDraft(product.terms ?? "");
             setWarrantyNoteDraft(product.warrantyNote ?? "");
@@ -477,7 +473,7 @@ function ProductGamePresentationFields({ isGame, fieldId, thumbnailKindDraft, se
   ));
 }
 
-function ProductGameFields({ isGame, fieldId, gameVariantEmojiDraft, gameVariantDraft, setGameVariantDraft, setGameVariantEmojiDraft, gameRegionDraft, setGameRegionDraft, gameServerDraft, setGameServerDraft }: {
+function ProductGameFields({ isGame, fieldId, gameVariantEmojiDraft, gameVariantDraft, setGameVariantDraft, setGameVariantEmojiDraft, gameRegionDraft, setGameRegionDraft }: {
   isGame: boolean;
   fieldId: string;
   gameVariantEmojiDraft: string;
@@ -486,8 +482,6 @@ function ProductGameFields({ isGame, fieldId, gameVariantEmojiDraft, gameVariant
   setGameVariantEmojiDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
   gameRegionDraft: string;
   setGameRegionDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
-  gameServerDraft: string;
-  setGameServerDraft: import("react").Dispatch<import("react").SetStateAction<string>>;
 }) {
   return (isGame && (
     <>
@@ -522,16 +516,6 @@ function ProductGameFields({ isGame, fieldId, gameVariantEmojiDraft, gameVariant
           placeholder="e.g. Global"
           value={gameRegionDraft}
           onChange={(e) => setGameRegionDraft(e.target.value)}
-        />
-      </div>
-      <div>
-        <label htmlFor={`${fieldId}-game-server-9`} className="text-sm font-medium text-ink">Game Server</label>
-        <ButtonLabelInput id={`${fieldId}-game-server-9`}
-          kind="gameServer"
-          className="mt-1"
-          placeholder="e.g. Asia"
-          value={gameServerDraft}
-          onChange={(e) => setGameServerDraft(e.target.value)}
         />
       </div>
     </>
@@ -801,7 +785,7 @@ function useProductStateActions({ setTogglingProduct, queryClient, productId, se
   return { toggleProductActive, toggleDenominationActive, deleteDenomination };
 }
 
-function useProductEditorSave({ setSavingProduct, setProductError, productId, nameDraft, descriptionDraft, isGame, gameVariantDraft, data, gameVariantEmojiDraft, gameRegionDraft, gameServerDraft, whatYouGetDraft, termsDraft, warrantyNoteDraft, thumbnailKindDraft, currencyIconKindDraft, categoryDraft, setEditingProduct, queryClient }: {
+function useProductEditorSave({ setSavingProduct, setProductError, productId, nameDraft, descriptionDraft, isGame, gameVariantDraft, data, gameVariantEmojiDraft, gameRegionDraft, whatYouGetDraft, termsDraft, warrantyNoteDraft, thumbnailKindDraft, currencyIconKindDraft, categoryDraft, setEditingProduct, queryClient }: {
   setSavingProduct: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   setProductError: import("react").Dispatch<import("react").SetStateAction<string | null>>;
   productId: string | undefined;
@@ -812,7 +796,6 @@ function useProductEditorSave({ setSavingProduct, setProductError, productId, na
   data: NoInfer<ProductDetailData> | undefined;
   gameVariantEmojiDraft: string;
   gameRegionDraft: string;
-  gameServerDraft: string;
   whatYouGetDraft: string;
   termsDraft: string;
   warrantyNoteDraft: string;
@@ -832,7 +815,6 @@ function useProductEditorSave({ setSavingProduct, setProductError, productId, na
         gameVariant: isGame ? gameVariantDraft.trim() : data?.product.gameVariant ?? null,
         gameVariantEmoji: isGame ? gameVariantEmojiDraft.trim() : data?.product.gameVariantEmoji ?? null,
         gameRegion: isGame ? gameRegionDraft.trim() : data?.product.gameRegion ?? null,
-        gameServer: isGame ? gameServerDraft.trim() : data?.product.gameServer ?? null,
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),

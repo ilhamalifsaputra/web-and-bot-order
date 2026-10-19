@@ -15,8 +15,7 @@
 import type { FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
-import type { CanonicalProduct } from "@app/core/canonicalProduct";
-import { storefrontCanonicalProduct } from "../canonicalView";
+import { canonicalProduct, type CanonicalProduct } from "@app/core/canonicalProduct";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { CategoryGroup, UserRole } from "@app/core/enums";
 import type { CartCompositionLine } from "@app/core/cartComposition";
@@ -207,7 +206,7 @@ export async function loadCartLines(
 ): Promise<CartLineView[]> {
   const groups = await activeServiceGroups(prisma, "web");
   const display = { ...await getCanonicalRateContext(prisma), preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
-  const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => storefrontCanonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: unit.toString() });
+  const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: unit.toString() });
   if (customer) {
     const isReseller = customer.user.role === UserRole.RESELLER;
     // Join the parent Product so the line can show `Product - Denomination`.

@@ -321,7 +321,7 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   owner_email_on_wallet_topup: 'Type "true" or "false" — email the owner when a buyer tops up their wallet balance.',
   custom_emoji_map: "Maps emoji in bot messages to Telegram Premium custom emoji ids.",
   bulk_purchase_broadcast_enabled: "Post a message to the public channel when a large purchase happens.",
-  game_topup_flow_v2_enabled: 'Type "true" or "false" — show the Game Top Up server picker, hints and search in the Telegram bot. Takes effect within about 30 seconds.',
+  game_topup_flow_v2_enabled: 'Type "true" or "false" — show the Game Top Up From price label, hints and search in the Telegram bot. Takes effect within about 30 seconds.',
   bulk_purchase_broadcast_threshold: "Minimum quantity in one order that triggers the broadcast.",
   bulk_purchase_broadcast_template: "Message template — supports {qty}, {product}, {denomination}.",
   digiflazz_username: "Your Digiflazz account username.",
@@ -480,7 +480,7 @@ const BOOLEAN_DESCRIPTIONS: Record<string, string> = {
   xendit_qris_enabled: "Show QRIS in the storefront footer. Checkout availability follows the payment integration.",
   xendit_card_enabled: "Show card payment logos in the storefront footer. Checkout availability follows the payment integration.",
   bulk_purchase_broadcast_enabled: "Publish qualifying bulk purchases using the configured threshold.",
-  game_topup_flow_v2_enabled: "Turn on the Game Top Up server picker, hints and search in the Telegram bot. Takes effect within about 30 seconds.",
+  game_topup_flow_v2_enabled: "Turn on the Game Top Up From price label, hints and search in the Telegram bot. Takes effect within about 30 seconds.",
 };
 
 function TextFieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selectOptions }: FieldRowProps) {

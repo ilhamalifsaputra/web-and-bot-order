@@ -110,9 +110,11 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     // issue thousands of concurrent Settings reads against the database on
     // one preview click.
     const context = await loadDigiflazzPriceContext(prisma);
+    // An unreadable global markup or rounding prices nothing: refuse.
     const problem = digiflazzPriceContextProblem(context);
     if (problem) return reply.code(400).send({ error: problem === "markup"
-      ? new InvalidDigiflazzMarkupError().message : new PricingPolicyUnreadableError("rounding").message });
+      ? new InvalidDigiflazzMarkupError().message
+      : new PricingPolicyUnreadableError(problem).message });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const targetId = body.categoryId == null ? null : Number(body.categoryId);
     if (targetId !== null && (!Number.isSafeInteger(targetId) || targetId <= 0 ||
@@ -124,6 +126,20 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       select: { id: true, categoryId: true },
     });
     const categories = new Map(products.map(p => [p.id, p.categoryId]));
+    // The category each group is priced by: its existing product's, else the target.
+    const categoryOf = (g: (typeof groups)[number]) =>
+      (g.existingProductId === null ? null : categories.get(g.existingProductId)) ?? targetId;
+    // Re-review N1: an unreadable category rule refuses only a preview that
+    // targets or touches that category; the rest of the catalog stays importable.
+    const blocked = [...new Set(groups.map(categoryOf).flatMap(id =>
+      id === null || !context.unreadableCategoryById.has(id) ? [] : [context.unreadableCategoryById.get(id)!]))];
+    if (targetId !== null && context.unreadableCategoryById.has(targetId)) {
+      const name = context.unreadableCategoryById.get(targetId)!;
+      if (!blocked.includes(name)) blocked.push(name);
+    }
+    if (blocked.length > 0) {
+      return reply.code(400).send({ error: new PricingPolicyUnreadableError("category", blocked.sort()).message });
+    }
     const withPrices = groups.map((g) => ({
       brand: g.brand,
       rawBrand: g.rawBrand,
@@ -134,7 +150,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         buyerSkuCode: item.buyerSkuCode,
         productName: item.productName,
         costPrice: item.price.toString(),
-        suggestedPrice: digiflazzSellPrice(context, item.price, (g.existingProductId === null ? null : categories.get(g.existingProductId)) ?? targetId).toString(),
+        suggestedPrice: digiflazzSellPrice(context, item.price, categoryOf(g)).toString(),
       })),
     }));
     return reply.send({ groups: withPrices });

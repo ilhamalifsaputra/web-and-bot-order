@@ -40,7 +40,7 @@ import {
   InvalidDigiflazzMarkupError,
   PricingPolicyUnreadableError,
   getPricingPolicy,
-  getCategoryRule,
+  readCategoryRule,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { catalogPricing } from "../../lib/catalogPricing";
@@ -743,9 +743,18 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     let price = parsePrice(body, "price");
     if (price === null) return reply.code(400).send({ error: moneyFieldError("Price") });
 
-    const costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
+    let costPrice = body.costPrice != null ? parsePrice(body, "costPrice") : null;
     if (body.costPrice != null && costPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Cost price") });
+    }
+    // Re-review N5: the form names an untouched EMPTY cost prefill in
+    // exact_fields without sending a cost ("there was no cost when the form
+    // loaded, and the admin did not type one"). That is not a request to clear
+    // the cost: the sync may have filled it since the page loaded, so the
+    // row's current cost stands. A cost the admin deliberately blanked is
+    // neither sent nor listed, and is still cleared.
+    if (body.costPrice == null && exactFields(body).has("costPrice")) {
+      costPrice = existing.costPrice === null ? null : new Decimal(existing.costPrice.toString());
     }
     const resellerPrice = body.resellerPrice != null ? parsePrice(body, "resellerPrice") : null;
     if (body.resellerPrice != null && resellerPrice === null) {
@@ -859,6 +868,18 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       priceOverridden = false;
     } else if (pricingMode === "manual") {
       priceOverridden = true;
+    } else if (
+      autoDeliverySource === existing.autoDeliverySource &&
+      exactFields(body).has("price") && exactFields(body).has("costPrice")
+    ) {
+      // Pricing review I3: price and cost are the form's untouched prefills
+      // (exact_fields). The hourly sync or Apply now may have repriced the SKU
+      // (and refreshed its cost) since the page loaded, so comparing the
+      // stale prefill against the current row would pin the OLD price as a
+      // manual override. Nothing about pricing was edited: keep the row's
+      // current price, cost and pricing mode.
+      price = new Decimal(existing.price.toString());
+      costPrice = existing.costPrice === null ? null : new Decimal(existing.costPrice.toString());
     } else if (autoDeliverySource === "digiflazz") {
       const costChanged = costPrice === null ? existing.costPrice !== null
         : existing.costPrice === null || !costPrice.equals(existing.costPrice);
@@ -1024,8 +1045,10 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const product = await getCatalogProductWithDenominations(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const [pricingPolicy, categoryRule] = await Promise.all([
-      getPricingPolicy(prisma), getCategoryRule(prisma, product.categoryId),
+    // readCategoryRule: an unreadable category rule must not break the page;
+    // catalogPricing reports it as an unreadable policy instead.
+    const [pricingPolicy, { rule: categoryRule }] = await Promise.all([
+      getPricingPolicy(prisma), readCategoryRule(prisma, product.categoryId),
     ]);
     const now = new Date();
     const denomStats = await Promise.all(

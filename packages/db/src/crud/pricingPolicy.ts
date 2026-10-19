@@ -17,6 +17,7 @@
 import { Prisma } from "@prisma/client";
 import { Decimal, moneyEq } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
+import { CategoryGroup } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { parsePercentInput } from "@app/core/moneyFormat";
 import {
@@ -32,6 +33,8 @@ import type { PrismaClient } from "../client";
 import { setSetting, invalidateSettingCache } from "./settings";
 import { logAdminAction } from "./audit";
 import { updateDenomination } from "./catalog";
+import { createHash } from "node:crypto";
+import { denominationPriceError, MIN_SALE_PRICE } from "@app/core/denominationPrices";
 import {
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
@@ -61,11 +64,14 @@ export class PricingValidationError extends Error {
 /** The stored global markup or rounding cannot be read, so no price may be
  * computed from it. The message is fit to show an admin. */
 export class PricingPolicyUnreadableError extends Error {
-  constructor(what: "markup" | "rounding") {
+  /** `categoryNames`: for "category", every category whose rule is unreadable. */
+  constructor(what: "markup" | "rounding" | "category", categoryNames: string[] = []) {
     super(
       what === "markup"
         ? "The stored default markup cannot be read as a number of zero or more, so no price can be computed from it. Save the default markup again on the Pricing & Margins page."
-        : "The stored rounding policy is not one this version knows, so no price can be computed from it. Save the rounding policy again on the Pricing & Margins page.",
+        : what === "rounding"
+        ? "The stored rounding policy is not one this version knows, so no price can be computed from it. Save the rounding policy again on the Pricing & Margins page."
+        : `The stored markup rule of ${categoryNames.map((n) => `category "${n}"`).join(", ")} cannot be read, so no price can be computed from it. Remove or save that category rule again on the Pricing & Margins page.`,
     );
     this.name = "PricingPolicyUnreadableError";
   }
@@ -287,9 +293,19 @@ export interface CategoryRuleInput {
   markupValue: Decimal | null;
 }
 
-function storedCategoryRule(row: { markupType: string | null; markupValue: Prisma.Decimal | null }): MarkupRule | null {
-  if ((row.markupType !== "percent" && row.markupType !== "flat") || row.markupValue === null) return null;
-  return { type: row.markupType, value: new Decimal(row.markupValue.toString()) };
+/** A stored category rule this version cannot read (an unknown type, a
+ * missing or negative amount — only reachable by direct SQL). */
+export const UNREADABLE_CATEGORY_RULE = "unreadable" as const;
+export type StoredCategoryRule = MarkupRule | null | typeof UNREADABLE_CATEGORY_RULE;
+
+/** null = no rule (inherits the global default). Pricing review Minor 4: an
+ * unreadable rule is reported, never silently read as "inherit". */
+function storedCategoryRule(row: { markupType: string | null; markupValue: Prisma.Decimal | null }): StoredCategoryRule {
+  if (row.markupType === null) return null;
+  if ((row.markupType !== "percent" && row.markupType !== "flat") || row.markupValue === null) return UNREADABLE_CATEGORY_RULE;
+  const value = new Decimal(row.markupValue.toString());
+  if (!value.isFinite() || value.isNegative()) return UNREADABLE_CATEGORY_RULE;
+  return { type: row.markupType, value };
 }
 
 /**
@@ -315,13 +331,24 @@ export async function setCategoryRule(
 
   const category = await db.category.findUnique({
     where: { id: categoryId },
-    select: { id: true, name: true, markupType: true, markupValue: true },
+    select: { id: true, name: true, group: true, markupType: true, markupValue: true },
   });
   if (!category) throw new PricingValidationError("That category no longer exists.");
-  const before = storedCategoryRule(category);
+  // Pricing review I2: category rules are a Game Top Up concept (AGENTS.md
+  // family separation). A no-group legacy category belongs to Premium Apps,
+  // the same `group ?? PREMIUM_APPS` rule as serviceForCategoryGroup. Clearing
+  // stays allowed so a rule stored before this check can still be removed.
+  if (hasType && (category.group ?? CategoryGroup.PREMIUM_APPS) !== CategoryGroup.GAME_TOPUP) {
+    throw new PricingValidationError("Category markup rules apply only to Game Top Up categories; Premium Apps keep manual prices.");
+  }
+  const stored = storedCategoryRule(category);
+  // An unreadable stored rule is described as such (describeRule(null)) and
+  // never equals anything, so saving or clearing it always writes.
+  const before: MarkupRule | null = stored === UNREADABLE_CATEGORY_RULE ? null : stored;
   const next: MarkupRule | null = hasType ? { type: rule.markupType, value: rule.markupValue! } : null;
 
-  const unchanged = next === null ? before === null : before !== null && rulesEqual(before, next);
+  const unchanged = stored !== UNREADABLE_CATEGORY_RULE &&
+    (next === null ? before === null : before !== null && rulesEqual(before, next));
   if (unchanged) return { changed: false };
 
   await db.category.update({
@@ -331,7 +358,7 @@ export async function setCategoryRule(
   const name = `category "${category.name}"`;
   const details = next === null
     ? `Removed the markup for ${name} (it was ${describeRule(before)}); it now uses the default markup.`
-    : before === null
+    : stored === null
       ? `Set the markup for ${name} to ${describeRule(next)} (it used the default markup before).`
       : `Changed the markup for ${name} from ${describeRule(before)} to ${describeRule(next)}.`;
   await logAdminAction(db, {
@@ -348,30 +375,103 @@ export function clearCategoryRule(db: Db, adminId: number | null, categoryId: nu
   return setCategoryRule(db, adminId, categoryId, { markupType: null, markupValue: null });
 }
 
-/** One category's own rule; null when it has none (inherits the global
- * default) or the category does not exist. For single-row callers; a run over
- * many rows loads {@link getCategoryRuleMap} once instead. */
-export async function getCategoryRule(db: Db, categoryId: number): Promise<MarkupRule | null> {
+/** One category's stored rule without throwing: null when it has none
+ * (inherits the global default) or the category does not exist,
+ * {@link UNREADABLE_CATEGORY_RULE} when it cannot be read. */
+export async function readCategoryRule(db: Db, categoryId: number): Promise<{ rule: StoredCategoryRule; name: string | null }> {
   const row = await db.category.findUnique({
     where: { id: categoryId },
-    select: { markupType: true, markupValue: true },
+    select: { name: true, markupType: true, markupValue: true },
   });
-  return row ? storedCategoryRule(row) : null;
+  return row ? { rule: storedCategoryRule(row), name: row.name } : { rule: null, name: null };
 }
 
-/** categoryId → rule, for every category with a complete rule. A category
- * missing from the map inherits the global default. */
-export async function getCategoryRuleMap(db: Db): Promise<Map<number, MarkupRule>> {
+/** One category's own rule; null when it has none (inherits the global
+ * default) or the category does not exist. Throws PricingPolicyUnreadableError
+ * for an unreadable rule. For single-row callers; a run over many rows loads
+ * {@link getCategoryRuleMap} once instead. */
+export async function getCategoryRule(db: Db, categoryId: number): Promise<MarkupRule | null> {
+  const { rule, name } = await readCategoryRule(db, categoryId);
+  if (rule === UNREADABLE_CATEGORY_RULE) throw new PricingPolicyUnreadableError("category", [name ?? String(categoryId)]);
+  return rule;
+}
+
+/** Every category rule without throwing: the readable ones by category id
+ * (a category missing from `rules` inherits the global default), and the
+ * names of the categories whose stored rule cannot be read (`unreadable`,
+ * sorted by name), also keyed by id (`unreadableById`). */
+export async function readCategoryRules(db: Db): Promise<{
+  rules: Map<number, MarkupRule>;
+  unreadable: string[];
+  unreadableById: Map<number, string>;
+}> {
   const rows = await db.category.findMany({
     where: { markupType: { not: null } },
-    select: { id: true, markupType: true, markupValue: true },
+    select: { id: true, name: true, markupType: true, markupValue: true },
+    orderBy: { name: "asc" },
   });
-  const map = new Map<number, MarkupRule>();
+  const rules = new Map<number, MarkupRule>();
+  const unreadable: string[] = [];
+  const unreadableById = new Map<number, string>();
   for (const row of rows) {
     const rule = storedCategoryRule(row);
-    if (rule) map.set(row.id, rule);
+    if (rule === UNREADABLE_CATEGORY_RULE) {
+      unreadable.push(row.name);
+      unreadableById.set(row.id, row.name);
+    } else if (rule) rules.set(row.id, rule);
   }
-  return map;
+  return { rules, unreadable, unreadableById };
+}
+
+/** categoryId → rule, for every category with a rule. A category missing from
+ * the map inherits the global default. Throws PricingPolicyUnreadableError
+ * when any stored category rule cannot be read (never a silent fallback to
+ * the global rule). */
+export async function getCategoryRuleMap(db: Db): Promise<Map<number, MarkupRule>> {
+  const { rules, unreadable } = await readCategoryRules(db);
+  if (unreadable.length > 0) throw new PricingPolicyUnreadableError("category", unreadable);
+  return rules;
+}
+
+export interface PricingCategoryRow {
+  id: number;
+  name: string;
+  group: string | null;
+  markupType: string | null;
+  markupValue: Prisma.Decimal | null;
+  /** Unarchived Digiflazz-routed SKUs (with a supplier SKU) in the category. */
+  skuCount: number;
+  /** False when a rule is stored but this version cannot read it (re-review N7). */
+  ruleReadable: boolean;
+}
+
+/** Every category with its stored rule and Digiflazz SKU count, for the
+ * Pricing & Margins page. A fixed number of queries whatever the catalog
+ * size (pricing review Minor 6: was one count per category). */
+export async function listPricingCategories(db: Db): Promise<PricingCategoryRow[]> {
+  const [categories, perProduct] = await Promise.all([
+    db.category.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, group: true, markupType: true, markupValue: true } }),
+    db.denomination.groupBy({
+      by: ["productId"],
+      where: { AND: [DIGIFLAZZ_SUPPLIER_SCOPE, { supplierSku: { not: null }, isArchived: false }] },
+      _count: { _all: true },
+    }),
+  ]);
+  const products = perProduct.length === 0 ? [] : await db.product.findMany({
+    where: { id: { in: perProduct.map((r) => r.productId) } },
+    select: { id: true, categoryId: true },
+  });
+  const categoryOf = new Map(products.map((p) => [p.id, p.categoryId]));
+  const counts = new Map<number, number>();
+  for (const row of perProduct) {
+    const categoryId = categoryOf.get(row.productId);
+    if (categoryId !== undefined) counts.set(categoryId, (counts.get(categoryId) ?? 0) + row._count._all);
+  }
+  return categories.map((c) => ({
+    ...c,
+    skuCount: counts.get(c.id) ?? 0,
+    ruleReadable: storedCategoryRule(c) !== UNREADABLE_CATEGORY_RULE,
+  }));
 }
 
 // ---- Reprice ("Apply now") ----
@@ -387,11 +487,29 @@ export interface RepriceSampleRow {
   cost: Decimal;
 }
 
+/** Why a new price was refused by the admin form's price checks
+ * (`denominationPriceError`): below the Rp1 sale minimum, or below the SKU's
+ * own reseller price. */
+export type RepriceBlockReason = "price_below_minimum" | "reseller_above_price" | "invalid_prices";
+
+export interface RepriceBlockedRow extends RepriceSampleRow {
+  reason: RepriceBlockReason;
+  resellerPrice: Decimal | null;
+}
+
 export interface RepriceImpact {
   eligibleCount: number;
+  /** Rows Apply now would actually write (blocked rows excluded). */
   changedCount: number;
   /** Up to {@link REPRICE_SAMPLE_SIZE} changed SKUs, lowest id first. */
   sample: RepriceSampleRow[];
+  /** Rows whose new price fails a price check; Apply now leaves them alone. */
+  blockedCount: number;
+  /** Up to {@link REPRICE_SAMPLE_SIZE} blocked SKUs, lowest id first. */
+  blocked: RepriceBlockedRow[];
+  /** Identifies the pricing policy this preview was priced from; pass it back
+   * to {@link applyReprice} so a policy saved in between is refused. */
+  policyFingerprint: string;
 }
 
 export interface RepriceResult {
@@ -401,22 +519,58 @@ export interface RepriceResult {
   /** Eligible when listed, but no longer eligible once locked (made manual,
    * archived, cost cleared or moved out of scope meanwhile). */
   skippedCount: number;
+  /** Left at their current price because the new price failed a price check
+   * (below Rp1, or below the SKU's reseller price). */
+  blockedCount: number;
+}
+
+/** Apply now committed every batch, but its final audit row failed. */
+export class RepriceAuditFailedError extends Error {
+  constructor(updatedCount: number, options?: { cause?: unknown }) {
+    super(
+      `The new prices were applied to ${updatedCount} item(s), but the change could not be written to the audit log. The prices stay as applied; tell the developer so the audit entry can be recorded.`,
+      options,
+    );
+    this.name = "RepriceAuditFailedError";
+  }
+}
+
+/** The policy changed between the admin's preview and their Apply now. */
+export class RepricePolicyChangedError extends Error {
+  constructor() {
+    super("The pricing rules changed after you opened the preview. Review the new impact and apply again.");
+    this.name = "RepricePolicyChangedError";
+  }
 }
 
 const REPRICE_SAMPLE_SIZE = 10;
 const REPRICE_BATCH_SIZE = 100;
 
 /** Exactly the rows the resync reprices (Digiflazz scope with a supplier SKU,
- * not archived), narrowed to auto-priced rows with a known cost. A Premium
+ * not archived), narrowed to auto-priced rows with a positive known cost (a
+ * cost of 0 would price the SKU from nothing — pricing review I4). A Premium
  * Apps manual SKU has no supplierSku, so it is never in here. */
 function eligibleWhere(scope: RepriceScope): Prisma.DenominationWhereInput {
   return {
     AND: [
       DIGIFLAZZ_SUPPLIER_SCOPE,
-      { supplierSku: { not: null }, isArchived: false, priceOverridden: false, costPrice: { not: null } },
+      { supplierSku: { not: null }, isArchived: false, priceOverridden: false, costPrice: { not: null, gt: 0 } },
       ...(scope === "all" ? [] : [{ product: { categoryId: scope } }]),
     ],
   };
+}
+
+/** The admin form's price checks (`denominationPriceError`) on a new price;
+ * null when it may be written. */
+function repriceBlockReason(newPrice: Decimal, costPrice: Decimal, resellerPrice: Decimal | null): RepriceBlockReason | null {
+  if (denominationPriceError({ price: newPrice, costPrice, resellerPrice }) === null) return null;
+  if (!newPrice.isFinite() || newPrice.lessThan(MIN_SALE_PRICE)) return "price_below_minimum";
+  if (resellerPrice !== null && resellerPrice.greaterThan(newPrice)) return "reseller_above_price";
+  return "invalid_prices";
+}
+
+function toDecimalOrNull(v: Prisma.Decimal | null): Decimal | null {
+  return v === null ? null : new Decimal(v.toString());
 }
 
 interface LoadedPolicy {
@@ -455,33 +609,53 @@ function newPriceFor(
   return resolved.calculatedPrice!;
 }
 
-/** What "Apply now" would change, priced from the real stored rows. Throws
+/** A stable digest of everything that decides an Apply-now price: the global
+ * rule, rounding and every category rule. The low-margin warning is left out
+ * on purpose (it never changes a price). */
+function policyFingerprint(policy: LoadedPolicy): string {
+  const ruleKey = (r: MarkupRule) => `${r.type ?? ""}:${r.type === null ? "0" : r.value.toFixed()}`;
+  const categories = [...policy.categoryRules.entries()].sort(([a], [b]) => a - b).map(([id, r]) => `${id}=${ruleKey(r)}`);
+  const text = [ruleKey(policy.globalRule), policy.rounding, ...categories].join("|");
+  return createHash("sha256").update(text).digest("hex").slice(0, 32);
+}
+
+/** What "Apply now" would change, priced from the real stored rows with the
+ * same price checks Apply now runs, so the preview matches the apply. Throws
  * PricingPolicyUnreadableError instead of pricing from an unreadable policy. */
 export async function computeRepriceImpact(db: Db, scope: RepriceScope): Promise<RepriceImpact> {
   const policy = await loadUsablePolicy(db);
   const rows = await db.denomination.findMany({
     where: eligibleWhere(scope),
-    select: { id: true, name: true, price: true, costPrice: true, product: { select: { name: true, categoryId: true } } },
+    select: { id: true, name: true, price: true, costPrice: true, resellerPrice: true, product: { select: { name: true, categoryId: true } } },
     orderBy: { id: "asc" },
   });
   let changedCount = 0;
+  let blockedCount = 0;
   const sample: RepriceSampleRow[] = [];
+  const blocked: RepriceBlockedRow[] = [];
   for (const row of rows) {
     const newPrice = newPriceFor(policy, { ...row, categoryId: row.product.categoryId });
     if (moneyEq(newPrice, row.price)) continue;
-    changedCount++;
-    if (sample.length < REPRICE_SAMPLE_SIZE) {
-      sample.push({
-        denominationId: row.id,
-        name: row.name,
-        productName: row.product.name,
-        oldPrice: new Decimal(row.price.toString()),
-        newPrice,
-        cost: new Decimal(row.costPrice!.toString()),
-      });
+    const cost = new Decimal(row.costPrice!.toString());
+    const resellerPrice = toDecimalOrNull(row.resellerPrice);
+    const base = {
+      denominationId: row.id,
+      name: row.name,
+      productName: row.product.name,
+      oldPrice: new Decimal(row.price.toString()),
+      newPrice,
+      cost,
+    };
+    const reason = repriceBlockReason(newPrice, cost, resellerPrice);
+    if (reason !== null) {
+      blockedCount++;
+      if (blocked.length < REPRICE_SAMPLE_SIZE) blocked.push({ ...base, reason, resellerPrice });
+      continue;
     }
+    changedCount++;
+    if (sample.length < REPRICE_SAMPLE_SIZE) sample.push(base);
   }
-  return { eligibleCount: rows.length, changedCount, sample };
+  return { eligibleCount: rows.length, changedCount, sample, blockedCount, blocked, policyFingerprint: policyFingerprint(policy) };
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -502,10 +676,20 @@ export async function applyReprice(
   now: Date = new Date(),
   /** Test seams only: a smaller batch size, and a hook run before each
    * batch's transaction (to change rows or the lease mid-run, or to fail). */
-  opts: { batchSize?: number; beforeBatch?: (batchIndex: number) => Promise<void> } = {},
+  opts: {
+    batchSize?: number;
+    beforeBatch?: (batchIndex: number) => Promise<void>;
+    /** The `policyFingerprint` of the preview the admin confirmed; when given
+     * and the stored policy no longer matches it, nothing is written
+     * (RepricePolicyChangedError). */
+    expectedPolicyFingerprint?: string;
+  } = {},
 ): Promise<RepriceResult> {
   // Refuse an unreadable policy before taking the lease.
   const policy = await loadUsablePolicy(db);
+  if (opts.expectedPolicyFingerprint !== undefined && opts.expectedPolicyFingerprint !== policyFingerprint(policy)) {
+    throw new RepricePolicyChangedError();
+  }
   const batchSize = opts.batchSize ?? REPRICE_BATCH_SIZE;
   const token = await claimDigiflazzCatalogSyncLease(db, now);
   if (!token) throw new RepriceBusyError();
@@ -519,7 +703,7 @@ export async function applyReprice(
     const ids = (
       await db.denomination.findMany({ where: eligibleWhere(scope), select: { id: true }, orderBy: { id: "asc" } })
     ).map((r) => r.id);
-    const result: RepriceResult = { eligibleCount: ids.length, updatedCount: 0, unchangedCount: 0, skippedCount: 0 };
+    const result: RepriceResult = { eligibleCount: ids.length, updatedCount: 0, unchangedCount: 0, skippedCount: 0, blockedCount: 0 };
 
     try {
       for (let i = 0, batchIndex = 0; i < ids.length; i += batchSize, batchIndex++) {
@@ -533,17 +717,22 @@ export async function applyReprice(
             data: { updatedAt: new Date() },
           });
           if (renewed.count !== 1) throw new RepriceLeaseLostError();
-          const c = { updated: 0, unchanged: 0, skipped: 0 };
+          const c = { updated: 0, unchanged: 0, skipped: 0, blocked: 0 };
           await tx.$queryRaw`SELECT id FROM denominations WHERE id IN (${Prisma.join(batch)}) ORDER BY id FOR UPDATE`;
           const locked = await tx.denomination.findMany({
             where: { AND: [{ id: { in: batch } }, eligibleWhere(scope)] },
-            select: { id: true, price: true, costPrice: true, product: { select: { categoryId: true } } },
+            select: { id: true, price: true, costPrice: true, resellerPrice: true, product: { select: { categoryId: true } } },
           });
           c.skipped = batch.length - locked.length;
           for (const row of locked) {
             const newPrice = newPriceFor(policy, { ...row, categoryId: row.product.categoryId });
             if (moneyEq(newPrice, row.price)) {
               c.unchanged++;
+              continue;
+            }
+            // Pricing review I4: the admin form's checks, on the locked row.
+            if (repriceBlockReason(newPrice, new Decimal(row.costPrice!.toString()), toDecimalOrNull(row.resellerPrice)) !== null) {
+              c.blocked++;
               continue;
             }
             await updateDenomination(tx, row.id, { price: newPrice });
@@ -554,6 +743,7 @@ export async function applyReprice(
         result.updatedCount += counts.updated;
         result.unchangedCount += counts.unchanged;
         result.skippedCount += counts.skipped;
+        result.blockedCount += counts.blocked;
       }
     } catch (err) {
       // Earlier batches are committed live prices: they must not go unaudited.
@@ -578,17 +768,30 @@ export async function applyReprice(
     const skippedNote = result.skippedCount > 0
       ? ` ${plural(result.skippedCount, "item was", "items were")} skipped because ${result.skippedCount === 1 ? "it" : "they"} changed while repricing.`
       : "";
+    const blockedNote = result.blockedCount > 0
+      ? ` ${plural(result.blockedCount, "item was", "items were")} left at ${result.blockedCount === 1 ? "its" : "their"} current price because the new price failed a price check (below Rp1, or below ${result.blockedCount === 1 ? "its" : "their"} reseller price).`
+      : "";
     const details = result.eligibleCount === 0
       ? `Found no auto-priced Digiflazz items${where} to reprice from the current pricing rules.`
       : result.updatedCount === 0
-      ? `Checked ${plural(result.eligibleCount, "Digiflazz item", "Digiflazz items")}${where} against the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${skippedNote}`
-      : `Repriced ${plural(result.updatedCount, "Digiflazz item", "Digiflazz items")}${where} from the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${skippedNote}`;
-    await logAdminAction(db, {
-      adminId,
-      action: "pricing_reprice",
-      ...auditTarget,
-      details,
-    });
+      ? `Checked ${plural(result.eligibleCount, "Digiflazz item", "Digiflazz items")}${where} against the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${skippedNote}${blockedNote}`
+      : `Repriced ${plural(result.updatedCount, "Digiflazz item", "Digiflazz items")}${where} from the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${skippedNote}${blockedNote}`;
+    try {
+      await logAdminAction(db, {
+        adminId,
+        action: "pricing_reprice",
+        ...auditTarget,
+        details,
+      });
+    } catch (auditErr) {
+      // Every batch is already committed: the prices are live. Say so loudly
+      // rather than let a bare 500 hide that they changed without an audit row.
+      logger.error(
+        { err: auditErr, updatedCount: result.updatedCount, blockedCount: result.blockedCount, scope },
+        `A pricing reprice finished and changed ${result.updatedCount} Digiflazz prices, but its audit row could not be written, so those price changes have no audit entry; the prices stay as repriced.`,
+      );
+      throw new RepriceAuditFailedError(result.updatedCount, { cause: auditErr });
+    }
     return result;
   } finally {
     try {

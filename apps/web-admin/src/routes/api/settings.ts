@@ -29,7 +29,15 @@ import {
   DIGIFLAZZ_WEBHOOK_SECRET_KEY,
   UNDERPAID_AUTO_RESOLVE_HOURS_KEY,
   FAILED_ORDER_ALERT_HOURS_KEY,
+  DIGIFLAZZ_MARKUP_TYPE_KEY,
+  DIGIFLAZZ_MARKUP_VALUE_KEY,
+  PRICING_ROUNDING_KEY,
+  PRICING_LOW_MARGIN_WARN_PCT_KEY,
+  PricingValidationError,
+  setGlobalPricing,
+  type GlobalPricingInput,
 } from "@app/db";
+import { isRoundingPolicy } from "@app/core/pricingRule";
 import { CUSTOMER_SERVICES, SERVICE_CHANNELS, type ServiceChannel } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { verifySmtp, sendMail, safeMailFailure, requireMailAcceptance, EMAIL_RECIPIENT_RE } from "@app/core/mailer";
@@ -413,6 +421,70 @@ class FieldEditError extends Error {
  * `FieldEditError` for anything the caller should treat as a rejected field;
  * returns the same shape `/edit` has always replied with on success.
  */
+/** The stored pricing policy (Pricing & Margins). Exported in a settings
+ * backup; imported only through {@link importPricingPolicy}. */
+const PRICING_BACKUP_KEYS: string[] = [
+  DIGIFLAZZ_MARKUP_TYPE_KEY, DIGIFLAZZ_MARKUP_VALUE_KEY, PRICING_ROUNDING_KEY, PRICING_LOW_MARGIN_WARN_PCT_KEY,
+];
+
+/**
+ * Apply the pricing keys of a settings import file through setGlobalPricing:
+ * the Pricing & Margins validation (percent at most 1000% with 4 decimals,
+ * flat in whole rupiah, a listed rounding, a warning below 100%), one
+ * transaction for the whole policy and its pricing audit sentence. An export
+ * holds stored plain decimals, so amounts are read exactly. A markup amount
+ * without its type (or the reverse) never reaches here: the import route
+ * refuses such a file (re-review N6). An
+ * invalid policy is refused as a whole: every pricing key in the file is
+ * reported skipped and nothing is stored.
+ */
+async function importPricingPolicy(
+  adminId: number,
+  incoming: Record<string, unknown>,
+): Promise<{ applied: number; skipped: { key: string; reason: string }[] }> {
+  const present = PRICING_BACKUP_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(incoming, k));
+  if (present.length === 0) return { applied: 0, skipped: [] };
+  const raw = (key: string) => String(incoming[key] ?? "").trim();
+  try {
+    const input: GlobalPricingInput = {};
+    // The import route has already refused a file with only one of the pair.
+    if (present.includes(DIGIFLAZZ_MARKUP_TYPE_KEY) && present.includes(DIGIFLAZZ_MARKUP_VALUE_KEY)) {
+      const type = raw(DIGIFLAZZ_MARKUP_TYPE_KEY);
+      const valueText = raw(DIGIFLAZZ_MARKUP_VALUE_KEY);
+      if (type !== "" && type !== "percent" && type !== "flat") {
+        throw new PricingValidationError('Markup type must be "percent", "flat" or empty.');
+      }
+      if (type === "") {
+        input.markupType = null;
+        input.markupValue = new Decimal(0);
+      } else {
+        // A blank amount is zero markup, as the readers of the stored setting treat it.
+        const value = valueText === "" ? new Decimal(0)
+          : type === "percent" ? readPercentField(valueText, { exact: true }) : readMoneyField(valueText, "IDR", { exact: true });
+        if (value === null) throw new PricingValidationError("The markup amount in the file is not a plain number of zero or more.");
+        input.markupType = type;
+        input.markupValue = value;
+      }
+    }
+    if (present.includes(PRICING_ROUNDING_KEY)) {
+      const rounding = raw(PRICING_ROUNDING_KEY) || "none";
+      if (!isRoundingPolicy(rounding)) throw new PricingValidationError("Choose one of the listed rounding options.");
+      input.rounding = rounding;
+    }
+    if (present.includes(PRICING_LOW_MARGIN_WARN_PCT_KEY)) {
+      const text = raw(PRICING_LOW_MARGIN_WARN_PCT_KEY);
+      const warn = text === "" ? null : readPercentField(text, { exact: true });
+      if (text !== "" && warn === null) throw new PricingValidationError("The low-margin warning in the file is not a plain number.");
+      input.lowMarginWarnPct = warn;
+    }
+    await setGlobalPricing(prisma, adminId, input);
+    return { applied: present.length, skipped: [] };
+  } catch (err) {
+    if (!(err instanceof PricingValidationError)) throw err;
+    return { applied: 0, skipped: present.map((key) => ({ key, reason: `The pricing policy was not imported: ${err.message}` })) };
+  }
+}
+
 async function applyFieldEdit(
   admin: { userId: number; telegramId: number; role: string },
   key: string,
@@ -814,7 +886,9 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const currentValues: Record<string, string> = {};
     for (const r of rows) currentValues[r.key] = r.value;
     const fields: Record<string, string> = {};
-    for (const key of Object.keys(EDITABLE)) {
+    // The whole pricing policy travels with a backup, rounding and the
+    // low-margin warning included (they are edited on Pricing & Margins, not here).
+    for (const key of [...Object.keys(EDITABLE), ...PRICING_BACKUP_KEYS.filter((k) => !(k in EDITABLE))]) {
       if (isSecret(key)) continue;
       const v = currentValues[key];
       if (v !== undefined) fields[key] = v;
@@ -845,9 +919,27 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     for (const bandKey of IMPORT_FIRST) {
       if (Object.prototype.hasOwnProperty.call(incoming, bandKey)) bandOverride[bandKey] = String(incoming[bandKey] ?? "");
     }
+    // Re-review N6: the markup type and amount only mean something together
+    // (15 is 15% or Rp15 depending on the type), so a file carrying one
+    // without the other is refused before anything is written, instead of
+    // pairing it with this shop's stored other half.
+    const hasMarkupType = Object.prototype.hasOwnProperty.call(incoming, DIGIFLAZZ_MARKUP_TYPE_KEY);
+    const hasMarkupValue = Object.prototype.hasOwnProperty.call(incoming, DIGIFLAZZ_MARKUP_VALUE_KEY);
+    if (hasMarkupType !== hasMarkupValue) {
+      return reply.code(400).send({
+        error: `The file has ${hasMarkupType ? DIGIFLAZZ_MARKUP_TYPE_KEY : DIGIFLAZZ_MARKUP_VALUE_KEY} without ${hasMarkupType ? DIGIFLAZZ_MARKUP_VALUE_KEY : DIGIFLAZZ_MARKUP_TYPE_KEY}. The markup type and amount must both be in the file, or neither, so nothing was imported. Use an unedited export, or add or remove the missing key.`,
+      });
+    }
     let applied = 0;
     const skippedKeys: { key: string; reason: string }[] = [];
+    // Pricing review Minor 1: the pricing policy keys go through the Pricing &
+    // Margins validation and are written together, atomically, with the
+    // pricing audit sentence — never one raw setting at a time.
+    const pricingResult = await importPricingPolicy(req.admin!.userId, incoming);
+    applied += pricingResult.applied;
+    skippedKeys.push(...pricingResult.skipped);
     for (const [key, value] of entries) {
+      if (PRICING_BACKUP_KEYS.includes(key)) continue;
       if (!(key in EDITABLE)) {
         // Clipped: an unknown key is arbitrary text from the uploaded file.
         skippedKeys.push({ key: key.slice(0, 64), reason: "Not a setting that can be edited here." });

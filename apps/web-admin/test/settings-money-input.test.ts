@@ -160,6 +160,79 @@ describe("a pre-filled stored value survives a re-save (exact_fields)", () => {
   });
 });
 
+describe("pricing policy in a settings backup (pricing review Minor 1)", () => {
+  it("export includes the whole pricing policy, rounding and low-margin warning too", async () => {
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "15");
+    await setSetting(prisma, "pricing_rounding", "ceil_500");
+    await setSetting(prisma, "pricing_low_margin_warn_pct", "5");
+    const res = await app.inject({ url: "/api/settings/export", cookies: { [COOKIE]: cookie } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().fields).toMatchObject({
+      digiflazz_markup_type: "percent", digiflazz_markup_value: "15", pricing_rounding: "ceil_500", pricing_low_margin_warn_pct: "5",
+    });
+  });
+
+  it("import applies the pricing policy through the pricing validation, atomically, with the pricing audit sentence", async () => {
+    const res = await post("/api/settings/import", {
+      fields: { digiflazz_markup_type: "flat", digiflazz_markup_value: "1500", pricing_rounding: "ceil_100", pricing_low_margin_warn_pct: "4.5" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ applied: 4, skipped: 0 });
+    expect(await getSetting(prisma, "digiflazz_markup_type")).toBe("flat");
+    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("1500");
+    expect(await getSetting(prisma, "pricing_rounding")).toBe("ceil_100");
+    expect(await getSetting(prisma, "pricing_low_margin_warn_pct")).toBe("4.5");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "pricing_global_update" } });
+    expect(audit?.details).toBe("Changed the default markup from no markup to a flat Rp1.500, rounding from none to round up to Rp100 and the low-margin warning from off to 4.5%.");
+  });
+
+  it.each([
+    { digiflazz_markup_type: "percent", digiflazz_markup_value: "5000" },
+    { digiflazz_markup_type: "flat", digiflazz_markup_value: "1500.5" },
+    { digiflazz_markup_type: "bogus", digiflazz_markup_value: "5" },
+    { pricing_rounding: "ceil_7" },
+    { pricing_low_margin_warn_pct: "100" },
+  ])("import refuses an invalid pricing policy %j as a whole and stores none of it", async (fields) => {
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "10");
+    const res = await post("/api/settings/import", { fields: { ...fields, shop_name: "Imported shop" } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ applied: 1, skipped: Object.keys(fields).length });
+    expect(await getSetting(prisma, "digiflazz_markup_type")).toBe("percent");
+    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("10");
+    expect(await getSetting(prisma, "pricing_rounding")).toBeNull();
+    expect(await prisma.auditLog.count({ where: { action: "pricing_global_update" } })).toBe(0);
+  });
+
+  it.each([
+    { digiflazz_markup_type: "flat" },
+    { digiflazz_markup_value: "1500" },
+  ])("N6: a file with only half of the markup pair %j is refused (400) and nothing is imported", async (fields) => {
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "15");
+    await setSetting(prisma, "shop_name", "Live shop");
+    const res = await post("/api/settings/import", { fields: { ...fields, shop_name: "Imported shop" } });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error).toMatch(/digiflazz_markup_type.*digiflazz_markup_value|both/i);
+    expect(await getSetting(prisma, "digiflazz_markup_type")).toBe("percent");
+    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("15");
+    expect(await getSetting(prisma, "shop_name")).toBe("Live shop");
+    expect(await prisma.auditLog.count({ where: { action: "pricing_global_update" } })).toBe(0);
+  });
+
+  it("N6: an old backup with no pricing keys still imports and keeps the live pricing policy", async () => {
+    await setSetting(prisma, "digiflazz_markup_type", "flat");
+    await setSetting(prisma, "digiflazz_markup_value", "2000");
+    const res = await post("/api/settings/import", { fields: { shop_name: "Old backup shop" } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ applied: 1, skipped: 0 });
+    expect(await getSetting(prisma, "digiflazz_markup_type")).toBe("flat");
+    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("2000");
+    expect(await getSetting(prisma, "shop_name")).toBe("Old backup shop");
+  });
+});
+
 // Integration review fix round: the USDT rate sanity band (fx_rate_min /
 // fx_rate_max) is "IDR per 1 USDT", so it is read by shape like the rate it
 // judges. Saved as raw text, a ceiling typed 20.000 was read as Rp20 and

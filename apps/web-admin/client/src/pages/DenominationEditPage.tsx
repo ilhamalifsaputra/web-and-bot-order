@@ -125,7 +125,7 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
     (p) => p.category?.id === data?.product.category?.id,
   );
 
-  const { pricingMode, setPricingMode, name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule } = useDenominationDraft({ data, denomId, denomination: denomination!, pricing, productId });
+  const { pricingMode, setPricingMode, name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule, initialPricingMode } = useDenominationDraft({ data, denomId, denomination: denomination!, pricing, productId });
 
   // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
   // every other field on this form.
@@ -141,16 +141,25 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
         type,
         durationLabel: durationLabel.trim(),
         ...(isGame && autoDeliverySource === "digiflazz" && deliveryType === "manual_with_info" &&
-          (pricingMode !== (denomination?.priceOverridden ? "manual" : "auto") || price !== denomination?.price || costPrice !== (denomination?.costPrice ?? ""))
+          // Compared with what this form LOADED, never with the live query data: a background
+          // refetch after a sync must not turn an unrelated save into a pricing change (review I3).
+          (pricingMode !== initialPricingMode || price !== pricePrefill.price || costPrice !== pricePrefill.costPrice)
           ? { pricingMode } : {}),
         price: price.trim(),
         ...(costPrice.trim() ? { costPrice: costPrice.trim() } : {}),
         ...(resellerPrice.trim() ? { resellerPrice: resellerPrice.trim() } : {}),
-        exact_fields: exactFieldsOf(
-          { price: price.trim(), costPrice: costPrice.trim(), resellerPrice: resellerPrice.trim() },
-          pricePrefill,
-          PRICE_FIELDS,
-        ),
+        exact_fields: [
+          ...exactFieldsOf(
+            { price: price.trim(), costPrice: costPrice.trim(), resellerPrice: resellerPrice.trim() },
+            pricePrefill,
+            PRICE_FIELDS,
+          ),
+          // Re-review N5: a cost that was EMPTY when the form loaded and is still
+          // empty is untouched, not cleared; naming it (with no costPrice sent)
+          // lets the server keep a cost the sync filled since. A cost the admin
+          // blanked had a prefill, so it is not named and is still cleared.
+          ...(pricePrefill.costPrice === "" && costPrice.trim() === "" ? ["costPrice"] : []),
+        ],
         ...(warrantyDays.trim() ? { warrantyDays: Number(warrantyDays.trim()) } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(sortOrder.trim() ? { sortOrder: Number(sortOrder.trim()) } : {}),
@@ -390,7 +399,9 @@ function DenominationEditModeHarga({ isGame, autoDeliverySource, deliveryType, f
       <label htmlFor={`${fieldId}-mode-harga-6`} className="text-sm font-medium">Mode harga</label>
       <Select value={pricingMode} onValueChange={value => { if (value === "auto" && pricingMode === "manual") setAutoConfirm(true); else setPricingMode(value as "auto" | "manual"); }}>
         <SelectTrigger id={`${fieldId}-mode-harga-6`} aria-label="Mode harga"><SelectValue /></SelectTrigger>
-        <SelectContent><SelectItem value="auto" disabled={!costPrice.trim()}>Otomatis</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
+        {/* With no HPP, "auto" cannot be newly chosen, but an automatic SKU still waiting for its
+            first HPP keeps it selected and says so (visual review V2). */}
+        <SelectContent><SelectItem value="auto" disabled={!costPrice.trim() && pricingMode !== "auto"}>{costPrice.trim() ? "Otomatis" : "Otomatis · menunggu HPP"}</SelectItem><SelectItem value="manual">Manual</SelectItem></SelectContent>
       </Select>
       <p className="text-xs text-ink-soft">Otomatis mengikuti HPP dan aturan kategori/global. Manual melindungi harga saat sync.</p>
     </div>
@@ -427,7 +438,8 @@ function useDenominationDraft({ data, denomId, denomination, pricing, productId 
   const existingRule = data.statsByDenom?.[Number(denomId)]?.rule ?? null;
   // Keep the exact stored values from the first loaded render for untouched money fields.
   const [initial] = useState(() => ({ denomination, existingRule, productId, pricing }));
-  const [pricingMode, setPricingMode] = useState<"auto" | "manual">(() => initial.pricing?.automaticAvailable && !initial.denomination.priceOverridden ? "auto" : "manual");
+  const [initialPricingMode] = useState<"auto" | "manual">(() => initial.pricing?.automaticAvailable && !initial.denomination.priceOverridden ? "auto" : "manual");
+  const [pricingMode, setPricingMode] = useState<"auto" | "manual">(initialPricingMode);
   const [name, setName] = useState(() => (initial.denomination.name));
   const [type, setType] = useState<string | null>(() => (initial.denomination.type));
   const [durationLabel, setDurationLabel] = useState(() => (initial.denomination.durationLabel));
@@ -452,7 +464,7 @@ function useDenominationDraft({ data, denomId, denomination, pricing, productId 
   const [bulkError, setBulkError] = useState<string | null>(null);
   const pricePrefill: PriceFields = { price: initial.denomination.price, costPrice: initial.denomination.costPrice ?? "", resellerPrice: initial.denomination.resellerPrice ?? "" };
   const bulkPrefill = initial.existingRule ? { discountPercent: initial.existingRule.discountPercent } : null;
-  return { name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule, pricingMode, setPricingMode };
+  return { name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule, pricingMode, setPricingMode, initialPricingMode };
 }
 
 export function DenominationEditPage() {

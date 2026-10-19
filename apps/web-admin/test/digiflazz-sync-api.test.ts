@@ -116,6 +116,41 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     expect(res.json().error).toMatch(/markup/i);
   });
 
+  it("N1: an unreadable category rule refuses only a preview that targets or touches that category", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "10");
+    const good = await createCategory(prisma, "Voucher Good");
+    const junk = await createCategory(prisma, "Voucher Junk");
+    await importDigiflazzBrand(prisma, {
+      brand: "Free Fire", categoryId: junk.id,
+      rows: [{ buyerSkuCode: "ff5", productName: "FF 5", price: "5500", costPrice: "5000" }],
+    });
+    await prisma.category.update({ where: { id: junk.id }, data: { markupType: "weird", markupValue: "10" } });
+    const ml = { buyerSkuCode: "ml100", productName: "ML 100", category: "Game", brand: "Mobile Legends", type: "Umum", price: new Decimal(15000), buyerProductStatus: true, sellerProductStatus: true, stock: null };
+    const ff = { ...ml, buyerSkuCode: "ff10", productName: "FF 10", brand: "Free Fire", price: new Decimal(9000) };
+
+    // A brand-new brand into a readable category: priced by the global rule.
+    digiflazzMock.getPriceList.mockResolvedValue([ml]);
+    const ok = await postJson("/api/catalog/digiflazz/sync/preview", { categoryId: good.id });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().groups[0].skus[0].suggestedPrice).toBe("16500");
+
+    // Targeting the unreadable category is refused, naming it.
+    clearDigiflazzPriceListCache();
+    const target = await postJson("/api/catalog/digiflazz/sync/preview", { categoryId: junk.id });
+    expect(target.statusCode).toBe(400);
+    expect(target.json().error).toContain("Voucher Junk");
+
+    // A brand already living in the unreadable category is refused too.
+    clearDigiflazzPriceListCache();
+    digiflazzMock.getPriceList.mockResolvedValue([ml, ff]);
+    const touched = await postJson("/api/catalog/digiflazz/sync/preview", { categoryId: good.id });
+    expect(touched.statusCode).toBe(400);
+    expect(touched.json().error).toContain("Voucher Junk");
+  });
+
   it("splits a region-suffixed brand into its own group with rawBrand/region set", async () => {
     await setSetting(prisma, "digiflazz_username", "u");
     await setSetting(prisma, "digiflazz_api_key", "k");

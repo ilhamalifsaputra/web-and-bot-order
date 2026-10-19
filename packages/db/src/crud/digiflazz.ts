@@ -88,8 +88,9 @@ import { enqueueAdminDigiflazzBelowCost, enqueueDigiflazzReviewAlert, enqueueAdm
 // time, only inside functions.
 import {
   getPricingPolicy,
-  getCategoryRule,
-  getCategoryRuleMap,
+  readCategoryRule,
+  readCategoryRules,
+  UNREADABLE_CATEGORY_RULE,
   PricingPolicyUnreadableError,
   PRICING_ROUNDING_KEY,
 } from "./pricingPolicy";
@@ -2339,6 +2340,13 @@ export interface DigiflazzPriceContext {
   roundingReadable: boolean;
   /** categoryId → that category's own rule; a missing id inherits the global rule. */
   categoryRules: Map<number, MarkupRule>;
+  /** Names of loaded categories whose stored rule cannot be read, sorted by
+   * name (for admin-facing messages). */
+  unreadableCategories: string[];
+  /** The same unreadable categories by id → name. Only SKUs of these
+   * categories cannot be priced (re-review N1: one bad category rule must not
+   * stop the rest of the catalog); never a silent fallback to the global rule. */
+  unreadableCategoryById: Map<number, string>;
 }
 
 /** Load the pricing context once. With `onlyCategoryId`, only that one
@@ -2347,12 +2355,19 @@ export interface DigiflazzPriceContext {
 export async function loadDigiflazzPriceContext(db: Db, onlyCategoryId?: number | null): Promise<DigiflazzPriceContext> {
   const policy = await getPricingPolicy(db);
   let categoryRules: Map<number, MarkupRule>;
+  let unreadableCategories: string[] = [];
+  let unreadableCategoryById = new Map<number, string>();
   if (onlyCategoryId === undefined) {
-    categoryRules = await getCategoryRuleMap(db);
+    ({ rules: categoryRules, unreadable: unreadableCategories, unreadableById: unreadableCategoryById } = await readCategoryRules(db));
   } else {
     categoryRules = new Map();
-    const rule = onlyCategoryId === null ? null : await getCategoryRule(db, onlyCategoryId);
-    if (rule && onlyCategoryId !== null) categoryRules.set(onlyCategoryId, rule);
+    if (onlyCategoryId !== null) {
+      const { rule, name } = await readCategoryRule(db, onlyCategoryId);
+      if (rule === UNREADABLE_CATEGORY_RULE) {
+        unreadableCategories = [name ?? String(onlyCategoryId)];
+        unreadableCategoryById = new Map([[onlyCategoryId, unreadableCategories[0]!]]);
+      } else if (rule) categoryRules.set(onlyCategoryId, rule);
+    }
   }
   return {
     markupSettings: policy.globalRaw,
@@ -2360,15 +2375,23 @@ export async function loadDigiflazzPriceContext(db: Db, onlyCategoryId?: number 
     rounding: policy.rounding,
     roundingReadable: policy.roundingReadable,
     categoryRules,
+    unreadableCategories,
+    unreadableCategoryById,
   };
 }
 
-/** Which stored policy piece stops the context from pricing anything, or
- * null when it can price. Callers treat both like the long-standing
- * unreadable-markup case: never guess a price from them. */
-export function digiflazzPriceContextProblem(ctx: DigiflazzPriceContext): "markup" | "rounding" | null {
+/** Which stored policy piece stops the context from pricing, or null when it
+ * can price. Without `categoryId` only the global pieces (markup, rounding)
+ * are judged — they stop every SKU; with one, that category's own rule is
+ * judged too. Callers treat each like the long-standing unreadable-markup
+ * case: never guess a price from them. */
+export function digiflazzPriceContextProblem(
+  ctx: DigiflazzPriceContext,
+  categoryId?: number | null,
+): "markup" | "rounding" | "category" | null {
   if (ctx.globalRule === null) return "markup";
   if (!ctx.roundingReadable) return "rounding";
+  if (categoryId != null && ctx.unreadableCategoryById.has(categoryId)) return "category";
   return null;
 }
 
@@ -2383,6 +2406,8 @@ export function digiflazzPriceContextProblem(ctx: DigiflazzPriceContext): "marku
 export function digiflazzSellPrice(ctx: DigiflazzPriceContext, cost: Decimal, categoryId: number | null): Decimal {
   if (ctx.globalRule === null) throw new InvalidDigiflazzMarkupError();
   if (!ctx.roundingReadable) throw new PricingPolicyUnreadableError("rounding");
+  const unreadableName = categoryId === null ? undefined : ctx.unreadableCategoryById.get(categoryId);
+  if (unreadableName !== undefined) throw new PricingPolicyUnreadableError("category", [unreadableName]);
   const categoryRule = categoryId === null ? null : (ctx.categoryRules.get(categoryId) ?? null);
   const { rule } = resolveRule(categoryRule, ctx.globalRule);
   return applyRounding(applyMarkupRule(cost, rule), ctx.rounding);
@@ -2447,7 +2472,7 @@ function isPriceOverriddenInContext(
   categoryId: number | null,
 ): boolean {
   if (costPrice == null) return true;
-  if (digiflazzPriceContextProblem(ctx) !== null) return true;
+  if (digiflazzPriceContextProblem(ctx, categoryId) !== null) return true;
   return !moneyEq(price, digiflazzSellPrice(ctx, costPrice, categoryId));
 }
 
@@ -2951,6 +2976,10 @@ async function createMissingSkusForBrand(
     // categoryId: new SKUs are priced by this product's category rule.
     const product = await tx.product.findUnique({ where: { id: productId }, select: { isActive: true, isArchived: true, categoryId: true } });
     if (!product || product.isArchived) return [];
+    // Re-review N1: a category whose stored rule is unreadable cannot price a
+    // new SKU; it is skipped (the sync reports the category once) while the
+    // other brands go on.
+    if (priceContext.unreadableCategoryById.has(product.categoryId)) return [];
     const raced = await tx.denomination.findMany({
       where: { ...DIGIFLAZZ_SUPPLIER_SCOPE, supplierSku: { in: candidates.map((i) => i.buyerSkuCode) } },
       select: { supplierSku: true },
@@ -3089,10 +3118,17 @@ async function resyncDigiflazzCatalogWithOutcome(
   // The price is always cost → rule of the SKU's product category (else the
   // global default) → rounding; never derived from the previous price, so a
   // rule change followed by any number of syncs applies markup exactly once.
+  //
+  // Re-review N1: an unreadable markup or rounding (global) stops all of this
+  // for every SKU; an unreadable CATEGORY rule stops it only for that
+  // category's SKUs (kept price lifted to cost, no auto-add, no reactivation),
+  // while every other category is synced as usual.
   const pricingProblem = digiflazzPriceContextProblem(priceContext);
   const markupReadable = pricingProblem === null;
+  const categoryPriceable = (categoryId: number) =>
+    markupReadable && !priceContext.unreadableCategoryById.has(categoryId);
   const newSellPriceFor = (item: DigiflazzPriceListItem, currentPrice: Decimal, categoryId: number) =>
-    markupReadable
+    categoryPriceable(categoryId)
       ? digiflazzSellPrice(priceContext, item.price, categoryId)
       : Decimal.max(currentPrice, quantizeMoney(item.price, 4));
 
@@ -3115,14 +3151,27 @@ async function resyncDigiflazzCatalogWithOutcome(
     const item = bySku.get(denom.supplierSku!);
     if (!item) continue;
     consideredRows++;
-    const newPrice = newSellPriceFor(item, denom.price, denom.product.categoryId);
-    const oldPrice = denom.price;
-    // oldPrice.isZero() guards the ratio check below from dividing by zero:
-    // any nonzero new price on a zero old price counts as a sharp change on
+    // Pricing review I1: "sharp" is judged on the SUPPLIER's input (the cost),
+    // not on the policy's output. A legitimate admin policy change (a category
+    // rule 10% → 100%, rounding ceil_1000 on Rp1.000 SKUs) moves the sell
+    // price far without the supplier response being malformed at all;
+    // comparing sell prices made every hourly sync abort after such a change.
+    // Only a row with no stored cost yet falls back to comparing the would-be
+    // sell price with the stored one (the pre-cost behaviour). Re-review N4: a
+    // stored cost of 0 (or below) is no usable cost either — judged on it,
+    // every real supplier price would count as sharp, and since an aborted run
+    // never corrects the cost, a couple of such rows would abort every sync
+    // for good. It takes the same fallback as a missing cost (and matches
+    // Apply now's `costPrice > 0` eligibility).
+    const [newValue, oldValue] = denom.costPrice !== null && denom.costPrice.greaterThan(0)
+      ? [quantizeMoney(item.price, 4), denom.costPrice]
+      : [newSellPriceFor(item, denom.price, denom.product.categoryId), denom.price];
+    // oldValue.isZero() guards the ratio check below from dividing by zero:
+    // any nonzero new value on a zero old value counts as a sharp change on
     // its own.
-    const sharp = oldPrice.isZero()
-      ? !newPrice.isZero()
-      : newPrice.lessThan(oldPrice.times(0.5)) || newPrice.greaterThan(oldPrice.times(1.5));
+    const sharp = oldValue.isZero()
+      ? !newValue.isZero()
+      : newValue.lessThan(oldValue.times(0.5)) || newValue.greaterThan(oldValue.times(1.5));
     if (sharp) sharpChanges++;
   }
 
@@ -3163,14 +3212,14 @@ async function resyncDigiflazzCatalogWithOutcome(
     if (abortReason.kind === "sharp_change") {
       logger.error(
         { sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows },
-        "Aborted the Digiflazz catalog sync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
+        "Aborted the Digiflazz catalog sync because too many denominations' supplier costs would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
       );
       await logAdminAction(db, {
         adminId: null,
         action: "digiflazz_catalog_resync_aborted",
         targetType: "product",
         targetId: null,
-        details: `Aborted the Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
+        details: `Aborted the Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} supplier prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
       });
     } else {
       logger.error(
@@ -3248,8 +3297,9 @@ async function resyncDigiflazzCatalogWithOutcome(
         data.isActive = false;
         counts.deactivated++;
         add.push(denom.id);
-      } else if (!denom.isActive && item.buyerProductStatus && remembered.has(denom.id) && markupReadable) {
-        // An unreadable markup keeps a sync-deactivated SKU remembered and off.
+      } else if (!denom.isActive && item.buyerProductStatus && remembered.has(denom.id) && categoryPriceable(denom.product.categoryId)) {
+        // An unreadable markup (or this SKU's category rule) keeps a
+        // sync-deactivated SKU remembered and off.
         data.isActive = true;
         counts.reactivated++;
         forget.push(denom.id);
@@ -3342,20 +3392,38 @@ async function resyncDigiflazzCatalogWithOutcome(
       details:
         "The Digiflazz catalog sync could not read the price rounding policy, so it kept the current sell prices instead of repricing them (a price below the new supplier cost was raised to that cost). Please save the rounding policy again on the Pricing & Margins page.",
     });
-  } else if (result.updated > 0 || result.deactivated > 0 || result.added > 0 || result.reactivated > 0) {
-    const parts = [
-      result.updated > 0 ? `updated ${result.updated} price(s)` : null,
-      result.added > 0 ? `added ${result.added} new SKU(s)` : null,
-      result.reactivated > 0 ? `reactivated ${result.reactivated}` : null,
-      result.deactivated > 0 ? `deactivated ${result.deactivated}` : null,
-    ].filter((p): p is string => p !== null);
-    await logAdminAction(db, {
-      adminId: null,
-      action: "digiflazz_catalog_resync",
-      targetType: "product",
-      targetId: null,
-      details: `Digiflazz sync: ${parts.join(", ")}.`,
-    });
+  } else {
+    if (priceContext.unreadableCategories.length > 0) {
+      const count = priceContext.unreadableCategories.length;
+      const names = priceContext.unreadableCategories.map((n) => `"${n}"`).join(", ");
+      logger.error(
+        { unreadableCategoryCount: count },
+        `The Digiflazz catalog sync could not read the stored markup rule of ${count} category or categories, so it kept the current sell prices of those categories' SKUs instead of repricing them (only lifting a price the new supplier cost had overtaken up to that cost), and did not add new SKUs to them or switch their sync-deactivated SKUs back on; costs and availability were still updated, and every other category was synced as usual. Those prices will keep drifting from the intended margin until an admin removes or saves those category rules again.`,
+      );
+      await logAdminAction(db, {
+        adminId: null,
+        action: "digiflazz_markup_unreadable",
+        targetType: "product",
+        targetId: null,
+        details:
+          `The Digiflazz catalog sync could not read the markup rule of ${count === 1 ? "category" : "categories"} ${names}, so it kept the current sell prices of ${count === 1 ? "that category's" : "those categories'"} SKUs instead of repricing them (a price below the new supplier cost was raised to that cost), and did not add new SKUs there or switch its sync-deactivated SKUs back on. Every other category was synced as usual. Please remove or save that category rule again on the Pricing & Margins page.`,
+      });
+    }
+    if (result.updated > 0 || result.deactivated > 0 || result.added > 0 || result.reactivated > 0) {
+      const parts = [
+        result.updated > 0 ? `updated ${result.updated} price(s)` : null,
+        result.added > 0 ? `added ${result.added} new SKU(s)` : null,
+        result.reactivated > 0 ? `reactivated ${result.reactivated}` : null,
+        result.deactivated > 0 ? `deactivated ${result.deactivated}` : null,
+      ].filter((p): p is string => p !== null);
+      await logAdminAction(db, {
+        adminId: null,
+        action: "digiflazz_catalog_resync",
+        targetType: "product",
+        targetId: null,
+        details: `Digiflazz sync: ${parts.join(", ")}.`,
+      });
+    }
   }
   // Independent of the markup: an unreadable markup still deactivates SKUs
   // Digiflazz reports down, and admins must hear about those too.
@@ -3379,15 +3447,18 @@ async function resyncDigiflazzCatalogWithOutcome(
   });
   // An unreadable markup is reported as an unhealthy run on the poll-health
   // surface (the admin panel's sync-problem indicator) until it is fixed.
+  const categoryProblem = markupReadable && priceContext.unreadableCategories.length > 0;
   await recordPollHealth(db, "digiflazzCatalogSync", {
     lastTxCount: result.updated + result.deactivated + result.added + result.reactivated,
-    success: markupReadable,
-    ...(markupReadable
+    success: markupReadable && !categoryProblem,
+    ...(markupReadable && !categoryProblem
       ? {}
       : {
           error: pricingProblem === "rounding"
             ? "Pricing rounding policy is unreadable; prices were not repriced"
-            : "Digiflazz markup setting is unreadable; prices were not repriced",
+            : pricingProblem === "markup"
+            ? "Digiflazz markup setting is unreadable; prices were not repriced"
+            : "A category markup rule is unreadable; that category's prices were not repriced",
         }),
   });
   emitDigiflazzCatalogSyncChanged();

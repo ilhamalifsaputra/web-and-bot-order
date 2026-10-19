@@ -105,6 +105,15 @@ describe("Pricing & Margins API", () => {
     expect((await app.inject({ method: "DELETE", url: `/api/pricing/categories/${category.id}`, cookies: { [COOKIE]: cookie }, headers: { "x-csrf-token": csrf } })).statusCode).toBe(200);
     expect((await prisma.category.findUniqueOrThrow({ where: { id: category.id } })).markupType).toBeNull();
   });
+  it("refuses a category rule on a Premium Apps or legacy no-group category with 400", async () => {
+    const premium = await prisma.category.create({ data: { name: "Apps", slug: "apps", group: "PREMIUM_APPS" } });
+    const legacy = await prisma.category.create({ data: { name: "Old", slug: "old", group: null } });
+    for (const c of [premium, legacy]) {
+      const res = await app.inject({ method: "PUT", url: `/api/pricing/categories/${c.id}`, cookies: { [COOKIE]: cookie }, headers: { "x-csrf-token": csrf }, payload: { markupType: "percent", markupValue: "8" } });
+      expect(res.statusCode, res.body).toBe(400);
+      expect((await prisma.category.findUniqueOrThrow({ where: { id: c.id } })).markupType).toBeNull();
+    }
+  });
   it("returns impact without writes and applies only eligible automatic SKUs", async () => {
     await setSetting(prisma, "digiflazz_markup_type", "percent");
     await setSetting(prisma, "digiflazz_markup_value", "15");
@@ -115,7 +124,15 @@ describe("Pricing & Margins API", () => {
     expect(impact.statusCode, impact.body).toBe(200);
     expect(impact.json().changedCount).toBe(1);
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } })).price.toString()).toBe("100000");
-    expect((await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all" })).json().updatedCount).toBe(1);
+    const fingerprint = impact.json().policyFingerprint as string;
+    // Apply is bound to the previewed policy: missing → 400, stale → 409.
+    expect((await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all" })).statusCode).toBe(400);
+    await setSetting(prisma, "digiflazz_markup_value", "20");
+    const stale = await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: fingerprint });
+    expect(stale.statusCode, stale.body).toBe(409);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } })).price.toString()).toBe("100000");
+    await setSetting(prisma, "digiflazz_markup_value", "15");
+    expect((await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: fingerprint })).json().updatedCount).toBe(1);
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } })).price.toString()).toBe("115000");
   });
 });

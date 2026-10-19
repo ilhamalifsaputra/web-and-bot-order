@@ -70,6 +70,69 @@ describe("PricingPage", () => {
     expect(screen.queryByRole("button", { name: "Edit Apps" })).not.toBeInTheDocument();
     expect(apiPost).not.toHaveBeenCalled();
   });
+  it("shows a Premium Apps row as manual pricing, with no Digiflazz count, rule badge or editor", async () => {
+    renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
+    const row = screen.getAllByRole("row").find(r => within(r).queryByText("Apps"))!;
+    expect(within(row).getByText("Harga manual")).toBeInTheDocument();
+    expect(within(row).queryByText(/SKU Digiflazz/)).not.toBeInTheDocument();
+    expect(within(row).queryByText(/Inherited|Default global/)).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+  });
+  it("N2: a non-game category whose Digiflazz SKUs the sync prices says so, never 'Harga manual'; a Game category keeps its rule cell", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ ...DATA, categories: [
+      { id: 1, name: "Games", group: "GAME_TOPUP", markupType: null, markupValue: null, skuCount: 2, ruleReadable: true },
+      { id: 3, name: "Legacy", group: null, markupType: null, markupValue: null, skuCount: 4, ruleReadable: true },
+      { id: 4, name: "Old Apps", group: "PREMIUM_APPS", markupType: "percent", markupValue: "12", skuCount: 1, ruleReadable: true },
+    ] });
+    renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
+    const rowOf = (name: string) => screen.getAllByRole("row").filter(r => within(r).queryAllByText(name).length > 0).at(-1)!;
+    const legacy = rowOf("Legacy");
+    expect(within(legacy).queryByText("Harga manual")).not.toBeInTheDocument();
+    expect(within(legacy).getByText("Harga otomatis dari sync")).toBeInTheDocument();
+    expect(within(legacy).getByText(/4 SKU Digiflazz/)).toBeInTheDocument();
+    expect(within(legacy).getByText(/default global/)).toBeInTheDocument();
+    expect(within(legacy).queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+    const old = rowOf("Old Apps");
+    expect(within(old).getByText("Harga otomatis dari sync")).toBeInTheDocument();
+    expect(within(old).getByText(/aturan lama tersimpan \(12%\)/)).toBeInTheDocument();
+    expect(within(old).getByRole("button", { name: /^hapus\s*aturan\s*old apps$/i })).toBeInTheDocument();
+    const games = rowOf("Games");
+    expect(within(games).getByText("Default global")).toBeInTheDocument();
+    expect(within(games).queryByText("Harga otomatis dari sync")).not.toBeInTheDocument();
+  });
+  it("N7: an unreadable Game category rule shows as 'Tidak terbaca', not as an override or the global default", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ ...DATA, categories: [
+      { id: 1, name: "Games", group: "GAME_TOPUP", markupType: "weird", markupValue: "10", skuCount: 2, ruleReadable: false },
+    ] });
+    renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
+    const row = screen.getAllByRole("row").filter(r => within(r).queryAllByText("Games").length > 0).at(-1)!;
+    expect(within(row).getByText("Tidak terbaca")).toBeInTheDocument();
+    expect(within(row).queryByText(/^Override$|^Inherited$|Default global/)).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /^hapus\s*aturan\s*games$/i })).toBeInTheDocument();
+  });
+  it("binds Apply now to the previewed policy and reports SKUs a price check blocked", async () => {
+    const IMPACT = {
+      eligibleCount: 3, changedCount: 1, policyFingerprint: "a".repeat(32),
+      sample: [{ denominationId: 7, productName: "ML", name: "86 Diamonds", oldPrice: "20000", newPrice: "22000", cost: "20000" }],
+      blockedCount: 1,
+      blocked: [{ denominationId: 8, productName: "ML", name: "172 Diamonds", oldPrice: "115000", newPrice: "108000", cost: "100000", resellerPrice: "110000", reason: "reseller_above_price" }],
+    };
+    vi.mocked(apiPost).mockImplementation(async (path: string) =>
+      path === "/api/pricing/reprice/preview" ? IMPACT
+        : path === "/api/pricing/reprice/apply" ? { eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 0, blockedCount: 1 }
+        : path.endsWith("/preview") ? PREVIEW : {});
+    renderPage(); await screen.findByText("Rp115.000");
+    await userEvent.click(screen.getByRole("button", { name: "Lihat dampak & terapkan" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/1 SKU dilewati oleh Terapkan sekarang/)).toBeInTheDocument();
+    // N3: the hourly sync does not run this check, so the dialog must not promise the price stays.
+    expect(within(dialog).queryByText(/harganya tetap/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/sync berikutnya masih dapat mengubah/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/172 Diamonds/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/di bawah harga reseller/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Terapkan sekarang" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/pricing/reprice/apply", { scope: "all", policyFingerprint: "a".repeat(32) }));
+  });
   it("saves and removes category overrides", async () => {
     renderPage(); await screen.findByRole("button", { name: /^edit\s*games$/i });
     await userEvent.click(screen.getByRole("button", { name: /^edit\s*games$/i }));

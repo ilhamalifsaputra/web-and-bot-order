@@ -433,7 +433,8 @@ const PRICING_BACKUP_KEYS: string[] = [
  * flat in whole rupiah, a listed rounding, a warning below 100%), one
  * transaction for the whole policy and its pricing audit sentence. An export
  * holds stored plain decimals, so amounts are read exactly. A markup amount
- * without its type (or the reverse) is paired with the stored other half. An
+ * without its type (or the reverse) never reaches here: the import route
+ * refuses such a file (re-review N6). An
  * invalid policy is refused as a whole: every pricing key in the file is
  * reported skipped and nothing is stored.
  */
@@ -446,13 +447,10 @@ async function importPricingPolicy(
   const raw = (key: string) => String(incoming[key] ?? "").trim();
   try {
     const input: GlobalPricingInput = {};
-    if (present.includes(DIGIFLAZZ_MARKUP_TYPE_KEY) || present.includes(DIGIFLAZZ_MARKUP_VALUE_KEY)) {
-      const type = present.includes(DIGIFLAZZ_MARKUP_TYPE_KEY)
-        ? raw(DIGIFLAZZ_MARKUP_TYPE_KEY)
-        : ((await getSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY)) ?? "").trim();
-      const valueText = present.includes(DIGIFLAZZ_MARKUP_VALUE_KEY)
-        ? raw(DIGIFLAZZ_MARKUP_VALUE_KEY)
-        : ((await getSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY)) ?? "").trim();
+    // The import route has already refused a file with only one of the pair.
+    if (present.includes(DIGIFLAZZ_MARKUP_TYPE_KEY) && present.includes(DIGIFLAZZ_MARKUP_VALUE_KEY)) {
+      const type = raw(DIGIFLAZZ_MARKUP_TYPE_KEY);
+      const valueText = raw(DIGIFLAZZ_MARKUP_VALUE_KEY);
       if (type !== "" && type !== "percent" && type !== "flat") {
         throw new PricingValidationError('Markup type must be "percent", "flat" or empty.');
       }
@@ -920,6 +918,17 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const bandOverride: Record<string, string> = {};
     for (const bandKey of IMPORT_FIRST) {
       if (Object.prototype.hasOwnProperty.call(incoming, bandKey)) bandOverride[bandKey] = String(incoming[bandKey] ?? "");
+    }
+    // Re-review N6: the markup type and amount only mean something together
+    // (15 is 15% or Rp15 depending on the type), so a file carrying one
+    // without the other is refused before anything is written, instead of
+    // pairing it with this shop's stored other half.
+    const hasMarkupType = Object.prototype.hasOwnProperty.call(incoming, DIGIFLAZZ_MARKUP_TYPE_KEY);
+    const hasMarkupValue = Object.prototype.hasOwnProperty.call(incoming, DIGIFLAZZ_MARKUP_VALUE_KEY);
+    if (hasMarkupType !== hasMarkupValue) {
+      return reply.code(400).send({
+        error: `The file has ${hasMarkupType ? DIGIFLAZZ_MARKUP_TYPE_KEY : DIGIFLAZZ_MARKUP_VALUE_KEY} without ${hasMarkupType ? DIGIFLAZZ_MARKUP_VALUE_KEY : DIGIFLAZZ_MARKUP_TYPE_KEY}. The markup type and amount must both be in the file, or neither, so nothing was imported. Use an unedited export, or add or remove the missing key.`,
+      });
     }
     let applied = 0;
     const skippedKeys: { key: string; reason: string }[] = [];

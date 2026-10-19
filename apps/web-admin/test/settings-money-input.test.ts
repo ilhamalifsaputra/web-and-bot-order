@@ -204,6 +204,33 @@ describe("pricing policy in a settings backup (pricing review Minor 1)", () => {
     expect(await getSetting(prisma, "pricing_rounding")).toBeNull();
     expect(await prisma.auditLog.count({ where: { action: "pricing_global_update" } })).toBe(0);
   });
+
+  it.each([
+    { digiflazz_markup_type: "flat" },
+    { digiflazz_markup_value: "1500" },
+  ])("N6: a file with only half of the markup pair %j is refused (400) and nothing is imported", async (fields) => {
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "15");
+    await setSetting(prisma, "shop_name", "Live shop");
+    const res = await post("/api/settings/import", { fields: { ...fields, shop_name: "Imported shop" } });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error).toMatch(/digiflazz_markup_type.*digiflazz_markup_value|both/i);
+    expect(await getSetting(prisma, "digiflazz_markup_type")).toBe("percent");
+    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("15");
+    expect(await getSetting(prisma, "shop_name")).toBe("Live shop");
+    expect(await prisma.auditLog.count({ where: { action: "pricing_global_update" } })).toBe(0);
+  });
+
+  it("N6: an old backup with no pricing keys still imports and keeps the live pricing policy", async () => {
+    await setSetting(prisma, "digiflazz_markup_type", "flat");
+    await setSetting(prisma, "digiflazz_markup_value", "2000");
+    const res = await post("/api/settings/import", { fields: { shop_name: "Old backup shop" } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ applied: 1, skipped: 0 });
+    expect(await getSetting(prisma, "digiflazz_markup_type")).toBe("flat");
+    expect(await getSetting(prisma, "digiflazz_markup_value")).toBe("2000");
+    expect(await getSetting(prisma, "shop_name")).toBe("Old backup shop");
+  });
 });
 
 // Integration review fix round: the USDT rate sanity band (fx_rate_min /

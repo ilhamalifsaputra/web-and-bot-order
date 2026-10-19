@@ -13,13 +13,13 @@ describe("PricingSummary warnings (visual review V1)", () => {
     render(<PricingSummary pricing={{ ...base, effectivePrice: "9000", grossMarginPct: "-11.11", grossProfit: "-1000", warnings: ["below_cost"] }} />);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("Di bawah HPP");
-    expect(alert.className).toContain("text-destructive");
+    expect(alert.className).toContain("text-rust-dark");
     expect(alert.querySelector("svg")).not.toBeNull();
   });
 
   it("shows an unreadable policy as a destructive alert too", () => {
     render(<PricingSummary pricing={{ ...base, calculatedPrice: null, warnings: ["unreadable_policy"] }} />);
-    expect(screen.getByRole("alert").className).toContain("text-destructive");
+    expect(screen.getByRole("alert").className).toContain("text-rust-dark");
   });
 
   it("M1: the error alert is filled with the rust tint and border (stronger than the amber warning), not the plain card", () => {
@@ -28,6 +28,10 @@ describe("PricingSummary warnings (visual review V1)", () => {
     expect(alert.className).toContain("bg-rust-tint");
     expect(alert.className).toContain("border-rust/40");
     expect(alert.className).not.toMatch(/\bbg-card\b/);
+    // I1: rust-dark on rust-tint is 5.47:1 (rust is 4.08:1) — title/icon and description both.
+    expect(alert.className).toContain("text-rust-dark");
+    expect(alert.className).toContain("*:data-[slot=alert-description]:text-rust-dark");
+    expect(alert.className).not.toContain("text-destructive");
   });
 
   it("(a) below cost hides the redundant low-margin alert", () => {

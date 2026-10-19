@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { Decimal } from "decimal.js";
 import { AlertCircle, AlertTriangle } from "lucide-react";
 import { formatCurrencyDisplay } from "../shared/CurrencyAmount.helpers";
+import { ERROR_ALERT_CLASS } from "../../lib/errorAlert";
 
 export interface CatalogPricingInfo {
   /** The admin may pick Auto/Manual on the edit form (Game Top Up only). */
@@ -38,8 +39,9 @@ const WARNINGS: Record<string, { tone: "error" | "warning"; title: string; text:
 function PricingWarning({ code }: { code: string }) {
   const w = WARNINGS[code]!;
   if (w.tone === "error") {
-    // Filled rust tint + border so the error reads stronger than the amber warning (review M1).
-    return <Alert variant="destructive" className="border-rust/40 bg-rust-tint"><AlertCircle aria-hidden="true" /><AlertTitle>{w.title}</AlertTitle><AlertDescription>{w.text}</AlertDescription></Alert>;
+    // Filled rust tint + border so the error reads stronger than the amber warning (review M1);
+    // rust-dark text, since rust on rust-tint is only 4.08:1 (rust-dark 5.47:1, round 3b I1).
+    return <Alert variant="destructive" className={ERROR_ALERT_CLASS}><AlertCircle aria-hidden="true" /><AlertTitle>{w.title}</AlertTitle><AlertDescription>{w.text}</AlertDescription></Alert>;
   }
   // A standing state of the SKU, not an event: role="status" (same pattern as OrderDetailPage's amber notice).
   return <Alert role="status" className="border-amberx/40 bg-amberx-tint text-ink"><AlertTriangle className="text-amberx" aria-hidden="true" /><AlertTitle>{w.title}</AlertTitle><AlertDescription className="text-ink">{w.text}</AlertDescription></Alert>;

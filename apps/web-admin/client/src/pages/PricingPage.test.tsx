@@ -158,6 +158,10 @@ describe("PricingPage", () => {
       expect(alert).not.toHaveTextContent(/cannot be read/);
       expect(alert.querySelector("svg")).not.toBeNull();
       expect(alert.className).toContain("bg-rust-tint");
+      // I1: rust-dark on rust-tint is 5.47:1 (rust is 4.08:1) — title/icon and description both.
+      expect(alert.className).toContain("text-rust-dark");
+      expect(alert.className).toContain("*:data-[slot=alert-description]:text-rust-dark");
+      expect(alert.className).not.toContain("text-destructive");
       expect(alert.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(alert.nextElementSibling).toBe(button);
       // The only alert on the page is the one in the card.
@@ -204,6 +208,27 @@ describe("PricingPage", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Terapkan sekarang" }));
     expect(await screen.findByText(/1 SKU diperbarui; 1 SKU dilewati karena aturan kategorinya tidak terbaca\./)).toBeInTheDocument();
   });
+  describe("M-1: an Apply-now failure on confirm reads in Indonesian", () => {
+    const IMPACT = { eligibleCount: 1, changedCount: 1, policyFingerprint: "c".repeat(32), sample: [], blockedCount: 0, blocked: [], unreadableRuleCount: 0, unreadableRuleRows: [] };
+    it.each([
+      [Object.assign(new Error("The pricing rules changed after you opened the preview."), { status: 409, errorArgs: { conflict: "policy_changed" } }), /Aturan harga berubah setelah dampak diperiksa/],
+      [Object.assign(new Error("A Digiflazz catalog sync or another reprice is running right now."), { status: 409, errorArgs: { conflict: "busy" } }), /Sync katalog Digiflazz atau penerapan lain sedang berjalan/],
+      [Object.assign(new Error("The stored markup rule of category \"Voucher Game\" cannot be read"), { status: 400, errorArgs: { policy: "category", categories: "Voucher Game" } }), /Tidak dapat menerapkan harga\. Aturan markup tersimpan untuk kategori Voucher Game tidak terbaca/],
+      [Object.assign(new Error("The new prices were applied to 3 item(s), but the change could not be written to the audit log."), { status: 500, errorArgs: { failure: "audit" } }), /Harga baru sudah diterapkan, tetapi catatan audit gagal disimpan/],
+      [new Error("/api/pricing/reprice/apply responded 502"), /^Tidak dapat menerapkan harga\. Coba lagi sebentar lagi\.$/],
+    ])("maps %s", async (err, text) => {
+      vi.mocked(apiPost).mockImplementation(async (path: string) => {
+        if (path === "/api/pricing/reprice/apply") throw err;
+        return path === "/api/pricing/reprice/preview" ? IMPACT : PREVIEW;
+      });
+      renderPage(); await screen.findByText("Rp115.000");
+      await userEvent.click(screen.getByRole("button", { name: "Lihat dampak & terapkan" }));
+      const dialog = await screen.findByRole("dialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Terapkan sekarang" }));
+      expect(await within(dialog).findByText(text)).toBeInTheDocument();
+      expect(within(dialog).queryByText(err.message)).not.toBeInTheDocument();
+    });
+  });
   it("(b) the footer does not claim every Premium Apps price is manual", async () => {
     renderPage(); await screen.findByText("Rp115.000");
     expect(screen.queryByText(/Premium Apps menggunakan harga manual\./)).not.toBeInTheDocument();
@@ -215,6 +240,9 @@ describe("PricingPage", () => {
       for (const badge of screen.getAllByText(label)) {
         expect(badge).toHaveAttribute("data-variant", "outline");
         expect(badge.className).toContain("bg-card");
+        // M-2: ink-soft at 80% is >= 3.5:1 against both the white badge and the bg-sand card.
+        expect(badge.className).toContain("border-ink-soft/80");
+        expect(badge.className).not.toContain("border-border");
       }
     }
   });

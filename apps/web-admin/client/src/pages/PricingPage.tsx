@@ -17,7 +17,8 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { exactFieldsOf } from "../lib/exactFields";
 import { familyOfGroup, GAME_TOPUP_GROUP } from "../lib/catalogFamily";
-import { impactErrorText, marginDisplay } from "./PricingPage.helpers";
+import { ERROR_ALERT_CLASS } from "../lib/errorAlert";
+import { applyErrorText, impactErrorText, marginDisplay } from "./PricingPage.helpers";
 
 type RuleType = "none" | "percent" | "flat";
 interface Category { id: number; name: string; group: string | null; markupType: "percent" | "flat" | null; markupValue: string | null; skuCount: number; ruleReadable: boolean }
@@ -47,7 +48,8 @@ function applySummary(r: ApplyResult): string {
 /** Rule-state badge: outlined on the card colour so it stays visible on the
  * grey (`bg-sand`) mobile card stack, where a secondary badge blends in. */
 function RuleBadge({ children }: { children: string }) {
-  return <Badge variant="outline" className="bg-card">{children}</Badge>;
+  // ink-soft/80 border: >= 3.5:1 against both the white badge and bg-sand (round 3b M-2).
+  return <Badge variant="outline" className="border-ink-soft/80 bg-card">{children}</Badge>;
 }
 const BLOCK_REASONS: Record<Impact["blocked"][number]["reason"], string> = {
   price_below_minimum: "harga baru di bawah Rp1", reseller_above_price: "harga baru di bawah harga reseller", invalid_prices: "harga baru tidak valid",
@@ -152,7 +154,7 @@ export function PricingPage() {
         </CardContent></Card>
         <Card id="apply-pricing"><CardHeader><CardTitle as="h2">Terapkan harga sekarang</CardTitle><CardDescription>Lihat dampaknya sebelum memperbarui SKU otomatis. SKU manual dan riwayat pesanan tetap dipertahankan.</CardDescription></CardHeader><CardContent className="space-y-4">
           <Select value={scope} onValueChange={v => { setScope(v); setImpact(null); setImpactError(null); }} disabled={!owner}><SelectTrigger className="sm:max-w-sm" aria-label="Cakupan harga"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Semua SKU otomatis</SelectItem>{query.data.categories.filter(isGameCategory).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select>
-          {impactError && <Alert variant="destructive" className="border-rust/40 bg-rust-tint"><AlertCircle aria-hidden="true" /><AlertDescription>{impactError}</AlertDescription></Alert>}
+          {impactError && <Alert variant="destructive" className={ERROR_ALERT_CLASS}><AlertCircle aria-hidden="true" /><AlertDescription>{impactError}</AlertDescription></Alert>}
           <Button disabled={!owner || impactLoading || dirty} onClick={() => { setImpactError(null); setImpactLoading(true); void apiPost<Impact>("/api/pricing/reprice/preview", { scope: scope === "all" ? "all" : Number(scope) }).then(setImpact).catch((e: unknown) => setImpactError(impactErrorText(e))).finally(() => setImpactLoading(false)); }}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
           {dirty && <p className="text-xs text-ink-soft">Simpan perubahan default terlebih dahulu.</p>}
         </CardContent></Card>
@@ -170,7 +172,13 @@ export function PricingPage() {
       {!!impact?.unreadableRuleCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.unreadableRuleCount} SKU dilewati karena aturan markup kategorinya tidak terbaca. Hapus atau simpan ulang aturan kategori itu, lalu terapkan lagi.</span>{impact.unreadableRuleRows.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (kategori {r.categoryName}: aturan tidak terbaca)</span></span>)}</span>}</span>}
       onConfirm={async () => {
         if (!impact) return;
-        const result = await apiPost<ApplyResult>("/api/pricing/reprice/apply", { scope: scope === "all" ? "all" : Number(scope), policyFingerprint: impact.policyFingerprint });
+        let result: ApplyResult;
+        try {
+          result = await apiPost<ApplyResult>("/api/pricing/reprice/apply", { scope: scope === "all" ? "all" : Number(scope), policyFingerprint: impact.policyFingerprint });
+        } catch (e) {
+          // SaveConfirmDialog shows the thrown message: word it in Indonesian (round 3b M-1).
+          throw new Error(applyErrorText(e), { cause: e });
+        }
         await reload();
         return applySummary(result);
       }} />

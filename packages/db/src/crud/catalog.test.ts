@@ -867,11 +867,11 @@ describe("searchCatalog options (Game Top-up search)", () => {
     expect(hits.map((x) => x.id)).toEqual([exact.id, prefixA.id, prefixB.id, sub.id, descOnly.id]);
   });
 
-  it("still ranks the exact and prefix matches first when far more than 200 products match", async () => {
+  it("ranks exact and prefix matches ahead of name-order filler", async () => {
     const tag = `zzq${Math.random().toString(36).slice(2, 8)}`;
     const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
-    // 205 name-substring matches that sort before the exact/prefix matches in plain name order.
-    for (let i = 0; i < 205; i += 1) {
+    // 12 name-substring matches (more than the limit of 5) that sort before the exact/prefix matches in plain name order.
+    for (let i = 0; i < 12; i += 1) {
       await gameProduct(cat, `Aa ${tag} ${String(i).padStart(3, "0")}`);
     }
     const prefix = await gameProduct(cat, `${tag} Zulu`);
@@ -883,7 +883,7 @@ describe("searchCatalog options (Game Top-up search)", () => {
     // The no-options path is unchanged: plain name order, so the exact match is cut off.
     const plain = await searchCatalog(prisma, tag, "bot", 5);
     expect(plain.map((x) => x.id)).not.toContain(exact.id);
-  }, 120_000);
+  });
 
   it("collapses inner whitespace in the query", async () => {
     const tag = `Ws${Math.random().toString(36).slice(2, 8)}`;

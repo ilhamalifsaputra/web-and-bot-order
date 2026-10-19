@@ -14,10 +14,9 @@ import { t } from "../src/util/i18n";
 import { Decimal } from "@app/core/money";
 import { serviceForCategoryGroup } from "@app/core/services";
 
-// Game Top-up `From` price label and one-line hints (Phase 2, Task 5), gated by
-// game_topup_flow_v2_enabled. Fixtures are built in-test.
+// Game Top-up `From` price label and one-line hints: always on for GAME_TOPUP
+// (scoped by category.group), never shown for Premium Apps. Fixtures are built in-test.
 
-const FLAG = "game_topup_flow_v2_enabled";
 const EXPECTED_SKU_SENDS = 1;
 const HINT_KEYS = ["hint.game_list", "hint.variant", "hint.region", "hint.packs"] as const;
 
@@ -111,11 +110,7 @@ async function openList(catId: number, o: SessionOpts = {}) {
   return entry;
 }
 
-describe("From price, flag ON", () => {
-  beforeEach(async () => {
-    await setSetting(prisma, FLAG, "true");
-  });
-
+describe("From price", () => {
   it("shows the cheapest active denomination per GAME_TOPUP product, ignoring stock", async () => {
     const cat = await gameCategory();
     await product(cat.id, "Diamonds A", [30000, 15000, 20000]);
@@ -197,11 +192,7 @@ describe("From price, flag ON", () => {
   });
 });
 
-describe("hints, flag ON", () => {
-  beforeEach(async () => {
-    await setSetting(prisma, FLAG, "true");
-  });
-
+describe("hints", () => {
   it("product list: hint.game_list (not hint.packs) rides on the same bubble with unchanged call counts", async () => {
     const cat = await gameCategory();
     await product(cat.id, "List Game A", [15000]);
@@ -272,73 +263,46 @@ describe("hints, flag ON", () => {
     for (const key of HINT_KEYS) expect(sentIncludes(a.sink, t(a.ctx, key))).toBe(false);
   });
 
-  it("Premium Apps flat list has no hint", async () => {
-    const cat = await createCategory(prisma, { name: "Hint Premium Apps", group: CategoryGroup.PREMIUM_APPS });
-    await product(cat.id, "App One", [15000]);
-    await product(cat.id, "App Two", [20000]);
+  it("Premium Apps flat list is byte-identical to the plain numbered format (no From, no hint)", async () => {
+    const cat = await createCategory(prisma, { name: "Plain Premium Apps", group: CategoryGroup.PREMIUM_APPS });
+    await product(cat.id, "Plain App A", [15000]);
+    await product(cat.id, "Plain App B", [20000, 30000]);
     const { ctx, sink } = await openList(cat.id);
-    for (const key of HINT_KEYS) expect(sentIncludes(sink, t(ctx, key))).toBe(false);
-  });
-});
-
-describe("flag OFF", () => {
-  it.each([["unset", null], ["false", "false"]])("(%s) the product list text is byte-identical to the old format and no hint appears", async (_label, value) => {
-    if (value !== null) await setSetting(prisma, FLAG, value);
-    const cat = await gameCategory();
-    await product(cat.id, "Old Game A", [15000]);
-    await product(cat.id, "Old Game B", [20000, 30000]);
-    const { ctx, sink } = await openList(cat.id);
-    const expected = t(ctx, "browse.list_decorated", { page: 1, total: 1, items: "1. Old Game A\n2. Old Game B" });
-    expect(bubbleText(sink)).toBe(expected);
+    expect(bubbleText(sink)).toBe(t(ctx, "browse.list_decorated", { page: 1, total: 1, items: "1. Plain App A\n2. Plain App B" }));
     expect(calls(sink, "sendMessage")).toHaveLength(0);
     expect(calls(sink, "reply")).toHaveLength(1);
     expect(calls(sink, "editMessageText")).toHaveLength(1);
     expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
 
-  it("pickers and the SKU picker carry no hint", async () => {
-    const cat = await gameCategory("Layered Off");
-    await product(cat.id, "LO A", [15000, 20000], { gameVariant: "Global", gameRegion: "Asia" });
-    await product(cat.id, "LO B", [15000], { gameVariant: "Lite", gameRegion: "Asia" });
-    const variantStep = await openList(cat.id);
-    expect(bubbleText(variantStep.sink)).toBe(t(variantStep.ctx, "browse.choose_variant"));
-    const sku = customerCtx();
-    const p = await prisma.product.findFirstOrThrow({ where: { name: "LO A" } });
-    await customer.browseProduct(sku.ctx, p.id);
-    for (const key of HINT_KEYS) expect(sentIncludes(sku.sink, t(sku.ctx, key))).toBe(false);
+  it("the Premium Apps group goes straight to the flat list (no category picker) with no From and no hint", async () => {
+    await product((await createCategory(prisma, { name: "Premium One", group: CategoryGroup.PREMIUM_APPS })).id, "P1", [1000]);
+    await product((await createCategory(prisma, { name: "Premium Two", group: CategoryGroup.PREMIUM_APPS })).id, "P2", [1000]);
+    const { ctx, sink } = customerCtx({}, { callbackData: `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}` });
+    await routeCallback(ctx);
+    expect(bubbleText(sink)).toContain("P1");
+    expect(bubbleText(sink)).toContain("P2");
+    expect(bubbleText(sink)).not.toContain(fromLine(ctx, "").trim());
+    for (const key of HINT_KEYS) expect(sentIncludes(sink, t(ctx, key))).toBe(false);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
 
-  it("category list and region picker are byte-identical to the old text with exact call counts", async () => {
-    await gameCategory("Off One");
-    await gameCategory("Off Two");
-    const list = customerCtx({}, { callbackData: `v1:browse:grp:${CategoryGroup.GAME_TOPUP}` });
-    await routeCallback(list.ctx);
-    const groupLabel = t(list.ctx, serviceForCategoryGroup(CategoryGroup.GAME_TOPUP).translationKey);
-    expect(bubbleText(list.sink)).toBe(t(list.ctx, "browse.category_picker_title", { group: groupLabel }));
-    expect(calls(list.sink, "editMessageText")).toHaveLength(1);
-    expect(calls(list.sink, "sendMessage")).toHaveLength(0);
-    expect(calls(list.sink, "reply")).toHaveLength(0);
-    expect(calls(list.sink, "deleteMessage")).toHaveLength(0);
-
-    const cat = await gameCategory("Region Off");
-    await product(cat.id, "RO A", [15000], { gameRegion: "Asia" });
-    await product(cat.id, "RO B", [15000], { gameRegion: "EU" });
-    const region = await openList(cat.id);
-    expect(bubbleText(region.sink)).toBe(t(region.ctx, "browse.choose_region"));
-    expect(calls(region.sink, "editMessageText")).toHaveLength(1);
-    expect(calls(region.sink, "sendMessage")).toHaveLength(0);
-    expect(calls(region.sink, "reply")).toHaveLength(1);
-    expect(calls(region.sink, "deleteMessage")).toHaveLength(0);
+  it("a legacy category with no group is treated as Premium Apps: no From, no hint", async () => {
+    const cat = await createCategory(prisma, { name: "Legacy Group-less" });
+    await prisma.category.update({ where: { id: cat.id }, data: { group: null } });
+    await product(cat.id, "Legacy App", [15000]);
+    await product(cat.id, "Legacy App 2", [20000]);
+    const { ctx, sink } = await openList(cat.id);
+    expect(bubbleText(sink)).toBe(t(ctx, "browse.list_decorated", { page: 1, total: 1, items: "1. Legacy App\n2. Legacy App 2" }));
+    for (const key of HINT_KEYS) expect(sentIncludes(sink, t(ctx, key))).toBe(false);
   });
 
-  it("a region tap lands on the product list with no hint", async () => {
-    const cat = await gameCategory("Region Tap Off");
-    await product(cat.id, "SO A", [15000], { gameRegion: "Asia" });
-    await product(cat.id, "SO B", [15000], { gameRegion: "Asia" });
-    await product(cat.id, "SO C", [15000], { gameRegion: "EU" });
-    const regionStep = await openList(cat.id);
-    const tap = tapCtx(regionStep.ctx, {}, { callbackData: `v1:browse:greg:${cat.id}:0` });
-    await routeCallback(tap.ctx);
-    for (const key of HINT_KEYS) expect(sentIncludes(tap.sink, t(tap.ctx, key))).toBe(false);
+  it("Premium Apps flat list has no hint", async () => {
+    const cat = await createCategory(prisma, { name: "Hint Premium Apps", group: CategoryGroup.PREMIUM_APPS });
+    await product(cat.id, "App One", [15000]);
+    await product(cat.id, "App Two", [20000]);
+    const { ctx, sink } = await openList(cat.id);
+    for (const key of HINT_KEYS) expect(sentIncludes(sink, t(ctx, key))).toBe(false);
   });
 });

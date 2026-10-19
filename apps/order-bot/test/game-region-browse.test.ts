@@ -2,7 +2,7 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, setSetting, createCatalogProduct, createCategory, createDenomination, upsertUser } from "@app/db";
+import { prisma, createCatalogProduct, createCategory, createDenomination, upsertUser } from "@app/db";
 import { CategoryGroup } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
@@ -14,10 +14,9 @@ import { t } from "../src/util/i18n";
 
 // Game Top-up region -> product list navigation. Region is the only level
 // below the edition: tapping a region goes straight to that region's products
-// (or the single product's detail), with and without game_topup_flow_v2_enabled.
-// The flag only appends one hint line to the bubble; it never adds a step or a message.
+// (or the single product's detail). The hint is one line appended to the bubble;
+// it never adds a step or a message.
 
-const FLAG = "game_topup_flow_v2_enabled";
 type Button = { text: string; callback_data?: string };
 
 let sample: SampleData;
@@ -93,11 +92,7 @@ const BACK_SEND = 0;
 const BACK_REPLY = 1;
 const BACK_EDIT = 0;
 
-describe.each([["unset", null], ["false", "false"], ["true", "true"]])("region picker with the flow v2 flag %s", (_label, value) => {
-  beforeEach(async () => {
-    if (value !== null) await setSetting(prisma, FLAG, value);
-  });
-
+describe("region picker", () => {
   it("a region tap lists every product in that region with the same Telegram call budget", async () => {
     const cat = await freeFire();
     const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });

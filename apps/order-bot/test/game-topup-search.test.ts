@@ -11,14 +11,11 @@ import type { SessionData } from "../src/context";
 import * as customer from "../src/handlers/customer";
 import { routeCallback } from "../src/handlers/callbacks";
 import { enterConversation } from "../src/conversations";
-import { searchResultsKb } from "../src/keyboards/customer";
 import { t } from "../src/util/i18n";
 
-// Game Top-up search (Phase 2, Task 6), gated by game_topup_flow_v2_enabled:
-// service-tagged results, Game-only scope, paging from a session snapshot, the
+// Game Top-up search (always on): service-tagged results, Game-only scope, paging from a session snapshot, the
 // "Search again" mode, and the exact Telegram call counts. Fixtures are in-test.
 
-const FLAG = "game_topup_flow_v2_enabled";
 const TAG = "Zqx";
 
 let sample: SampleData;
@@ -88,11 +85,7 @@ const runSearch = (session: SessionData, q: string) => {
   return customer.searchCommand(u.ctx).then(() => u);
 };
 
-describe("flag ON", () => {
-  beforeEach(async () => {
-    await setSetting(prisma, FLAG, "true");
-  });
-
+describe("/search", () => {
   it("lists only Game Top Up products, each tagged with its service, in one message", async () => {
     await seed({ games: [`${TAG} Legends`], premium: [`${TAG} Plus App`] });
     const { ctx, sink } = await runSearch(newSession(), TAG);
@@ -279,42 +272,5 @@ describe("flag ON", () => {
     expect(screenText(sink)).toBe(`${t(ctx, "search.no_query")}\n${t(ctx, "hint.search")}`);
     expect(calls(sink, "reply")).toHaveLength(1);
     expect(session.scratch.searchAwaiting).toBe(true);
-  });
-});
-
-describe("flag OFF", () => {
-  it.each([["unset", null], ["false", "false"]])("(%s) /search keeps today's results, keyboard and call count", async (_label, value) => {
-    if (value !== null) await setSetting(prisma, FLAG, value);
-    const { games, apps } = await seed({ games: [`${TAG} Legends`], premium: [`${TAG} Plus App`] });
-    const session = newSession();
-    const { ctx, sink } = await runSearch(session, TAG);
-    const picks = buttons(sink).filter((b) => b.callback_data.startsWith("v1:browse:pick:"));
-    expect(picks.map((b) => b.text)).toEqual([`${TAG} Legends`, `${TAG} Plus App`]);
-    expect(buttons(sink)).toEqual(
-      searchResultsKb([{ id: games[0]!.id, name: games[0]!.name }, { id: apps[0]!.id, name: apps[0]!.name }], "en")
-        .inline_keyboard.flat()
-        .map((b) => ({ text: b.text, callback_data: (b as { callback_data: string }).callback_data })),
-    );
-    expect(screenText(sink)).toBe(t(ctx, "search.results", { query: TAG, count: 2 }));
-    expect(sentIncludes(sink, t(ctx, "hint.search"))).toBe(false);
-    expect(sentIncludes(sink, "v1:search:")).toBe(false);
-    expect(calls(sink, "reply")).toHaveLength(1);
-    expect(calls(sink, "editMessageText")).toHaveLength(0);
-    expect(calls(sink, "deleteMessage")).toHaveLength(0);
-    expect(session.scratch.searchSnapshot).toBeUndefined();
-  });
-
-  it("a bare /search keeps the usage text and does not arm a mode; Search again is a stale tap", async () => {
-    await seed();
-    const session = newSession();
-    const { ctx, sink } = await runSearch(session, "");
-    expect(screenText(sink)).toBe(t(ctx, "search.no_query"));
-    expect(session.scratch.searchAwaiting).toBeUndefined();
-
-    const tap = update(session, { callbackData: "v1:search:again" });
-    await routeCallback(tap.ctx);
-    expect(sentIncludes(tap.sink, t(tap.ctx, "error.stale_screen"))).toBe(true);
-    expect(calls(tap.sink, "editMessageText")).toHaveLength(0);
-    expect(session.scratch.searchAwaiting).toBeUndefined();
   });
 });

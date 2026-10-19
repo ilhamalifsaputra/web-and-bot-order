@@ -53,7 +53,6 @@ import {
   soldCountForDenomination,
   soldCountForProduct,
   getSetting,
-  isGameTopupFlowV2Enabled,
   getCanonicalRateContext,
   setSetting,
   searchCatalog,
@@ -388,15 +387,6 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * The one-line Game Top-up hint (`hint.*` locale key) appended to the end of a
- * screen's own bubble text, or "" while game_topup_flow_v2_enabled is OFF — so
- * the flag-off text stays byte-identical. Never a separate message.
- */
-async function gameHintLine(ctx: MyContext, key: string): Promise<string> {
-  return (await isGameTopupFlowV2Enabled(prisma)) ? `\n${t(ctx, key)}` : "";
-}
-
-/**
  * First step of the "🛍 Products" entry point — the two-bucket group picker
  * (Category.group). Clears any category/group/product scope left over from a
  * previous browse session so a fresh entry never resumes mid-category.
@@ -496,7 +486,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
     await browseCategoryEntry(ctx, categories[0]!.id, ckb.cb("browse", "grps"));
     return;
   }
-  const gameListHint = group === CategoryGroup.GAME_TOPUP ? await gameHintLine(ctx, "hint.game_list") : "";
+  const gameListHint = group === CategoryGroup.GAME_TOPUP ? `\n${t(ctx, "hint.game_list")}` : "";
   await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }) + gameListHint, ckb.categoryPickerKb(categories, ctx.session.lang));
 }
 
@@ -614,7 +604,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     // variant picker, a no-op loop, since this category has >1 variant.
     await smartEdit(
       ctx,
-      t(ctx, "browse.choose_variant") + (await gameHintLine(ctx, "hint.variant")),
+      t(ctx, "browse.choose_variant") + `\n${t(ctx, "hint.variant")}`,
       ckb.gameVariantPickerKb(variants, categoryId, effectiveBackTarget, ctx.session.lang),
     );
     return;
@@ -710,7 +700,7 @@ async function enterGameVariant(
     await ctx.reply(t(ctx, "browse.use_numbers"), {
       reply_markup: ckb.gamePickerPersistentKb(regions.length, ctx.session.lang),
     });
-    await smartEdit(ctx, t(ctx, "browse.choose_region") + (await gameHintLine(ctx, "hint.region")), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
+    await smartEdit(ctx, t(ctx, "browse.choose_region") + `\n${t(ctx, "hint.region")}`, ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
   await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
@@ -888,12 +878,11 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
 
   // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
   const isGameProduct = (p: (typeof pageProducts)[number]) => p.category.group === CategoryGroup.GAME_TOPUP;
-  const gameFlowV2 = await isGameTopupFlowV2Enabled(prisma);
   const hasGameProducts = pageProducts.some(isGameProduct);
-  const showFrom = gameFlowV2 && hasGameProducts;
   // One rate lookup per render; every price string goes through the buyer's
-  // language-aware formatter (never hand-formatted).
-  const prices = showFrom
+  // language-aware formatter (never hand-formatted). Only a list that holds
+  // Game Top-up products gets From labels and the hint.
+  const prices = hasGameProducts
     ? ctxPriceFormatter(ctx, await getCanonicalRateContext(prisma).then((r) => (r.rate ? new Decimal(r.rate) : null)))
     : null;
   const isReseller = ctx.session.dbUser?.role === UserRole.RESELLER;
@@ -916,7 +905,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   }) +
     // Same Rp fallback notice the SKU picker appends, only when a From was rendered.
     (renderedFrom && prices ? prices.rateNotice(lang) : "") +
-    (gameFlowV2 && hasGameProducts ? `\n${t(ctx, "hint.game_list")}` : "");
+    (hasGameProducts ?`\n${t(ctx, "hint.game_list")}` : "");
 
   // No per-product inline buttons: the user picks the number shown in the
   // caption (handleProductNumber resolves it against browseEntries), either
@@ -1240,7 +1229,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const { pages } = presentCanonicalCatalog(products, { locale: lang, intro });
   const pageIndex = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pages.length - 1);
   const page = pages[pageIndex]!;
-  const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "") + (await gameHintLine(ctx, "hint.packs"));
+  const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "") + `\n${t(ctx, "hint.packs")}`;
   // Remembered so the denomination detail's Back returns to this same page.
   sc(ctx).productPage = pageIndex;
   await render(text, ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length));
@@ -2028,7 +2017,7 @@ async function renderGameSearchPage(ctx: MyContext, page: number): Promise<void>
   );
 }
 
-/** Flag-ON search: Game Top Up only, ranked + alias-aware, paged from a snapshot. */
+/** Search: Game Top Up only, ranked + alias-aware, paged from a snapshot. */
 async function runGameSearch(ctx: MyContext, rawQuery: string): Promise<void> {
   const lang = ctx.session.lang;
   const query = rawQuery.trim().slice(0, SEARCH_QUERY_MAX_CHARS);
@@ -2069,10 +2058,6 @@ export async function searchPage(ctx: MyContext, page: number): Promise<void> {
 
 /** `search:again` — turn the bubble into the search prompt and arm the next typed text as the query. */
 export async function searchAgain(ctx: MyContext): Promise<void> {
-  if (!(await isGameTopupFlowV2Enabled(prisma))) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-    return;
-  }
   await smartEdit(ctx, t(ctx, "hint.search"), ckb.backToMain(ctx.session.lang));
   sc(ctx).searchAwaiting = true;
 }
@@ -2080,27 +2065,10 @@ export async function searchAgain(ctx: MyContext): Promise<void> {
 export async function searchCommand(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const query = (typeof ctx.match === "string" ? ctx.match : "").trim();
-  if (await isGameTopupFlowV2Enabled(prisma)) {
-    if (!query) {
-      await menuAnchor(ctx, `${t(ctx, "search.no_query")}\n${t(ctx, "hint.search")}`, ckb.backToMain(lang));
-      sc(ctx).searchAwaiting = true;
-      return;
-    }
-    await runGameSearch(ctx, query);
-    return;
-  }
   if (!query) {
-    await smartEdit(ctx, t(ctx, "search.no_query"), ckb.backToMain(lang));
+    await menuAnchor(ctx, `${t(ctx, "search.no_query")}\n${t(ctx, "hint.search")}`, ckb.backToMain(lang));
+    sc(ctx).searchAwaiting = true;
     return;
   }
-  const products = await searchCatalog(prisma, query, "bot");
-  if (!products.length) {
-    await smartEdit(ctx, t(ctx, "search.no_results", { query: esc(query) }), ckb.backToMain(lang));
-    return;
-  }
-  await smartEdit(
-    ctx,
-    t(ctx, "search.results", { query: esc(query), count: products.length }),
-    ckb.searchResultsKb(products, lang),
-  );
+  await runGameSearch(ctx, query);
 }

@@ -297,6 +297,95 @@ berubah. Tidak ada saklar di Settings dan tidak ada perubahan skema. Storefront
 tidak terpengaruh. Premium Apps tidak pernah terpengaruh: tidak ada `From`,
 hint, atau perubahan lain pada daftar, picker, dan layar SKU-nya.
 
+**Struktur level katalog Game Top-up.** Tidak ada level Server terpisah: pada data
+Digiflazz region = server (satu level: Global, Malaysia, Indonesia, Brazil, ...).
+Hirarkinya Edisi (`Product.gameVariant`) → Region (`Product.gameRegion`) → paket.
+Edisi dipisah dari `type` Digiflazz (mis. Arena Breakout vs Arena Breakout
+Infinite). Dua game bernama sama tetapi berbeda akhiran publisher/distribusi
+tetap dua `Product` terpisah dan **tidak pernah digabung**.
+
+**Isi region otomatis saat import Digiflazz.** Saat admin mengimpor brand
+(Settings → Digiflazz sync → apply), `Product.gameRegion` diisi dari akhiran
+region grup di price list lewat `gameRegionLabel`, dengan syarat:
+
+- **Hanya saat Product dibuat (create-only).** Product yang sudah ada tidak
+  disentuh; nilai yang diisi/diubah admin selalu menang.
+- **Hanya kategori Game Top-up** (`category.group = GAME_TOPUP`). Premium Apps dan
+  kategori tanpa grup tidak pernah dapat region dari import.
+- **Hanya akhiran yang ada di tabel putih** `packages/core/src/regionLabel.ts`
+  (Indonesia, Malaysia, Singapore, Filipina, Russia, Brazil, Global; label berisi
+  emoji bendera). Tabel ini **DRAFT** untuk dikoreksi pemilik; singkatan
+  `id`/`sg`/`my` adalah asumsi. **Menambah negara = menambah satu baris** di tabel
+  itu (token + label; label harus muat satu tombol sempit). Kata publisher
+  (mis. Garena, Activision) tidak pernah menjadi label: region dibiarkan kosong
+  untuk diisi admin.
+
+Respons `/sync/apply` memuat `regions[]` (sejajar dengan `brands`): `written`
+(true hanya bila import ini yang membuat Product dengan region itu), `label`,
+`suffix`, dan `skippedReason` bila tidak ditulis: `product_exists`, `no_suffix`,
+`unrecognized_suffix`, `no_matching_group`, `no_price_list` (tanpa kredensial,
+price list gagal dimuat, atau rc 83) atau `not_game_topup_category`. Toast sukses
+di halaman Digiflazz Sync menambah satu kalimat (bahasa Inggris, seperti string
+di sekitarnya) mis. "2 of 3 brands got an automatic region; 1 skipped
+(unrecognised suffix: Garena)." Yang **dilaporkan**: `unrecognized_suffix`
+(maks. 3 nama lalu "..."), `no_price_list` dan `no_matching_group`. Yang
+**senyap** (bukan tindakan admin): `product_exists`, `no_suffix`,
+`not_game_topup_category`; bila tidak ada yang layak dilaporkan, toast tidak
+menambah kalimat apa pun.
+
+**Guard scope campuran di bot.** Untuk satu scope (kategori + edisi), bila ada
+produk layak tampil (aktif, tidak diarsipkan, punya paket aktif berharga) yang
+`gameRegion`-nya kosong, level Region **dilewati** dan semua produk scope itu
+ditampilkan dalam satu daftar (halaman, refresh, dan Back konsisten). Tidak ada
+produk yang menghilang gara-gara sebagian saudaranya diberi region. Picker Region
+baru muncul bila semua produk di scope punya region.
+
+**Backfill produk lama (sekali jalan).** Produk yang diimpor sebelum auto-isi
+region tidak berubah sendiri. Skrip operator:
+
+```
+pnpm exec tsx scripts/fill-game-regions.ts                      # dry run (default), tidak menulis apa pun
+pnpm exec tsx scripts/fill-game-regions.ts --apply              # tulis scope yang memenuhi syarat
+pnpm exec tsx scripts/fill-game-regions.ts --category-ids=1,2   # batasi ke kategori tertentu
+```
+
+- Menolak jalan bila `DATABASE_URL_PRISMA` menunjuk host selain
+  localhost/127.0.0.1/::1, kecuali diberi `--i-know-this-is-not-local`. Ambil backup
+  segar sebelum `--apply` di database bersama.
+- **Pemilik sebaiknya menjalankan dry run dulu dan membaca laporannya sebelum
+  `--apply`.** Dry run tidak menulis apa pun (tanpa audit, tanpa bump revisi).
+- **Semua-atau-tidak-sama-sekali per scope** = (kategori GAME_TOPUP, `gameVariant`;
+  null adalah scope sendiri; produk tidak diarsipkan, aktif atau tidak). Scope
+  ditulis hanya bila setiap anggota bisa diberi label dan ada >= 2 label berbeda.
+  Alasan dilewati: `mixed` (sebagian anggota tanpa akhiran), `no_suffix`,
+  `admin_set_region_present` (ada nilai `gameRegion` apa pun, termasuk kosong/spasi;
+  tidak pernah ditimpa), `already_filled` (semua sudah persis berlabel itu),
+  `unknown_suffix` (akhiran di luar tabel; daftar akhiran ikut dilaporkan),
+  `single_region_scope` (butuh >= 2 label berbeda; satu region tidak berguna dan
+  menyembunyikan saudara yang diimpor kemudian), `possible_doubled_suffix` (nama
+  dasar sudah memuat kata region itu, mis. "Game Malaysia (Malaysia)"),
+  `changed_concurrently` (anggota scope berubah antara baca dan tulis), dan
+  `failed` (galat tak terduga).
+- Penulisan: satu transaksi pendek per scope, compare-and-set (`gameRegion` masih
+  null), satu baris audit per produk (`game_region_backfill`), lalu
+  `bumpCatalogRevision` sekali bila ada yang tertulis. Galat tak terduga
+  menghentikan run di scope itu (`stoppedEarly`); scope sebelumnya tetap, yang
+  sesudahnya tidak dicoba. Pesan galat dibersihkan dari URL `postgres(ql)://`.
+- Kode keluar: `0` sukses; `1` bila ada scope `changed_concurrently`/`failed` atau
+  bump revisi gagal; `2` untuk opsi salah atau penolakan host non-lokal.
+- **Risiko sisa:** transaksi berjalan pada READ COMMITTED, jadi saudara yang
+  di-commit sesi lain di antara hitung ulang dalam transaksi dan COMMIT tidak
+  terlihat. Jalankan saat tidak ada Digiflazz sync/import berjalan. Produk itu
+  hanya tanpa region dan tetap tampil di bot lewat guard scope campuran.
+- **Satu produk nonaktif yang usang dengan brand sampah memblokir seluruh
+  scope-nya** (`unknown_suffix`/`mixed`): arsipkan atau perbaiki produk itu lalu
+  jalankan ulang.
+
+**Deploy.** Tidak ada perubahan skema dibanding `master` (skema `Product`
+identik), jadi tidak ada migrasi untuk cabang ini dan tidak ada langkah restart
+khusus selain deploy kode biasa. Tabel label region masih draft: koreksi dulu
+sebelum menjalankan backfill dengan `--apply`.
+
 Key rahasia (`tokopay_secret`, `bot_token`, `notif_bot_token`, `bybit_api_key`,
 `bybit_api_secret`, `web_cookie_secret`) ditangani **write-only**: tak di-echo,
 `(hidden)` di tabel, audit `key=(updated)` tanpa nilai.

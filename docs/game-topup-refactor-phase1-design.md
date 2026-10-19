@@ -36,6 +36,8 @@ Aturan tiap level, sama dengan perilaku variant/region sekarang (`browseCategory
 
 Urutan hierarki: Variant → Region → SKU. Region hanya valid di dalam edisi yang dipilih; filter berlaku kumulatif.
 
+Sumber data dari Digiflazz (keadaan akhir Phase 2): tidak ada level Server (`gameServer` dihapus); region = server pada data Digiflazz. Edisi dipisah dari `type` Digiflazz menjadi `gameVariant` (mis. Arena Breakout vs Arena Breakout Infinite). Dua game bernama sama dengan akhiran publisher/distribusi berbeda adalah dua `Product` terpisah dan tidak pernah digabung. `gameRegion` diisi otomatis saat import Digiflazz (create-only, lihat bagian "Hasil akhir Phase 2"). Aturan "kategori campuran melewati level" kini berlaku juga untuk Region di bot, bukan hanya Variant.
+
 ## 3. Kontrak input akun (satu pesan)
 
 ### 3.1 Kontrak kanonis
@@ -80,7 +82,9 @@ Tidak ada tabel baru. Draft tetap di `session.scratch` (Postgres-backed, TTL 24 
 
 | Kunci baru | Isi |
 |---|---|
-| `reviewPriceTotal` | total (string Decimal) yang ditampilkan di layar review, untuk `expectedTotal` |
+| `reviewPriceTotal` | total (string Decimal) yang ditampilkan di layar review, untuk `expectedTotal` (Phase 3, belum dibuat) |
+
+Kunci scratch Phase 2 yang kini ikut dipakai: `gameVariantDimensionSkipped` dan `gameRegionDimensionSkipped` (boolean; scope campuran, level dilewati dan semua produk scope itu dicantumkan). Tidak ada kunci untuk level Server karena level itu tidak ada.
 
 Aturan:
 - Callback pilihan membawa indeks; indeks dicek terhadap snapshot, tidak cocok → toast "layar usang".
@@ -233,3 +237,19 @@ Ditunda:
 - Parser input akun satu pesan (bagian 3.2, Phase 3).
 - Layar review dan `expectedTotal` (bagian 6, Phase 3).
 - TTL per rail dan reminder pembayaran (bagian 9, Phase 4).
+
+## 14. Hasil akhir Phase 2
+
+Keadaan akhir cabang `worktree-game-topup-refactor` (diverifikasi terhadap kode, 2026-10-19):
+
+- **Level server dihapus.** Region = server pada data Digiflazz, satu level. Edisi dipisah dari `type` Digiflazz ke `gameVariant`. Game bernama sama dengan akhiran publisher/distribusi berbeda tetap `Product` terpisah, tidak pernah digabung.
+- **Flag dihapus.** Label `mulai …` (`From`), hint satu baris, dan `/search` baru (khusus Game Top-up, berperingkat, label layanan, halaman, "Search again", alias dari `detection_aliases` yang bawaannya kosong) selalu aktif untuk Game Top-up. Hint daftar game pada daftar produk datar hanya ditambahkan bila setiap produk di halaman itu Game Top-up.
+- **Isi region otomatis saat import Digiflazz**: create-only, dari akhiran region grup lewat `gameRegionLabel` (`packages/core/src/regionLabel.ts`, tabel putih DRAFT berlabel emoji bendera; singkatan `id`/`sg`/`my` asumsi; menambah negara = satu baris; kata publisher tidak pernah menjadi label). Respons apply memuat `regions[]` (`written`, `skippedReason`: `product_exists`, `no_suffix`, `unrecognized_suffix`, `no_matching_group`, `no_price_list`, `not_game_topup_category`) dan toast admin hanya melaporkan skip yang bisa ditindak.
+- **Guard scope campuran di bot**: bila ada produk layak tampil di scope (kategori + edisi) tanpa region, level Region dilewati dan semua produk dicantumkan; tidak ada yang menghilang.
+- **Backfill produk lama**: `pnpm exec tsx scripts/fill-game-regions.ts` (dry run default, `--apply`, `--category-ids=`; menolak DB non-lokal tanpa `--i-know-this-is-not-local`). Semua-atau-tidak per scope (kategori GAME_TOPUP, `gameVariant`), compare-and-set, audit per produk, `bumpCatalogRevision`. Risiko sisa: READ COMMITTED, saudara yang di-commit antara hitung ulang dan COMMIT tidak terlihat; jalankan saat tidak ada sync/import. Pemilik sebaiknya dry run dan meninjau laporan sebelum `--apply`. Rincian operator ada di `DOCS.md` (bagian katalog Game Top-up).
+- **Deploy**: tidak ada perubahan skema dibanding `master` (skema `Product` identik), tidak ada migrasi untuk cabang ini.
+
+Belum dikerjakan dan tidak boleh dianggap selesai:
+- Phase 3 (parser input akun satu pesan, layar review, `expectedTotal`) belum dibuat.
+- Phase 4 (TTL per rail, reminder, verifikasi edit pesan batal) belum dibuat.
+- Format kawat Digiflazz dan KokinPay yang live tetap belum terverifikasi (butuh akun live); bentuk akhiran region di data nyata juga belum dilihat, jadi tabel label dan heuristik `possible_doubled_suffix` perlu ditinjau pemilik.

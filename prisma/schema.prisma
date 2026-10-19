@@ -266,8 +266,14 @@ model Product {
   /// Admin-set free-text region/country label (e.g. "🇮🇩 Indonesia") — any
   /// flag glyph is part of this string, unlike gameVariantEmoji, since a
   /// region label is only ever rendered once, at the region picker.
-  /// Independent of the Digiflazz Product-name "(Region)" suffix, which does
-  /// not backfill this field.
+  /// In Digiflazz data the region IS the server (one level: Global, Malaysia,
+  /// Indonesia, ...), so there is no separate server field. The Digiflazz
+  /// import fills it on Product CREATE only, from the "(Region)" suffix of the
+  /// group name when packages/core/src/regionLabel.ts knows it (a publisher
+  /// word or unlisted country stays null); an existing value is never
+  /// overwritten, so an admin edit always wins. Products imported before the
+  /// auto-fill are filled by scripts/fill-game-regions.ts (all-or-nothing per
+  /// category + gameVariant, dry run by default).
   gameRegion              String?  @map("game_region")
   sortOrder               Int      @default(0) @map("sort_order")
   isActive                Boolean  @default(true) @map("is_active")

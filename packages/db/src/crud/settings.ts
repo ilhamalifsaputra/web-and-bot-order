@@ -2,7 +2,6 @@
  * Runtime key/value settings — port of the "Settings" section of crud.py.
  */
 import type { Db } from "./_types";
-import { resolveBooleanSetting } from "@app/core";
 import { encryptCredentials, decryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 
 // Settings are read constantly on hot paths (bot menu banner, FX rate for
@@ -52,14 +51,6 @@ export async function getSetting(db: Db, key: string): Promise<string | null> {
   const value = s ? s.value : null;
   cache.set(key, { value, expiresAt: Date.now() + TTL_MS });
   return value;
-}
-
-/** Feature flag for the Game Top-up flow v2 (Server level, hints, search).
- * Off unless an admin sets it to "true"; reads through getSetting's TTL cache. */
-export async function isGameTopupFlowV2Enabled(db: Db): Promise<boolean> {
-  const raw = await getSetting(db, "game_topup_flow_v2_enabled");
-  // smtpSecure only matters for the smtp_secure key; it is irrelevant here.
-  return resolveBooleanSetting("game_topup_flow_v2_enabled", raw, { smtpSecure: false }) === true;
 }
 
 /** Freshness metadata for derived caches; never returns a setting's value or

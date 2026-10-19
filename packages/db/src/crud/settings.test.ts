@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { getSetting, setSetting, isGameTopupFlowV2Enabled, deleteSetting, setEncryptedSetting, getDecryptedSetting } from "./settings";
+import { getSetting, setSetting, deleteSetting, setEncryptedSetting, getDecryptedSetting } from "./settings";
 import {
   credentialEnvelopeVersion,
   CredentialEnvelopeError,
@@ -111,13 +111,3 @@ describe.each([false, true])("encrypted settings with CREDENTIAL_ENVELOPE_WRITE_
   });
 });
 
-describe("isGameTopupFlowV2Enabled", () => {
-  it("is off when unset or not exactly true, on when true", async () => {
-    expect(await isGameTopupFlowV2Enabled(prisma)).toBe(false);
-    await setSetting(prisma, "game_topup_flow_v2_enabled", "false");
-    expect(await isGameTopupFlowV2Enabled(prisma)).toBe(false);
-    await setSetting(prisma, "game_topup_flow_v2_enabled", "true");
-    expect(await isGameTopupFlowV2Enabled(prisma)).toBe(true);
-    await setSetting(prisma, "game_topup_flow_v2_enabled", "false");
-  });
-});

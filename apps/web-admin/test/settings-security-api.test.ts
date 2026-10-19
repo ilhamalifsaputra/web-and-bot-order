@@ -242,22 +242,6 @@ describe("POST /api/settings/edit", () => {
     }
   });
 
-  it("lists game_topup_flow_v2_enabled as an off-by-default switch and saves true/false with an audit entry", async () => {
-    const before = await getJson("/api/settings", cookie);
-    const listed = (before.json() as { fields: Array<{ key: string; kind: string; checked: boolean; label: string }> }).fields.find((f) => f.key === "game_topup_flow_v2_enabled");
-    expect(listed).toMatchObject({ kind: "boolean", checked: false, label: "Game Top-up flow v2 (From price label, hints, search)" });
-
-    for (const [sent, stored] of [[true, "true"], [false, "false"]] as const) {
-      const res = await postJson("/api/settings/edit", cookie, csrf, { key: "game_topup_flow_v2_enabled", value: sent });
-      expect(res.statusCode).toBe(200);
-      expect(await getSetting(prisma, "game_topup_flow_v2_enabled")).toBe(stored);
-      const audit = await prisma.auditLog.findFirst({ where: { action: "setting_set", details: { contains: "game_topup_flow_v2_enabled" } }, orderBy: { id: "desc" } });
-      expect(audit?.details).toBe(`Changed setting "game_topup_flow_v2_enabled" to "${stored}".`);
-    }
-    const after = await getJson("/api/settings", cookie);
-    expect((after.json() as { fields: Array<{ key: string; checked: boolean }> }).fields.find((f) => f.key === "game_topup_flow_v2_enabled")?.checked).toBe(false);
-  });
-
   // Whole-branch review A1: both keys had a documented default and a reader in
   // packages/db, but no field here, so the only way to change either was a
   // direct database write (FINANCE_ARCHITECTURE known gap 5).

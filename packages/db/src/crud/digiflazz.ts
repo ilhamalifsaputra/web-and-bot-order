@@ -44,7 +44,7 @@ import { recordEmailProviderHealth } from "./emailSecurity";
  * Digiflazz account (same hedge checkout.ts's webhook doc comment already
  * carries for this same call).
  */
-import { OrderStatus, OrderItemStatus, ProductType, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderItemStatus, ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
 import {
@@ -2709,6 +2709,12 @@ export async function importDigiflazzBrand(
      * groupDigiflazzPriceListByBrand's type-split). Never written on the
      * reuse-existing path — after birth, gameVariant is admin-owned. */
     gameVariant?: string | null;
+    /** Seeded into Product.gameRegion on the CREATE path only, already a
+     * label from gameRegionLabel (@app/core) — a known region, never a raw
+     * publisher suffix. Never written on the reuse-existing path, so after
+     * birth the region is admin-owned. Ignored when the target category is
+     * explicitly Premium Apps: region is a Game Top-up field. */
+    gameRegion?: string | null;
   },
 ): Promise<{ productId: number; denominationCount: number; report: { created: number; updated: number; unchanged: number; skipped: number; conflicts: number; errors: number } }> {
   const { productId, touchedDenoms, report } = await db.$transaction(async (tx) => {
@@ -2743,11 +2749,15 @@ export async function importDigiflazzBrand(
       throw new ValidationError("Brand identity changed with new SKUs. Review the existing product mapping before importing.");
     }
     if (!product) {
+      const targetCategory = args.gameRegion
+        ? await tx.category.findUnique({ where: { id: args.categoryId }, select: { group: true } })
+        : null;
       product = await createCatalogProduct(tx, {
         categoryId: args.categoryId,
         name: args.brand,
         digiflazzBrand: args.brand,
         gameVariant: args.gameVariant ?? null,
+        gameRegion: targetCategory?.group === CategoryGroup.PREMIUM_APPS ? null : args.gameRegion ?? null,
         isActive: false,
       });
     }

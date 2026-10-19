@@ -27,6 +27,7 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
+import { gameRegionLabel } from "@app/core";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { exactFields, readMoneyField } from "../../lib/moneyField";
 import { getPriceListCached, getPriceListFresh } from "../../lib/digiflazzPriceListCache";
@@ -63,6 +64,35 @@ const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them
  * this exact text to skip the preview, which would only be refused again. */
 const RATE_LIMITED_ERROR = "Digiflazz sedang membatasi pengecekan price-list (rc 83). Coba lagi beberapa menit lagi.";
 const RATE_LIMITED_BODY = { error: RATE_LIMITED_ERROR, code: "digiflazz_rate_limited" } as const;
+
+/**
+ * The region label each import group's new Product is born with, aligned by
+ * index with `requests`. Derived on the server from the group's own `region`
+ * in the Digiflazz price list (the cached list the preview just showed), never
+ * from a client-sent value or by re-parsing the brand string. Best effort:
+ * with no credentials or no list available every entry is null and the import
+ * proceeds without a region (an admin can set it, or the backfill can).
+ */
+async function regionLabelsForImport(requests: Array<{ brand: string; gameVariant: string | null }>): Promise<Array<string | null>> {
+  const none = requests.map(() => null);
+  const creds = await getDigiflazzCreds(prisma);
+  if (!creds) return none;
+  let items;
+  try {
+    items = await getPriceListCached(creds);
+  } catch (err) {
+    logger.warn(
+      { err },
+      "The Digiflazz price list could not be loaded while importing brands, so the new products are created without an automatic game region; an admin can set it later.",
+    );
+    return none;
+  }
+  const groups = await groupDigiflazzPriceListByBrand(prisma, items.filter(isDigiflazzGameItem), { withDetection: false });
+  return requests.map((request) => {
+    const group = groups.find((g) => g.brand === request.brand && (g.gameVariant ?? null) === request.gameVariant);
+    return gameRegionLabel(group?.region);
+  });
+}
 
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {
   // Step 1: fetch + group (dry run, no write) — same "preview then apply"
@@ -318,6 +348,8 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         }
       }
 
+      const regionLabels = await regionLabelsForImport(brands.map((b, i) => ({ brand: b.brand, gameVariant: gameVariants[i] ?? null })));
+
       let brandsImported = 0;
       let denominationsImported = 0;
       const reports = [];
@@ -329,6 +361,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
             categoryId,
             rows: parsedRows[i] ?? [],
             gameVariant: gameVariants[i] ?? null,
+            gameRegion: regionLabels[i] ?? null,
           });
         } catch (err) {
           logger.warn({ brand: b.brand, brandsImported, denominationsImported, conflicts: err instanceof ValidationError ? 1 : 0, errors: err instanceof ValidationError ? 0 : 1 }, "Digiflazz import stopped");

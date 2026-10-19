@@ -256,6 +256,56 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     expect(body.reports[0]).toMatchObject({ created: 1, conflicts: 0, errors: 0 });
   });
 
+  describe("game region", () => {
+    const listItem = (buyerSkuCode: string, productName: string) => ({
+      buyerSkuCode, productName, category: "Game", brand: "Game B", type: "Umum", price: new Decimal(15000),
+      buyerProductStatus: true, sellerProductStatus: true, stock: null,
+    });
+    const applyBody = (categoryId: number, extra: Record<string, unknown> = {}) => ({
+      categoryId,
+      brands: [
+        { brand: "Game B (Global)", ...extra, rows: [{ buyerSkuCode: "gb-g-1", productName: "Game B 100 Coin (Global)", price: "16500", costPrice: "15000" }] },
+        { brand: "Game B (Publisher X)", ...extra, rows: [{ buyerSkuCode: "gb-x-1", productName: "Game B 100 Coin (Publisher X)", price: "16500", costPrice: "15000" }] },
+      ],
+    });
+
+    it("derives the region from the price list's group, ignores a client-sent value, and skips unknown suffixes", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([
+        listItem("gb-g-1", "Game B 100 Coin (Global)"),
+        listItem("gb-x-1", "Game B 100 Coin (Publisher X)"),
+      ]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id, { gameRegion: "Forged Region" }));
+      expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      const publisher = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Publisher X)" } });
+      expect(global.gameRegion).toBe("\u{1F310} Global");
+      expect(publisher.gameRegion).toBeNull();
+    });
+
+    it("imports without a region when no price list is available", async () => {
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+      expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+    });
+
+    it("still imports, without a region, when the price list cannot be loaded", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockRejectedValue(new Error("HTTP 503"));
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+    });
+  });
+
   it("rejects a non-positive price", async () => {
     const category = await createCategory(prisma, "Top Up Game");
     const res = await postJson("/api/catalog/digiflazz/sync/apply", {

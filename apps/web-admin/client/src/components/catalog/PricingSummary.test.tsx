@@ -22,6 +22,27 @@ describe("PricingSummary warnings (visual review V1)", () => {
     expect(screen.getByRole("alert").className).toContain("text-destructive");
   });
 
+  it("M1: the error alert is filled with the rust tint and border (stronger than the amber warning), not the plain card", () => {
+    render(<PricingSummary pricing={{ ...base, effectivePrice: "9000", grossMarginPct: "-11.11", grossProfit: "-1000", warnings: ["below_cost"] }} />);
+    const alert = screen.getByRole("alert");
+    expect(alert.className).toContain("bg-rust-tint");
+    expect(alert.className).toContain("border-rust/40");
+    expect(alert.className).not.toMatch(/\bbg-card\b/);
+  });
+
+  it("(a) below cost hides the redundant low-margin alert", () => {
+    render(<PricingSummary pricing={{ ...base, effectivePrice: "9000", grossMarginPct: "-11.11", grossProfit: "-1000", warnings: ["low_margin", "below_cost"] }} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Di bawah HPP");
+    expect(screen.queryByText("Margin rendah")).not.toBeInTheDocument();
+  });
+
+  it("(a) orders errors before warnings whatever the server order", () => {
+    render(<PricingSummary pricing={{ ...base, calculatedPrice: null, warnings: ["low_margin", "unreadable_policy"] }} />);
+    const error = screen.getByRole("alert");
+    const warning = screen.getByRole("status");
+    expect(error.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("shows a low margin as a warning-toned alert with its own title and icon", () => {
     render(<PricingSummary pricing={{ ...base, warnings: ["low_margin"] }} />);
     const status = screen.getByRole("status");

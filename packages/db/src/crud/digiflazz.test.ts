@@ -5829,6 +5829,28 @@ describe("Digiflazz pricing — category rules and rounding (Pricing & Margins)"
       }
     });
 
+    it.each([
+      ["an ordinary price list does not abort the sync", 10100, 0],
+      ["a genuine ×10 malformed list still aborts it", 101000, 1],
+    ])("N4: two rows with a stored cost of 0 count like rows with no cost: %s", async (_label, supplierPrice, aborts) => {
+      await setGlobalPercent("10");
+      const cat = await createCategory(prisma, `Voucher Zero ${supplierPrice}`);
+      const productId = await importBrand(`Brand Z${supplierPrice}`, cat.id, Array.from({ length: 5 }, (_, i) => row(`z${supplierPrice}-${i}`, "11000", "10000")));
+      const zeroed = (await prisma.denomination.findMany({ where: { productId }, orderBy: { id: "asc" } })).slice(0, 2).map((d) => d.id);
+      await prisma.denomination.updateMany({ where: { id: { in: zeroed } }, data: { costPrice: "0" } });
+      digiflazzMock.getPriceList.mockResolvedValue(
+        Array.from({ length: 5 }, (_, i) => priceListItem({ buyerSkuCode: `z${supplierPrice}-${i}`, brand: `Brand Z${supplierPrice}`, price: new Decimal(supplierPrice) })),
+      );
+      await resyncDigiflazzCatalog(prisma);
+      expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync_aborted" } })).toBe(aborts);
+      if (!aborts) {
+        for (const r of await prisma.denomination.findMany({ where: { productId } })) {
+          expect(r.costPrice!.toString()).toBe("10100");
+          expect(r.price.toString()).toBe("11110");
+        }
+      }
+    });
+
     it("a genuine supplier-wide cost swing still trips the breaker, even with no policy change", async () => {
       await setGlobalPercent("10");
       const cat = await createCategory(prisma, "Voucher Breaker C");

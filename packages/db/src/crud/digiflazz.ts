@@ -3157,8 +3157,13 @@ async function resyncDigiflazzCatalogWithOutcome(
     // price far without the supplier response being malformed at all;
     // comparing sell prices made every hourly sync abort after such a change.
     // Only a row with no stored cost yet falls back to comparing the would-be
-    // sell price with the stored one (the pre-cost behaviour).
-    const [newValue, oldValue] = denom.costPrice !== null
+    // sell price with the stored one (the pre-cost behaviour). Re-review N4: a
+    // stored cost of 0 (or below) is no usable cost either — judged on it,
+    // every real supplier price would count as sharp, and since an aborted run
+    // never corrects the cost, a couple of such rows would abort every sync
+    // for good. It takes the same fallback as a missing cost (and matches
+    // Apply now's `costPrice > 0` eligibility).
+    const [newValue, oldValue] = denom.costPrice !== null && denom.costPrice.greaterThan(0)
       ? [quantizeMoney(item.price, 4), denom.costPrice]
       : [newSellPriceFor(item, denom.price, denom.product.categoryId), denom.price];
     // oldValue.isZero() guards the ratio check below from dividing by zero:

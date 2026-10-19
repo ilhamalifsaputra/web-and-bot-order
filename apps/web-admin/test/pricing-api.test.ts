@@ -130,6 +130,7 @@ describe("Pricing & Margins API", () => {
     await setSetting(prisma, "digiflazz_markup_value", "20");
     const stale = await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: fingerprint });
     expect(stale.statusCode, stale.body).toBe(409);
+    expect(stale.json().error_args).toEqual({ conflict: "policy_changed" });
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } })).price.toString()).toBe("100000");
     await setSetting(prisma, "digiflazz_markup_value", "15");
     expect((await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: fingerprint })).json().updatedCount).toBe(1);

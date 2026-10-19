@@ -853,7 +853,7 @@ export async function applyReprice(
       : "";
     const unreadableNames = [...unreadableSeen].map((id) => policy.unreadableCategories.get(id)!).sort();
     const unreadableNote = result.unreadableRuleCount > 0
-      ? ` ${plural(result.unreadableRuleCount, "item was", "items were")} left at ${result.unreadableRuleCount === 1 ? "its" : "their"} current price because the stored markup rule of ${joinClauses(unreadableNames.map((n) => `category "${n}"`))} cannot be read.`
+      ? ` ${plural(result.unreadableRuleCount, "item was", "items were")} left at ${result.unreadableRuleCount === 1 ? "its" : "their"} current price because the stored markup ${unreadableNames.length === 1 ? "rule of category" : "rules of categories"} ${joinClauses(unreadableNames.map((n) => `"${n}"`))} cannot be read.`
       : "";
     const notes = `${skippedNote}${blockedNote}${unreadableNote}`;
     const details = result.eligibleCount === 0

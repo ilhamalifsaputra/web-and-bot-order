@@ -692,6 +692,19 @@ describe("applyReprice", () => {
       );
     });
 
+    it("names every unreadable category in one audit sentence when two or more are skipped", async () => {
+      const s = await seedRepriceCatalog();
+      await prisma.category.update({ where: { id: s.ruled.id }, data: junk });
+      await prisma.category.update({ where: { id: s.plain.id }, data: { markupType: "percent", markupValue: "-5" } });
+      const impact = await computeRepriceImpact(prisma, "all");
+      expect(impact).toMatchObject({ eligibleCount: 3, changedCount: 0, unreadableRuleCount: 3 });
+      const res = await applyReprice(prisma, adminId, "all", new Date(), { expectedPolicyFingerprint: impact.policyFingerprint });
+      expect(res).toEqual({ eligibleCount: 3, updatedCount: 0, unchangedCount: 0, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 3 });
+      expect((await audits("pricing_reprice"))[0]!.details).toBe(
+        'Checked 3 Digiflazz items against the current pricing rules; 0 were already up to date. 3 items were left at their current price because the stored markup rules of categories "Plain Game" and "Ruled Game" cannot be read.',
+      );
+    });
+
     it("a rule turning unreadable (or readable again) after the preview changes the fingerprint, so the stale preview is refused", async () => {
       const s = await seedRepriceCatalog();
       const readable = await computeRepriceImpact(prisma, "all");

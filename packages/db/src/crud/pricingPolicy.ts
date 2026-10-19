@@ -441,6 +441,8 @@ export interface PricingCategoryRow {
   markupValue: Prisma.Decimal | null;
   /** Unarchived Digiflazz-routed SKUs (with a supplier SKU) in the category. */
   skuCount: number;
+  /** False when a rule is stored but this version cannot read it (re-review N7). */
+  ruleReadable: boolean;
 }
 
 /** Every category with its stored rule and Digiflazz SKU count, for the
@@ -465,7 +467,11 @@ export async function listPricingCategories(db: Db): Promise<PricingCategoryRow[
     const categoryId = categoryOf.get(row.productId);
     if (categoryId !== undefined) counts.set(categoryId, (counts.get(categoryId) ?? 0) + row._count._all);
   }
-  return categories.map((c) => ({ ...c, skuCount: counts.get(c.id) ?? 0 }));
+  return categories.map((c) => ({
+    ...c,
+    skuCount: counts.get(c.id) ?? 0,
+    ruleReadable: storedCategoryRule(c) !== UNREADABLE_CATEGORY_RULE,
+  }));
 }
 
 // ---- Reprice ("Apply now") ----

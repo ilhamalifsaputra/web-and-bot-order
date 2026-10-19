@@ -337,6 +337,21 @@ describe("listPricingCategories", () => {
     expect(byId.get(empty.id)!.skuCount).toBe(0);
     expect(byId.get(game.id)).toMatchObject({ name: "Count Game", group: CategoryGroup.GAME_TOPUP, markupType: null });
   });
+
+  it("N7: says whether each stored rule can be read", async () => {
+    const none = await makeCategory("Rule None");
+    const ok = await makeCategory("Rule Ok");
+    const junk = await makeCategory("Rule Junk");
+    const negative = await makeCategory("Rule Negative");
+    await prisma.category.update({ where: { id: ok.id }, data: { markupType: "percent", markupValue: "12" } });
+    await prisma.category.update({ where: { id: junk.id }, data: { markupType: "weird", markupValue: "10" } });
+    await prisma.category.update({ where: { id: negative.id }, data: { markupType: "flat", markupValue: "-5" } });
+    const byId = new Map((await listPricingCategories(prisma)).map((r) => [r.id, r]));
+    expect(byId.get(none.id)!.ruleReadable).toBe(true);
+    expect(byId.get(ok.id)!.ruleReadable).toBe(true);
+    expect(byId.get(junk.id)!.ruleReadable).toBe(false);
+    expect(byId.get(negative.id)!.ruleReadable).toBe(false);
+  });
 });
 
 /** Global 10%; `ruled` category 20%; `plain` inherits. */

@@ -285,29 +285,17 @@ di-stamp ke `@app/core/runtime`):
 > sendiri. Setting yang "perlu restart" hanya menempel di proses yang dibaca
 > ulang; di deploy multi-proses, restart **proses yang relevan**, bukan hanya web.
 
-### Flag `game_topup_flow_v2_enabled` (alur katalog Game Top-up v2)
+### Alur katalog Game Top-up (selalu aktif)
 
-Setting boolean di tabel `settings`, **default mati** (`DEFAULT_OFF` di
-`packages/core/src/booleanSettings.ts`; hanya nilai `true` yang menyalakan,
-dibaca `isGameTopupFlowV2Enabled` di `packages/db/src/crud/settings.ts`).
-Nyala, bot menampilkan untuk Game Top-up saja: akhiran `From <harga>` pada
-daftar produk, satu baris hint `hint.*` per layar, dan `/search` (berperingkat,
-label layanan, halaman, "Search again"; alias dari tabel `detection_aliases`
-yang bawaannya **kosong**). Mati = perilaku lama persis: langkah navigasi
-(edisi, region, daftar produk) tidak berubah dan tidak ada data produk yang
-mempengaruhinya. Rilis ini tidak mengubah skema database. Storefront tidak
-terpengaruh. Premium Apps tidak pernah terpengaruh.
-
-Flag ini adalah toggle di **web-admin -> Settings** ("Game Top-up flow v2
-(From price label, hints, search)"); perubahannya lewat jalur audit
-(`setting_set`). Bot mengambil perubahan dalam sekitar 30 detik (cache TTL
-`getSetting`), tanpa restart. Cadangan bila web-admin tidak bisa dipakai: ubah
-baris `settings` langsung, mis.
-`INSERT INTO settings (key, value, updated_at) VALUES ('game_topup_flow_v2_enabled', 'true', now()) ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = now();`
-(`'false'` untuk mematikan). Jalur SQL ini melewati audit log; catat sendiri.
-
-Rollback: karena tidak ada perubahan skema, mematikan flag atau mengganti ke
-image sebelumnya sama-sama aman.
+Untuk Game Top-up saja (dipilih lewat `category.group`, bukan nama produk), bot
+selalu menampilkan akhiran `From <harga>` pada daftar produk, satu baris hint
+`hint.*` per layar (daftar game, edisi, region, paket, search), dan `/search`
+(berperingkat, label layanan, halaman, "Search again"; alias dari tabel
+`detection_aliases` yang bawaannya **kosong**). `/search` hanya mengembalikan
+produk Game Top-up. Langkah navigasi (edisi, region, daftar produk) tidak
+berubah. Tidak ada saklar di Settings dan tidak ada perubahan skema. Storefront
+tidak terpengaruh. Premium Apps tidak pernah terpengaruh: tidak ada `From`,
+hint, atau perubahan lain pada daftar, picker, dan layar SKU-nya.
 
 Key rahasia (`tokopay_secret`, `bot_token`, `notif_bot_token`, `bybit_api_key`,
 `bybit_api_secret`, `web_cookie_secret`) ditangani **write-only**: tak di-echo,

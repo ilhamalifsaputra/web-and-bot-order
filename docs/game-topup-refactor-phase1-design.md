@@ -173,7 +173,7 @@ Risiko yang diaudit di Phase 4 sebelum default diubah: pembayaran yang terdeteks
 ### 9.3 Feature flag
 
 Kunci baru di `booleanSettings.ts`, `DEFAULT_OFF`:
-- `game_topup_flow_v2_enabled` — alur katalog/input/review baru. Mati = alur lama utuh (rollback tanpa deploy).
+- ~~Flag alur Game Top-up v2~~ — flag ini dihapus pada 2026-10-19 atas keputusan pemilik; alur katalog Game Top-up (label `From`, hint, `/search`) menjadi bawaan dan tidak ada saklarnya lagi.
 - `payment_reminder_enabled` — job reminder.
 
 TTL baru tidak di bawah flag (konfigurasi env); rollback = kembalikan nilai env.
@@ -213,7 +213,7 @@ Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm t
 
 ## 13. Hasil Phase 2
 
-Semua perilaku baru di bawah ini berada di balik `game_topup_flow_v2_enabled` (`DEFAULT_OFF`, `packages/core/src/booleanSettings.ts`; dibaca lewat `isGameTopupFlowV2Enabled(db)`; saklar ada di Settings admin dan setiap perubahannya diaudit). Mati = perilaku bot lama persis: langkah navigasi variant → region → daftar produk tidak berubah, dan hint, label `From`, serta `/search` baru hanya muncul bila flag menyala. Tidak ada perubahan skema atau kontrak data pada Phase 2: pada data Digiflazz region = server, jadi tidak ada level Server terpisah.
+Catatan 2026-10-19: flag alur Game Top-up v2 dihapus atas keputusan pemilik; label `From`, hint, dan `/search` baru kini selalu aktif untuk Game Top-up (dipilih lewat `category.group`) dan tidak pernah muncul untuk Premium Apps. Tidak ada perubahan skema atau kontrak data pada Phase 2: pada data Digiflazz region = server, jadi tidak ada level Server terpisah.
 
 Selesai:
 - Label harga `From <harga>` pada daftar produk Game Top-up.

@@ -55,7 +55,14 @@ export default async function pricingApiRoutes(app: FastifyInstance): Promise<vo
     }
   });
   app.setErrorHandler((err, _req, reply) => {
-    if (err instanceof PricingValidationError || err instanceof PricingPolicyUnreadableError) return reply.code(400).send({ error: err.message });
+    if (err instanceof PricingValidationError) return reply.code(400).send({ error: err.message });
+    // error_args says which stored piece is unreadable, so the admin client can
+    // show its own Indonesian sentence next to the button (review M2).
+    if (err instanceof PricingPolicyUnreadableError) {
+      const args: Record<string, string> = { policy: err.what };
+      if (err.what === "category") args.categories = err.categoryNames.join(", ");
+      return reply.code(400).send({ error: err.message, error_args: args });
+    }
     if (err instanceof RepriceBusyError || err instanceof RepriceLeaseLostError || err instanceof RepricePolicyChangedError) {
       return reply.code(409).send({ error: err.message });
     }

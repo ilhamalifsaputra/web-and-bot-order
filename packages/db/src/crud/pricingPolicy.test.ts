@@ -421,7 +421,7 @@ describe("applyReprice", () => {
   it("writes only changed prices, never touches excluded rows, audits once and is idempotent", async () => {
     const s = await seedRepriceCatalog();
     const first = await applyReprice(prisma, adminId, "all");
-    expect(first).toEqual({ eligibleCount: 3, updatedCount: 2, unchangedCount: 1, skippedCount: 0, blockedCount: 0 });
+    expect(first).toEqual({ eligibleCount: 3, updatedCount: 2, unchangedCount: 1, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 0 });
     expect((await priceOf(s.a.id)).toString()).toBe("120000");
     expect((await priceOf(s.b.id)).toString()).toBe("110000");
     expect((await priceOf(s.g.id)).toString()).toBe("55000");
@@ -439,7 +439,7 @@ describe("applyReprice", () => {
     expect(rows[0]!.details).toBe("Repriced 2 Digiflazz items from the current pricing rules; 1 was already up to date.");
 
     const second = await applyReprice(prisma, adminId, "all");
-    expect(second).toEqual({ eligibleCount: 3, updatedCount: 0, unchangedCount: 3, skippedCount: 0, blockedCount: 0 });
+    expect(second).toEqual({ eligibleCount: 3, updatedCount: 0, unchangedCount: 3, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 0 });
     rows = await audits("pricing_reprice");
     expect(rows[1]!.details).toBe("Checked 3 Digiflazz items against the current pricing rules; 3 were already up to date.");
   });
@@ -480,7 +480,7 @@ describe("applyReprice", () => {
         await prisma.denomination.update({ where: { id: s.a.id }, data: { priceOverridden: true } });
       },
     });
-    expect(res).toEqual({ eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 1, blockedCount: 0 });
+    expect(res).toEqual({ eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 1, blockedCount: 0, unreadableRuleCount: 0 });
     expect((await priceOf(s.a.id)).toString()).toBe("100000");
     expect((await priceOf(s.g.id)).toString()).toBe("55000");
     expect((await audits("pricing_reprice"))[0]!.details).toBe(
@@ -585,7 +585,7 @@ describe("applyReprice", () => {
       expect(impact.blocked[0]!.newPrice.toString()).toBe("108000");
 
       const res = await applyReprice(prisma, adminId, cat.id);
-      expect(res).toEqual({ eligibleCount: 2, updatedCount: 1, unchangedCount: 0, skippedCount: 0, blockedCount: 1 });
+      expect(res).toEqual({ eligibleCount: 2, updatedCount: 1, unchangedCount: 0, skippedCount: 0, blockedCount: 1, unreadableRuleCount: 0 });
       expect((await priceOf(gap.id)).toString()).toBe("115000");
       expect((await priceOf(ok.id)).toString()).toBe("54000");
       expect((await audits("pricing_reprice"))[0]!.details).toBe(
@@ -645,14 +645,82 @@ describe("applyReprice", () => {
     { markupType: "weird", markupValue: "10" },
     { markupType: "percent", markupValue: "-5" },
     { markupType: "flat", markupValue: null },
-  ])("Minor 2: an unreadable category rule %j stops preview and apply with the typed error instead of using the global rule", async (bad) => {
+  ])("Minor 2 / M3: a run scoped to the category whose rule %j is unreadable refuses with the typed error and writes nothing", async (bad) => {
     const s = await seedRepriceCatalog();
     await prisma.category.update({ where: { id: s.ruled.id }, data: bad });
     await expect(getCategoryRule(prisma, s.ruled.id)).rejects.toBeInstanceOf(PricingPolicyUnreadableError);
-    await expect(computeRepriceImpact(prisma, "all")).rejects.toThrow(/Ruled Game/);
-    await expect(applyReprice(prisma, adminId, "all")).rejects.toBeInstanceOf(PricingPolicyUnreadableError);
+    await expect(computeRepriceImpact(prisma, s.ruled.id)).rejects.toThrow(/Ruled Game/);
+    await expect(applyReprice(prisma, adminId, s.ruled.id)).rejects.toBeInstanceOf(PricingPolicyUnreadableError);
     expect((await priceOf(s.a.id)).toString()).toBe("100000");
-    expect((await priceOf(s.g.id)).toString()).toBe("50000");
+    expect(await audits("pricing_reprice")).toHaveLength(0);
+    // The lease was never taken.
+    expect(await claimDigiflazzCatalogSyncLease(prisma)).not.toBeNull();
+  });
+
+  describe("M3: an unreadable rule in one category does not block the others", () => {
+    const junk = { markupType: "bogus", markupValue: "10" };
+
+    it("a run scoped to another category previews and applies normally", async () => {
+      const s = await seedRepriceCatalog();
+      await prisma.category.update({ where: { id: s.ruled.id }, data: junk });
+      const impact = await computeRepriceImpact(prisma, s.plain.id);
+      expect(impact).toMatchObject({ eligibleCount: 2, changedCount: 1, blockedCount: 0, unreadableRuleCount: 0, unreadableRuleRows: [] });
+      expect(impact.sample.map((r) => r.denominationId)).toEqual([s.g.id]);
+      const res = await applyReprice(prisma, adminId, s.plain.id, new Date(), { expectedPolicyFingerprint: impact.policyFingerprint });
+      expect(res).toEqual({ eligibleCount: 2, updatedCount: 1, unchangedCount: 1, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 0 });
+      expect((await priceOf(s.g.id)).toString()).toBe("55000");
+      expect((await priceOf(s.a.id)).toString()).toBe("100000");
+    });
+
+    it('"all" skips and reports only the unreadable category\'s SKUs; preview and apply agree; apply never writes them', async () => {
+      const s = await seedRepriceCatalog();
+      await prisma.category.update({ where: { id: s.ruled.id }, data: junk });
+      const impact = await computeRepriceImpact(prisma, "all");
+      expect(impact).toMatchObject({ eligibleCount: 3, changedCount: 1, blockedCount: 0, unreadableRuleCount: 1 });
+      expect(impact.sample.map((r) => r.denominationId)).toEqual([s.g.id]);
+      expect(impact.unreadableRuleRows).toEqual([
+        expect.objectContaining({ denominationId: s.a.id, categoryName: "Ruled Game", reason: "category_rule_unreadable" }),
+      ]);
+      expect(impact.unreadableRuleRows[0]!.oldPrice.toString()).toBe("100000");
+
+      const res = await applyReprice(prisma, adminId, "all", new Date(), { expectedPolicyFingerprint: impact.policyFingerprint });
+      expect(res).toEqual({ eligibleCount: 3, updatedCount: 1, unchangedCount: 1, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 1 });
+      expect((await priceOf(s.a.id)).toString()).toBe("100000");
+      expect((await priceOf(s.g.id)).toString()).toBe("55000");
+      expect((await audits("pricing_reprice"))[0]!.details).toBe(
+        'Repriced 1 Digiflazz item from the current pricing rules; 1 was already up to date. 1 item was left at its current price because the stored markup rule of category "Ruled Game" cannot be read.',
+      );
+    });
+
+    it("a rule turning unreadable (or readable again) after the preview changes the fingerprint, so the stale preview is refused", async () => {
+      const s = await seedRepriceCatalog();
+      const readable = await computeRepriceImpact(prisma, "all");
+      await prisma.category.update({ where: { id: s.ruled.id }, data: junk });
+      await expect(
+        applyReprice(prisma, adminId, "all", new Date(), { expectedPolicyFingerprint: readable.policyFingerprint }),
+      ).rejects.toBeInstanceOf(RepricePolicyChangedError);
+      const unreadable = await computeRepriceImpact(prisma, "all");
+      expect(unreadable.policyFingerprint).not.toBe(readable.policyFingerprint);
+      await setCategoryRule(prisma, adminId, s.ruled.id, { markupType: "percent", markupValue: d("20") });
+      await expect(
+        applyReprice(prisma, adminId, "all", new Date(), { expectedPolicyFingerprint: unreadable.policyFingerprint }),
+      ).rejects.toBeInstanceOf(RepricePolicyChangedError);
+      expect((await priceOf(s.a.id)).toString()).toBe("100000");
+      expect((await priceOf(s.g.id)).toString()).toBe("50000");
+    });
+
+    it("a row that moves into the unreadable category between listing and locking is counted as unreadable, not priced", async () => {
+      const s = await seedRepriceCatalog();
+      await prisma.category.update({ where: { id: s.ruled.id }, data: junk });
+      const res = await applyReprice(prisma, adminId, "all", new Date(), {
+        beforeBatch: async () => {
+          const product = await prisma.denomination.findUniqueOrThrow({ where: { id: s.g.id }, select: { productId: true } });
+          await prisma.product.update({ where: { id: product.productId }, data: { categoryId: s.ruled.id } });
+        },
+      });
+      expect(res).toEqual({ eligibleCount: 3, updatedCount: 0, unchangedCount: 1, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 2 });
+      expect((await priceOf(s.g.id)).toString()).toBe("50000");
+    });
   });
 
   it("refuses with PricingPolicyUnreadableError on an unreadable global markup and changes nothing", async () => {

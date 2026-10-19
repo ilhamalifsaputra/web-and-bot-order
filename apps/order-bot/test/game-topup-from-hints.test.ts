@@ -261,6 +261,28 @@ describe("hints", () => {
     const a = customerCtx();
     await customer.browseProduct(a.ctx, app.product.id);
     for (const key of HINT_KEYS) expect(sentIncludes(a.sink, t(a.ctx, key))).toBe(false);
+    expect(sentIncludes(a.sink, fromLine(a.ctx, "").trim())).toBe(false);
+  });
+
+  it("a flat list mixing Game Top-up and Premium Apps rows: From only on game rows, Premium rows plain, no game-list hint", async () => {
+    const gameCat = await gameCategory("Mixed Game Cat");
+    const appCat = await createCategory(prisma, { name: "Mixed Apps Cat", group: CategoryGroup.PREMIUM_APPS });
+    await product(gameCat.id, "Mixed Game Row", [15000]);
+    await product(appCat.id, "Mixed App Row", [20000]);
+    // No category scope: the unscoped flat list holds products of every category.
+    const { ctx, sink } = customerCtx();
+    await customer.browseProductsFlat(ctx, 0);
+    const lines = [...calls(sink, "editMessageText"), ...calls(sink, "sendMessage"), ...calls(sink, "reply")].flatMap((c) => String(c.args[0]).split("\n"));
+    expect(lines.length).toBeGreaterThan(0);
+    const gameLine = lines.find((l) => l.includes("Mixed Game Row"))!;
+    const appLine = lines.find((l) => l.includes("Mixed App Row"))!;
+    const fromPrefix = fromLine(ctx, "").trim();
+    expect(gameLine).toContain(fromLine(ctx, ctxPriceFormatter(ctx, null).price(15000)));
+    expect(appLine).toMatch(/^\d+\. Mixed App Row$/);
+    expect(appLine).not.toContain(fromPrefix);
+    expect(sentIncludes(sink, t(ctx, "hint.game_list"))).toBe(false);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
 
   it("Premium Apps flat list is byte-identical to the plain numbered format (no From, no hint)", async () => {

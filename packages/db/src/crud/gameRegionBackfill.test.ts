@@ -1,7 +1,7 @@
 import { beforeAll, afterAll, beforeEach, describe, it, expect } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct } from "./catalog";
-import { fillGameRegions } from "./gameRegionBackfill";
+import { fillGameRegions, redactConnectionUrls } from "./gameRegionBackfill";
 import { getSetting } from "./settings";
 import { CategoryGroup } from "@app/core/enums";
 
@@ -207,8 +207,7 @@ describe("fillGameRegions", () => {
         apply: true, categoryIds: [categoryId],
         beforeScopeWrite: async () => { await db.prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Moved" } }); },
       });
-      expect(report.scopes[0]).toMatchObject({ status: "skipped", reason: "changed_concurrently" });
-      await expectUntouched({ ...report, updated: 0 }, [a.id, b.id], audit);
+      await expectUntouched(report, [a.id, b.id], audit);
     });
   });
 
@@ -236,7 +235,32 @@ describe("fillGameRegions", () => {
     expect(report.scopes.map((s) => s.status)).toEqual(["written", "failed"]);
     expect(report.scopes[1]!.error).toBe("unexpected");
     expect(report.updated).toBe(2);
+    expect(report.failed).toBe(2);
+    expect(report.stoppedEarly).toBe(true);
+    expect(report.skipped).toBe(0);
     expect(await regionOf(first.id)).toBe(GLOBAL);
+  });
+
+  it("redacts connection URLs from a failed scope's error message", async () => {
+    await mk("Game R (Global)");
+    await mk("Game R (Malaysia)");
+    const report = await fillGameRegions(db.prisma, {
+      apply: true, categoryIds: [categoryId],
+      beforeScopeWrite: async () => { throw new Error("Can't reach database server at postgresql://shop:s3cret@db.internal.example:5432/shop?schema=public, retrying"); },
+    });
+    const error = report.scopes[0]!.error!;
+    expect(error).not.toContain("s3cret");
+    expect(error).not.toContain("db.internal.example");
+    expect(error).toContain("[redacted-url]");
+    expect(error).toContain("retrying");
+    expect(redactConnectionUrls("postgres://u:p@h/db and postgresql://x@y/z")).toBe("[redacted-url] and [redacted-url]");
+  });
+
+  it("reports failed 0 and stoppedEarly false when no scope failed", async () => {
+    await mk("Game S (Global)");
+    await mk("Game S (Malaysia)");
+    const report = await fillGameRegions(db.prisma, { apply: true, categoryIds: [categoryId] });
+    expect(report).toMatchObject({ updated: 2, failed: 0, stoppedEarly: false });
   });
 
   it("compare-and-set: a region set by an admin between read and write wins and the scope is rolled back", async () => {

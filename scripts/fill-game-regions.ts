@@ -13,7 +13,7 @@
  * if a scope could not be written (a product changed mid-run, or an unexpected
  * error stopped the run) or the catalog revision bump failed.
  */
-import { prisma, fillGameRegions } from "@app/db";
+import { prisma, fillGameRegions, redactConnectionUrls } from "@app/db";
 
 const USAGE = `Fill Product.gameRegion for already-imported Game Top-up products.
 
@@ -86,8 +86,10 @@ async function main(): Promise<void> {
     if (scope.reason === "already_filled") console.log("    every product already carries the label this backfill would write; nothing to do.");
     if (scope.unknownSuffixes?.length) console.log(`    unmapped suffixes: ${scope.unknownSuffixes.join(", ")}`);
   }
-  console.log(`\n${report.scopes.length} scope(s); ${report.updated} product(s) updated, ${report.skipped} product(s) in skipped scopes.`);
-  if (report.scopes.some((s) => s.status === "failed")) console.log("A scope failed unexpectedly; the run stopped there and later scopes were NOT attempted.");
+  console.log(
+    `\n${report.scopes.length} scope(s); ${report.updated} product(s) updated, ${report.skipped} product(s) in scopes skipped by a rule, ${report.failed} product(s) in scopes that failed.`,
+  );
+  if (report.stoppedEarly) console.log("A scope failed unexpectedly; the run stopped early there and later scopes were NOT attempted.");
   if (report.revisionBumpFailed) console.log("WARNING: regions were written but bumping the detection catalog revision failed; bump it manually.");
   if (!apply) console.log("Run again with --apply to write the scopes marked WOULD WRITE.");
   console.log("\n" + JSON.stringify(report, null, 2));
@@ -96,7 +98,7 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (e) => {
-  console.error("Fill game regions failed:", e instanceof Error ? e.message : e);
+  console.error("Fill game regions failed:", redactConnectionUrls(e instanceof Error ? e.message : String(e)));
   await prisma.$disconnect().catch(() => {});
   process.exit(1);
 });

@@ -536,7 +536,8 @@ export function gameRegionPickerKb(
 }
 
 /** Cut `text` to at most `maxCells` terminal cells (emoji/CJK = 2), ending in
- * "…" when it had to shorten. A name inside the admin budget is never cut. */
+ * "…" when it had to shorten. Used for a search-result name so that name plus
+ * its service tag fits MAX_LABEL_WIDTH; a name that already fits is never cut. */
 function clipToCells(text: string, maxCells: number): string {
   if (visualWidth(text) <= maxCells) return text;
   let out = "";
@@ -570,15 +571,6 @@ export function productsNavKb(page: number, totalPages: number, lang: string): I
   return nav.length ? ik([nav]) : undefined;
 }
 
-/** Inline keyboard for /search results — each mid-tier Product opens its picker. */
-export function searchResultsKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
-  const rows: Btn[][] = products.map((p) => [
-    { text: truncLabel(p.name, LIST_LABEL_MAX_CHARS), data: cb("browse", "pick", p.id) },
-  ]);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
-  return ik(rows);
-}
-
 /** One /search hit as stored in the session snapshot: `serviceKey` is the service's locale key (its short tag). */
 export interface SearchHit {
   id: number;
@@ -587,7 +579,7 @@ export interface SearchHit {
 }
 
 /**
- * Game Top Up search results (flag-gated): `<name> · <service tag>` per hit, the
+ * Game Top Up search results: `<name> · <service tag>` per hit, the
  * name cut so the whole label stays within MAX_LABEL_WIDTH, then Prev/Next
  * (`search:page:<n>`), Search again and Menu, each on its own row. `hits` is the
  * current page's slice of the snapshot.

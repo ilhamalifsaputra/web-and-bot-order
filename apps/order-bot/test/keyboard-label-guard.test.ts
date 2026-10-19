@@ -21,7 +21,7 @@ import { hasRepeatedIcon } from "@app/core/unitDisplay";
 import { presentCanonicalCatalog } from "../src/util/canonicalPresenter";
 import { BUTTON_LABEL_MAX, truncLabel } from "../src/util/format";
 import {
-  canonicalDenominationPickerKb, categoryPickerKb, denominationPickerKb, gameRegionPickerKb, gameVariantPickerKb, popularKb, searchResultsKb,
+  canonicalDenominationPickerKb, categoryPickerKb, denominationPickerKb, gameRegionPickerKb, gameVariantPickerKb, popularKb,
 } from "../src/keyboards/customer";
 
 type Currency = "IDR" | "USD";
@@ -366,19 +366,19 @@ describe("keyboard label guard: the other pickers keep their own limits", () => 
     expect(truncLabel("x".repeat(PLAN_LABEL_MAX_CHARS))).toBe("x".repeat(PLAN_LABEL_MAX_CHARS));
     expect(truncLabel("x".repeat(PLAN_LABEL_MAX_CHARS + 1))).toBe(`${"x".repeat(PLAN_LABEL_MAX_CHARS - 1)}…`);
   });
-  it("search, popular and category buttons are cut at the list limit and keep a name within the admin budget whole", () => {
+  it("popular and category buttons are cut at the list limit and keep a name within the admin budget whole", () => {
     const products = hostileNames.map((name, i) => ({ id: 200 + i, name }));
     const categories = hostileNames.map((name, i) => ({ id: 300 + i, name, emoji: i % 2 ? "🎮" : null }));
     const all = [
-      ...searchResultsKb(products, "en").inline_keyboard.flat(), ...popularKb(products, "en").inline_keyboard.flat(), ...categoryPickerKb(categories, "en").inline_keyboard.flat(),
+      ...popularKb(products, "en").inline_keyboard.flat(), ...categoryPickerKb(categories, "en").inline_keyboard.flat(),
     ].filter((button) => "callback_data" in button && button.callback_data.startsWith("v1:browse:"));
-    expect(all.length).toBeGreaterThan(products.length * 2);
+    expect(all.length).toBeGreaterThan(products.length);
     for (const button of all) expect(button.text.length, button.text).toBeLessThanOrEqual(LIST_LABEL_MAX_CHARS);
     // The admin hint promises that a name within the budget is never cut.
     const budget = buttonNameBudget("productList");
     const fitting = "x".repeat(budget);
     expect(visualWidth(fitting)).toBe(budget);
-    for (const keyboard of [searchResultsKb([{ id: 1, name: fitting }], "en"), popularKb([{ id: 1, name: fitting }], "en")]) expect(keyboard.inline_keyboard[0]![0]!.text).toBe(fitting);
+    expect(popularKb([{ id: 1, name: fitting }], "en").inline_keyboard[0]![0]!.text).toBe(fitting);
     const category = buttonNameBudget("category", { emoji: true });
     expect(categoryPickerKb([{ id: 1, name: "a".repeat(category), emoji: "🎮" }], "en").inline_keyboard[0]![0]!.text).toBe(`🎮 ${"a".repeat(category)}`);
   });

@@ -879,9 +879,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
   const isGameProduct = (p: (typeof pageProducts)[number]) => p.category.group === CategoryGroup.GAME_TOPUP;
   const hasGameProducts = pageProducts.some(isGameProduct);
+  const allGameProducts = pageProducts.length > 0 && pageProducts.every(isGameProduct);
   // One rate lookup per render; every price string goes through the buyer's
-  // language-aware formatter (never hand-formatted). Only a list that holds
-  // Game Top-up products gets From labels and the hint.
+  // language-aware formatter (never hand-formatted). Only Game Top-up rows get
+  // From labels, and the hint needs every row on the page to be Game Top-up.
   const prices = hasGameProducts
     ? ctxPriceFormatter(ctx, await getCanonicalRateContext(prisma).then((r) => (r.rate ? new Decimal(r.rate) : null)))
     : null;
@@ -905,7 +906,8 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   }) +
     // Same Rp fallback notice the SKU picker appends, only when a From was rendered.
     (renderedFrom && prices ? prices.rateNotice(lang) : "") +
-    (hasGameProducts ?`\n${t(ctx, "hint.game_list")}` : "");
+    // The game-list hint only fits a page made up entirely of Game Top-up products.
+    (allGameProducts ? `\n${t(ctx, "hint.game_list")}` : "");
 
   // No per-product inline buttons: the user picks the number shown in the
   // caption (handleProductNumber resolves it against browseEntries), either

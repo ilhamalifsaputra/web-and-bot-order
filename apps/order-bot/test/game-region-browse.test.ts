@@ -120,6 +120,10 @@ describe("region picker", () => {
     await routeCallback(tap.ctx);
     expect(sentIncludes(tap.sink, "FF Delta")).toBe(true);
     expect(sentIncludes(tap.sink, "FF Alpha")).toBe(false);
+    expect(calls(tap.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(tap.sink, "reply")).toHaveLength(0);
+    expect(calls(tap.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(tap.sink, "deleteMessage")).toHaveLength(0);
   });
 
   it("a mixed region scope (some products without a region) lists every product and shows no picker", async () => {

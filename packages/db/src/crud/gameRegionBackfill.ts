@@ -5,9 +5,13 @@
  *
  * Why it is all-or-nothing per scope: the bot shows a Region picker for a
  * (category, gameVariant) scope as soon as ANY product in it has a gameRegion,
- * and a product without one then vanishes behind the picker/filter (there is no
- * "mixed" guard for region, unlike gameVariant). So a scope is written only
- * when every member can be labelled; otherwise it is skipped and reported.
+ * and a product without one is easy to miss. The bot does have a mixed-scope
+ * guard (it skips the Region level and lists everything when any eligible
+ * product in the scope lacks a region), so nothing vanishes; this backfill is
+ * still all-or-nothing so a scope ends up either fully labelled or untouched,
+ * and the picker never offers a half-labelled set of regions. A scope is
+ * written only when every member can be labelled; otherwise it is skipped and
+ * reported.
  *
  * Scope  = non-archived products (active or not) of ONE category whose `group`
  *          is exactly GAME_TOPUP, sharing one `gameVariant` (null is its own
@@ -31,10 +35,21 @@
  * moved to another variant/category in the read-to-write window aborts the
  * scope (`changed_concurrently`) instead of leaving it half-labelled; any lost
  * race rolls the whole scope back.
+ * Residual risk: the transaction runs at READ COMMITTED, so a sibling product
+ * that another session inserts (and commits) in the window between the
+ * in-transaction recount and this transaction's COMMIT is not seen, and the
+ * scope is then labelled without it. That product keeps a null region and is
+ * still listed by the bot (mixed-scope guard), just without the picker. This
+ * is acceptable for an operator-run one-off script: run it when no Digiflazz
+ * sync or import is in progress.
+ * One stale inactive (non-archived) product with a junk brand blocks its whole
+ * scope (`unknown_suffix` / `mixed`); archive or fix it, then run again.
  * An unexpected (non-race) error stops the run after the first failing scope:
  * the partial report (scopes already written, plus the failed one with
  * `error`) is returned rather than thrown away, and later scopes are not
- * attempted. A failing catalog-revision bump is logged and flagged as
+ * attempted (`stoppedEarly`; the members of the failed scope count in `failed`,
+ * not in `skipped`). Error messages are stripped of postgres(ql):// URLs before
+ * they reach the report. A failing catalog-revision bump is logged and flagged as
  * `revisionBumpFailed` while the report is still returned.
  * Dry run (`apply: false`, the default) performs zero writes.
  */
@@ -88,8 +103,12 @@ export interface GameRegionBackfillReport {
   scopes: GameRegionScopeReport[];
   /** Products whose gameRegion was written (always 0 on a dry run). */
   updated: number;
-  /** Products in skipped or failed scopes. */
+  /** Products in scopes skipped by a rule (including a lost race). */
   skipped: number;
+  /** Products in scopes that failed with an unexpected error (not a skip by rule). */
+  failed: number;
+  /** True when the run stopped after a failed scope, so later scopes were not attempted. */
+  stoppedEarly: boolean;
   /** True when data was written but the detection catalog revision bump then failed. */
   revisionBumpFailed?: boolean;
 }
@@ -101,6 +120,11 @@ export interface FillGameRegionsOptions {
   beforeScopeWrite?: (scope: GameRegionScopeReport) => Promise<void>;
   /** Test seam: replaces the catalog revision bump. */
   bumpRevision?: (db: PrismaClient) => Promise<unknown>;
+}
+
+/** Replaces any postgres(ql):// connection URL in a message, which may carry a host or credentials. */
+export function redactConnectionUrls(message: string): string {
+  return message.replace(/postgres(?:ql)?:\/\/[^\s'"`]+/gi, "[redacted-url]");
 }
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -131,7 +155,7 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
     select: { id: true, name: true },
     orderBy: { id: "asc" },
   });
-  const report: GameRegionBackfillReport = { applied: apply, scopes: [], updated: 0, skipped: 0 };
+  const report: GameRegionBackfillReport = { applied: apply, scopes: [], updated: 0, skipped: 0, failed: 0, stoppedEarly: false };
   let wroteAny = false;
   let stopped = false;
 
@@ -182,7 +206,7 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
           }
         } catch (err) {
           scope.status = "failed";
-          scope.error = err instanceof Error ? err.message : String(err);
+          scope.error = redactConnectionUrls(err instanceof Error ? err.message : String(err));
           logger.error(
             { err, categoryId: category.id },
             "Game region backfill stopped after an unexpected error in one scope; scopes written before it are kept and later scopes were not attempted.",
@@ -197,8 +221,10 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
 
   for (const scope of report.scopes) {
     if (scope.status === "written") report.updated += scope.members.length;
-    else if (scope.status === "skipped" || scope.status === "failed") report.skipped += scope.members.length;
+    else if (scope.status === "skipped") report.skipped += scope.members.length;
+    else if (scope.status === "failed") report.failed += scope.members.length;
   }
+  report.stoppedEarly = stopped;
   if (wroteAny) {
     try {
       await (opts.bumpRevision ?? bumpCatalogRevision)(db);

@@ -148,11 +148,18 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
         price: price.trim(),
         ...(costPrice.trim() ? { costPrice: costPrice.trim() } : {}),
         ...(resellerPrice.trim() ? { resellerPrice: resellerPrice.trim() } : {}),
-        exact_fields: exactFieldsOf(
-          { price: price.trim(), costPrice: costPrice.trim(), resellerPrice: resellerPrice.trim() },
-          pricePrefill,
-          PRICE_FIELDS,
-        ),
+        exact_fields: [
+          ...exactFieldsOf(
+            { price: price.trim(), costPrice: costPrice.trim(), resellerPrice: resellerPrice.trim() },
+            pricePrefill,
+            PRICE_FIELDS,
+          ),
+          // Re-review N5: a cost that was EMPTY when the form loaded and is still
+          // empty is untouched, not cleared; naming it (with no costPrice sent)
+          // lets the server keep a cost the sync filled since. A cost the admin
+          // blanked had a prefill, so it is not named and is still cleared.
+          ...(pricePrefill.costPrice === "" && costPrice.trim() === "" ? ["costPrice"] : []),
+        ],
         ...(warrantyDays.trim() ? { warrantyDays: Number(warrantyDays.trim()) } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(sortOrder.trim() ? { sortOrder: Number(sortOrder.trim()) } : {}),

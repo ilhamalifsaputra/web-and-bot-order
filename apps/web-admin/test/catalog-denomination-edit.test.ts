@@ -930,6 +930,52 @@ describe("pricing mode and unchanged-price regression", () => {
     });
   });
 
+  describe("N5: a stale form on a SKU that had no cost when it loaded", () => {
+    // The form loaded a "Menunggu HPP" SKU (no cost, automatic); the client
+    // names the untouched EMPTY cost in exact_fields and sends no costPrice.
+    async function loadedWithoutCost() {
+      const ctx = await automaticSku();
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "15");
+      await prisma.denomination.update({ where: { id: ctx.denom.id }, data: { price: "100000", costPrice: null, priceOverridden: false } });
+      const { costPrice: _omitted, ...rest } = ctx.body;
+      const stale = { ...rest, price: "100000", exact_fields: ["price", "costPrice"] };
+      // The sync then fills the cost and reprices.
+      await prisma.denomination.update({ where: { id: ctx.denom.id }, data: { price: "115000", costPrice: "100000" } });
+      return { ...ctx, stale };
+    }
+
+    it("a rename keeps the sync's cost, price and automatic status", async () => {
+      const { denom, stale } = await loadedWithoutCost();
+      const res = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...stale, name: "Renamed only" });
+      expect(res.statusCode, res.body).toBe(200);
+      const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+      expect(row.name).toBe("Renamed only");
+      expect(row.price.toString()).toBe("115000");
+      expect(row.costPrice!.toString()).toBe("100000");
+      expect(row.priceOverridden).toBe(false);
+    });
+
+    it("a price edit with the empty cost left alone keeps the sync's cost and judges the price against it", async () => {
+      const { denom, stale } = await loadedWithoutCost();
+      const res = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...stale, price: "120000", exact_fields: ["costPrice"] });
+      expect(res.statusCode, res.body).toBe(200);
+      const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+      expect(row.costPrice!.toString()).toBe("100000");
+      expect(row.price.toString()).toBe("120000");
+      expect(row.priceOverridden).toBe(true);
+    });
+
+    it("a cost the admin deliberately cleared (it had a value, not listed as exact) is still cleared", async () => {
+      const { denom, body } = await automaticSku();
+      const { costPrice: _cleared, ...rest } = body;
+      const res = await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...rest, exact_fields: ["price"] });
+      expect(res.statusCode, res.body).toBe(200);
+      const row = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+      expect(row.costPrice).toBeNull();
+      expect(row.priceOverridden).toBe(true);
+    });
+  });
+
   it("refuses automatic without cost and on a Premium Apps SKU", async () => {
     const { denom, body, category } = await automaticSku();
     expect((await patchJson(`/api/catalog/denominations/${denom.id}`, cookie, csrf, { ...body, costPrice: null, pricingMode: "auto" })).statusCode).toBe(400);

@@ -747,6 +747,15 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (body.costPrice != null && costPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Cost price") });
     }
+    // Re-review N5: the form names an untouched EMPTY cost prefill in
+    // exact_fields without sending a cost ("there was no cost when the form
+    // loaded, and the admin did not type one"). That is not a request to clear
+    // the cost: the sync may have filled it since the page loaded, so the
+    // row's current cost stands. A cost the admin deliberately blanked is
+    // neither sent nor listed, and is still cleared.
+    if (body.costPrice == null && exactFields(body).has("costPrice")) {
+      costPrice = existing.costPrice === null ? null : new Decimal(existing.costPrice.toString());
+    }
     const resellerPrice = body.resellerPrice != null ? parsePrice(body, "resellerPrice") : null;
     if (body.resellerPrice != null && resellerPrice === null) {
       return reply.code(400).send({ error: moneyFieldError("Reseller price") });

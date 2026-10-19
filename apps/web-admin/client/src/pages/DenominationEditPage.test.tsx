@@ -491,6 +491,32 @@ describe("pricing family separation", () => {
     expect(sent).not.toHaveProperty("pricingMode");
     expect(sent.exact_fields).toEqual(expect.arrayContaining(["price", "costPrice"]));
   });
+  it("N5: an untouched EMPTY cost prefill is named in exact_fields (no cost sent), so the server keeps a cost the sync filled meanwhile", async () => {
+    vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } :
+      gameDetail({ costPrice: null }, { source: "manual_no_cost", costPrice: null, calculatedPrice: null, grossMarginPct: null, grossProfit: null, pendingReprice: false }));
+    vi.mocked(apiPatch).mockResolvedValue({ id: 10 });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await screen.findByRole("combobox", { name: "Mode harga" });
+    fireEvent.change(screen.getByDisplayValue("Netflix 1 Month"), { target: { value: "Renamed" } });
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalled());
+    const sent = vi.mocked(apiPatch).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("costPrice");
+    expect(sent).not.toHaveProperty("pricingMode");
+    expect(sent.exact_fields).toEqual(expect.arrayContaining(["price", "costPrice"]));
+  });
+  it("N5: a cost the admin deliberately blanks (it had a value) is not named in exact_fields, so the server clears it", async () => {
+    vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } : gameDetail({ costPrice: "10000" }, {}));
+    vi.mocked(apiPatch).mockResolvedValue({ id: 10 });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await screen.findByRole("combobox", { name: "Mode harga" });
+    fireEvent.change(screen.getByDisplayValue("10000"), { target: { value: "" } });
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalled());
+    const sent = vi.mocked(apiPatch).mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("costPrice");
+    expect(sent.exact_fields).not.toContain("costPrice");
+  });
   it("shows automatic/manual controls for Game Top Up and preserves mode on unrelated save", async () => {
     vi.mocked(apiGet).mockImplementation(async url => url === "/api/catalog" ? { products: [] } : {
       product: { ...PRODUCT_DETAIL.product, category: { id: 1, name: "Games", group: "GAME_TOPUP" }, denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], price: "11000", priceOverridden: false, autoDeliverySource: "digiflazz", supplierSku: "game86", deliveryType: "manual_with_info", additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS) }] }, statsByDenom: { 10: { pricing } } });

@@ -146,8 +146,97 @@ describe("fillGameRegions", () => {
     const audit = await auditCount();
     const again = await fillGameRegions(db.prisma, { apply: true, categoryIds: [categoryId] });
     expect(again.updated).toBe(0);
-    expect(again.scopes[0]).toMatchObject({ status: "skipped", reason: "admin_set_region_present" });
+    expect(again.scopes[0]).toMatchObject({ status: "skipped", reason: "already_filled" });
     expect(await auditCount()).toBe(audit);
+  });
+
+  it("keeps admin_set_region_present when the stored labels differ from what would be written", async () => {
+    await mk("Game K (Global)", { gameRegion: GLOBAL });
+    await mk("Game K (Malaysia)", { gameRegion: GLOBAL });
+    const report = await fillGameRegions(db.prisma, { apply: true, categoryIds: [categoryId] });
+    expect(report.scopes[0]).toMatchObject({ status: "skipped", reason: "admin_set_region_present" });
+  });
+
+  it.each([["whitespace-only", "  "], ["empty string", ""]])("skips a scope whose member has a %s gameRegion and writes nothing", async (_n, value) => {
+    const a = await mk("Game W (Global)");
+    const b = await mk("Game W (Malaysia)", { gameRegion: value });
+    const audit = await auditCount();
+    const report = await fillGameRegions(db.prisma, { apply: true, categoryIds: [categoryId] });
+    expect(report.scopes[0]).toMatchObject({ status: "skipped", reason: "admin_set_region_present" });
+    expect(await regionOf(a.id)).toBeNull();
+    expect(await regionOf(b.id)).toBe(value);
+    expect(await auditCount()).toBe(audit);
+  });
+
+  describe("scope membership changing between read and write", () => {
+    const expectUntouched = async (report: Awaited<ReturnType<typeof fillGameRegions>>, ids: number[], audit: number) => {
+      expect(report.scopes[0]).toMatchObject({ status: "skipped", reason: "changed_concurrently" });
+      for (const id of ids) expect(await regionOf(id)).toBeNull();
+      expect(await auditCount()).toBe(audit);
+      expect(report.updated).toBe(0);
+    };
+
+    it("a new sibling appearing in the scope aborts it and writes nothing", async () => {
+      const a = await mk("Game N1 (Global)");
+      const b = await mk("Game N1 (Malaysia)");
+      const audit = await auditCount();
+      let extra = 0;
+      const report = await fillGameRegions(db.prisma, {
+        apply: true, categoryIds: [categoryId],
+        beforeScopeWrite: async () => { extra = (await mk("Game N1 (Philippines)")).id; },
+      });
+      await expectUntouched(report, [a.id, b.id, extra], audit);
+    });
+
+    it("a member archived mid-run aborts the scope and writes nothing", async () => {
+      const a = await mk("Game N2 (Global)");
+      const b = await mk("Game N2 (Malaysia)");
+      const audit = await auditCount();
+      const report = await fillGameRegions(db.prisma, {
+        apply: true, categoryIds: [categoryId],
+        beforeScopeWrite: async () => { await db.prisma.product.update({ where: { id: b.id }, data: { isArchived: true, isActive: false } }); },
+      });
+      await expectUntouched(report, [a.id, b.id], audit);
+    });
+
+    it("a member moved to another gameVariant mid-run aborts the scope and writes nothing", async () => {
+      const a = await mk("Game N3 (Global)");
+      const b = await mk("Game N3 (Malaysia)");
+      const audit = await auditCount();
+      const report = await fillGameRegions(db.prisma, {
+        apply: true, categoryIds: [categoryId],
+        beforeScopeWrite: async () => { await db.prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Moved" } }); },
+      });
+      expect(report.scopes[0]).toMatchObject({ status: "skipped", reason: "changed_concurrently" });
+      await expectUntouched({ ...report, updated: 0 }, [a.id, b.id], audit);
+    });
+  });
+
+  it("still returns the report with revisionBumpFailed when the catalog revision bump throws", async () => {
+    const a = await mk("Game B (Global)");
+    await mk("Game B (Malaysia)");
+    const report = await fillGameRegions(db.prisma, {
+      apply: true, categoryIds: [categoryId],
+      bumpRevision: async () => { throw new Error("boom"); },
+    });
+    expect(report).toMatchObject({ updated: 2, revisionBumpFailed: true });
+    expect(await regionOf(a.id)).toBe(GLOBAL);
+  });
+
+  it("an unexpected error in one scope stops the run but keeps the reports of scopes already written", async () => {
+    const first = await mk("Game E1 (Global)", { gameVariant: "A" });
+    await mk("Game E1 (Malaysia)", { gameVariant: "A" });
+    await mk("Game E2 (Global)", { gameVariant: "B" });
+    await mk("Game E2 (Malaysia)", { gameVariant: "B" });
+    let calls = 0;
+    const report = await fillGameRegions(db.prisma, {
+      apply: true, categoryIds: [categoryId],
+      beforeScopeWrite: async () => { if (++calls === 2) throw new Error("unexpected"); },
+    });
+    expect(report.scopes.map((s) => s.status)).toEqual(["written", "failed"]);
+    expect(report.scopes[1]!.error).toBe("unexpected");
+    expect(report.updated).toBe(2);
+    expect(await regionOf(first.id)).toBe(GLOBAL);
   });
 
   it("compare-and-set: a region set by an admin between read and write wins and the scope is rolled back", async () => {

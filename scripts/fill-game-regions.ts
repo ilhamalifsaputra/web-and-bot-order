@@ -10,7 +10,8 @@
  * Refuses to run when DATABASE_URL_PRISMA points at a host other than
  * localhost / 127.0.0.1 / ::1 unless --i-know-this-is-not-local is passed.
  * Take a fresh backup before running --apply on any shared database. Exits 1
- * if a scope could not be written because a product changed mid-run.
+ * if a scope could not be written (a product changed mid-run, or an unexpected
+ * error stopped the run) or the catalog revision bump failed.
  */
 import { prisma, fillGameRegions } from "@app/db";
 
@@ -77,18 +78,21 @@ async function main(): Promise<void> {
   console.log(apply ? "Fill game regions (APPLY)\n" : "Fill game regions (dry run, nothing written)\n");
   for (const scope of report.scopes) {
     const variant = scope.gameVariant ?? "(no variant)";
-    const outcome = scope.status === "skipped" ? `SKIPPED (${scope.reason})` : scope.status === "written" ? "WRITTEN" : "WOULD WRITE";
+    const outcome = scope.status === "failed" ? `FAILED (${scope.error})` : scope.status === "skipped" ? `SKIPPED (${scope.reason})` : scope.status === "written" ? "WRITTEN" : "WOULD WRITE";
     console.log(`- ${scope.categoryName} [#${scope.categoryId}] / ${variant}: ${outcome}`);
     for (const m of scope.members) {
       console.log(`    #${m.productId} "${m.name}" brand=${JSON.stringify(m.digiflazzBrand)} suffix=${JSON.stringify(m.suffix)} -> ${m.label ?? "(none)"}`);
     }
+    if (scope.reason === "already_filled") console.log("    every product already carries the label this backfill would write; nothing to do.");
     if (scope.unknownSuffixes?.length) console.log(`    unmapped suffixes: ${scope.unknownSuffixes.join(", ")}`);
   }
   console.log(`\n${report.scopes.length} scope(s); ${report.updated} product(s) updated, ${report.skipped} product(s) in skipped scopes.`);
+  if (report.scopes.some((s) => s.status === "failed")) console.log("A scope failed unexpectedly; the run stopped there and later scopes were NOT attempted.");
+  if (report.revisionBumpFailed) console.log("WARNING: regions were written but bumping the detection catalog revision failed; bump it manually.");
   if (!apply) console.log("Run again with --apply to write the scopes marked WOULD WRITE.");
   console.log("\n" + JSON.stringify(report, null, 2));
   await prisma.$disconnect();
-  if (report.scopes.some((s) => s.reason === "changed_concurrently")) process.exit(1);
+  if (report.scopes.some((s) => s.reason === "changed_concurrently" || s.status === "failed") || report.revisionBumpFailed) process.exit(1);
 }
 
 main().catch(async (e) => {

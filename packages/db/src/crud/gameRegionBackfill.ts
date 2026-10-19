@@ -16,18 +16,31 @@
  * Written only when ALL hold:
  *   - every member's digiflazzBrand has a suffix that gameRegionLabel() knows
  *     (publisher words and unlisted countries are never guessed);
- *   - no member already has a gameRegion (an admin-set value wins);
+ *   - no member already has a gameRegion (an admin-set value wins; ANY non-null
+ *     value counts, including '' and whitespace, and is never overwritten). A
+ *     scope whose members ALL already carry exactly the label we would write is
+ *     reported as `already_filled` (idempotent re-apply) instead;
  *   - no suffix looks doubled ("Game Malaysia (Malaysia)");
  *   - the members map to at least 2 distinct labels. A single-region scope
  *     gains nothing (the bot would just apply it as a filter) and would hide
  *     siblings imported later without a region, so it is reported as
  *     `single_region_scope` and left alone.
- * Every write is compare-and-set (`gameRegion` still empty), one short
- * transaction per scope; any lost race rolls the whole scope back.
+ * Every write is compare-and-set (`gameRegion` still null), one short
+ * transaction per scope. Inside it the scope is re-read with the same
+ * membership predicate used for reading, so a sibling imported, archived or
+ * moved to another variant/category in the read-to-write window aborts the
+ * scope (`changed_concurrently`) instead of leaving it half-labelled; any lost
+ * race rolls the whole scope back.
+ * An unexpected (non-race) error stops the run after the first failing scope:
+ * the partial report (scopes already written, plus the failed one with
+ * `error`) is returned rather than thrown away, and later scopes are not
+ * attempted. A failing catalog-revision bump is logged and flagged as
+ * `revisionBumpFailed` while the report is still returned.
  * Dry run (`apply: false`, the default) performs zero writes.
  */
 import { CategoryGroup } from "@app/core/enums";
 import { gameRegionLabel } from "@app/core";
+import { logger } from "@app/core/logger";
 import { parseProductRegion } from "@app/core/suppliers/digiflazz";
 import type { PrismaClient } from "../client";
 import { logAdminAction } from "./audit";
@@ -37,6 +50,7 @@ export const GAME_REGION_BACKFILL_ACTION = "game_region_backfill";
 
 export type GameRegionSkipReason =
   | "admin_set_region_present"
+  | "already_filled"
   | "unknown_suffix"
   | "possible_doubled_suffix"
   | "mixed"
@@ -60,10 +74,12 @@ export interface GameRegionScopeReport {
   categoryId: number;
   categoryName: string;
   gameVariant: string | null;
-  status: "written" | "would_write" | "skipped";
+  status: "written" | "would_write" | "skipped" | "failed";
   reason?: GameRegionSkipReason;
   /** Distinct unmapped suffixes (publisher words etc.), for `unknown_suffix`. */
   unknownSuffixes?: string[];
+  /** Message of the unexpected error, for `status: "failed"`. */
+  error?: string;
   members: GameRegionMember[];
 }
 
@@ -72,8 +88,10 @@ export interface GameRegionBackfillReport {
   scopes: GameRegionScopeReport[];
   /** Products whose gameRegion was written (always 0 on a dry run). */
   updated: number;
-  /** Products in skipped scopes. */
+  /** Products in skipped or failed scopes. */
   skipped: number;
+  /** True when data was written but the detection catalog revision bump then failed. */
+  revisionBumpFailed?: boolean;
 }
 
 export interface FillGameRegionsOptions {
@@ -81,6 +99,8 @@ export interface FillGameRegionsOptions {
   categoryIds?: number[];
   /** Test seam: runs after a scope was read and before its write transaction. */
   beforeScopeWrite?: (scope: GameRegionScopeReport) => Promise<void>;
+  /** Test seam: replaces the catalog revision bump. */
+  bumpRevision?: (db: PrismaClient) => Promise<unknown>;
 }
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -93,7 +113,8 @@ function looksDoubled(brand: string, suffix: string): boolean {
 }
 
 function skipReason(members: Array<GameRegionMember & { doubled: boolean }>): GameRegionSkipReason | null {
-  if (members.some((m) => (m.currentRegion ?? "").trim() !== "")) return "admin_set_region_present";
+  if (members.every((m) => m.label !== null && m.currentRegion === m.label)) return "already_filled";
+  if (members.some((m) => m.currentRegion !== null)) return "admin_set_region_present";
   if (members.some((m) => m.suffix !== null && m.label === null)) return "unknown_suffix";
   if (members.some((m) => m.doubled)) return "possible_doubled_suffix";
   const withSuffix = members.filter((m) => m.suffix !== null).length;
@@ -111,9 +132,10 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
     orderBy: { id: "asc" },
   });
   const report: GameRegionBackfillReport = { applied: apply, scopes: [], updated: 0, skipped: 0 };
-  const writtenByScope: GameRegionScopeReport[] = [];
+  let wroteAny = false;
+  let stopped = false;
 
-  for (const category of categories) {
+  categoryLoop: for (const category of categories) {
     const products = await db.product.findMany({
       where: { categoryId: category.id, isArchived: false },
       select: { id: true, name: true, digiflazzBrand: true, gameVariant: true, gameRegion: true },
@@ -149,35 +171,66 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
           scope.unknownSuffixes = [...new Set(members.filter((m) => m.suffix !== null && m.label === null).map((m) => m.suffix!))].sort();
         }
       } else if (apply) {
-        await opts.beforeScopeWrite?.(scope);
-        const ok = await writeScope(db, scope);
-        if (!ok) {
-          scope.status = "skipped";
-          scope.reason = "changed_concurrently";
-        } else {
-          writtenByScope.push(scope);
+        try {
+          await opts.beforeScopeWrite?.(scope);
+          const ok = await writeScope(db, scope, category.id, gameVariant);
+          if (!ok) {
+            scope.status = "skipped";
+            scope.reason = "changed_concurrently";
+          } else {
+            wroteAny = true;
+          }
+        } catch (err) {
+          scope.status = "failed";
+          scope.error = err instanceof Error ? err.message : String(err);
+          logger.error(
+            { err, categoryId: category.id },
+            "Game region backfill stopped after an unexpected error in one scope; scopes written before it are kept and later scopes were not attempted.",
+          );
+          stopped = true;
         }
       }
       report.scopes.push(scope);
+      if (stopped) break categoryLoop;
     }
   }
 
   for (const scope of report.scopes) {
     if (scope.status === "written") report.updated += scope.members.length;
-    else if (scope.status === "skipped") report.skipped += scope.members.length;
+    else if (scope.status === "skipped" || scope.status === "failed") report.skipped += scope.members.length;
   }
-  if (writtenByScope.length > 0) await bumpCatalogRevision(db);
+  if (wroteAny) {
+    try {
+      await (opts.bumpRevision ?? bumpCatalogRevision)(db);
+    } catch (err) {
+      report.revisionBumpFailed = true;
+      logger.warn(
+        { err },
+        "Game regions were written but bumping the detection catalog revision failed, so the bot may keep serving a stale catalog index until the revision is bumped another way.",
+      );
+    }
+  }
   return report;
 }
 
-/** Writes one scope in a short transaction; false means a concurrent edit won and nothing was kept. */
-async function writeScope(db: PrismaClient, scope: GameRegionScopeReport): Promise<boolean> {
+/**
+ * Writes one scope in a short transaction; false means a concurrent edit won and nothing was kept.
+ * Membership is re-read inside the transaction with the same predicate as the initial read.
+ */
+async function writeScope(db: PrismaClient, scope: GameRegionScopeReport, categoryId: number, gameVariant: string | null): Promise<boolean> {
   class LostRace extends Error {}
   try {
     await db.$transaction(async (tx) => {
+      const current = await tx.product.findMany({
+        where: { categoryId, isArchived: false, gameVariant },
+        select: { id: true },
+        orderBy: { id: "asc" },
+      });
+      const expected = scope.members.map((m) => m.productId).sort((a, b) => a - b);
+      if (current.length !== expected.length || current.some((p, i) => p.id !== expected[i])) throw new LostRace();
       for (const m of scope.members) {
         const { count } = await tx.product.updateMany({
-          where: { id: m.productId, OR: [{ gameRegion: null }, { gameRegion: "" }] },
+          where: { id: m.productId, categoryId, isArchived: false, gameVariant, gameRegion: null },
           data: { gameRegion: m.label! },
         });
         if (count !== 1) throw new LostRace();

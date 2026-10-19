@@ -241,3 +241,10 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Final source `pnpm doctor:full`: **637 files, 0 errors and 0 warnings across both clients and all categories**. `pnpm doctor:bugs` and `pnpm lint` clean (637 files); `pnpm doctor:changed` 245 files, no Bugs issues.
 - `pnpm typecheck`, `pnpm run pretest` and `pnpm exec vitest run --maxWorkers=2` all exit 0 against an isolated local PostgreSQL on port 5560: **644 test files, 11,984 tests, 0 failures**. Production build passed. Runtime check is covered by the client test suites (React 19, jsdom 30); no live browser session was run.
 - Not upgraded on purpose: TypeScript 7 (breaks typescript-eslint and the AST guard tests), Prisma 7 and `@grammyjs/conversations` 2 (separate branches), `prom-client` replacement, `@types/node` stays 22 to match `engines`.
+
+
+## Product description read-more toggle - 19 Oktober 2026
+
+- Worktree `product-description-readmore`, branch `worktree-product-description-readmore`, based on `master` at `b7a955f5`. Adds a shared `ProductDescription` component (3-line clamp below `md`, a "Read more" / "Show less" toggle only when the text is truncated) used by the Premium Apps product page and the Game Top Up page, plus the `web.read_more` / `web.read_less` locale keys.
+- Final source `pnpm doctor:full`: **641 files, 0 errors and 0 warnings across both clients and all categories** (full scan covers the Bugs category; a separate `pnpm doctor:bugs` run was skipped for memory reasons). `pnpm typecheck` and `pnpm run pretest` exit 0 against an isolated local PostgreSQL on port 5571.
+- Full `vitest` was **not proven green** before merge, on the owner's call: the first full run (`--maxWorkers=2`) ended with exit 4 and no summary after one admin test (`SalesAnalyticsCard`) timed out under load (it passes 10/10 alone); a rerun with a JSON reporter was still in progress at merge time. Focused tests for the touched files, `locales.test.ts`, and the storefront client typecheck pass.

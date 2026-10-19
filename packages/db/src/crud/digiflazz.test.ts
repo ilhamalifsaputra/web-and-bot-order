@@ -5949,4 +5949,24 @@ describe("importDigiflazzBrand — gameRegion seeding from the group's region", 
     ], category.id);
     expect(products.map((p) => p.gameRegion)).toEqual([null]);
   });
+
+  it("does not seed a region into a legacy category with no group (resolved as Premium Apps)", async () => {
+    const category = await createCategory(prisma, { name: "Legacy Cat" });
+    expect(category.group).toBeNull();
+    const products = await importAll([
+      priceListItem({ buyerSkuCode: "gf-1", brand: "Game F", productName: "Game F 100 Coin (Global)" }),
+    ], category.id);
+    expect(products.map((p) => p.gameRegion)).toEqual([null]);
+  });
+
+  it("keeps an existing Product whose region is NULL at NULL on re-import", async () => {
+    const category = await createCategory(prisma, { name: "Game Cat G", group: CategoryGroup.GAME_TOPUP });
+    const first = await createCatalogProduct(prisma, { categoryId: category.id, name: "Game G", digiflazzBrand: "Game G (Global)", isActive: false });
+    expect(first.gameRegion).toBeNull();
+    const [after] = await importAll([
+      priceListItem({ buyerSkuCode: "gg-1", brand: "Game G", productName: "Game G 100 Coin (Global)" }),
+    ], category.id);
+    expect(after!.id).toBe(first.id);
+    expect(after!.gameRegion).toBeNull();
+  });
 });

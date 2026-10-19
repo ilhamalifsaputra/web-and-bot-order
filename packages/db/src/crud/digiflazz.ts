@@ -46,6 +46,7 @@ import { recordEmailProviderHealth } from "./emailSecurity";
  */
 import { OrderStatus, OrderItemStatus, ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
+import { serviceForCategoryGroup } from "@app/core/services";
 import { quantizeMoney } from "@app/core/formatters";
 import {
   applyMarkupRule,
@@ -2712,8 +2713,10 @@ export async function importDigiflazzBrand(
     /** Seeded into Product.gameRegion on the CREATE path only, already a
      * label from gameRegionLabel (@app/core) — a known region, never a raw
      * publisher suffix. Never written on the reuse-existing path, so after
-     * birth the region is admin-owned. Ignored when the target category is
-     * explicitly Premium Apps: region is a Game Top-up field. */
+     * birth the region is admin-owned. Ignored unless the target category
+     * resolves to the Game Top-up service (serviceForCategoryGroup, so a
+     * legacy null-group category counts as Premium Apps): region is a Game
+     * Top-up field. */
     gameRegion?: string | null;
   },
 ): Promise<{ productId: number; denominationCount: number; report: { created: number; updated: number; unchanged: number; skipped: number; conflicts: number; errors: number } }> {
@@ -2757,7 +2760,10 @@ export async function importDigiflazzBrand(
         name: args.brand,
         digiflazzBrand: args.brand,
         gameVariant: args.gameVariant ?? null,
-        gameRegion: targetCategory?.group === CategoryGroup.PREMIUM_APPS ? null : args.gameRegion ?? null,
+        gameRegion:
+          targetCategory && serviceForCategoryGroup(targetCategory.group as CategoryGroup | null).group === CategoryGroup.GAME_TOPUP
+            ? args.gameRegion ?? null
+            : null,
         isActive: false,
       });
     }

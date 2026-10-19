@@ -11,6 +11,7 @@ import {
   InvalidDigiflazzMarkupError,
   importDigiflazzBrand,
   listAllCategories,
+  getCategory,
   logAdminAction,
   listDetectionIssues,
   resolveDetectionIssue,
@@ -28,6 +29,8 @@ import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { gameRegionLabel } from "@app/core";
+import { serviceForCategoryGroup } from "@app/core/services";
+import { CategoryGroup } from "@app/core/enums";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { exactFields, readMoneyField } from "../../lib/moneyField";
 import { getPriceListCached, getPriceListFresh } from "../../lib/digiflazzPriceListCache";
@@ -65,18 +68,51 @@ const NO_CREDENTIALS_ERROR = "Digiflazz credentials are not configured. Set them
 const RATE_LIMITED_ERROR = "Digiflazz sedang membatasi pengecekan price-list (rc 83). Coba lagi beberapa menit lagi.";
 const RATE_LIMITED_BODY = { error: RATE_LIMITED_ERROR, code: "digiflazz_rate_limited" } as const;
 
+/** Why an import group's new Product was created without an automatic region. */
+export type RegionSkippedReason = "no_price_list" | "no_matching_group" | "unrecognized_suffix" | "not_game_topup_category";
+
+/**
+ * Per-brand outcome of the automatic region derivation, returned to the admin
+ * as `regions[]` in the /sync/apply response (additive; the existing response
+ * fields are unchanged and the React client ignores unknown keys), aligned by
+ * index with the request's `brands`.
+ *  - `seeded`: a known region label was derived and handed to the import. The
+ *    import is create-only, so a brand whose Product already existed keeps the
+ *    region it has.
+ *  - `label`: the flagged label (e.g. "<flag> Indonesia"), or null.
+ *  - `skippedReason`: why no label was derived, or null when one was or when
+ *    the brand simply has no "(Region)" suffix (nothing to seed, not a failure).
+ *  - `suffix`: the raw "(Region)" suffix found in the price list, or null.
+ */
+export interface ImportRegionOutcome {
+  brand: string;
+  seeded: boolean;
+  label: string | null;
+  skippedReason: RegionSkippedReason | null;
+  suffix: string | null;
+}
+
 /**
  * The region label each import group's new Product is born with, aligned by
  * index with `requests`. Derived on the server from the group's own `region`
- * in the Digiflazz price list (the cached list the preview just showed), never
- * from a client-sent value or by re-parsing the brand string. Best effort:
- * with no credentials or no list available every entry is null and the import
- * proceeds without a region (an admin can set it, or the backfill can).
+ * in the Digiflazz price list, never from a client-sent value or by re-parsing
+ * the brand string. Best effort: with a non-Game category, no credentials or no
+ * list available every entry is skipped and the import proceeds without a
+ * region (an admin can set it, or the backfill can). The list comes through the
+ * 5-minute cache, so if the cache expired between the preview and this apply
+ * the region may come from a newer price list than the one the admin reviewed.
  */
-async function regionLabelsForImport(requests: Array<{ brand: string; gameVariant: string | null }>): Promise<Array<string | null>> {
-  const none = requests.map(() => null);
+async function regionOutcomesForImport(
+  categoryGroup: string | null,
+  requests: Array<{ brand: string; gameVariant: string | null }>,
+): Promise<ImportRegionOutcome[]> {
+  const skipAll = (skippedReason: RegionSkippedReason): ImportRegionOutcome[] =>
+    requests.map((request) => ({ brand: request.brand, seeded: false, label: null, skippedReason, suffix: null }));
+  if (serviceForCategoryGroup(categoryGroup as CategoryGroup | null).group !== CategoryGroup.GAME_TOPUP) {
+    return skipAll("not_game_topup_category");
+  }
   const creds = await getDigiflazzCreds(prisma);
-  if (!creds) return none;
+  if (!creds) return skipAll("no_price_list");
   let items;
   try {
     items = await getPriceListCached(creds);
@@ -85,12 +121,16 @@ async function regionLabelsForImport(requests: Array<{ brand: string; gameVarian
       { err },
       "The Digiflazz price list could not be loaded while importing brands, so the new products are created without an automatic game region; an admin can set it later.",
     );
-    return none;
+    return skipAll("no_price_list");
   }
   const groups = await groupDigiflazzPriceListByBrand(prisma, items.filter(isDigiflazzGameItem), { withDetection: false });
-  return requests.map((request) => {
+  return requests.map((request): ImportRegionOutcome => {
     const group = groups.find((g) => g.brand === request.brand && (g.gameVariant ?? null) === request.gameVariant);
-    return gameRegionLabel(group?.region);
+    if (!group) return { brand: request.brand, seeded: false, label: null, skippedReason: "no_matching_group", suffix: null };
+    const suffix = group.region ?? null;
+    const label = gameRegionLabel(suffix);
+    if (label) return { brand: request.brand, seeded: true, label, skippedReason: null, suffix };
+    return { brand: request.brand, seeded: false, label: null, skippedReason: suffix ? "unrecognized_suffix" : null, suffix };
   });
 }
 
@@ -348,7 +388,9 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         }
       }
 
-      const regionLabels = await regionLabelsForImport(brands.map((b, i) => ({ brand: b.brand, gameVariant: gameVariants[i] ?? null })));
+      const category = await getCategory(prisma, categoryId);
+      // A missing category is left to the import itself to reject, as before.
+      const regions = await regionOutcomesForImport(category?.group ?? null, brands.map((b, i) => ({ brand: b.brand, gameVariant: gameVariants[i] ?? null })));
 
       let brandsImported = 0;
       let denominationsImported = 0;
@@ -361,7 +403,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
             categoryId,
             rows: parsedRows[i] ?? [],
             gameVariant: gameVariants[i] ?? null,
-            gameRegion: regionLabels[i] ?? null,
+            gameRegion: regions[i]?.label ?? null,
           });
         } catch (err) {
           logger.warn({ brand: b.brand, brandsImported, denominationsImported, conflicts: err instanceof ValidationError ? 1 : 0, errors: err instanceof ValidationError ? 0 : 1 }, "Digiflazz import stopped");
@@ -384,7 +426,16 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         targetId: null,
         details: `Imported ${brandsImported} game(s) / ${denominationsImported} denomination(s) from Digiflazz.`,
       });
-      return reply.send({ ok: true, brandsImported, denominationsImported, reports, atomic: false });
+      const seededCount = regions.filter((r) => r.seeded).length;
+      const skippedByReason = new Map<string, number>();
+      for (const r of regions) if (r.skippedReason) skippedByReason.set(r.skippedReason, (skippedByReason.get(r.skippedReason) ?? 0) + 1);
+      logger.info(
+        { brandsImported, regionsSeeded: seededCount, regionsSkipped: Object.fromEntries(skippedByReason) },
+        `Digiflazz import finished: an automatic game region was derived for ${seededCount} of ${regions.length} imported brand(s); the others were created without one and an admin can set it later.`,
+      );
+      // `regions` is additive (see ImportRegionOutcome): it tells the admin which
+      // brands got an automatic region and why the rest did not.
+      return reply.send({ ok: true, brandsImported, denominationsImported, reports, regions, atomic: false });
     },
   );
 

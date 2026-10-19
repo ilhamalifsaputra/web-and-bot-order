@@ -16,6 +16,7 @@ import { buildApp } from "../src/server";
 import { Decimal } from "@app/core/money";
 import { DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
 import { clearDigiflazzPriceListCache } from "../src/lib/digiflazzPriceListCache";
+import { logger } from "@app/core/logger";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -283,6 +284,59 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       const publisher = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Publisher X)" } });
       expect(global.gameRegion).toBe("\u{1F310} Global");
       expect(publisher.gameRegion).toBeNull();
+      expect(res.json().regions).toEqual([
+        { brand: "Game B (Global)", seeded: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global" },
+        { brand: "Game B (Publisher X)", seeded: false, label: null, skippedReason: "unrecognized_suffix", suffix: "Publisher X" },
+      ]);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+    });
+
+    it("logs one info sentence per import with the outcome and no secrets", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "secret-key-123");
+      digiflazzMock.getPriceList.mockResolvedValue([
+        listItem("gb-g-1", "Game B 100 Coin (Global)"),
+        listItem("gb-x-1", "Game B 100 Coin (Publisher X)"),
+      ]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const info = vi.spyOn(logger, "info");
+      try {
+        await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+        const lines = info.mock.calls.filter((c) => String(c[1]).startsWith("Digiflazz import finished"));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]![1]).toContain("1 of 2 imported brand(s)");
+        expect(JSON.stringify(lines[0])).not.toContain("secret-key-123");
+      } finally {
+        info.mockRestore();
+      }
+    });
+
+    it("reports not_game_topup_category and makes no price-list call for a Premium Apps or ungrouped category", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      const premium = await createCategory(prisma, { name: "Apps", group: "PREMIUM_APPS" });
+      const legacy = await createCategory(prisma, { name: "Legacy" });
+      for (const category of [premium, legacy]) {
+        const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+          categoryId: category.id,
+          brands: [{ brand: `Game ${category.id} (Global)`, rows: [{ buyerSkuCode: `np-${category.id}`, productName: "Game 100 Coin (Global)", price: "16500", costPrice: "15000" }] }],
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json().regions).toEqual([
+          { brand: `Game ${category.id} (Global)`, seeded: false, label: null, skippedReason: "not_game_topup_category", suffix: null },
+        ]);
+      }
+      expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+    });
+
+    it("reports no_matching_group when the price list has no group for the brand", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("other-1", "Other Game 100 Coin")]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().regions.map((r: { skippedReason: string }) => r.skippedReason)).toEqual(["no_matching_group", "no_matching_group"]);
     });
 
     it("imports without a region when no price list is available", async () => {
@@ -292,6 +346,7 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
       expect(global.gameRegion).toBeNull();
       expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+      expect(res.json().regions.map((r: { seeded: boolean; skippedReason: string }) => [r.seeded, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
     });
 
     it("still imports, without a region, when the price list cannot be loaded", async () => {
@@ -301,6 +356,20 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
       const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
       expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+      expect(res.json().regions.map((r: { skippedReason: string }) => r.skippedReason)).toEqual(["no_price_list", "no_price_list"]);
+    });
+
+    it("still imports and reports no_price_list when a cold-cache fetch is refused with rc 83", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockRejectedValue(rateLimitedError());
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+      expect(res.json().regions.map((r: { seeded: boolean; skippedReason: string }) => [r.seeded, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
       const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
       expect(global.gameRegion).toBeNull();
     });

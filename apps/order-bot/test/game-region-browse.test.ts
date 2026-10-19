@@ -8,6 +8,8 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { routeCallback } from "../src/handlers/callbacks";
+import * as customer from "../src/handlers/customer";
+import { persistentLabel } from "../src/keyboards/customer";
 import { t } from "../src/util/i18n";
 
 // Game Top-up region -> product list navigation. Region is the only level
@@ -85,6 +87,11 @@ function regionIdx(sink: SentCall[], catId: number, label: string): number {
 }
 
 type Scratch = { activeNumberedScreen?: string };
+
+// Exact Telegram call counts of the typed Back from the product list (pinned from the observed run).
+const BACK_SEND = 0;
+const BACK_REPLY = 1;
+const BACK_EDIT = 0;
 
 describe.each([["unset", null], ["false", "false"], ["true", "true"]])("region picker with the flow v2 flag %s", (_label, value) => {
   beforeEach(async () => {
@@ -175,6 +182,62 @@ describe.each([["unset", null], ["false", "false"], ["true", "true"]])("region p
     expect(buttons(entry.sink).filter((b) => b.callback_data?.includes(":greg:"))).toHaveLength(2);
     expect(calls(entry.sink, "reply")).toHaveLength(1);
     expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
+
+    // Picking a region filters: only that region's products are listed.
+    const tap = tapCtx(entry.ctx, { callbackData: `v1:browse:greg:${cat.id}:${regionIdx(entry.sink, cat.id, "Indonesia")}` });
+    await routeCallback(tap.ctx);
+    for (const name of ["FF Alpha", "FF Bravo", "FF Charlie"]) expect(sentIncludes(tap.sink, name)).toBe(true);
+    expect(sentIncludes(tap.sink, "FF Delta")).toBe(false);
+    expect((tap.ctx.session.scratch as { gameRegionDimensionSkipped?: boolean }).gameRegionDimensionSkipped).toBeUndefined();
+  });
+
+  it("after the variant picker, a mixed region scope keeps the variant filter and lists every product of that variant", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "FF Global Indo", { gameVariant: "Global", gameRegion: "Indonesia" });
+    await product(cat.id, "FF Global Plain", { gameVariant: "Global" });
+    await product(cat.id, "FF Lite Asia", { gameVariant: "Lite", gameRegion: "Asia" });
+    await product(cat.id, "FF Lite Plain", { gameVariant: "Lite" });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_variant"))).toBe(true);
+    const variantBtn = buttons(entry.sink).find((b) => b.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`) && b.text.includes("Global"));
+
+    const tap = tapCtx(entry.ctx, { callbackData: variantBtn!.callback_data! });
+    await routeCallback(tap.ctx);
+    // Variant filter kept (no Lite product), both the regional and the region-less Global product listed.
+    expect(sentIncludes(tap.sink, "FF Global Indo")).toBe(true);
+    expect(sentIncludes(tap.sink, "FF Global Plain")).toBe(true);
+    expect(sentIncludes(tap.sink, "FF Lite Asia")).toBe(false);
+    expect(sentIncludes(tap.sink, "FF Lite Plain")).toBe(false);
+    expect(sentIncludes(tap.sink, t(tap.ctx, "browse.choose_region"))).toBe(false);
+    // The product query carries no gameRegion key: the scratch flag that removes it is set.
+    const scratch = tap.ctx.session.scratch as { gameRegionDimensionSkipped?: boolean; resolvedGameVariant?: string | null; resolvedGameRegion?: string | null };
+    expect(scratch.gameRegionDimensionSkipped).toBe(true);
+    expect(scratch.resolvedGameVariant).toBe("Global");
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+    expect(calls(tap.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(tap.sink, "reply")).toHaveLength(1);
+    expect(calls(tap.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(tap.sink, "deleteMessage")).toHaveLength(0);
+  });
+
+  it("Back from a mixed-scope product list reaches the category picker", async () => {
+    const cat = await freeFire();
+    await product(cat.id, "FF Echo");
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    expect(sentIncludes(entry.sink, "FF Echo")).toBe(true);
+
+    const back = customerCtx({ text: persistentLabel("back", "en"), session: { ...userSession(), scratch: entry.ctx.session.scratch } });
+    await customer.handleProductNumber(back.ctx);
+    expect(sentIncludes(back.sink, "Wild Rift")).toBe(true);
+    expect(sentIncludes(back.sink, "FF Alpha")).toBe(false);
+    expect(sentIncludes(back.sink, "What are you shopping for")).toBe(false);
+    expect(calls(back.sink, "sendMessage")).toHaveLength(BACK_SEND);
+    expect(calls(back.sink, "reply")).toHaveLength(BACK_REPLY);
+    expect(calls(back.sink, "editMessageText")).toHaveLength(BACK_EDIT);
+    expect(calls(back.sink, "deleteMessage")).toHaveLength(0);
   });
 
   it("a region-less product that is inactive does not make the scope mixed", async () => {

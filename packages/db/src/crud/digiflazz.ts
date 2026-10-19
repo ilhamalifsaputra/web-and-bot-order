@@ -2719,8 +2719,8 @@ export async function importDigiflazzBrand(
      * Top-up field. */
     gameRegion?: string | null;
   },
-): Promise<{ productId: number; denominationCount: number; report: { created: number; updated: number; unchanged: number; skipped: number; conflicts: number; errors: number } }> {
-  const { productId, touchedDenoms, report } = await db.$transaction(async (tx) => {
+): Promise<{ productId: number; denominationCount: number; productCreated: boolean; report: { created: number; updated: number; unchanged: number; skipped: number; conflicts: number; errors: number } }> {
+  const { productId, touchedDenoms, report, productCreated } = await db.$transaction(async (tx) => {
     // Serialize the lookup AND first creation, across brands and processes.
     // The unique supplier index also protects manual/CSV/provider-map writes.
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(73910421)::text`;
@@ -2743,7 +2743,7 @@ export async function importDigiflazzBrand(
     let product = owners[0]?.product ?? exactProducts[0];
     if (!product && requestedSkus.every(sku => ignoredSkus.has(sku))) {
       report.skipped = requestedSkus.length;
-      return { productId: tombstones[0]!.productId, touchedDenoms: [], report };
+      return { productId: tombstones[0]!.productId, touchedDenoms: [], report, productCreated: false };
     }
     if (product && product.digiflazzBrand !== args.brand && product.categoryId !== args.categoryId) {
       throw new ValidationError("Supplier SKU conflicts with the selected category.");
@@ -2751,7 +2751,12 @@ export async function importDigiflazzBrand(
     if (owners.length && product!.digiflazzBrand !== args.brand && owners.length !== requestedSkus.length) {
       throw new ValidationError("Brand identity changed with new SKUs. Review the existing product mapping before importing.");
     }
+    const productCreated = !product;
     if (!product) {
+      // Second category read on purpose: the route already checked the category
+      // group before deriving a region, but this write path re-checks it inside
+      // the transaction as a defence-in-depth guard, so a direct caller can never
+      // seed a game region into a Premium Apps or ungrouped product.
       const targetCategory = args.gameRegion
         ? await tx.category.findUnique({ where: { id: args.categoryId }, select: { group: true } })
         : null;
@@ -2848,7 +2853,7 @@ export async function importDigiflazzBrand(
       }
     }
 
-    return { productId: product.id, touchedDenoms, report };
+    return { productId: product.id, touchedDenoms, report, productCreated };
   });
 
   // Invalidate every Db handle's cached CatalogIndex so the next
@@ -2884,7 +2889,7 @@ export async function importDigiflazzBrand(
   // touchedDenoms.length, not args.rows.length — it reflects the deduped
   // row count (one entry per unique buyerSkuCode), not the raw input size.
   logger.info({ productId, ...report }, "Digiflazz import completed");
-  return { productId, denominationCount: touchedDenoms.length, report };
+  return { productId, denominationCount: touchedDenoms.length, productCreated, report };
 }
 
 /** Most new SKUs one resync run may add; the rest wait for the next run, so a

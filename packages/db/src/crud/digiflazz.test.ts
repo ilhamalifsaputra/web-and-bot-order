@@ -5938,6 +5938,20 @@ describe("importDigiflazzBrand — gameRegion seeding from the group's region", 
     expect(second!.gameRegion).toBe("Custom Region");
   });
 
+  it("reports productCreated true on the creating import and false when the Product is reused", async () => {
+    const category = await createCategory(prisma, { name: "Game Cat E", group: CategoryGroup.GAME_TOPUP });
+    const args = {
+      brand: "Game E (Global)",
+      categoryId: category.id,
+      gameRegion: gameRegionLabel("Global"),
+      rows: [{ buyerSkuCode: "ge-1", productName: "Game E 100 Coin (Global)", price: "16500", costPrice: "15000" }],
+    };
+    const first = await importDigiflazzBrand(prisma, args);
+    const second = await importDigiflazzBrand(prisma, args);
+    expect([first.productCreated, second.productCreated]).toEqual([true, false]);
+    expect(second.productId).toBe(first.productId);
+  });
+
   it("writes nothing for an unknown suffix", () => {
     expect(gameRegionLabel("Publisher X")).toBeNull();
   });

@@ -5,9 +5,14 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DigiflazzSyncPage } from "./DigiflazzSyncPage";
+import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 
 const PREVIEW_STORAGE_KEY = "digiflazz-sync-preview";
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -715,5 +720,58 @@ describe("DigiflazzSyncPage — Deteksi panel", () => {
         {},
       ),
     );
+  });
+});
+
+describe("DigiflazzSyncPage — automatic region outcome in the import toast", () => {
+  const OK_MESSAGE = "Imported 2 game(s), 2 denomination(s). Activate them from the Catalog page when ready.";
+  const region = (brand: string, over: Record<string, unknown> = {}) => ({
+    brand, written: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global", ...over,
+  });
+
+  async function importWith(extra: Record<string, unknown>) {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await syncWizard(user);
+    await selectCategory(user);
+    vi.mocked(apiPost).mockImplementation(async (url) => url.endsWith("/sync/preview")
+      ? PREVIEW_RESPONSE
+      : { ok: true, brandsImported: 2, denominationsImported: 2, ...extra } as never);
+    await user.click(screen.getByRole("button", { name: /impor terpilih/i }));
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalledTimes(1));
+    return String(vi.mocked(toast.success).mock.calls[0]![0]);
+  }
+
+  it("adds nothing when every brand got an automatic region", async () => {
+    expect(await importWith({ regions: [region("Mobile Legends"), region("Free Fire")] })).toBe(OK_MESSAGE);
+  });
+
+  it("adds nothing when the regions list is empty", async () => {
+    expect(await importWith({ regions: [] })).toBe(OK_MESSAGE);
+  });
+
+  it("adds nothing and does not crash when an older server sends no regions field", async () => {
+    expect(await importWith({})).toBe(OK_MESSAGE);
+  });
+
+  it("names the skipped brands' unrecognised suffixes, at most three, then an ellipsis", async () => {
+    const skipped = (suffix: string) => region(`Game (${suffix})`, { written: false, label: null, skippedReason: "unrecognized_suffix", suffix });
+    const message = await importWith({
+      regions: [region("A"), skipped("Garena"), skipped("Moonton"), skipped("Riot"), skipped("Tencent")],
+    });
+    expect(message).toContain("1 of 5 brands got an automatic region; 4 skipped (unrecognised suffix: Garena, Moonton, Riot, \u2026).");
+  });
+
+  it("gives a plain count for skips that are not about a suffix, and does not count brands whose product already existed as skipped", async () => {
+    const message = await importWith({
+      regions: [
+        region("A", { written: false, skippedReason: "product_exists" }),
+        region("B", { written: false, label: null, skippedReason: "no_price_list", suffix: null }),
+      ],
+    });
+    expect(message).toContain("0 of 2 brands got an automatic region; 1 skipped.");
+  });
+
+  it("stays silent when the only brand without a new region already existed", async () => {
+    expect(await importWith({ regions: [region("A", { written: false, skippedReason: "product_exists" })] })).toBe(OK_MESSAGE);
   });
 });

@@ -285,8 +285,8 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       expect(global.gameRegion).toBe("\u{1F310} Global");
       expect(publisher.gameRegion).toBeNull();
       expect(res.json().regions).toEqual([
-        { brand: "Game B (Global)", seeded: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global" },
-        { brand: "Game B (Publisher X)", seeded: false, label: null, skippedReason: "unrecognized_suffix", suffix: "Publisher X" },
+        { brand: "Game B (Global)", written: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global" },
+        { brand: "Game B (Publisher X)", written: false, label: null, skippedReason: "unrecognized_suffix", suffix: "Publisher X" },
       ]);
       expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
     });
@@ -323,10 +323,66 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
         });
         expect(res.statusCode, res.body).toBe(200);
         expect(res.json().regions).toEqual([
-          { brand: `Game ${category.id} (Global)`, seeded: false, label: null, skippedReason: "not_game_topup_category", suffix: null },
+          { brand: `Game ${category.id} (Global)`, written: false, label: null, skippedReason: "not_game_topup_category", suffix: null },
         ]);
       }
       expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+    });
+
+    it("reports no_suffix for a brand without a region suffix", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("gb-n-1", "Game B 100 Coin")]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+        categoryId: category.id,
+        brands: [{ brand: "Game B", rows: [{ buyerSkuCode: "gb-n-1", productName: "Game B 100 Coin", price: "16500", costPrice: "15000" }] }],
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().regions).toEqual([
+        { brand: "Game B", written: false, label: null, skippedReason: "no_suffix", suffix: null },
+      ]);
+    });
+
+    it("reports product_exists (derived but not applied) when the brand's Product already existed", async () => {
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      // First import without credentials: the Product is born with no region.
+      const first = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(first.statusCode, first.body).toBe(200);
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([
+        listItem("gb-g-1", "Game B 100 Coin (Global)"),
+        listItem("gb-x-1", "Game B 100 Coin (Publisher X)"),
+      ]);
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().regions).toEqual([
+        { brand: "Game B (Global)", written: false, label: "\u{1F310} Global", skippedReason: "product_exists", suffix: "Global" },
+        { brand: "Game B (Publisher X)", written: false, label: null, skippedReason: "unrecognized_suffix", suffix: "Publisher X" },
+      ]);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+    });
+
+    it("includes regions for the brands already committed in a 409 partial-commit answer", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("gb-g-1", "Game B 100 Coin (Global)")]);
+      const first = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const second = await createCategory(prisma, { name: "Top Up Game 2", group: "GAME_TOPUP" });
+      // The second brand's SKU is already owned by a Product in another category.
+      const seed = await postJson("/api/catalog/digiflazz/sync/apply", {
+        categoryId: first.id,
+        brands: [{ brand: "Other Brand", rows: [{ buyerSkuCode: "gb-x-1", productName: "Other 100", price: "16500", costPrice: "15000" }] }],
+      });
+      expect(seed.statusCode, seed.body).toBe(200);
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(second.id));
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json()).toMatchObject({ brandsImported: 1, atomic: false });
+      expect(res.json().regions).toEqual([
+        { brand: "Game B (Global)", written: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global" },
+      ]);
     });
 
     it("reports no_matching_group when the price list has no group for the brand", async () => {
@@ -346,7 +402,7 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
       expect(global.gameRegion).toBeNull();
       expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
-      expect(res.json().regions.map((r: { seeded: boolean; skippedReason: string }) => [r.seeded, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
     });
 
     it("still imports, without a region, when the price list cannot be loaded", async () => {
@@ -369,7 +425,7 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
       expect(res.statusCode, res.body).toBe(200);
       expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
-      expect(res.json().regions.map((r: { seeded: boolean; skippedReason: string }) => [r.seeded, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
       const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
       expect(global.gameRegion).toBeNull();
     });

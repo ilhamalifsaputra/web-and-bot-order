@@ -8,7 +8,7 @@ Cakupan: hanya Game Top-up (`CategoryGroup.GAME_TOPUP`), kecuali bagian TTL/remi
 
 | # | Keputusan | Sumber |
 |---|---|---|
-| D1 | Server menjadi langkah katalog (Game Top-up saja) | Pemilik |
+| D1 | Tidak ada level Server terpisah: pada data Digiflazz region = server, jadi Region menjadi satu-satunya level di bawah edisi (menggantikan usulan awal level Server) | Pemilik |
 | D2 | Gift Card tidak dibuat sekarang; desain harus bisa menampung service baru | Pemilik |
 | D3 | TTL pembayaran per rail: QRIS/PayDisini 10, Binance Pay 10, Bybit UID 10, Bybit BSC 30, NOWPayments 30 menit | Pemilik |
 | D4 | Reminder saat sisa 5 menit, lalu auto-cancel + push pesan batal + edit pesan order | Pemilik |
@@ -24,8 +24,7 @@ Level pilihan untuk satu Category dihitung dari data, bukan hardcode:
 
 1. **Variant** (`Product.gameVariant`) — sudah ada.
 2. **Region** (`Product.gameRegion`) — sudah ada.
-3. **Server** (`Product.gameServer`) — **baru**.
-4. **SKU** (`Denomination`).
+3. **SKU** (`Denomination`).
 
 Aturan tiap level, sama dengan perilaku variant/region sekarang (`browseCategoryEntry`, `customer.ts:491`):
 
@@ -35,32 +34,7 @@ Aturan tiap level, sama dengan perilaku variant/region sekarang (`browseCategory
 - Satu produk tersisa setelah filter → langsung ke SKU picker.
 - Pilihan memakai indeks ke snapshot di `scratch`; callback hanya membawa indeks/id numerik (< 64 byte).
 
-Urutan hierarki: Variant → Region → Server. Server hanya valid di dalam region yang dipilih; filter berlaku kumulatif.
-
-### 2.1 Skema Server (perubahan skema, perlu persetujuan)
-
-Usulan minimal: **satu kolom nullable** pada `products`, meniru `gameRegion`.
-
-```prisma
-/// Admin-set free-text server/zone label (e.g. "Asia - Indonesia"). Same
-/// semantics as gameRegion: null = no server distinction, bot skips the picker.
-gameServer String? @map("game_server")
-```
-
-Alasan memilih kolom, bukan tabel:
-
-- Pola `gameVariant`/`gameRegion` sudah terbukti, termasuk admin UI, import Digiflazz, dan tes.
-- Mapping provider tetap per `Denomination` (`supplierSku`, `providerInputMapping`), jadi tidak butuh tabel mapping server.
-- Migrasi aditif dan nullable: tidak ada backfill wajib. **Tidak** aman untuk rollback dengan mengganti image saja: `prisma db push` milik image lama ingin men-drop kolom `game_server`, sehingga menolak tanpa `--accept-data-loss`; entrypoint gagal dan container tidak start. Rollback yang sebenarnya adalah restore dump PostgreSQL pra-deploy (`deploy/backup/restore.sh`), lalu pilih versi kode yang cocok dengan dump itu. Lihat `docs/MIGRATIONS.md`, bagian "Cara rollback migrasi". Mematikan `game_topup_flow_v2_enabled` hanya menyembunyikan perilaku baru di bot; kolom tetap ada.
-
-Alternatif (tabel `GameServer` dengan relasi) ditolak untuk fase ini: lebih banyak join, tidak ada kebutuhan data per-server selain label.
-
-Dampak yang harus dicakup di Phase 2:
-- `packages/db/src/crud/catalog.ts` (daftar nilai server per kategori, seperti `listCategoryGameRegions`).
-- `apps/web-admin/src/routes/api/catalog.ts` dan form admin (field hanya tampil untuk Game Top-up, tersembunyi dan tidak ikut validasi untuk Premium Apps, sesuai aturan AGENTS.md).
-- `apps/order-bot` keyboard dan handler, kontrak teks di `locales/en.json` dan `id.json`.
-- Digiflazz import: server **tidak** diisi otomatis; admin mengisi (sama seperti `gameRegion`, yang tidak di-backfill).
-- Migrasi: `prisma db push` / migration file; migrasi live dan restart order-bot sebelum kode baru jalan (aturan "Schema change on deploy").
+Urutan hierarki: Variant → Region → SKU. Region hanya valid di dalam edisi yang dipilih; filter berlaku kumulatif.
 
 ## 3. Kontrak input akun (satu pesan)
 
@@ -106,8 +80,6 @@ Tidak ada tabel baru. Draft tetap di `session.scratch` (Postgres-backed, TTL 24 
 
 | Kunci baru | Isi |
 |---|---|
-| `gameServerEntries` | snapshot daftar server untuk indeks callback |
-| `resolvedGameServer` | server terpilih |
 | `reviewPriceTotal` | total (string Decimal) yang ditampilkan di layar review, untuk `expectedTotal` |
 
 Aturan:
@@ -118,13 +90,13 @@ Aturan:
 
 ## 5. Navigasi, back stack, dan siklus pesan
 
-- Back tetap dihitung dari `scratch` (`handleBackButton`, `customer.ts:241`); urutan pengecekan diperluas dengan server di antara region dan product.
+- Back tetap dihitung dari `scratch` (`handleBackButton`, `customer.ts:241`); urutan pengecekan tidak berubah (variant, region, product).
 - Satu bubble navigasi aktif: `smartEdit` untuk callback, `menuAnchor`/`editAnchor` untuk input teks. Input yang diterima dihapus dengan `consumeInput`.
 - Matriks edit/kirim/hapus (mengikuti "Telegram message budget" di AGENTS.md):
 
 | Kejadian | Aksi |
 |---|---|
-| Pilih level (variant/region/server/SKU) | edit bubble aktif |
+| Pilih level (variant/region/SKU) | edit bubble aktif |
 | Input akun valid | hapus pesan user, edit prompt menjadi review |
 | Input akun salah | hapus pesan user, edit prompt dengan galat + contoh |
 | Change details | edit review kembali ke prompt input |
@@ -210,24 +182,24 @@ TTL baru tidak di bawah flag (konfigurasi env); rollback = kembalikan nilai env.
 
 Fixture di `apps/order-bot/test/helpers` / `__fixtures__` (perubahan fixture memicu seluruh suite):
 - Mobile Legends: dua field (User ID + Zone), satu region.
-- Free Fire: satu field, region + server.
+- Free Fire: satu field, region.
 - Delta Force: satu field, tanpa region.
-- Kategori campuran (sebagian produk tanpa server), satu server saja (dilewati), nol SKU aktif.
+- Kategori campuran (sebagian produk tanpa region), satu region saja (dilewati), nol SKU aktif.
 - Kategori Premium Apps sebagai kontrol: tidak ada kontrol game yang muncul.
 
 Tes yang harus ada, per fase:
-- Phase 2: pohon level (variant/region/server), skip, kategori campuran, stale callback, search (exact/prefix/kosong/panjang), `From`, jumlah panggilan Telegram.
+- Phase 2: pohon level (variant/region), skip, kategori campuran, stale callback, search (exact/prefix/kosong/panjang), `From`, jumlah panggilan Telegram.
 - Phase 3: parser (`123456789 1234`, `123456789,1234`, `123456789:1234`, leading zero, angka panjang, angka menyambung ditolak, `A(B)` ditoleransi tetapi tidak muncul di teks apa pun, ambigu, kurang field, bukan angka), nickname `unavailable` tidak memblokir, tap ganda Continue tidak membuat dua order, harga berubah → reconfirm, user lain menekan callback.
 - Phase 4: reminder untuk pending, dibayar sebelum jadwal, dibayar saat dikirim, expired, cancelled, worker ganda, restart, Telegram gagal, sisa waktu < lead, per rail TTL.
 - Guard baru: parser murni (tanpa DB) masuk `test:guards`; pengecekan panjang `callback_data` ≤ 64 byte untuk callback baru.
 
-Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm test:changed` per tugas, `pnpm typecheck && pnpm test` penuh sekali sebelum merge, dan `pnpm doctor:full` bersih bila ada perubahan klien React (form admin untuk `gameServer`).
+Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm test:changed` per tugas, `pnpm typecheck && pnpm test` penuh sekali sebelum merge, dan `pnpm doctor:full` bersih bila ada perubahan klien React.
 
 ## 11. Urutan implementasi dan model
 
 | Fase | Isi | Catatan |
 |---|---|---|
-| 2 | Kolom `gameServer`, level server di bot, admin field, label `From`, search, flag | Skema aditif; butuh persetujuan migrasi |
+| 2 | Label `From`, hint, search, flag | Tanpa perubahan skema |
 | 3 | Parser, review, Continue/Change details, `expectedTotal` | Logika uang → Opus untuk implementasi dan review akhir |
 | 4 | TTL per rail, reminder, verifikasi edit pesan batal | Menyentuh pembayaran → Opus; audit race sebelum ubah default |
 | 5 | Regresi penuh, stub E2E, runbook migrasi dan rollback | Tidak ada deploy otomatis |
@@ -241,11 +213,9 @@ Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm t
 
 ## 13. Hasil Phase 2
 
-Semua perilaku baru di bawah ini berada di balik `game_topup_flow_v2_enabled` (`DEFAULT_OFF`, `packages/core/src/booleanSettings.ts`; dibaca lewat `isGameTopupFlowV2Enabled(db)`). Mati = perilaku bot lama, kecuali qualifier server: kolom, crud, field admin, dan kontrak kanonis tidak di bawah flag, jadi begitu ada produk dengan Game Server terisi, label SKU di bot memuat server tersebut walau flag mati (sudah diterima owner). Storefront menyembunyikan server (API storefront mengosongkan `gameServer`). Level Server dilewati bila cakupan campuran, dideteksi per ketukan lewat `countCategoryProductsWithoutGameServer`, bukan lewat kunci scratch.
+Semua perilaku baru di bawah ini berada di balik `game_topup_flow_v2_enabled` (`DEFAULT_OFF`, `packages/core/src/booleanSettings.ts`; dibaca lewat `isGameTopupFlowV2Enabled(db)`; saklar ada di Settings admin dan setiap perubahannya diaudit). Mati = perilaku bot lama persis: langkah navigasi variant → region → daftar produk tidak berubah, dan hint, label `From`, serta `/search` baru hanya muncul bila flag menyala. Tidak ada perubahan skema atau kontrak data pada Phase 2: pada data Digiflazz region = server, jadi tidak ada level Server terpisah.
 
 Selesai:
-- Kolom `Product.gameServer` (migrasi `20261013090000_add_product_game_server`), crud `listCategoryGameServers` dan `countCategoryProductsWithoutGameServer`, field admin "Game Server" (hanya Game Top-up; nilai tersimpan dipertahankan saat field tersembunyi), dan `gameServer` sebagai qualifier kontrak kanonis (urutan region, server, variant).
-- Level Server di bot setelah Region; dilewati bila cakupan campuran atau server kurang dari dua.
 - Label harga `From <harga>` pada daftar produk Game Top-up.
 - Hint satu baris `hint.*` per layar (tabel di bawah).
 - `/search` khusus Game Top-up: berperingkat, label tipe layanan, halaman, "Search again". Alias dibaca dari tabel basis pengetahuan deteksi `detection_aliases`; daftar bawaannya **kosong**, jadi alias baru bekerja setelah admin menambahkan baris.
@@ -255,7 +225,6 @@ Selesai:
 | Daftar game | `hint.game_list` | `Pick a game, or type /search to look one up.` |
 | Variant | `hint.variant` | `Choose the game edition.` |
 | Region | `hint.region` | `Choose your account region.` |
-| Server | `hint.server` | `Choose your account server.` |
 | Paket | `hint.packs` | `Pick a pack to see its details.` |
 | Search | `hint.search`, `hint.search_empty` | `Type a game name, then pick a result.` |
 | Input akun (Phase 3) | belum ada | `123456789 1234` |

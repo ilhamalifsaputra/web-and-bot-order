@@ -398,8 +398,13 @@ export async function getCategoryRule(db: Db, categoryId: number): Promise<Marku
 
 /** Every category rule without throwing: the readable ones by category id
  * (a category missing from `rules` inherits the global default), and the
- * names of the categories whose stored rule cannot be read. */
-export async function readCategoryRules(db: Db): Promise<{ rules: Map<number, MarkupRule>; unreadable: string[] }> {
+ * names of the categories whose stored rule cannot be read (`unreadable`,
+ * sorted by name), also keyed by id (`unreadableById`). */
+export async function readCategoryRules(db: Db): Promise<{
+  rules: Map<number, MarkupRule>;
+  unreadable: string[];
+  unreadableById: Map<number, string>;
+}> {
   const rows = await db.category.findMany({
     where: { markupType: { not: null } },
     select: { id: true, name: true, markupType: true, markupValue: true },
@@ -407,12 +412,15 @@ export async function readCategoryRules(db: Db): Promise<{ rules: Map<number, Ma
   });
   const rules = new Map<number, MarkupRule>();
   const unreadable: string[] = [];
+  const unreadableById = new Map<number, string>();
   for (const row of rows) {
     const rule = storedCategoryRule(row);
-    if (rule === UNREADABLE_CATEGORY_RULE) unreadable.push(row.name);
-    else if (rule) rules.set(row.id, rule);
+    if (rule === UNREADABLE_CATEGORY_RULE) {
+      unreadable.push(row.name);
+      unreadableById.set(row.id, row.name);
+    } else if (rule) rules.set(row.id, rule);
   }
-  return { rules, unreadable };
+  return { rules, unreadable, unreadableById };
 }
 
 /** categoryId → rule, for every category with a rule. A category missing from

@@ -5731,6 +5731,64 @@ describe("Digiflazz pricing — category rules and rounding (Pricing & Margins)"
     expect(audit?.details).toContain('"Voucher Junk"');
   });
 
+  it("N1: an unreadable category rule only stops its own category; every other category is still repriced, auto-added and reactivated", async () => {
+    await setGlobalPercent("10");
+    const good = await createCategory(prisma, "Voucher Good");
+    const junk = await createCategory(prisma, "Voucher Junk N1");
+    const pGood = await importBrand("Brand Good", good.id, [row("g1", "11000", "10000"), row("g2", "11000", "10000")]);
+    const pJunk = await importBrand("Brand Junky", junk.id, [row("k1", "11000", "10000"), row("k2", "11000", "10000")]);
+    const g2 = await prisma.denomination.findFirstOrThrow({ where: { productId: pGood, supplierSku: "g2" } });
+    const k2 = await prisma.denomination.findFirstOrThrow({ where: { productId: pJunk, supplierSku: "k2" } });
+    // Both g2 and k2 were switched off by an earlier sync (remembered).
+    await prisma.denomination.updateMany({ where: { id: { in: [g2.id, k2.id] } }, data: { isActive: false } });
+    await setSetting(prisma, "digiflazz_auto_deactivated_ids", JSON.stringify([g2.id, k2.id]));
+    await prisma.category.update({ where: { id: junk.id }, data: { markupType: "weird", markupValue: "10" } });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "g1", productName: "Brand Good 1", brand: "Brand Good", price: new Decimal(10500) }),
+      priceListItem({ buyerSkuCode: "g2", productName: "Brand Good 2", brand: "Brand Good", price: new Decimal(10000) }),
+      priceListItem({ buyerSkuCode: "g3", productName: "Brand Good 3", brand: "Brand Good", price: new Decimal(20000) }),
+      priceListItem({ buyerSkuCode: "k1", productName: "Brand Junky 1", brand: "Brand Junky", price: new Decimal(10500) }),
+      priceListItem({ buyerSkuCode: "k2", productName: "Brand Junky 2", brand: "Brand Junky", price: new Decimal(10000) }),
+      priceListItem({ buyerSkuCode: "k3", productName: "Brand Junky 3", brand: "Brand Junky", price: new Decimal(20000) }),
+    ]);
+
+    const counts = await resyncDigiflazzCatalog(prisma);
+    const sku = (supplierSku: string) => prisma.denomination.findFirstOrThrow({ where: { supplierSku } });
+
+    // The readable category goes on as normal.
+    expect((await sku("g1")).price.toString()).toBe("11550");
+    expect((await sku("g2")).isActive).toBe(true);
+    expect((await sku("g3")).price.toString()).toBe("22000");
+    expect(counts).toMatchObject({ added: 1, reactivated: 1 });
+    // The unreadable category: cost updated, price kept, nothing added or reactivated.
+    const k1 = await sku("k1");
+    expect(k1.price.toString()).toBe("11000");
+    expect(k1.costPrice!.toString()).toBe("10500");
+    expect((await sku("k2")).isActive).toBe(false);
+    expect(await prisma.denomination.count({ where: { supplierSku: "k3" } })).toBe(0);
+    expect(JSON.parse((await prisma.setting.findUniqueOrThrow({ where: { key: "digiflazz_auto_deactivated_ids" } })).value)).toEqual([k2.id]);
+    // One audit names the category; the normal sync summary is still written.
+    const unreadable = await prisma.auditLog.findMany({ where: { action: "digiflazz_markup_unreadable" } });
+    expect(unreadable).toHaveLength(1);
+    expect(unreadable[0]!.details).toContain('"Voucher Junk N1"');
+    expect(await prisma.auditLog.count({ where: { action: "digiflazz_catalog_resync" } })).toBe(1);
+  });
+
+  it("N1: an unreadable global markup still stops repricing, auto-add and reactivation everywhere", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const good = await createCategory(prisma, "Voucher Global");
+    await importBrand("Brand Glob", good.id, [row("q1", "11000", "10000")]);
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10%");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "q1", productName: "Brand Glob 1", brand: "Brand Glob", price: new Decimal(10500) }),
+      priceListItem({ buyerSkuCode: "q2", productName: "Brand Glob 2", brand: "Brand Glob", price: new Decimal(20000) }),
+    ]);
+    const counts = await resyncDigiflazzCatalog(prisma);
+    expect(counts.added).toBe(0);
+    expect((await prisma.denomination.findFirstOrThrow({ where: { supplierSku: "q1" } })).price.toString()).toBe("11000");
+  });
+
   describe("I1: the circuit breaker judges supplier movement, not a policy change", () => {
     async function sixAutoSkus(catId: number, brand: string, prefix: string, cost: string, price: string) {
       return importBrand(brand, catId, Array.from({ length: 6 }, (_, i) => row(`${prefix}${i}`, price, cost)));

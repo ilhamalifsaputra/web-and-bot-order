@@ -16,7 +16,7 @@ import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtBalance, formatIdrFor, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
-import { LIST_LABEL_MAX_CHARS, MAX_LABEL_WIDTH, buttonNameBudget, visualWidth } from "@app/core/buttonLimits";
+import { LIST_LABEL_MAX_CHARS, MAX_LABEL_WIDTH, visualWidth } from "@app/core/buttonLimits";
 import type { CatalogButton } from "../util/canonicalPresenter";
 
 export const CB_PREFIX = "v1";
@@ -545,34 +545,6 @@ function clipToCells(text: string, maxCells: number): string {
     out += ch;
   }
   return `${out}…`;
-}
-
-/**
- * Game Top Up server picker, shown after the region (flag-gated by
- * `game_topup_flow_v2_enabled`) — one button per server string, two per row,
- * index-addressed like `gameRegionPickerKb`. The button text is the raw server
- * label cut to the admin's `gameServer` budget, so a name that respects the
- * hint is never shortened. `backTarget` is built by the caller: it re-opens
- * the region picker when one was shown, else the step above it.
- */
-export function gameServerPickerKb(
-  servers: string[],
-  categoryId: number,
-  backTarget: string,
-  lang: string,
-): InlineKeyboard {
-  const budget = buttonNameBudget("gameServer");
-  const rows: Btn[][] = [];
-  for (let i = 0; i < servers.length; i += 2) {
-    rows.push(
-      servers.slice(i, i + 2).map((s, j) => ({
-        text: clipToCells(s, budget),
-        data: cb("browse", "gsrv", categoryId, i + j),
-      })),
-    );
-  }
-  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
-  return ik(rows);
 }
 
 export function qtyInputCancelKb(denominationId: number, lang: string): InlineKeyboard {

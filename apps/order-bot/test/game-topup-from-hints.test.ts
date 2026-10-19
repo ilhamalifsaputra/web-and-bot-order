@@ -19,7 +19,7 @@ import { serviceForCategoryGroup } from "@app/core/services";
 
 const FLAG = "game_topup_flow_v2_enabled";
 const EXPECTED_SKU_SENDS = 1;
-const HINT_KEYS = ["hint.game_list", "hint.variant", "hint.region", "hint.server", "hint.packs"] as const;
+const HINT_KEYS = ["hint.game_list", "hint.variant", "hint.region", "hint.packs"] as const;
 
 let sample: SampleData;
 
@@ -67,12 +67,12 @@ async function product(
   categoryId: number,
   name: string,
   prices: Array<number | { price: number; resellerPrice?: number }>,
-  dims: { gameVariant?: string | null; gameRegion?: string | null; gameServer?: string | null } = {},
+  dims: { gameVariant?: string | null; gameRegion?: string | null } = {},
 ) {
   const p = await createCatalogProduct(prisma, { categoryId, name });
   await prisma.product.update({
     where: { id: p.id },
-    data: { gameVariant: dims.gameVariant ?? null, gameRegion: dims.gameRegion ?? null, gameServer: dims.gameServer ?? null },
+    data: { gameVariant: dims.gameVariant ?? null, gameRegion: dims.gameRegion ?? null },
   });
   const denoms = [];
   for (const [i, entry] of prices.entries()) {
@@ -216,12 +216,12 @@ describe("hints, flag ON", () => {
     expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
 
-  it("variant, region and server pickers each carry exactly their own hint", async () => {
+  it("variant and region pickers, then the product list, each carry exactly their own hint", async () => {
     const cat = await gameCategory("Layered Game");
-    await product(cat.id, "LG A", [15000], { gameVariant: "Global", gameRegion: "Asia", gameServer: "S1" });
-    await product(cat.id, "LG B", [15000], { gameVariant: "Global", gameRegion: "Asia", gameServer: "S2" });
-    await product(cat.id, "LG C", [15000], { gameVariant: "Lite", gameRegion: "Asia", gameServer: "S1" });
-    await product(cat.id, "LG D", [15000], { gameVariant: "Global", gameRegion: "EU", gameServer: "S1" });
+    await product(cat.id, "LG A", [15000], { gameVariant: "Global", gameRegion: "Asia" });
+    await product(cat.id, "LG B", [15000], { gameVariant: "Global", gameRegion: "Asia" });
+    await product(cat.id, "LG C", [15000], { gameVariant: "Lite", gameRegion: "Asia" });
+    await product(cat.id, "LG D", [15000], { gameVariant: "Global", gameRegion: "EU" });
 
     const variantStep = await openList(cat.id);
     expect(bubbleText(variantStep.sink).endsWith(t(variantStep.ctx, "hint.variant"))).toBe(true);
@@ -235,13 +235,13 @@ describe("hints, flag ON", () => {
     expect(calls(regionStep.sink, "editMessageText")).toHaveLength(1);
     expect(calls(regionStep.sink, "sendMessage")).toHaveLength(0);
 
-    const serverStep = tapCtx(regionStep.ctx, {}, { callbackData: `v1:browse:greg:${cat.id}:0` });
-    await routeCallback(serverStep.ctx);
-    expect(bubbleText(serverStep.sink).endsWith(t(serverStep.ctx, "hint.server"))).toBe(true);
-    expect(calls(serverStep.sink, "editMessageText")).toHaveLength(1);
-    expect(calls(serverStep.sink, "sendMessage")).toHaveLength(0);
+    const listStep = tapCtx(regionStep.ctx, {}, { callbackData: `v1:browse:greg:${cat.id}:0` });
+    await routeCallback(listStep.ctx);
+    expect(bubbleText(listStep.sink).endsWith(t(listStep.ctx, "hint.game_list"))).toBe(true);
+    expect(calls(listStep.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(listStep.sink, "sendMessage")).toHaveLength(0);
     for (const other of ["hint.variant", "hint.region"] as const) {
-      expect(bubbleText(serverStep.sink)).not.toContain(t(serverStep.ctx, other));
+      expect(bubbleText(listStep.sink)).not.toContain(t(listStep.ctx, other));
     }
   });
 
@@ -331,17 +331,14 @@ describe("flag OFF", () => {
     expect(calls(region.sink, "deleteMessage")).toHaveLength(0);
   });
 
-  // The server picker only renders with the flag ON (pickGameRegion skips straight
-  // to the product list otherwise), so there is no flag-off server text to pin.
-  it("never reaches the server picker: a region tap lands on the product list with no hint", async () => {
-    const cat = await gameCategory("Server Off");
-    await product(cat.id, "SO A", [15000], { gameRegion: "Asia", gameServer: "S1" });
-    await product(cat.id, "SO B", [15000], { gameRegion: "Asia", gameServer: "S2" });
-    await product(cat.id, "SO C", [15000], { gameRegion: "EU", gameServer: "S1" });
+  it("a region tap lands on the product list with no hint", async () => {
+    const cat = await gameCategory("Region Tap Off");
+    await product(cat.id, "SO A", [15000], { gameRegion: "Asia" });
+    await product(cat.id, "SO B", [15000], { gameRegion: "Asia" });
+    await product(cat.id, "SO C", [15000], { gameRegion: "EU" });
     const regionStep = await openList(cat.id);
     const tap = tapCtx(regionStep.ctx, {}, { callbackData: `v1:browse:greg:${cat.id}:0` });
     await routeCallback(tap.ctx);
-    expect(bubbleText(tap.sink)).not.toContain(t(tap.ctx, "browse.choose_server"));
     for (const key of HINT_KEYS) expect(sentIncludes(tap.sink, t(tap.ctx, key))).toBe(false);
   });
 });

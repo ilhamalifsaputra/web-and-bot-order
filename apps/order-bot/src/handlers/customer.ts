@@ -32,8 +32,6 @@ import {
   listCategoryGameVariants,
   countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
-  listCategoryGameServers,
-  countCategoryProductsWithoutGameServer,
   getCategory,
   soldCountsByProduct,
   getCatalogProductWithDenominations,
@@ -130,7 +128,7 @@ interface BrowseScratch {
    * never be read even by accident. Undefined means "products" too — an
    * in-flight session that predates this field never set it, and its only
    * possible numbered screen before this field existed was the product list. */
-  activeNumberedScreen?: "products" | "gameVariant" | "gameRegion" | "gameServer";
+  activeNumberedScreen?: "products" | "gameVariant" | "gameRegion";
   /** The active Category scope for the flat product list (Products entry
    * flow's third step) — set by browseCategoryEntry, read by
    * browseProductsFlat. Undefined means no category scope (shouldn't
@@ -161,17 +159,6 @@ interface BrowseScratch {
   /** The Game Top Up region resolved for the active browse session — same
    * null-vs-undefined contract as resolvedGameVariant. */
   resolvedGameRegion?: string | null;
-  /** The callback_data the region picker's Back button carried when it was last
-   * rendered — the server picker's Back (`gregs`) re-opens that picker with it. */
-  gameRegionBackTarget?: string;
-  /** Snapshot of the server options rendered by the current server picker
-   * (flag-gated, see isGameTopupFlowV2Enabled) — pickGameServer resolves its
-   * tapped index against this. */
-  gameServerEntries?: string[];
-  /** The Game Top Up server resolved for the active browse session: a string
-   * only when a server level was resolved (picked, or the single server of a
-   * scope where every product has one). Absent means no server filter. */
-  resolvedGameServer?: string | null;
   /** Set true by browseCategoryEntry when the active category is a mixed
    * GAME_TOPUP category (some products carry a gameVariant, some don't):
    * the variant/region pickers are skipped entirely and browseProductsFlat
@@ -195,15 +182,6 @@ interface BrowseScratch {
   orderId?: number;
 }
 const sc = (ctx: MyContext) => ctx.session.scratch as BrowseScratch & Record<string, unknown>;
-
-/** Drops every Game Top Up server-level scratch field. Called wherever the
- * region/variant navigation state is reset, so a leftover server snapshot or
- * resolved server can never leak into another category or flow. */
-function clearGameServerScratch(ctx: MyContext): void {
-  delete sc(ctx).gameServerEntries;
-  delete sc(ctx).resolvedGameServer;
-  delete sc(ctx).gameRegionBackTarget;
-}
 
 function requireUser(ctx: MyContext) {
   const u = ctx.session.dbUser;
@@ -431,7 +409,6 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
-  clearGameServerScratch(ctx);
   // Finding I2 (final-review): this screen renders without going through
   // browseProductsFlat/the variant-picker-render/the region-picker-render —
   // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
@@ -482,7 +459,6 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
-  clearGameServerScratch(ctx);
   // Finding I2 (final-review): same reasoning as browseGroups' own reset
   // above — this screen (both its empty-state and its normal category-list
   // render below) never goes through browseProductsFlat/a picker render, so
@@ -558,7 +534,6 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
     delete sc(ctx).gameVariantDimensionSkipped;
-    clearGameServerScratch(ctx);
     await browseProductsFlat(ctx, 0);
     return;
   }
@@ -601,7 +576,6 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
     sc(ctx).gameVariantDimensionSkipped = true;
-    clearGameServerScratch(ctx);
     await browseProductsFlat(ctx, 0);
     return;
   }
@@ -615,7 +589,6 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     // BrowseScratch.activeNumberedScreen.
     delete sc(ctx).browseEntries;
     delete sc(ctx).gameRegionEntries;
-    delete sc(ctx).gameServerEntries;
     // Telegram can't edit away the OLD bottom ReplyKeyboardMarkup (only a
     // fresh sendMessage can replace it) — resend it now, sized to this
     // picker's own option count, BEFORE the picker's own inline-keyboard
@@ -690,7 +663,6 @@ async function enterGameVariant(
   // on a real picker tap) is by definition NOT the mixed-skip path — clear the
   // flag so it can't linger from an earlier category this session.
   delete sc(ctx).gameVariantDimensionSkipped;
-  clearGameServerScratch(ctx);
   sc(ctx).gameVariantEmoji = gameVariantEmoji;
 
   const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
@@ -702,9 +674,6 @@ async function enterGameVariant(
     // BrowseScratch.activeNumberedScreen.
     delete sc(ctx).browseEntries;
     delete sc(ctx).gameVariantEntries;
-    delete sc(ctx).gameServerEntries;
-    // Back from the server picker re-opens THIS picker with the same target.
-    sc(ctx).gameRegionBackTarget = regionBackTarget;
     // Same reasoning as the variant picker's render above — resend the
     // bottom digit keyboard, sized to this picker's own option count, before
     // the picker's own inline-keyboard render.
@@ -714,9 +683,7 @@ async function enterGameVariant(
     await smartEdit(ctx, t(ctx, "browse.choose_region") + (await gameHintLine(ctx, "hint.region")), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
-  // No region picker was shown, so the server picker's Back skips straight to
-  // wherever the region picker's Back would have gone.
-  await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null, regionBackTarget);
+  await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
 }
 
 /** Shared index-resolution for the region picker — same pattern as
@@ -728,9 +695,7 @@ async function enterGameVariant(
 async function resolveGameRegionByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
   const region = sc(ctx).gameRegionEntries?.[idx];
   if (region === undefined) return false;
-  // A real region picker WAS shown for this tap — the server step's own Back
-  // (if it renders) should re-open it.
-  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region, ckb.cb("browse", "gregs", categoryId));
+  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region);
   return true;
 }
 
@@ -742,31 +707,15 @@ export async function pickGameRegion(ctx: MyContext, categoryId: number, idx: nu
   }
 }
 
-/** The server picker's Back (`gregs:<categoryId>`): re-open the region picker
- * the customer came from, using the Back target it was rendered with. A stale
- * tap (scratch belongs to another category or flow) restarts the category. */
-export async function reopenGameRegionPicker(ctx: MyContext, categoryId: number): Promise<void> {
-  const backTarget = sc(ctx).gameRegionBackTarget;
-  if (sc(ctx).categoryId !== categoryId || backTarget == null || sc(ctx).resolvedGameVariant === undefined) {
-    await browseCategoryEntry(ctx, categoryId);
-    return;
-  }
-  await enterGameVariant(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, sc(ctx).gameVariantEmoji ?? null, backTarget);
-}
-
 /** Shared by enterGameVariant's single-region skip and pickGameRegion's
- * explicit tap: record the resolved region, then (flag-gated) render the
- * server picker or skip it, and fall into enterGameServer.
- *
- * `serverBackTarget` is the callback_data the SERVER picker's Back button
- * carries if it renders: `gregs` when a real region picker was shown, else the
- * region picker's own Back target. */
+ * explicit tap: record the resolved region, then either collapse straight
+ * to the single matching product's detail (mirrors browseProduct's own
+ * single-denomination collapse) or fall into the scoped flat list. */
 async function enterGameRegion(
   ctx: MyContext,
   categoryId: number,
   gameVariant: string | null,
   gameRegion: string | null,
-  serverBackTarget: string,
 ): Promise<void> {
   sc(ctx).resolvedGameRegion = gameRegion;
   // Finding I5 (final-review): the variant/region navigation chain threads
@@ -780,83 +729,7 @@ async function enterGameRegion(
   // paths) funnels through before falling through to browseProductsFlat, so
   // syncing it here (once) covers every caller.
   sc(ctx).categoryId = categoryId;
-  // A new region means any earlier server choice no longer applies.
-  delete sc(ctx).gameServerEntries;
-  delete sc(ctx).resolvedGameServer;
-
-  // Served from getSetting's short per-client TTL cache, so a tap with the flag
-  // OFF costs no database round trip.
-  if (!(await isGameTopupFlowV2Enabled(prisma))) {
-    await enterGameServer(ctx, categoryId, gameVariant, gameRegion, undefined);
-    return;
-  }
-
-  const [servers, unservedCount] = await Promise.all([
-    listCategoryGameServers(prisma, categoryId, gameVariant, gameRegion),
-    countCategoryProductsWithoutGameServer(prisma, categoryId, gameVariant, gameRegion),
-  ]);
-  // A MIXED scope (some products have no server) would lose those products
-  // behind a server pick, so the level is skipped and nothing is filtered.
-  const mixed = unservedCount > 0;
-  if (servers.length > 1 && !mixed) {
-    sc(ctx).gameServerEntries = servers;
-    sc(ctx).activeNumberedScreen = "gameServer";
-    // A typed digit must resolve against THIS picker now — see
-    // BrowseScratch.activeNumberedScreen.
-    delete sc(ctx).browseEntries;
-    delete sc(ctx).gameVariantEntries;
-    delete sc(ctx).gameRegionEntries;
-    // Same reasoning as the region picker's render: resend the bottom digit
-    // keyboard, sized to this picker's own option count, before the edit.
-    await ctx.reply(t(ctx, "browse.use_numbers"), {
-      reply_markup: ckb.gamePickerPersistentKb(servers.length, ctx.session.lang),
-    });
-    // The picker only renders with the flag ON, so the hint needs no re-check.
-    await smartEdit(ctx, `${t(ctx, "browse.choose_server")}\n${t(ctx, "hint.server")}`, ckb.gameServerPickerKb(servers, categoryId, serverBackTarget, ctx.session.lang));
-    return;
-  }
-  await enterGameServer(ctx, categoryId, gameVariant, gameRegion, servers.length === 1 && !mixed ? servers[0]! : undefined);
-}
-
-/** Shared index-resolution for the server picker — same pattern as
- * resolveGameRegionByIndex, for a tapped index or a typed digit. Returns false
- * on a stale index (checked with `=== undefined`). */
-async function resolveGameServerByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
-  const server = sc(ctx).gameServerEntries?.[idx];
-  if (server === undefined) return false;
-  await enterGameServer(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, sc(ctx).resolvedGameRegion ?? null, server);
-  return true;
-}
-
-/** A customer tapped one entry on the server picker rendered by
- * enterGameRegion — same stale-index guard as pickGameRegion. */
-export async function pickGameServer(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
-  if (!(await resolveGameServerByIndex(ctx, categoryId, idx))) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-  }
-}
-
-/** Last step of the game chain: record the resolved server (undefined = no
- * server dimension, so no server filter), then either collapse straight to the
- * single matching product's detail (mirrors browseProduct's own
- * single-denomination collapse) or fall into the scoped flat list. */
-async function enterGameServer(
-  ctx: MyContext,
-  categoryId: number,
-  gameVariant: string | null,
-  gameRegion: string | null,
-  gameServer: string | undefined,
-): Promise<void> {
-  if (gameServer === undefined) delete sc(ctx).resolvedGameServer;
-  else sc(ctx).resolvedGameServer = gameServer;
-  sc(ctx).categoryId = categoryId;
-  delete sc(ctx).gameServerEntries;
-  const products = await listCatalogProducts(
-    prisma,
-    "bot",
-    categoryId,
-    gameServer === undefined ? { gameVariant, gameRegion } : { gameVariant, gameRegion, gameServer },
-  );
+  const products = await listCatalogProducts(prisma, "bot", categoryId, { gameVariant, gameRegion });
   if (products.length === 1) {
     await browseProduct(ctx, products[0]!.id);
     return;
@@ -923,13 +796,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   const categoryId = sc(ctx).categoryId;
   const filter =
     sc(ctx).group === CategoryGroup.GAME_TOPUP && !sc(ctx).gameVariantDimensionSkipped
-      ? {
-          gameVariant: sc(ctx).resolvedGameVariant ?? null,
-          gameRegion: sc(ctx).resolvedGameRegion ?? null,
-          // Only when a server level was resolved (flag ON); otherwise the
-          // filter is exactly what it was before servers existed.
-          ...(typeof sc(ctx).resolvedGameServer === "string" ? { gameServer: sc(ctx).resolvedGameServer } : {}),
-        }
+      ? { gameVariant: sc(ctx).resolvedGameVariant ?? null, gameRegion: sc(ctx).resolvedGameRegion ?? null }
       : undefined;
   // Finding I2 (final-review): captured BEFORE it's overwritten below (and
   // before the empty-products early return), so both this function's own
@@ -959,7 +826,6 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     delete sc(ctx).variantId;
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
-    delete sc(ctx).gameServerEntries;
     const emptyKeyboard =
       categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
         ? ckb.categoryPickerKb([], lang)
@@ -982,7 +848,6 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // BrowseScratch.activeNumberedScreen.
   delete sc(ctx).gameVariantEntries;
   delete sc(ctx).gameRegionEntries;
-  delete sc(ctx).gameServerEntries;
   delete sc(ctx).productId;
   delete sc(ctx).variantId;
 
@@ -1180,13 +1045,8 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   // "products", or undefined (an in-flight session that predates this
   // field), falls through unchanged to the existing browseEntries logic.
   const activeScreen = sc(ctx).activeNumberedScreen;
-  if (activeScreen === "gameVariant" || activeScreen === "gameRegion" || activeScreen === "gameServer") {
-    const pickerEntries =
-      activeScreen === "gameVariant"
-        ? sc(ctx).gameVariantEntries
-        : activeScreen === "gameRegion"
-          ? sc(ctx).gameRegionEntries
-          : sc(ctx).gameServerEntries;
+  if (activeScreen === "gameVariant" || activeScreen === "gameRegion") {
+    const pickerEntries = activeScreen === "gameVariant" ? sc(ctx).gameVariantEntries : sc(ctx).gameRegionEntries;
     const count = pickerEntries?.length ?? 0;
     const categoryId = sc(ctx).categoryId;
     // categoryId is always set alongside these entries by browseCategoryEntry/
@@ -1200,10 +1060,8 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     }
     if (activeScreen === "gameVariant") {
       await resolveGameVariantByIndex(ctx, categoryId, idx - 1);
-    } else if (activeScreen === "gameRegion") {
-      await resolveGameRegionByIndex(ctx, categoryId, idx - 1);
     } else {
-      await resolveGameServerByIndex(ctx, categoryId, idx - 1);
+      await resolveGameRegionByIndex(ctx, categoryId, idx - 1);
     }
     return;
   }

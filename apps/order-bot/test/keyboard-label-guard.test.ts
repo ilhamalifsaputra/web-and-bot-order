@@ -21,7 +21,7 @@ import { hasRepeatedIcon } from "@app/core/unitDisplay";
 import { presentCanonicalCatalog } from "../src/util/canonicalPresenter";
 import { BUTTON_LABEL_MAX, truncLabel } from "../src/util/format";
 import {
-  canonicalDenominationPickerKb, categoryPickerKb, denominationPickerKb, gameRegionPickerKb, gameServerPickerKb, gameVariantPickerKb, popularKb, searchResultsKb,
+  canonicalDenominationPickerKb, categoryPickerKb, denominationPickerKb, gameRegionPickerKb, gameVariantPickerKb, popularKb, searchResultsKb,
 } from "../src/keyboards/customer";
 
 type Currency = "IDR" | "USD";
@@ -390,19 +390,5 @@ describe("keyboard label guard: the other pickers keep their own limits", () => 
     const pickerButtons = rows.flat().filter((button) => "callback_data" in button && /^v1:browse:g(var|reg):/.test(button.callback_data));
     expect(pickerButtons).toHaveLength(variants.length + regions.length);
     for (const button of pickerButtons) expect(visualWidth(button.text), button.text).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
-  });
-  it("server buttons for a name within the admin budget are never cut and fit two to a row; an oversize name is clipped to the budget", () => {
-    const budget = buttonNameBudget("gameServer");
-    expect(budget).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
-    const fitting = ["a".repeat(budget), "超".repeat(Math.floor(budget / 2))];
-    const oversize = ["b".repeat(budget + 20), "超".repeat(budget), `🎮${"c".repeat(budget)}`];
-    const rows = gameServerPickerKb([...fitting, ...oversize], 1, "v1:browse:gregs:1", "en").inline_keyboard;
-    const pickerButtons = rows.flat().filter((button) => "callback_data" in button && /^v1:browse:gsrv:/.test(button.callback_data));
-    expect(pickerButtons).toHaveLength(fitting.length + oversize.length);
-    fitting.forEach((name, i) => expect(pickerButtons[i]!.text).toBe(name));
-    for (const button of pickerButtons) {
-      expect(visualWidth(button.text), button.text).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
-      expect(Buffer.byteLength((button as { callback_data: string }).callback_data, "utf8")).toBeLessThanOrEqual(MAX_LABEL_BYTES);
-    }
   });
 });

@@ -67,9 +67,6 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   // — it's the region picker's Back target, re-rendering the variant picker.
   // `gvar`/`greg:<categoryId>:<idx>` resolve a tapped index against the
   // snapshot browseCategoryEntry/pickGameVariant stashed in scratch.
-  // gsrv/gregs belong to the flag-gated Server level: `gsrv:<categoryId>:<idx>`
-  // resolves against the server snapshot, and `gregs:<categoryId>` is the
-  // server picker's Back target, re-opening the region picker.
   const action = parts[2];
   if (action === "prods") await customer.browseResume(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
@@ -90,8 +87,6 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   else if (action === "gvars") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
   else if (action === "gvar") await customer.pickGameVariant(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else if (action === "greg") await customer.pickGameRegion(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
-  else if (action === "gregs") await customer.reopenGameRegionPicker(ctx, parseInt(parts[3]!, 10));
-  else if (action === "gsrv") await customer.pickGameServer(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Browse callback used an unrecognized action "${action}" — likely a button from a stale/pre-rename bubble, showing the stale-screen toast instead`);
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });

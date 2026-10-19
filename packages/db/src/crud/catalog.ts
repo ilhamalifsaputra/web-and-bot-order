@@ -215,9 +215,6 @@ export async function createCatalogProduct(
     gameVariant?: string | null;
     gameVariantEmoji?: string | null;
     gameRegion?: string | null;
-    /** Admin-set server/zone label (e.g. "Asia - Indonesia") — null = no
-     * server distinction, so the bot skips the server picker. */
-    gameServer?: string | null;
     /** Admin-set default placeholder art style (Fase 12) shown when no
      * `webImageUrl` is set — null = auto-resolve from category. See
      * prisma/schema.prisma Product.thumbnailKind for the allowed values. */
@@ -259,7 +256,6 @@ export async function createCatalogProduct(
       gameVariant: args.gameVariant ?? null,
       gameVariantEmoji: args.gameVariantEmoji ?? null,
       gameRegion: args.gameRegion ?? null,
-      gameServer: args.gameServer ?? null,
       thumbnailKind: args.thumbnailKind ?? null,
       currencyIconKind: args.currencyIconKind ?? null,
     },
@@ -723,7 +719,7 @@ export async function listCatalogProducts(
   db: Db,
   channel: ServiceChannel,
   categoryId?: number,
-  filter?: { gameVariant?: string | null; gameRegion?: string | null; gameServer?: string | null },
+  filter?: { gameVariant?: string | null; gameRegion?: string | null },
 ): Promise<CatalogProduct[]> {
   const [products, groups] = await Promise.all([db.product.findMany({
     where: {
@@ -733,7 +729,6 @@ export async function listCatalogProducts(
       ...(categoryId != null ? { categoryId } : {}),
       ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
       ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
-      ...(filter && "gameServer" in filter ? { gameServer: filter.gameServer } : {}),
       denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
@@ -837,66 +832,6 @@ export async function listCategoryGameRegions(
     }
   }
   return out;
-}
-
-/**
- * Distinct gameServer values among a category's catalog-eligible products,
- * scoped to one exact gameVariant + gameRegion (pass `null` for "no such
- * dimension"). Same 0-or-1-means-skip contract as `listCategoryGameRegions`.
- */
-export async function listCategoryGameServers(
-  db: Db,
-  categoryId: number,
-  gameVariant: string | null,
-  gameRegion: string | null,
-): Promise<string[]> {
-  const products = await db.product.findMany({
-    where: {
-      categoryId,
-      gameVariant,
-      gameRegion,
-      isActive: true,
-      isArchived: false,
-      gameServer: { not: null },
-      denominations: { some: { isActive: true, price: { gt: 0 } } },
-    },
-    select: { gameServer: true },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-  });
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const p of products) {
-    if (!seen.has(p.gameServer!)) {
-      seen.add(p.gameServer!);
-      out.push(p.gameServer!);
-    }
-  }
-  return out;
-}
-
-/**
- * Count of catalog-eligible products within one exact gameVariant + gameRegion
- * scope that have NO gameServer set. The bot uses this with
- * listCategoryGameServers to detect a "mixed" scope (some products unlabelled)
- * in which the server picker would hide products, so the level is skipped.
- */
-export async function countCategoryProductsWithoutGameServer(
-  db: Db,
-  categoryId: number,
-  gameVariant: string | null,
-  gameRegion: string | null,
-): Promise<number> {
-  return db.product.count({
-    where: {
-      categoryId,
-      gameVariant,
-      gameRegion,
-      isActive: true,
-      isArchived: false,
-      gameServer: null,
-      denominations: { some: { isActive: true, price: { gt: 0 } } },
-    },
-  });
 }
 
 /** Newest active products (by newest active denomination) for the home grid. */

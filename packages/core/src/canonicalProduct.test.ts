@@ -443,19 +443,3 @@ describe("structured quantity beside a differently ordered or bonus-including na
     });
   });
 });
-
-describe("canonical gameServer", () => {
-  it("carries gameServer on the product and as a qualifier between region and variant", () => {
-    const data = input("Mobile Legends 86 Diamonds");
-    data.product.gameRegion = "Indonesia";
-    data.product.gameServer = "Asia";
-    data.product.gameVariant = "Fast";
-    const result = canonicalProduct(data, context);
-    expect(result.product.gameServer).toBe("Asia");
-    expect(result.qualifiers).toEqual(["Indonesia", "Asia", "Fast"]);
-    expect(CanonicalProductSchema.parse(result).product.gameServer).toBe("Asia");
-  });
-  it("defaults gameServer to null", () => {
-    expect(present("Mobile Legends 86 Diamonds").product.gameServer).toBeNull();
-  });
-});

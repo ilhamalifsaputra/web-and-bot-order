@@ -36,8 +36,6 @@ import {
   listCategoryGameVariants,
   countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
-  listCategoryGameServers,
-  countCategoryProductsWithoutGameServer,
   listNewestCatalogProducts,
   listFlashSaleProducts,
   hasActiveFlashSale,
@@ -142,7 +140,6 @@ describe("createCatalogProduct — game-navigation fields (Task 14)", () => {
     expect(product.gameVariant).toBeNull();
     expect(product.gameVariantEmoji).toBeNull();
     expect(product.gameRegion).toBeNull();
-    expect(product.gameServer).toBeNull();
   });
 
   it("persists explicit gameVariant/gameVariantEmoji/gameRegion", async () => {
@@ -157,16 +154,6 @@ describe("createCatalogProduct — game-navigation fields (Task 14)", () => {
     expect(product.gameVariant).toBe("Diamonds");
     expect(product.gameVariantEmoji).toBe("💎");
     expect(product.gameRegion).toBe("Global");
-  });
-
-  it("persists an explicit gameServer", async () => {
-    const cat = await makeCategory();
-    const product = await createCatalogProduct(prisma, {
-      categoryId: cat.id,
-      name: "Server Game",
-      gameServer: "Asia - Indonesia",
-    });
-    expect(product.gameServer).toBe("Asia - Indonesia");
   });
 });
 
@@ -658,25 +645,6 @@ describe("listCatalogProducts", () => {
     expect(ids).toContain(b.id);
   });
 
-  it("filters by gameServer, including an explicit null, and ignores it when the key is absent", async () => {
-    const cat = await makeCategory();
-    const a = await makeProduct(cat.id, "Server Asia");
-    await makeDenom(a.id, "1 Month", "10");
-    await prisma.product.update({ where: { id: a.id }, data: { gameServer: "Asia" } });
-    const b = await makeProduct(cat.id, "Server Europe");
-    await makeDenom(b.id, "1 Month", "10");
-    await prisma.product.update({ where: { id: b.id }, data: { gameServer: "Europe" } });
-    const c = await makeProduct(cat.id, "Server None");
-    await makeDenom(c.id, "1 Month", "10");
-
-    const asia = (await listCatalogProducts(prisma, "bot", cat.id, { gameServer: "Asia" })).map((x) => x.id);
-    expect(asia).toEqual([a.id]);
-    const none = (await listCatalogProducts(prisma, "bot", cat.id, { gameServer: null })).map((x) => x.id);
-    expect(none).toEqual([c.id]);
-    const all = (await listCatalogProducts(prisma, "bot", cat.id, {})).map((x) => x.id);
-    expect(all).toEqual(expect.arrayContaining([a.id, b.id, c.id]));
-  });
-
   it("existing two-argument call sites are unaffected by the new optional filter param", async () => {
     const cat = await makeCategory();
     const p = await makeProduct(cat.id, "Unaffected");
@@ -821,70 +789,6 @@ describe("listCategoryGameRegions", () => {
 
     const regions = await listCategoryGameRegions(prisma, cat.id, null);
     expect(regions).toEqual(["NA"]);
-  });
-});
-
-describe("listCategoryGameServers", () => {
-  async function server(catId: number, name: string, data: Record<string, unknown>, price = "10") {
-    const p = await makeProduct(catId, name);
-    await makeDenom(p.id, "1 Month", price);
-    await prisma.product.update({ where: { id: p.id }, data });
-    return p;
-  }
-
-  it("returns [] when no product has a gameServer", async () => {
-    const cat = await makeCategory();
-    await server(cat.id, "No Server", { gameVariant: "V", gameRegion: "R" });
-    expect(await listCategoryGameServers(prisma, cat.id, "V", "R")).toEqual([]);
-  });
-
-  it("returns distinct servers in sortOrder, name order", async () => {
-    const cat = await makeCategory();
-    await server(cat.id, "Bravo", { gameVariant: "V", gameRegion: "R", gameServer: "Beta", sortOrder: 2 });
-    await server(cat.id, "Alpha", { gameVariant: "V", gameRegion: "R", gameServer: "Alpha", sortOrder: 1 });
-    await server(cat.id, "Alpha Dup", { gameVariant: "V", gameRegion: "R", gameServer: "Alpha", sortOrder: 3 });
-    expect(await listCategoryGameServers(prisma, cat.id, "V", "R")).toEqual(["Alpha", "Beta"]);
-  });
-
-  it("scopes to the exact variant and region, including null", async () => {
-    const cat = await makeCategory();
-    await server(cat.id, "In scope", { gameVariant: "V", gameRegion: "R", gameServer: "S1" });
-    await server(cat.id, "Other variant", { gameVariant: "W", gameRegion: "R", gameServer: "S2" });
-    await server(cat.id, "Other region", { gameVariant: "V", gameRegion: "Q", gameServer: "S3" });
-    await server(cat.id, "Null scope", { gameVariant: null, gameRegion: null, gameServer: "S4" });
-    expect(await listCategoryGameServers(prisma, cat.id, "V", "R")).toEqual(["S1"]);
-    expect(await listCategoryGameServers(prisma, cat.id, null, null)).toEqual(["S4"]);
-  });
-
-  it("excludes inactive, archived, zero-price and no-denomination products", async () => {
-    const cat = await makeCategory();
-    const inactive = await server(cat.id, "Inactive", { gameServer: "X1" });
-    await prisma.product.update({ where: { id: inactive.id }, data: { isActive: false } });
-    const archived = await server(cat.id, "Archived", { gameServer: "X2" });
-    await setCatalogProductArchived(prisma, archived.id, true);
-    await server(cat.id, "Zero", { gameServer: "X3" }, "0");
-    const bare = await makeProduct(cat.id, "No Denom");
-    await prisma.product.update({ where: { id: bare.id }, data: { gameServer: "X4" } });
-    expect(await listCategoryGameServers(prisma, cat.id, null, null)).toEqual([]);
-  });
-});
-
-describe("countCategoryProductsWithoutGameServer", () => {
-  it("counts eligible products in the variant+region scope that have no server", async () => {
-    const cat = await makeCategory();
-    const mk = async (name: string, data: Record<string, unknown>) => {
-      const p = await makeProduct(cat.id, name);
-      await makeDenom(p.id, "1 Month", "10");
-      await prisma.product.update({ where: { id: p.id }, data });
-      return p;
-    };
-    await mk("Bare", { gameVariant: "V", gameRegion: "R" });
-    await mk("With server", { gameVariant: "V", gameRegion: "R", gameServer: "S" });
-    await mk("Other scope", { gameVariant: "W", gameRegion: "R" });
-    const archived = await mk("Archived", { gameVariant: "V", gameRegion: "R" });
-    await setCatalogProductArchived(prisma, archived.id, true);
-    expect(await countCategoryProductsWithoutGameServer(prisma, cat.id, "V", "R")).toBe(1);
-    expect(await countCategoryProductsWithoutGameServer(prisma, cat.id, null, null)).toBe(0);
   });
 });
 

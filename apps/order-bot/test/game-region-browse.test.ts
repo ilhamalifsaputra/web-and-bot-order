@@ -120,6 +120,72 @@ describe.each([["unset", null], ["false", "false"], ["true", "true"]])("region p
     expect(sentIncludes(tap.sink, "FF Alpha")).toBe(false);
   });
 
+  it("a mixed region scope (some products without a region) lists every product and shows no picker", async () => {
+    const cat = await freeFire();
+    await product(cat.id, "FF Echo");
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    for (const name of ["FF Alpha", "FF Bravo", "FF Charlie", "FF Delta", "FF Echo"]) expect(sentIncludes(entry.sink, name)).toBe(true);
+    expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_region"))).toBe(false);
+    expect(sentIncludes(entry.sink, ":greg:")).toBe(false);
+    expect((entry.ctx.session.scratch as Scratch).activeNumberedScreen).toBe("products");
+    // Digit-keyboard resend plus the list edit; no picker, no extra send or delete.
+    expect(calls(entry.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(entry.sink, "reply")).toHaveLength(1);
+    expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(entry.sink, "deleteMessage")).toHaveLength(0);
+  });
+
+  it("exactly one region plus a region-less sibling lists both instead of silently filtering", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "FF Alpha", { gameRegion: "Indonesia" });
+    await product(cat.id, "FF Echo");
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    expect(sentIncludes(entry.sink, "FF Alpha")).toBe(true);
+    expect(sentIncludes(entry.sink, "FF Echo")).toBe(true);
+    expect(calls(entry.sink, "reply")).toHaveLength(1);
+    expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
+  });
+
+  it("a mixed scope keeps every product on page 2 and after Back from a product", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    for (let i = 0; i < 12; i++) await product(cat.id, `FF P${String(i).padStart(2, "0")}`, i % 2 ? { gameRegion: "Indonesia" } : {});
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const page2 = tapCtx(entry.ctx, { callbackData: "v1:browse:page:1" });
+    await routeCallback(page2.ctx);
+    expect(sentIncludes(page2.sink, "FF P10")).toBe(true);
+    expect(sentIncludes(page2.sink, "FF P11")).toBe(true);
+    expect(calls(page2.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(page2.sink, "editMessageText")).toHaveLength(1);
+    expect(calls(page2.sink, "deleteMessage")).toHaveLength(0);
+
+    const back = tapCtx(page2.ctx, { callbackData: "v1:browse:prods" });
+    await routeCallback(back.ctx);
+    expect(sentIncludes(back.sink, "FF P10")).toBe(true);
+    expect(sentIncludes(back.sink, t(back.ctx, "browse.choose_region"))).toBe(false);
+  });
+
+  it("a non-mixed scope keeps the picker and the region filter", async () => {
+    const cat = await freeFire();
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_region"))).toBe(true);
+    expect(buttons(entry.sink).filter((b) => b.callback_data?.includes(":greg:"))).toHaveLength(2);
+    expect(calls(entry.sink, "reply")).toHaveLength(1);
+    expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
+  });
+
+  it("a region-less product that is inactive does not make the scope mixed", async () => {
+    const cat = await freeFire();
+    const hidden = await product(cat.id, "FF Hidden");
+    await prisma.product.update({ where: { id: hidden.id }, data: { isActive: false } });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_region"))).toBe(true);
+  });
+
   it("a Premium Apps category never shows the region picker, even when its products carry a region", async () => {
     const cat = await createCategory(prisma, { name: "Streaming Apps", group: CategoryGroup.PREMIUM_APPS });
     await product(cat.id, "App One", { gameRegion: "Indonesia" });

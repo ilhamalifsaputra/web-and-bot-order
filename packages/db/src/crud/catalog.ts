@@ -801,6 +801,31 @@ export async function countCategoryProductsWithoutGameVariant(db: Db, categoryId
 }
 
 /**
+ * Count of catalog-eligible products (same eligibility as
+ * listCategoryGameRegions) in one category + exact gameVariant scope (`null`
+ * for "no variant") that have NO gameRegion. When this is > 0 while the scope
+ * also has labelled regions, the scope is "mixed": a picked or silently
+ * applied region would hide these products, so the bot lists the whole scope
+ * instead. The region twin of countCategoryProductsWithoutGameVariant.
+ */
+export async function countCategoryProductsWithoutGameRegion(
+  db: Db,
+  categoryId: number,
+  gameVariant: string | null,
+): Promise<number> {
+  return db.product.count({
+    where: {
+      categoryId,
+      gameVariant,
+      isActive: true,
+      isArchived: false,
+      gameRegion: null,
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+  });
+}
+
+/**
  * Distinct gameRegion values among a category's catalog-eligible products,
  * scoped to one gameVariant (pass `null` for "no variant dimension" — e.g. a
  * category with no variant picker but still a region picker). Same

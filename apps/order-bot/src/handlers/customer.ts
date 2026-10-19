@@ -30,6 +30,7 @@ import {
   listCatalogProductsByGroup,
   listActiveCategoriesByGroup,
   listCategoryGameVariants,
+  countCategoryProductsWithoutGameRegion,
   countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
   getCategory,
@@ -165,6 +166,12 @@ interface BrowseScratch {
    * must NOT apply the gameVariant/gameRegion filter, or the labelled
    * products would vanish. Deleted on every non-mixed path. */
   gameVariantDimensionSkipped?: boolean;
+  /** Set true by enterGameVariant when the resolved variant scope is MIXED on
+   * region (some eligible products carry a gameRegion, some don't): the region
+   * picker and the region filter are skipped, and browseProductsFlat keeps the
+   * variant filter but leaves the gameRegion key out, so unlabelled products
+   * stay visible. Deleted on every non-mixed path. */
+  gameRegionDimensionSkipped?: boolean;
   /** True only between the "Search again" prompt and the next typed text: that
    * text is the Game Top Up search query. Cleared by every screen render
    * (smartEdit/menuAnchor/renderMenu) and every other callback tap, so it can
@@ -409,6 +416,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
+  delete sc(ctx).gameRegionDimensionSkipped;
   // Finding I2 (final-review): this screen renders without going through
   // browseProductsFlat/the variant-picker-render/the region-picker-render —
   // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
@@ -459,6 +467,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
+  delete sc(ctx).gameRegionDimensionSkipped;
   // Finding I2 (final-review): same reasoning as browseGroups' own reset
   // above — this screen (both its empty-state and its normal category-list
   // render below) never goes through browseProductsFlat/a picker render, so
@@ -534,6 +543,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
     delete sc(ctx).gameVariantDimensionSkipped;
+    delete sc(ctx).gameRegionDimensionSkipped;
     await browseProductsFlat(ctx, 0);
     return;
   }
@@ -576,10 +586,12 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
     sc(ctx).gameVariantDimensionSkipped = true;
+    delete sc(ctx).gameRegionDimensionSkipped;
     await browseProductsFlat(ctx, 0);
     return;
   }
   delete sc(ctx).gameVariantDimensionSkipped;
+  delete sc(ctx).gameRegionDimensionSkipped;
 
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;
@@ -663,9 +675,27 @@ async function enterGameVariant(
   // on a real picker tap) is by definition NOT the mixed-skip path — clear the
   // flag so it can't linger from an earlier category this session.
   delete sc(ctx).gameVariantDimensionSkipped;
+  delete sc(ctx).gameRegionDimensionSkipped;
   sc(ctx).gameVariantEmoji = gameVariantEmoji;
 
-  const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
+  const [regions, regionlessCount] = await Promise.all([
+    listCategoryGameRegions(prisma, categoryId, gameVariant),
+    countCategoryProductsWithoutGameRegion(prisma, categoryId, gameVariant),
+  ]);
+  // A MIXED region scope — some eligible products carry a gameRegion and some
+  // don't. A region picker (or the single-region auto-apply) would hide every
+  // region-less product, so skip the region level: no picker, and the list
+  // keeps the variant filter only. `regions.length > 0` keeps a scope with no
+  // regions at all on the unchanged path below.
+  if (regions.length > 0 && regionlessCount > 0) {
+    sc(ctx).gameRegionDimensionSkipped = true;
+    delete sc(ctx).resolvedGameRegion;
+    delete sc(ctx).gameRegionEntries;
+    sc(ctx).categoryId = categoryId;
+    await browseProductsFlat(ctx, 0);
+    return;
+  }
+  delete sc(ctx).gameRegionDimensionSkipped;
   if (regions.length > 1) {
     sc(ctx).gameRegionEntries = regions;
     sc(ctx).activeNumberedScreen = "gameRegion";
@@ -796,7 +826,12 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   const categoryId = sc(ctx).categoryId;
   const filter =
     sc(ctx).group === CategoryGroup.GAME_TOPUP && !sc(ctx).gameVariantDimensionSkipped
-      ? { gameVariant: sc(ctx).resolvedGameVariant ?? null, gameRegion: sc(ctx).resolvedGameRegion ?? null }
+      ? {
+          gameVariant: sc(ctx).resolvedGameVariant ?? null,
+          // Mixed region scope: leave the gameRegion key out entirely (not
+          // null) so region-less and labelled products are all listed.
+          ...(sc(ctx).gameRegionDimensionSkipped ? {} : { gameRegion: sc(ctx).resolvedGameRegion ?? null }),
+        }
       : undefined;
   // Finding I2 (final-review): captured BEFORE it's overwritten below (and
   // before the empty-products early return), so both this function's own

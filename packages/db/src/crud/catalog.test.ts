@@ -34,6 +34,7 @@ import {
   getCategoryBySlug,
   getCatalogProductBySlugWithDenominations,
   listCategoryGameVariants,
+  countCategoryProductsWithoutGameRegion,
   countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
   listNewestCatalogProducts,
@@ -752,6 +753,47 @@ describe("countCategoryProductsWithoutGameVariant", () => {
     const siblingProduct = await makeProduct(sibling.id, "Sibling Unlabelled");
     await makeDenom(siblingProduct.id, "1 Month", "10");
     expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(1);
+  });
+});
+
+describe("countCategoryProductsWithoutGameRegion", () => {
+  async function eligible(categoryId: number, name: string, data: { gameVariant?: string | null; gameRegion?: string | null } = {}) {
+    const p = await makeProduct(categoryId, name);
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: data.gameVariant ?? null, gameRegion: data.gameRegion ?? null } });
+    return p;
+  }
+
+  it("counts eligible region-less products and ignores labelled ones", async () => {
+    const cat = await makeCategory();
+    await eligible(cat.id, "No Region A");
+    await eligible(cat.id, "No Region B");
+    await eligible(cat.id, "With Region", { gameRegion: "Indonesia" });
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, null)).toBe(2);
+  });
+
+  it("matches the exact gameVariant, including null", async () => {
+    const cat = await makeCategory();
+    await eligible(cat.id, "Null Variant", {});
+    await eligible(cat.id, "Edition Variant", { gameVariant: "Max" });
+    await eligible(cat.id, "Other Variant", { gameVariant: "Lite" });
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, null)).toBe(1);
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, "Max")).toBe(1);
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, "Nope")).toBe(0);
+  });
+
+  it("excludes inactive, archived and unpriced products and other categories", async () => {
+    const cat = await makeCategory();
+    const sibling = await makeCategory();
+    const inactive = await eligible(cat.id, "Inactive");
+    await prisma.product.update({ where: { id: inactive.id }, data: { isActive: false } });
+    const archived = await eligible(cat.id, "Archived");
+    await setCatalogProductArchived(prisma, archived.id, true);
+    const noDenom = await makeProduct(cat.id, "Zero priced");
+    const d = await makeDenom(noDenom.id, "1 Month", "10");
+    await prisma.denomination.update({ where: { id: d.id }, data: { price: "0" } });
+    await eligible(sibling.id, "Sibling");
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, null)).toBe(0);
   });
 });
 

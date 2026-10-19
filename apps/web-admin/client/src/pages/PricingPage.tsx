@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertCircle } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../api/client";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
@@ -16,7 +17,7 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { exactFieldsOf } from "../lib/exactFields";
 import { familyOfGroup, GAME_TOPUP_GROUP } from "../lib/catalogFamily";
-import { marginDisplay } from "./PricingPage.helpers";
+import { impactErrorText, marginDisplay } from "./PricingPage.helpers";
 
 type RuleType = "none" | "percent" | "flat";
 interface Category { id: number; name: string; group: string | null; markupType: "percent" | "flat" | null; markupValue: string | null; skuCount: number; ruleReadable: boolean }
@@ -31,6 +32,22 @@ interface ImpactRow { denominationId: number; productName: string; name: string;
 interface Impact {
   eligibleCount: number; changedCount: number; sample: ImpactRow[]; policyFingerprint: string;
   blockedCount: number; blocked: (ImpactRow & { reason: "price_below_minimum" | "reseller_above_price" | "invalid_prices" })[];
+  /** SKUs left alone because their category's stored rule cannot be read (review M3). */
+  unreadableRuleCount: number;
+  unreadableRuleRows: { denominationId: number; productName: string; name: string; categoryName: string; oldPrice: string; reason: "category_rule_unreadable" }[];
+}
+interface ApplyResult { updatedCount: number; blockedCount: number; unreadableRuleCount: number }
+function applySummary(r: ApplyResult): string {
+  const skipped = [
+    r.blockedCount > 0 ? `${r.blockedCount} SKU dilewati karena gagal pemeriksaan harga` : null,
+    r.unreadableRuleCount > 0 ? `${r.unreadableRuleCount} SKU dilewati karena aturan kategorinya tidak terbaca` : null,
+  ].filter(Boolean);
+  return skipped.length ? `${r.updatedCount} SKU diperbarui; ${skipped.join("; ")}.` : `${r.updatedCount} SKU diperbarui.`;
+}
+/** Rule-state badge: outlined on the card colour so it stays visible on the
+ * grey (`bg-sand`) mobile card stack, where a secondary badge blends in. */
+function RuleBadge({ children }: { children: string }) {
+  return <Badge variant="outline" className="bg-card">{children}</Badge>;
 }
 const BLOCK_REASONS: Record<Impact["blocked"][number]["reason"], string> = {
   price_below_minimum: "harga baru di bawah Rp1", reseller_above_price: "harga baru di bawah harga reseller", invalid_prices: "harga baru tidak valid",
@@ -74,6 +91,7 @@ export function PricingPage() {
   const [scope, setScope] = useState("all");
   const [impact, setImpact] = useState<Impact | null>(null);
   const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const owner = query.data?.isOwner === true;
@@ -133,11 +151,12 @@ export function PricingPage() {
           ]} />
         </CardContent></Card>
         <Card id="apply-pricing"><CardHeader><CardTitle as="h2">Terapkan harga sekarang</CardTitle><CardDescription>Lihat dampaknya sebelum memperbarui SKU otomatis. SKU manual dan riwayat pesanan tetap dipertahankan.</CardDescription></CardHeader><CardContent className="space-y-4">
-          <Select value={scope} onValueChange={v => { setScope(v); setImpact(null); }} disabled={!owner}><SelectTrigger className="sm:max-w-sm" aria-label="Cakupan harga"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Semua SKU otomatis</SelectItem>{query.data.categories.filter(isGameCategory).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select>
-          <Button disabled={!owner || impactLoading || dirty} onClick={() => { setError(null); setImpactLoading(true); void apiPost<Impact>("/api/pricing/reprice/preview", { scope: scope === "all" ? "all" : Number(scope) }).then(setImpact).catch((e: Error) => setError(e.message)).finally(() => setImpactLoading(false)); }}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
+          <Select value={scope} onValueChange={v => { setScope(v); setImpact(null); setImpactError(null); }} disabled={!owner}><SelectTrigger className="sm:max-w-sm" aria-label="Cakupan harga"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Semua SKU otomatis</SelectItem>{query.data.categories.filter(isGameCategory).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select>
+          {impactError && <Alert variant="destructive" className="border-rust/40 bg-rust-tint"><AlertCircle aria-hidden="true" /><AlertDescription>{impactError}</AlertDescription></Alert>}
+          <Button disabled={!owner || impactLoading || dirty} onClick={() => { setImpactError(null); setImpactLoading(true); void apiPost<Impact>("/api/pricing/reprice/preview", { scope: scope === "all" ? "all" : Number(scope) }).then(setImpact).catch((e: unknown) => setImpactError(impactErrorText(e))).finally(() => setImpactLoading(false)); }}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
           {dirty && <p className="text-xs text-ink-soft">Simpan perubahan default terlebih dahulu.</p>}
         </CardContent></Card>
-        <p className="text-xs leading-relaxed text-ink-soft">Prioritas: harga SKU manual → aturan kategori → default global. Markup dihitung terhadap HPP; margin dihitung terhadap harga jual. Estimasi laba belum memperhitungkan biaya, diskon, atau refund. Premium Apps menggunakan harga manual.</p>
+        <p className="text-xs leading-relaxed text-ink-soft">Prioritas: harga SKU manual → aturan kategori → default global. Markup dihitung terhadap HPP; margin dihitung terhadap harga jual. Estimasi laba belum memperhitungkan biaya, diskon, atau refund. Premium Apps memakai harga manual, kecuali SKU yang terhubung ke Digiflazz (harganya mengikuti sync).</p>
       </div>
     </>}
     <SaveConfirmDialog open={saveOpen} onOpenChange={setSaveOpen} title="Simpan default harga?" description="Harga aktif berubah pada sync berikutnya atau saat Anda menerapkan aturan." onConfirm={saveGlobal} />
@@ -147,12 +166,13 @@ export function PricingPage() {
     </form></DialogContent></Dialog>
     <ConfirmDialog open={!!remove} onOpenChange={v => { if (!v) setRemove(null); }} title="Hapus aturan kategori?" description="Kategori kembali mengikuti default global pada sync atau penerapan berikutnya." onConfirm={async () => { if (!remove) return; try { await apiDelete(`/api/pricing/categories/${remove.id}`); await reload(); } catch (e) { setError((e as Error).message); } }} />
     <SaveConfirmDialog open={!!impact} onOpenChange={v => { if (!v) setImpact(null); }} title="Terapkan aturan tersimpan sekarang?" confirmLabel="Terapkan sekarang" description={<span className="block space-y-3"><span className="block">{impact?.changedCount} dari {impact?.eligibleCount} SKU otomatis berubah. Dampak diperiksa ulang saat diterapkan.</span><span className="block space-y-2">{impact?.sample.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} → {money(r.newPrice)}</span></span>)}</span>
-      {!!impact?.blockedCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.blockedCount} SKU dilewati oleh Terapkan sekarang karena gagal pemeriksaan harga. Sync berikutnya masih dapat mengubah harganya.</span>{impact.blocked.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (aturan: {money(r.newPrice)}, {BLOCK_REASONS[r.reason]})</span></span>)}</span>}</span>}
+      {!!impact?.blockedCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.blockedCount} SKU dilewati oleh Terapkan sekarang karena gagal pemeriksaan harga. Sync berikutnya masih dapat mengubah harganya.</span>{impact.blocked.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (aturan: {money(r.newPrice)}, {BLOCK_REASONS[r.reason]})</span></span>)}</span>}
+      {!!impact?.unreadableRuleCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.unreadableRuleCount} SKU dilewati karena aturan markup kategorinya tidak terbaca. Hapus atau simpan ulang aturan kategori itu, lalu terapkan lagi.</span>{impact.unreadableRuleRows.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (kategori {r.categoryName}: aturan tidak terbaca)</span></span>)}</span>}</span>}
       onConfirm={async () => {
         if (!impact) return;
-        const result = await apiPost<{ updatedCount: number; blockedCount: number }>("/api/pricing/reprice/apply", { scope: scope === "all" ? "all" : Number(scope), policyFingerprint: impact.policyFingerprint });
+        const result = await apiPost<ApplyResult>("/api/pricing/reprice/apply", { scope: scope === "all" ? "all" : Number(scope), policyFingerprint: impact.policyFingerprint });
         await reload();
-        return result.blockedCount > 0 ? `${result.updatedCount} SKU diperbarui; ${result.blockedCount} SKU dilewati karena gagal pemeriksaan harga.` : `${result.updatedCount} SKU diperbarui.`;
+        return applySummary(result);
       }} />
   </PageLayout>;
 }
@@ -167,12 +187,12 @@ function CategoryRuleCell({ category: c }: { category: Category }) {
     return <div className="space-y-1"><Badge variant="destructive">Tidak terbaca</Badge><p className="text-xs text-ink-soft">Aturan tersimpan tidak terbaca; sync tidak mengubah harga SKU kategori ini. Hapus atau simpan ulang aturannya.</p></div>;
   }
   if (isGameCategory(c)) {
-    return <div className="space-y-1"><Badge variant="secondary">{c.markupType ? "Override" : "Inherited"}</Badge><p className="text-sm tabular-nums">{ruleText ?? "Default global"}</p></div>;
+    return <div className="space-y-1"><RuleBadge>{c.markupType ? "Override" : "Inherited"}</RuleBadge><p className="text-sm tabular-nums">{ruleText ?? "Default global"}</p></div>;
   }
   if (c.skuCount === 0) {
-    return <div className="space-y-1"><Badge variant="secondary">Harga manual</Badge>{c.markupType && <p className="text-xs text-ink-soft">Ada aturan lama tersimpan; hapus agar tidak dipakai saat sync.</p>}</div>;
+    return <div className="space-y-1"><RuleBadge>Harga manual</RuleBadge>{c.markupType && <p className="text-xs text-ink-soft">Ada aturan lama tersimpan; hapus agar tidak dipakai saat sync.</p>}</div>;
   }
-  return <div className="space-y-1"><Badge variant="secondary">Harga otomatis dari sync</Badge><p className="text-xs text-ink-soft">{ruleText
+  return <div className="space-y-1"><RuleBadge>Harga otomatis dari sync</RuleBadge><p className="text-xs text-ink-soft">{ruleText
     ? `${c.skuCount} SKU Digiflazz mengikuti aturan lama tersimpan (${ruleText}); hapus agar kembali ke default global.`
     : `${c.skuCount} SKU Digiflazz mengikuti default global.`}</p></div>;
 }

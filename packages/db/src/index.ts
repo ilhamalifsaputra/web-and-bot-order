@@ -36,6 +36,7 @@ export * from "./crud/xendit";
 export * from "./crud/payMethodDisplay";
 export * from "./crud/digiflazz";
 export * from "./crud/digiflazzDuplicateAudit";
+export * from "./crud/gameRegionBackfill";
 export * from "./crud/fulfillmentMessages";
 export * from "./crud/digiflazzBackoff";
 export * from "./crud/digiflazzSyncStatus";

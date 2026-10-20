@@ -90,10 +90,6 @@ export function PricingPage() {
   const [categoryError, setCategoryError] = useState<string | null>(null);
   const [categorySaving, setCategorySaving] = useState(false);
   const [remove, setRemove] = useState<Category | null>(null);
-  const [scope, setScope] = useState("all");
-  const [impact, setImpact] = useState<Impact | null>(null);
-  const [impactLoading, setImpactLoading] = useState(false);
-  const [impactError, setImpactError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const owner = query.data?.isOwner === true;
@@ -143,21 +139,10 @@ export function PricingPage() {
       <nav aria-label="Pricing sections" className="mb-5 flex gap-5 overflow-x-auto text-sm text-pine"><a href="#global-pricing">Global Defaults</a><a href="#category-rules">Category Rules</a><a href="#apply-pricing">Terapkan harga</a></nav>
       <div className="space-y-6">
         <PricingGlobalDefaults setSaveOpen={setSaveOpen} query={query} owner={owner} fieldId={fieldId} form={form} setForm={setForm} sample={sample} setSample={setSample} checking={checking} previewError={previewError} preview={preview} dirty={dirty} />
-        <Card id="category-rules"><CardHeader><CardTitle as="h2">Category Rules</CardTitle><CardDescription>Aturan kategori menggantikan default global. Harga SKU manual tetap dipertahankan.</CardDescription></CardHeader><CardContent>
-          <DataTable nested data={query.data.categories} keyExtractor={c => c.id} columns={[
-            { key: "name", header: "Kategori", render: c => <div>{c.name}<p className="text-xs text-ink-soft">{isGameCategory(c) ? `Game Top Up · ${c.skuCount} SKU Digiflazz` : "Premium Apps"}</p></div> },
-            { key: "rule", header: "Aturan", render: c => <CategoryRuleCell category={c} /> },
-            { key: "actions", header: "", render: c => !owner ? <span className="text-xs text-ink-soft">Baca saja</span>
-              : isGameCategory(c) ? <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => { setEditCategory(c); setCategoryType(c.ruleReadable === false ? "percent" : c.markupType ?? "percent"); setCategoryValue(c.ruleReadable === false ? "0" : c.markupValue ?? "0"); setCategoryError(null); }}>Edit<span className="sr-only"> {c.name}</span></Button>{c.markupType && <Button variant="ghost" size="sm" onClick={() => setRemove(c)}>Hapus<span className="sr-only"> aturan {c.name}</span></Button>}</div>
-              : c.markupType ? <Button variant="ghost" size="sm" onClick={() => setRemove(c)}>Hapus<span className="sr-only"> aturan {c.name}</span></Button> : null },
-          ]} />
-        </CardContent></Card>
-        <Card id="apply-pricing"><CardHeader><CardTitle as="h2">Terapkan harga sekarang</CardTitle><CardDescription>Lihat dampaknya sebelum memperbarui SKU otomatis. SKU manual dan riwayat pesanan tetap dipertahankan.</CardDescription></CardHeader><CardContent className="space-y-4">
-          <Select value={scope} onValueChange={v => { setScope(v); setImpact(null); setImpactError(null); }} disabled={!owner}><SelectTrigger className="sm:max-w-sm" aria-label="Cakupan harga"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Semua SKU otomatis</SelectItem>{query.data.categories.filter(isGameCategory).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select>
-          {impactError && <Alert variant="destructive" className={ERROR_ALERT_CLASS}><AlertCircle aria-hidden="true" /><AlertDescription>{impactError}</AlertDescription></Alert>}
-          <Button disabled={!owner || impactLoading || dirty} onClick={() => { setImpactError(null); setImpactLoading(true); void apiPost<Impact>("/api/pricing/reprice/preview", { scope: scope === "all" ? "all" : Number(scope) }).then(setImpact).catch((e: unknown) => setImpactError(impactErrorText(e))).finally(() => setImpactLoading(false)); }}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
-          {dirty && <p className="text-xs text-ink-soft">Simpan perubahan default terlebih dahulu.</p>}
-        </CardContent></Card>
+        <CategoryRulesCard categories={query.data.categories} owner={owner} onRemove={setRemove} onEdit={c => {
+          setEditCategory(c); setCategoryType(c.ruleReadable === false ? "percent" : c.markupType ?? "percent"); setCategoryValue(c.ruleReadable === false ? "0" : c.markupValue ?? "0"); setCategoryError(null);
+        }} />
+        <PricingApplyNow categories={query.data.categories} owner={owner} dirty={dirty} reload={reload} />
         <p className="text-xs leading-relaxed text-ink-soft">Prioritas: harga SKU manual → aturan kategori → default global. Markup dihitung terhadap HPP; margin dihitung terhadap harga jual. Estimasi laba belum memperhitungkan biaya, diskon, atau refund. Premium Apps memakai harga manual, kecuali SKU yang terhubung ke Digiflazz (harganya mengikuti sync).</p>
       </div>
     </>}
@@ -167,22 +152,69 @@ export function PricingPage() {
       {categoryError && <p role="alert" className="text-sm text-rust">{categoryError}</p>}<Button type="submit" disabled={categorySaving || !categoryValue.trim()}>Simpan aturan</Button>
     </form></DialogContent></Dialog>
     <ConfirmDialog open={!!remove} onOpenChange={v => { if (!v) setRemove(null); }} title="Hapus aturan kategori?" description="Kategori kembali mengikuti default global pada sync atau penerapan berikutnya." onConfirm={async () => { if (!remove) return; try { await apiDelete(`/api/pricing/categories/${remove.id}`); await reload(); } catch (e) { setError((e as Error).message); } }} />
-    <SaveConfirmDialog open={!!impact} onOpenChange={v => { if (!v) setImpact(null); }} title="Terapkan aturan tersimpan sekarang?" confirmLabel="Terapkan sekarang" description={<span className="block space-y-3"><span className="block">{impact?.changedCount} dari {impact?.eligibleCount} SKU otomatis berubah. Dampak diperiksa ulang saat diterapkan.</span><span className="block space-y-2">{impact?.sample.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} → {money(r.newPrice)}</span></span>)}</span>
-      {!!impact?.blockedCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.blockedCount} SKU dilewati oleh Terapkan sekarang karena gagal pemeriksaan harga. Sync berikutnya masih dapat mengubah harganya.</span>{impact.blocked.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (aturan: {money(r.newPrice)}, {BLOCK_REASONS[r.reason]})</span></span>)}</span>}
-      {!!impact?.unreadableRuleCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.unreadableRuleCount} SKU dilewati karena aturan markup kategorinya tidak terbaca. Hapus atau simpan ulang aturan kategori itu, lalu terapkan lagi.</span>{impact.unreadableRuleRows.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (kategori {r.categoryName}: aturan tidak terbaca)</span></span>)}</span>}</span>}
-      onConfirm={async () => {
-        if (!impact) return;
-        let result: ApplyResult;
-        try {
-          result = await apiPost<ApplyResult>("/api/pricing/reprice/apply", { scope: scope === "all" ? "all" : Number(scope), policyFingerprint: impact.policyFingerprint });
-        } catch (e) {
-          // SaveConfirmDialog shows the thrown message: word it in Indonesian (round 3b M-1).
-          throw new Error(applyErrorText(e), { cause: e });
-        }
-        await reload();
-        return applySummary(result);
-      }} />
   </PageLayout>;
+}
+
+/** The Category Rules card: one row per category, with Edit/Hapus for owners. */
+function CategoryRulesCard({ categories, owner, onEdit, onRemove }: { categories: Category[]; owner: boolean; onEdit: (c: Category) => void; onRemove: (c: Category) => void }) {
+  return <Card id="category-rules"><CardHeader><CardTitle as="h2">Category Rules</CardTitle><CardDescription>Aturan kategori menggantikan default global. Harga SKU manual tetap dipertahankan.</CardDescription></CardHeader><CardContent>
+    <DataTable nested data={categories} keyExtractor={c => c.id} columns={[
+      { key: "name", header: "Kategori", render: c => <div>{c.name}<p className="text-xs text-ink-soft">{isGameCategory(c) ? `Game Top Up · ${c.skuCount} SKU Digiflazz` : "Premium Apps"}</p></div> },
+      { key: "rule", header: "Aturan", render: c => <CategoryRuleCell category={c} /> },
+      { key: "actions", header: "", render: c => <CategoryActions category={c} owner={owner} onEdit={onEdit} onRemove={onRemove} /> },
+    ]} />
+  </CardContent></Card>;
+}
+
+/** Read-only note, or Edit (Game Top Up only) and Hapus (any stored rule). */
+function CategoryActions({ category: c, owner, onEdit, onRemove }: { category: Category; owner: boolean; onEdit: (c: Category) => void; onRemove: (c: Category) => void }) {
+  if (!owner) return <span className="text-xs text-ink-soft">Baca saja</span>;
+  const removeButton = c.markupType ? <Button variant="ghost" size="sm" onClick={() => onRemove(c)}>Hapus<span className="sr-only"> aturan {c.name}</span></Button> : null;
+  if (!isGameCategory(c)) return removeButton;
+  return <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => onEdit(c)}>Edit<span className="sr-only"> {c.name}</span></Button>{removeButton}</div>;
+}
+
+/** The "Terapkan harga sekarang" card and its confirm dialog: preview the
+ * impact for a scope, show a refusal next to the button, then apply. */
+function PricingApplyNow({ categories, owner, dirty, reload }: { categories: Category[]; owner: boolean; dirty: boolean; reload: () => Promise<void> }) {
+  const [scope, setScope] = useState("all");
+  const [impact, setImpact] = useState<Impact | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState<string | null>(null);
+  const scopeBody = () => scope === "all" ? "all" : Number(scope);
+  function checkImpact() {
+    setImpactError(null); setImpactLoading(true);
+    void apiPost<Impact>("/api/pricing/reprice/preview", { scope: scopeBody() }).then(setImpact).catch((e: unknown) => setImpactError(impactErrorText(e))).finally(() => setImpactLoading(false));
+  }
+  async function apply() {
+    if (!impact) return;
+    let result: ApplyResult;
+    try {
+      result = await apiPost<ApplyResult>("/api/pricing/reprice/apply", { scope: scopeBody(), policyFingerprint: impact.policyFingerprint });
+    } catch (e) {
+      // SaveConfirmDialog shows the thrown message: word it in Indonesian (round 3b M-1).
+      throw new Error(applyErrorText(e), { cause: e });
+    }
+    await reload();
+    return applySummary(result);
+  }
+  return <>
+    <Card id="apply-pricing"><CardHeader><CardTitle as="h2">Terapkan harga sekarang</CardTitle><CardDescription>Lihat dampaknya sebelum memperbarui SKU otomatis. SKU manual dan riwayat pesanan tetap dipertahankan.</CardDescription></CardHeader><CardContent className="space-y-4">
+      <Select value={scope} onValueChange={v => { setScope(v); setImpact(null); setImpactError(null); }} disabled={!owner}><SelectTrigger className="sm:max-w-sm" aria-label="Cakupan harga"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Semua SKU otomatis</SelectItem>{categories.filter(isGameCategory).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select>
+      {impactError && <Alert variant="destructive" className={ERROR_ALERT_CLASS}><AlertCircle aria-hidden="true" /><AlertDescription>{impactError}</AlertDescription></Alert>}
+      <Button disabled={!owner || impactLoading || dirty} onClick={checkImpact}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
+      {dirty && <p className="text-xs text-ink-soft">Simpan perubahan default terlebih dahulu.</p>}
+    </CardContent></Card>
+    <SaveConfirmDialog open={!!impact} onOpenChange={v => { if (!v) setImpact(null); }} title="Terapkan aturan tersimpan sekarang?" confirmLabel="Terapkan sekarang" description={impact ? <ImpactDescription impact={impact} /> : null} onConfirm={apply} />
+  </>;
+}
+
+/** The confirm dialog body: changed SKUs, then SKUs a price check blocked, then
+ * SKUs skipped for an unreadable category rule. */
+function ImpactDescription({ impact }: { impact: Impact }) {
+  return <span className="block space-y-3"><span className="block">{impact.changedCount} dari {impact.eligibleCount} SKU otomatis berubah. Dampak diperiksa ulang saat diterapkan.</span><span className="block space-y-2">{impact.sample.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} → {money(r.newPrice)}</span></span>)}</span>
+    {!!impact.blockedCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.blockedCount} SKU dilewati oleh Terapkan sekarang karena gagal pemeriksaan harga. Sync berikutnya masih dapat mengubah harganya.</span>{impact.blocked.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (aturan: {money(r.newPrice)}, {BLOCK_REASONS[r.reason]})</span></span>)}</span>}
+    {!!impact.unreadableRuleCount && <span className="block space-y-2"><span className="block font-medium text-ink">{impact.unreadableRuleCount} SKU dilewati karena aturan markup kategorinya tidak terbaca. Hapus atau simpan ulang aturan kategori itu, lalu terapkan lagi.</span>{impact.unreadableRuleRows.map(r => <span key={r.denominationId} className="block text-sm"><span>{r.productName} · {r.name}</span><span className="block text-right tabular-nums">{money(r.oldPrice)} (kategori {r.categoryName}: aturan tidak terbaca)</span></span>)}</span>}</span>;
 }
 
 /** What the sync actually does with a category's Digiflazz SKUs. A Game

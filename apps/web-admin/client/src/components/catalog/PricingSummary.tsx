@@ -49,7 +49,8 @@ function PricingWarning({ code }: { code: string }) {
 /** Known warnings, errors first; low_margin is dropped next to below_cost
  * (a negative margin is always below the threshold, so it adds nothing). */
 function shownWarnings(codes: string[]): string[] {
-  const known = codes.filter(w => WARNINGS[w] && !(w === "low_margin" && codes.includes("below_cost")));
+  const belowCost = codes.includes("below_cost");
+  const known = codes.filter(w => WARNINGS[w] && !(w === "low_margin" && belowCost));
   return [...known.filter(w => WARNINGS[w]!.tone === "error"), ...known.filter(w => WARNINGS[w]!.tone !== "error")];
 }
 export function PricingSummary({ pricing }: { pricing: CatalogPricingInfo }) {

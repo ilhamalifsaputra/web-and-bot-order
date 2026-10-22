@@ -8,6 +8,18 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
   getPriceList: digiflazzMock.getPriceList,
 }));
 
+// Lets one test make the credential read or the brand grouping throw; null = the real function.
+const dbFaults = vi.hoisted(() => ({ creds: null as null | (() => never), grouping: null as null | (() => never) }));
+vi.mock("@app/db", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@app/db")>();
+  return {
+    ...original,
+    getDigiflazzCreds: (...args: Parameters<typeof original.getDigiflazzCreds>) => (dbFaults.creds ? dbFaults.creds() : original.getDigiflazzCreds(...args)),
+    groupDigiflazzPriceListByBrand: (...args: Parameters<typeof original.groupDigiflazzPriceListByBrand>) =>
+      dbFaults.grouping ? dbFaults.grouping() : original.groupDigiflazzPriceListByBrand(...args),
+  };
+});
+
 import { config } from "@app/core/config";
 import { prisma, initDb, upsertUser, setSetting, createCategory, importDigiflazzBrand, claimDigiflazzCatalogSyncLease } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -45,6 +57,8 @@ beforeEach(async () => {
   csrf = data.csrf;
   await setSetting(prisma, "setup_completed", "true");
   digiflazzMock.getPriceList.mockReset();
+  dbFaults.creds = null;
+  dbFaults.grouping = null;
   // The routes share an in-process price-list cache; every test starts cold.
   clearDigiflazzPriceListCache();
 });
@@ -415,6 +429,40 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
       expect(global.gameRegion).toBeNull();
       expect(res.json().regions.map((r: { skippedReason: string }) => r.skippedReason)).toEqual(["no_price_list", "no_price_list"]);
+    });
+
+    it("still imports, without a region, when reading the stored credentials throws", async () => {
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      dbFaults.creds = () => {
+        throw new Error("decrypt failed with secret-key-material");
+      };
+      const warn = vi.spyOn(logger, "warn");
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![1])).toMatch(/^The .+\.$/);
+      warn.mockRestore();
+    });
+
+    it("still imports, without a region, when grouping the price list throws", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("gb-g-1", "Game B 100 Coin (Global)")]);
+      dbFaults.grouping = () => {
+        throw new Error("database unavailable");
+      };
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
     });
 
     it("still imports and reports no_price_list when a cold-cache fetch is refused with rc 83", async () => {

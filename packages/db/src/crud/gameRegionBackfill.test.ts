@@ -1,9 +1,10 @@
-import { beforeAll, afterAll, beforeEach, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, beforeEach, describe, it, expect, vi } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct } from "./catalog";
 import { fillGameRegions, redactConnectionUrls } from "./gameRegionBackfill";
 import { getSetting } from "./settings";
 import { CategoryGroup } from "@app/core/enums";
+import { logger } from "@app/core/logger";
 
 const GLOBAL = "\u{1F310} Global";
 const MALAYSIA = "\u{1F1F2}\u{1F1FE} Malaysia";
@@ -244,6 +245,7 @@ describe("fillGameRegions", () => {
   it("redacts connection URLs from a failed scope's error message", async () => {
     await mk("Game R (Global)");
     await mk("Game R (Malaysia)");
+    const logged = vi.spyOn(logger, "error");
     const report = await fillGameRegions(db.prisma, {
       apply: true, categoryIds: [categoryId],
       beforeScopeWrite: async () => { throw new Error("Can't reach database server at postgresql://shop:s3cret@db.internal.example:5432/shop?schema=public, retrying"); },
@@ -253,6 +255,13 @@ describe("fillGameRegions", () => {
     expect(error).not.toContain("db.internal.example");
     expect(error).toContain("[redacted-url]");
     expect(error).toContain("retrying");
+    // The developer log gets the same redacted message, never the raw error object.
+    expect(logged).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(logged.mock.calls[0]);
+    expect(serialized).not.toContain("s3cret");
+    expect(serialized).not.toContain("db.internal.example");
+    expect(logged.mock.calls[0]![0]).toMatchObject({ categoryId, message: error });
+    logged.mockRestore();
     expect(redactConnectionUrls("postgres://u:p@h/db and postgresql://x@y/z")).toBe("[redacted-url] and [redacted-url]");
   });
 

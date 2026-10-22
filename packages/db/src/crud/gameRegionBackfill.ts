@@ -207,8 +207,10 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
         } catch (err) {
           scope.status = "failed";
           scope.error = redactConnectionUrls(err instanceof Error ? err.message : String(err));
+          // The raw error can carry a connection URL with credentials, so only the redacted message and code are logged.
+          const code = (err as { code?: unknown } | null)?.code;
           logger.error(
-            { err, categoryId: category.id },
+            { message: scope.error, code: typeof code === "string" ? code : undefined, categoryId: category.id },
             "Game region backfill stopped after an unexpected error in one scope; scopes written before it are kept and later scopes were not attempted.",
           );
           stopped = true;

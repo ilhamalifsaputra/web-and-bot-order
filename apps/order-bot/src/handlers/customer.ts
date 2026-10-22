@@ -2017,6 +2017,8 @@ async function renderGameSearchPage(ctx: MyContext, page: number): Promise<void>
     `${t(ctx, "search.results", { query: esc(snap.query), count: snap.hits.length })}\n${t(ctx, "hint.search")}`,
     ckb.gameSearchResultsKb(slice, page, totalPages, lang),
   );
+  // The hint tells the buyer to type a name, so the next text is a new query.
+  sc(ctx).searchAwaiting = true;
 }
 
 /** Search: Game Top Up only, ranked + alias-aware, paged from a snapshot. */
@@ -2034,6 +2036,8 @@ async function runGameSearch(ctx: MyContext, rawQuery: string): Promise<void> {
       `${t(ctx, "search.no_results", { query: esc(query) })}\n${t(ctx, "hint.search_empty")}`,
       ckb.gameSearchEmptyKb(lang),
     );
+    // "Try another name": the next typed text is a new query.
+    sc(ctx).searchAwaiting = true;
     return;
   }
   sc(ctx).searchSnapshot = {

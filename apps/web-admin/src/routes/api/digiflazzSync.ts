@@ -132,27 +132,28 @@ async function regionOutcomesForImport(
   if (serviceForCategoryGroup(categoryGroup as CategoryGroup | null).group !== CategoryGroup.GAME_TOPUP) {
     return skipAll("not_game_topup_category");
   }
-  const creds = await getDigiflazzCreds(prisma);
-  if (!creds) return skipAll("no_price_list");
-  let items;
+  // Everything below is best effort: before region derivation /sync/apply never
+  // needed credentials or the price list, so no failure here may fail the import.
   try {
-    items = await getPriceListCached(creds);
+    const creds = await getDigiflazzCreds(prisma);
+    if (!creds) return skipAll("no_price_list");
+    const items = await getPriceListCached(creds);
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items.filter(isDigiflazzGameItem), { withDetection: false });
+    return requests.map((request): ImportRegionOutcome => {
+      const group = groups.find((g) => g.brand === request.brand && (g.gameVariant ?? null) === request.gameVariant);
+      if (!group) return { brand: request.brand, written: false, label: null, skippedReason: "no_matching_group", suffix: null };
+      const suffix = group.region ?? null;
+      const label = gameRegionLabel(suffix);
+      if (label) return { brand: request.brand, written: false, label, skippedReason: null, suffix };
+      return { brand: request.brand, written: false, label: null, skippedReason: suffix ? "unrecognized_suffix" : "no_suffix", suffix };
+    });
   } catch (err) {
     logger.warn(
       { err },
-      "The Digiflazz price list could not be loaded while importing brands, so the new products are created without an automatic game region; an admin can set it later.",
+      "The game regions could not be derived while importing Digiflazz brands (the stored credentials, the price list or the brand grouping failed), so the new products are created without an automatic game region; an admin can set it later.",
     );
     return skipAll("no_price_list");
   }
-  const groups = await groupDigiflazzPriceListByBrand(prisma, items.filter(isDigiflazzGameItem), { withDetection: false });
-  return requests.map((request): ImportRegionOutcome => {
-    const group = groups.find((g) => g.brand === request.brand && (g.gameVariant ?? null) === request.gameVariant);
-    if (!group) return { brand: request.brand, written: false, label: null, skippedReason: "no_matching_group", suffix: null };
-    const suffix = group.region ?? null;
-    const label = gameRegionLabel(suffix);
-    if (label) return { brand: request.brand, written: false, label, skippedReason: null, suffix };
-    return { brand: request.brand, written: false, label: null, skippedReason: suffix ? "unrecognized_suffix" : "no_suffix", suffix };
-  });
 }
 
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {

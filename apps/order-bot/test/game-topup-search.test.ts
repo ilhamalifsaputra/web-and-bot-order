@@ -207,12 +207,33 @@ describe("/search", () => {
       expect(calls(typed.sink, "reply")).toHaveLength(0);
       expect(calls(typed.sink, "sendMessage")).toHaveLength(0);
       expect(buttons(typed.sink).filter((b) => b.callback_data.startsWith("v1:browse:pick:"))).toHaveLength(1);
-      expect(session.scratch.searchAwaiting).toBeUndefined();
+      // The results page tells the buyer to type a name, so it re-arms the next text.
+      expect(session.scratch.searchAwaiting).toBe(true);
+    });
 
-      // The mode was one-shot: the next text is ordinary free text again.
-      const later = update(session, { text: "hello there" });
-      await customer.handleProductNumber(later.ctx);
-      expect(later.sink).toEqual([]);
+    it("keeps typed text a new query after the empty state and after the results page", async () => {
+      await seed({ games: [`${TAG} Legends`, `${TAG} Quest`] });
+      const session = newSession();
+      // Empty state: hint says to try another name, so the next text must search.
+      await runSearch(session, "nothingmatches");
+      expect(session.scratch.searchAwaiting).toBe(true);
+      const second = update(session, { text: `${TAG} Quest` });
+      await customer.handleProductNumber(second.ctx);
+      expect(buttons(second.sink).filter((b) => b.callback_data.startsWith("v1:browse:pick:"))).toHaveLength(1);
+      expect(calls(second.sink, "deleteMessage")).toHaveLength(1);
+      expect(calls(second.sink, "reply")).toHaveLength(0);
+      expect(calls(second.sink, "editMessageText")).toHaveLength(1);
+      expect(calls(second.sink, "sendMessage")).toHaveLength(0);
+
+      // Results page: typing another name searches again.
+      expect(session.scratch.searchAwaiting).toBe(true);
+      const third = update(session, { text: `${TAG} Legends`, });
+      await customer.handleProductNumber(third.ctx);
+      expect(buttons(third.sink).filter((b) => b.callback_data.startsWith("v1:browse:pick:"))).toHaveLength(1);
+      expect(calls(third.sink, "deleteMessage")).toHaveLength(1);
+      expect(calls(third.sink, "sendMessage")).toHaveLength(0);
+      expect(calls(third.sink, "reply")).toHaveLength(0);
+      expect(calls(third.sink, "editMessageText")).toHaveLength(1);
     });
 
     it("is ended by any other tap, so a later text is not a query", async () => {

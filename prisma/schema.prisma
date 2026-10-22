@@ -405,14 +405,18 @@ model Denomination {
   detectionSkuKey       String?   @map("detection_sku_key")
   /// Same cache-invalidation stamp convention as Product.detectionStamp.
   detectionStamp        String?   @map("detection_stamp")
+  /// Tiered (volume) pricing switch. Tiers live in BulkPricingTier; a SKU with
+  /// this false ignores them. Replaces the single-rule BulkPricing model.
+  tieredPricingEnabled  Boolean   @default(false) @map("tiered_pricing_enabled")
 
-  product              Product                  @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  product              Product                 @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
   orderItems           OrderItem[]
   cartItems            CartItem[]
   reviews              Review[]
   restockSubscriptions RestockSubscription[]
   bulkPricing          BulkPricing?
+  pricingTiers         BulkPricingTier[]
   providerMappings     ProductProviderMapping[]
 
   @@index([productId], map: "ix_denominations_product_id")
@@ -662,6 +666,9 @@ model Order {
   voucherId              Int?      @map("voucher_id")
   walletUsed             Decimal   @default(0) @map("wallet_used")
   bulkDiscountAmount     Decimal   @default(0) @map("bulk_discount_amount")
+  /// Snapshot of the volume tier applied at checkout (null = none), so later
+  /// tier edits never change what a historical order was charged.
+  bulkTierSnapshot       Json?     @map("bulk_tier_snapshot")
   status                 String    @default("PENDING_PAYMENT")
   /// Transaction currency, set when the buyer picks a payment method
   /// (plan.md §15): "IDR" (TokoPay) or "USDT" (Binance). Catalog prices are
@@ -1662,6 +1669,27 @@ model BulkPricing {
   product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("bulk_pricing")
+}
+
+/// One volume-discount tier of a denomination. discountType is one of
+/// PERCENTAGE | FIXED_AMOUNT_OFF_PER_UNIT | FIXED_UNIT_PRICE (String, like the
+/// rest of this schema's enums); discountValue is a percent or an IDR amount.
+model BulkPricingTier {
+  id             Int      @id @default(autoincrement())
+  denominationId Int      @map("denomination_id")
+  minQuantity    Int      @map("min_quantity")
+  discountType   String   @map("discount_type")
+  discountValue  Decimal  @map("discount_value")
+  isEnabled      Boolean  @default(true) @map("is_enabled")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  denomination Denomination @relation(fields: [denominationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([denominationId, minQuantity], map: "ux_bulk_pricing_tiers_denomination_min_qty")
+  @@index([denominationId], map: "ix_bulk_pricing_tiers_denomination_id")
+  @@map("bulk_pricing_tiers")
 }
 
 model Setting {

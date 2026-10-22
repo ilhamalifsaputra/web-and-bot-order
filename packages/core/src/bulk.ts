@@ -193,11 +193,11 @@ export function validateTiers(tiers: readonly PricingTier[]): TierValidationResu
   const errors: TierValidationError[] = [];
   const seen = new Set<number>();
   for (const t of tiers) {
-    if (!Number.isInteger(t.minQuantity) || t.minQuantity < 2) {
+    if (!Number.isInteger(t.minQuantity) || t.minQuantity < 1) {
       errors.push({
         code: "INVALID_MIN_QUANTITY",
         tierId: t.id,
-        message: "Minimum quantity must be a whole number of at least 2; quantity 1 is the base price.",
+        message: "Minimum quantity must be a whole number of at least 1.",
       });
     } else if (seen.has(t.minQuantity)) {
       errors.push({
@@ -307,13 +307,12 @@ export function resolveTieredPrice(args: {
 /**
  * The legacy single BulkPricing rule as one PERCENTAGE tier (id "legacy"), so
  * a legacy caller can route through the engine and charge the same rupiah.
- * Returns [] for no rule, for a rule activeBulkPercent refuses (it never
- * discounted anything), and for minQuantity 1 — not representable as a tier
- * because quantity 1 is the base price. bulkDiscountFor still honours such a
- * row, so migrate it explicitly rather than routing it through here.
+ * Returns [] for no rule and for a rule activeBulkPercent refuses (it never
+ * discounted anything). A minQuantity-1 rule converts as-is: a tier at 1 is a
+ * discount on the base price, exactly what bulkDiscountFor applies.
  */
 export function tiersFromLegacyRule(rule: BulkRuleFields | null | undefined): PricingTier[] {
-  if (!rule || !Number.isInteger(rule.minQuantity) || rule.minQuantity < 2) return [];
+  if (!rule) return [];
   const percent = activeBulkPercent(rule, rule.minQuantity);
   if (percent === null) return [];
   return [
@@ -374,7 +373,8 @@ export function analyzeTiers(args: {
 
   const steps = new Set<number>();
   for (let q = 1; q < Math.min(bound, ANALYZE_SCAN_LIMIT); q++) steps.add(q);
-  for (const t of enabled) if (t.minQuantity <= bound) steps.add(t.minQuantity - 1);
+  // A tier at 1 has no "one fewer" quantity to compare against.
+  for (const t of enabled) if (t.minQuantity >= 2 && t.minQuantity <= bound) steps.add(t.minQuantity - 1);
 
   const nonMonotonic: TierAnalysis["nonMonotonic"] = [];
   for (const q of [...steps].sort((a, b) => a - b)) {

@@ -158,6 +158,35 @@ describe("resolveTieredPrice — discount types", () => {
     expect(r.totalDiscount.toString()).toBe("3000");
   });
 
+  it("a tier at minQuantity 1 discounts every quantity, single units included", () => {
+    const tiers = [tier({ minQuantity: 1, discountType: "FIXED_AMOUNT_OFF_PER_UNIT", discountValue: "500" })];
+    const one = resolveTieredPrice({ effectiveUnit: D(10000), quantity: 1, tiers });
+    expect(one.appliedTier?.id).toBe("t1");
+    expect(one.finalSubtotal.toString()).toBe("9500");
+    expect(resolveTieredPrice({ effectiveUnit: D(10000), quantity: 4, tiers }).finalSubtotal.toString()).toBe("38000");
+  });
+
+  it("tiers at 1, 3 and 5 coexist, each taking over at its threshold", () => {
+    const tiers = [
+      tier({ minQuantity: 5, discountType: "FIXED_UNIT_PRICE", discountValue: "7000" }),
+      tier({ minQuantity: 1, discountValue: "5" }),
+      tier({ minQuantity: 3, discountType: "FIXED_AMOUNT_OFF_PER_UNIT", discountValue: "2000" }),
+    ];
+    const rows = [1, 2, 3, 4, 5, 6].map((q) => {
+      const r = resolveTieredPrice({ effectiveUnit: D(10000), quantity: q, tiers });
+      return [r.appliedTier?.id, r.finalSubtotal.toString()];
+    });
+    expect(rows).toEqual([
+      ["t1", "9500"],
+      ["t1", "19000"],
+      ["t3", "24000"],
+      ["t3", "32000"],
+      ["t5", "35000"],
+      ["t5", "42000"],
+    ]);
+    expect(validateTiers(tiers)).toEqual({ ok: true });
+  });
+
   it("ignores disabled tiers", () => {
     const tiers = [
       tier({ minQuantity: 3, discountValue: "10" }),
@@ -219,9 +248,10 @@ describe("validateTiers", () => {
     expect(validateTiers([])).toEqual({ ok: true });
   });
 
-  it("rejects minQuantity that is not an integer >= 2 (qty 1 is the implicit base)", () => {
-    expect(codes([tier({ minQuantity: 1 })])).toEqual(["INVALID_MIN_QUANTITY"]);
+  it("accepts minQuantity 1 (a base-price discount) and rejects anything not an integer >= 1", () => {
+    expect(codes([tier({ minQuantity: 1 })])).toEqual([]);
     expect(codes([tier({ minQuantity: 0 })])).toEqual(["INVALID_MIN_QUANTITY"]);
+    expect(codes([tier({ minQuantity: -2 })])).toEqual(["INVALID_MIN_QUANTITY"]);
     expect(codes([tier({ minQuantity: 2.5 })])).toEqual(["INVALID_MIN_QUANTITY"]);
     expect(codes([tier({ minQuantity: Number.NaN })])).toEqual(["INVALID_MIN_QUANTITY"]);
   });
@@ -274,18 +304,22 @@ describe("tiersFromLegacyRule — engine reproduces bulkDiscountFor exactly", ()
     expect(tiersFromLegacyRule({ minQuantity: 5, discountPercent: "nope" })).toEqual([]);
   });
 
-  it("does NOT convert a legacy minQuantity-1 rule (not representable: qty 1 is the base price)", () => {
-    // Known divergence, pinned on purpose: bulkDiscountFor still honours such a
-    // row; a caller routing through the engine must migrate it explicitly.
-    expect(tiersFromLegacyRule({ minQuantity: 1, discountPercent: "10" })).toEqual([]);
-    expect(bulkDiscountFor("1000", { minQuantity: 1, discountPercent: "10" }, 1).toString()).toBe("100");
+  it("converts a legacy minQuantity-1 rule as-is (a base-price discount)", () => {
+    const tiers = tiersFromLegacyRule({ minQuantity: 1, discountPercent: "10" });
+    expect(tiers).toHaveLength(1);
+    expect(tiers[0]!.minQuantity).toBe(1);
+    const r = resolveTieredPrice({ effectiveUnit: D(1000), quantity: 1, tiers });
+    expect(r.totalDiscount.toString()).toBe(
+      bulkDiscountFor("1000", { minQuantity: 1, discountPercent: "10" }, 1).toString(),
+    );
+    expect(r.totalDiscount.toString()).toBe("100");
   });
 
   it("matches bulkDiscountFor for many (unit, pct, qty, minQuantity) combos, .5 edges included", () => {
     const units = ["1", "3", "999", "4650", "9300", "10001", "14500", "46500", "123457", "99999"];
     const pcts = ["0.5", "1", "5", "12.5", "15", "20", "33", "33.333", "50", "66.67", "99.99", "100"];
     const qtys = [1, 2, 3, 4, 5, 7, 10, 11, 25, 99];
-    const mins = [2, 3, 5, 10];
+    const mins = [1, 2, 3, 5, 10];
     let checked = 0;
     for (const u of units)
       for (const p of pcts)
@@ -347,6 +381,13 @@ describe("analyzeTiers", () => {
     const bad = [tier({ minQuantity: 2, id: "a" }), tier({ minQuantity: 2, id: "b" })];
     expect(() => analyzeTiers({ effectiveUnit: D(1000), tiers: bad })).not.toThrow();
     expect(() => analyzeTiers({ effectiveUnit: D(-5), tiers: specTiers })).not.toThrow();
+  });
+
+  it("handles a tier at minQuantity 1 (no quantity 0 to compare against)", () => {
+    const tiers = [tier({ minQuantity: 1, discountValue: "10" }), tier({ minQuantity: 3, discountValue: "20" })];
+    const a = analyzeTiers({ effectiveUnit: D(10000), costPrice: D(9500), tiers });
+    expect(a.nonMonotonic).toEqual([]);
+    expect(a.belowCost.map((b) => b.tierId)).toEqual(["t1", "t3"]);
   });
 
   it("respects maxQuantity as the scan bound", () => {

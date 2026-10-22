@@ -17,7 +17,6 @@ import { canonicalProduct } from "@app/core/canonicalProduct";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { boundedCanonicalName } from "../util/canonicalPresenter";
 import { effectiveUnitPrice } from "@app/core/flash";
-import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
 import {
@@ -43,7 +42,7 @@ import {
   buildNicknameProviderEntries,
   resolveNicknameGate,
   countAvailableStock,
-  getBulkPricingForDenomination,
+  quoteBulkForLines,
   getVoucherByCode,
   applyVoucherToSubtotal,
   computeEligibleAmounts,
@@ -382,23 +381,31 @@ async function computeConfirmation(
     getUser(prisma, info.id),
   ]);
   if (product === null || user === null) return null;
-  const bulkRule = await getBulkPricingForDenomination(prisma, productId);
   // Voucher amounts are IDR-canonical; shown in the buyer's display currency.
   const prices = ctxPriceFormatter(ctx, rate);
 
   const isReseller = info.role === UserRole.RESELLER;
   // Same helper createOrderDirect prices with, so the confirmation screen can
   // never quote a figure the order itself won't charge.
-  const unitPrice = effectiveUnitPrice(product, isReseller);
+  // One instant for the unit and the tiers, as createOrderDirect prices them.
+  const pricedAt = new Date();
+  const unitPrice = effectiveUnitPrice(product, isReseller, pricedAt);
   const canonical = canonicalProduct({ denomination: { ...product, createdAt: product.createdAt.toISOString() }, product: product.product, category: product.product.category }, { effectivePriceIDR: unitPrice.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", rate: rate?.toString(), locale: lang });
   const productName = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }), { includeProductName: true });
-  // Quantized and bulk-reduced exactly the way createOrderDirect does it
-  // (q4 subtotal, then subtract bulkDiscountFor) — this screen previously
-  // multiplied by (1 − percent/100) instead, which is the same value only up to
-  // rounding and is the kind of second spelling that drifts into quoting a
-  // figure the order won't charge.
+  // Quantized and bulk-reduced exactly the way createOrderDirect does it (q4
+  // subtotal, then subtract the volume-tier discount from quoteBulkForLines,
+  // the one helper every preview and order path prices tiers with) — this
+  // screen once multiplied by (1 − percent/100) instead, which is the same
+  // value only up to rounding and is the kind of second spelling that drifts
+  // into quoting a figure the order won't charge.
   const grossSubtotal = quantizeMoney(unitPrice.times(quantity), 4);
-  const bulkDiscountAmt = bulkDiscountFor(grossSubtotal, bulkRule, quantity);
+  const bulkQuote = await quoteBulkForLines(
+    prisma,
+    [{ denominationId: productId, quantity, denomination: product }],
+    isReseller,
+    pricedAt,
+  );
+  const bulkDiscountAmt = bulkQuote.bulkDiscount;
   let subtotal = grossSubtotal.minus(bulkDiscountAmt);
 
   let voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? "";

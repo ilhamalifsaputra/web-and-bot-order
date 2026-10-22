@@ -28,7 +28,6 @@ import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import { customerProgressPhase, paymentStatusFor, DIGIFLAZZ_STATUS_UNRESOLVED, type FulfillmentOrder } from "@app/core/orderFulfillment";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
-import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
 import { cartCompositionError } from "@app/core/cartComposition";
@@ -38,13 +37,12 @@ import {
   getCart,
   cartCompositionLineOfCartItem,
   getDenomination,
-  getBulkPricingForDenomination,
+  quoteBulkForLines,
   getVoucherByCode,
   assertVoucherNotRedeemedByUser,
   applyVoucherToSubtotal,
   computeEligibleAmounts,
   type EligibilityLine,
-  computeBulkDiscountForCart,
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
   completeOrderWithWalletCredit,
@@ -228,17 +226,15 @@ async function computeTotals(
     const unit = effectiveUnitPrice(ci.product, isReseller, pricedAt);
     subtotal = subtotal.plus(unit.times(ci.quantity));
   }
-  const bulkRules: Record<number, { minQuantity: number; discountPercent: Decimal.Value }> = {};
-  for (const ci of lines) {
-    const rule = await getBulkPricingForDenomination(prisma, ci.productId);
-    if (rule) bulkRules[ci.productId] = rule;
-  }
-  const bulkDiscount = computeBulkDiscountForCart(
-    lines as Parameters<typeof computeBulkDiscountForCart>[0],
-    bulkRules,
+  // Volume tiers through the same quoteBulkForLines createOrderFromCart prices
+  // with, so the preview's bulk discount is the order's to the rupiah.
+  const bulkQuote = await quoteBulkForLines(
+    prisma,
+    lines.map((ci) => ({ denominationId: ci.productId, quantity: ci.quantity, denomination: ci.product })),
     isReseller,
     pricedAt,
   );
+  const bulkDiscount = bulkQuote.bulkDiscount;
 
   let voucherDiscount = new Decimal(0);
   let voucherError: string | null = null;
@@ -256,12 +252,12 @@ async function computeTotals(
         // let a voucher look valid here only to be rejected at order
         // creation). ALL-scope (the default) skips straight to
         // eligibleSubtotal = subtotal, byte-identical to the pre-scope preview.
-        const eligibilityLines: EligibilityLine[] = lines.map((ci) => {
-          const itemSubtotal = effectiveUnitPrice(ci.product, isReseller, pricedAt).times(ci.quantity);
+        const eligibilityLines: EligibilityLine[] = lines.map((ci, index) => {
+          const priced = bulkQuote.lines[index]!.priced;
           return {
             catalogProductId: ci.product.productId,
-            lineSubtotal: itemSubtotal,
-            lineBulkDiscount: bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity),
+            lineSubtotal: priced.originalSubtotal,
+            lineBulkDiscount: priced.totalDiscount,
           };
         });
         const { eligibleSubtotal, eligibleBulkDiscount } = await computeEligibleAmounts(

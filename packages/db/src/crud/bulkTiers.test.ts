@@ -14,6 +14,7 @@ import {
   listTiers,
   replaceTiers,
   setTieredPricingEnabled,
+  saveTieredPricing,
   getEffectiveTiers,
   activeTiersByDenomination,
   priceLineWithTiers,
@@ -118,6 +119,54 @@ describe("replaceTiers", () => {
 
   it("refuses an unknown denomination", async () => {
     await expect(replaceTiers(prisma, 999999, THREE_TIERS, actor)).rejects.toMatchObject({ key: "error.product_unavailable" });
+  });
+});
+
+describe("saveTieredPricing (the admin editor's one save)", () => {
+  const auditActions = async () =>
+    (await prisma.auditLog.findMany({ orderBy: { id: "asc" } })).map((a) => a.action);
+
+  it("writes the tiers and the toggle together, auditing each change once", async () => {
+    const id = sample.product.id;
+    const result = await saveTieredPricing(prisma, id, { enabled: true, tiers: THREE_TIERS }, actor);
+
+    expect(result.enabled).toBe(true);
+    expect(result.tiers.map((t) => t.minQuantity)).toEqual([2, 3, 5]);
+    expect((await getEffectiveTiers(prisma, id)).map((t) => t.minQuantity)).toEqual([2, 3, 5]);
+    expect(await auditActions()).toEqual(["pricing_tiers_replace", "tiered_pricing_toggle"]);
+  });
+
+  it("a toggle-only save leaves the unchanged tiers alone (no tier audit line)", async () => {
+    const id = sample.product.id;
+    await saveTieredPricing(prisma, id, { enabled: true, tiers: THREE_TIERS }, actor);
+    const before = await listTiers(prisma, id);
+
+    await saveTieredPricing(prisma, id, { enabled: false, tiers: THREE_TIERS }, actor);
+    expect(await listTiers(prisma, id)).toEqual(before);
+    expect(await getEffectiveTiers(prisma, id)).toEqual([]);
+    expect(await auditActions()).toEqual(["pricing_tiers_replace", "tiered_pricing_toggle", "tiered_pricing_toggle"]);
+  });
+
+  it("an unchanged save writes nothing and audits nothing", async () => {
+    const id = sample.product.id;
+    await saveTieredPricing(prisma, id, { enabled: true, tiers: THREE_TIERS }, actor);
+    await saveTieredPricing(prisma, id, { enabled: true, tiers: [...THREE_TIERS].reverse() }, actor);
+    expect(await auditActions()).toEqual(["pricing_tiers_replace", "tiered_pricing_toggle"]);
+  });
+
+  it("an invalid tier set changes neither the tiers nor the toggle", async () => {
+    const id = sample.product.id;
+    await expect(
+      saveTieredPricing(
+        prisma,
+        id,
+        { enabled: true, tiers: [...THREE_TIERS, { minQuantity: 3, discountType: "PERCENTAGE", discountValue: "5" }] },
+        actor,
+      ),
+    ).rejects.toBeInstanceOf(TieredPricingError);
+    expect(await listTiers(prisma, id)).toEqual([]);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id } })).tieredPricingEnabled).toBe(false);
+    expect(await auditActions()).toEqual([]);
   });
 });
 

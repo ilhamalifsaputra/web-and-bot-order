@@ -252,6 +252,46 @@ export async function setTieredPricingEnabled(
   });
 }
 
+/** True when `next` would store exactly the tiers `current` already holds (order does not matter). */
+function sameTierSet(current: readonly PricingTier[], next: readonly PricingTier[]): boolean {
+  if (current.length !== next.length) return false;
+  const byMin = new Map(current.map((t) => [t.minQuantity, t]));
+  return next.every((t) => {
+    const stored = byMin.get(t.minQuantity);
+    return (
+      stored !== undefined &&
+      stored.discountType === t.discountType &&
+      stored.isEnabled === t.isEnabled &&
+      new Decimal(stored.discountValue).equals(new Decimal(t.discountValue))
+    );
+  });
+}
+
+/**
+ * The admin tier editor's one save: the whole tier set AND the on/off toggle,
+ * in one short transaction, so the toggle can never end up on over a tier set
+ * that failed to save. Each part is written (and audited) only when it
+ * actually changes — re-saving an unchanged editor writes nothing. Throws
+ * TieredPricingError for an invalid set before anything is written.
+ */
+export async function saveTieredPricing(
+  db: Db,
+  denominationId: number,
+  input: { enabled: boolean; tiers: readonly TierInput[] },
+  actor: TierActor,
+): Promise<{ enabled: boolean; tiers: PricingTier[] }> {
+  const parsed = parseTierInputs(input.tiers);
+  return inTransaction(db, async (tx) => {
+    const denomination = await denominationOrThrow(tx, denominationId);
+    const current = await listTiers(tx, denominationId);
+    const tiers = sameTierSet(current, parsed) ? current : await replaceTiers(tx, denominationId, input.tiers, actor);
+    if (denomination.tieredPricingEnabled !== input.enabled) {
+      await setTieredPricingEnabled(tx, denominationId, input.enabled, actor);
+    }
+    return { enabled: input.enabled, tiers };
+  });
+}
+
 /**
  * Validate on read: drop any stored tier the engine would refuse (a row
  * written by hand, or before a guard existed) instead of failing checkout on

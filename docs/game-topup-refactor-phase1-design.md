@@ -203,7 +203,7 @@ Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm t
 
 | Fase | Isi | Catatan |
 |---|---|---|
-| 2 | Label `From`, hint, search, flag | Tanpa perubahan skema |
+| 2 | Label `From`, hint, search | Tanpa perubahan skema |
 | 3 | Parser, review, Continue/Change details, `expectedTotal` | Logika uang → Opus untuk implementasi dan review akhir |
 | 4 | TTL per rail, reminder, verifikasi edit pesan batal | Menyentuh pembayaran → Opus; audit race sebelum ubah default |
 | 5 | Regresi penuh, stub E2E, runbook migrasi dan rollback | Tidak ada deploy otomatis |

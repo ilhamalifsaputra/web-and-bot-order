@@ -288,12 +288,12 @@ di-stamp ke `@app/core/runtime`):
 ### Alur katalog Game Top-up (selalu aktif)
 
 Untuk Game Top-up saja (dipilih lewat `category.group`, bukan nama produk), bot
-selalu menampilkan akhiran `From <harga>` pada daftar produk, satu baris hint
+selalu menampilkan akhiran harga huruf kecil pada daftar produk (`from <harga>` di bahasa Inggris, `mulai <harga>` di bahasa Indonesia; kunci `browse.product_from_price`), satu baris hint
 `hint.*` per layar (daftar game, edisi, region, paket, search), dan `/search`
 (berperingkat, label layanan, halaman, "Search again"; alias dari tabel
 `detection_aliases` yang bawaannya **kosong**). `/search` hanya mengembalikan
-produk Game Top-up. Langkah navigasi (edisi, region, daftar produk) tidak
-berubah. Tidak ada saklar di Settings dan tidak ada perubahan skema. Storefront
+produk Game Top-up. Urutan langkah navigasi (edisi, region, daftar produk) tidak
+berubah, kecuali level Region yang dilewati pada scope campuran (lihat "Guard scope campuran di bot" di bawah). Tidak ada saklar di Settings dan tidak ada perubahan skema. Storefront
 tidak terpengaruh. Premium Apps tidak pernah terpengaruh: tidak ada `From`,
 hint, atau perubahan lain pada daftar, picker, dan layar SKU-nya.
 

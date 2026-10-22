@@ -130,9 +130,48 @@ describe("Pricing & Margins API", () => {
     await setSetting(prisma, "digiflazz_markup_value", "20");
     const stale = await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: fingerprint });
     expect(stale.statusCode, stale.body).toBe(409);
+    expect(stale.json().error_args).toEqual({ conflict: "policy_changed" });
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } })).price.toString()).toBe("100000");
     await setSetting(prisma, "digiflazz_markup_value", "15");
     expect((await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: fingerprint })).json().updatedCount).toBe(1);
     expect((await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } })).price.toString()).toBe("115000");
+  });
+  it("M3: an unreadable rule in one category blocks only a run scoped to it; 'all' reports its SKUs as skipped", async () => {
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "15");
+    const good = await prisma.category.create({ data: { name: "Top Up Game", slug: "top-up-game", group: "GAME_TOPUP" } });
+    const junk = await prisma.category.create({ data: { name: "Voucher Game", slug: "voucher-game", group: "GAME_TOPUP", markupType: "bogus", markupValue: "10" } });
+    const sku = async (categoryId: number, slug: string) => {
+      const product = await prisma.product.create({ data: { name: slug, slug, categoryId } });
+      return prisma.denomination.create({ data: { productId: product.id, name: `${slug} sku`, slug: `${slug}-sku`, type: "PRIVATE", durationLabel: "Instant", price: "100000", costPrice: "100000", autoDeliverySource: "digiflazz", supplierSku: slug, deliveryType: "manual_with_info" } });
+    };
+    const goodSku = await sku(good.id, "ml");
+    const junkSku = await sku(junk.id, "ff");
+
+    const scoped = await postJson("/api/pricing/reprice/preview", cookie, csrf, { scope: good.id });
+    expect(scoped.statusCode, scoped.body).toBe(200);
+    expect(scoped.json()).toMatchObject({ eligibleCount: 1, changedCount: 1, unreadableRuleCount: 0 });
+
+    const all = await postJson("/api/pricing/reprice/preview", cookie, csrf, { scope: "all" });
+    expect(all.statusCode, all.body).toBe(200);
+    expect(all.json()).toMatchObject({ eligibleCount: 2, changedCount: 1, unreadableRuleCount: 1 });
+    expect(all.json().unreadableRuleRows).toEqual([
+      expect.objectContaining({ denominationId: junkSku.id, categoryName: "Voucher Game", reason: "category_rule_unreadable", oldPrice: "100000" }),
+    ]);
+    const applied = await postJson("/api/pricing/reprice/apply", cookie, csrf, { scope: "all", policyFingerprint: all.json().policyFingerprint });
+    expect(applied.json()).toMatchObject({ updatedCount: 1, unreadableRuleCount: 1 });
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: goodSku.id } })).price.toString()).toBe("115000");
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: junkSku.id } })).price.toString()).toBe("100000");
+
+    const refused = await postJson("/api/pricing/reprice/preview", cookie, csrf, { scope: junk.id });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error_args).toEqual({ policy: "category", categories: "Voucher Game" });
+  });
+  it("names which stored global setting is unreadable in error_args", async () => {
+    await setSetting(prisma, "digiflazz_markup_type", "percent");
+    await setSetting(prisma, "digiflazz_markup_value", "abc");
+    const res = await postJson("/api/pricing/reprice/preview", cookie, csrf, { scope: "all" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error_args).toEqual({ policy: "markup" });
   });
 });

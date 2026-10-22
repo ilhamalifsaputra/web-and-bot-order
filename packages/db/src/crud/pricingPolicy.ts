@@ -65,7 +65,11 @@ export class PricingValidationError extends Error {
  * computed from it. The message is fit to show an admin. */
 export class PricingPolicyUnreadableError extends Error {
   /** `categoryNames`: for "category", every category whose rule is unreadable. */
-  constructor(what: "markup" | "rounding" | "category", categoryNames: string[] = []) {
+  constructor(
+    /** Which stored piece is unreadable (the admin client words its own sentence from it). */
+    public readonly what: "markup" | "rounding" | "category",
+    public readonly categoryNames: string[] = [],
+  ) {
     super(
       what === "markup"
         ? "The stored default markup cannot be read as a number of zero or more, so no price can be computed from it. Save the default markup again on the Pricing & Margins page."
@@ -497,7 +501,23 @@ export interface RepriceBlockedRow extends RepriceSampleRow {
   resellerPrice: Decimal | null;
 }
 
+/** Why an eligible row was left out of a run without being priced: its
+ * category's stored markup rule cannot be read (a scope of "all" prices the
+ * other categories and leaves these rows alone; review M3). */
+export type RepriceSkipReason = "category_rule_unreadable";
+
+export interface RepriceSkippedRow {
+  denominationId: number;
+  name: string;
+  productName: string;
+  categoryName: string;
+  oldPrice: Decimal;
+  cost: Decimal;
+  reason: RepriceSkipReason;
+}
+
 export interface RepriceImpact {
+  /** Includes the rows of `unreadableRuleCount`; Apply now counts them the same way. */
   eligibleCount: number;
   /** Rows Apply now would actually write (blocked rows excluded). */
   changedCount: number;
@@ -507,6 +527,10 @@ export interface RepriceImpact {
   blockedCount: number;
   /** Up to {@link REPRICE_SAMPLE_SIZE} blocked SKUs, lowest id first. */
   blocked: RepriceBlockedRow[];
+  /** Rows left alone because their category's stored rule cannot be read. */
+  unreadableRuleCount: number;
+  /** Up to {@link REPRICE_SAMPLE_SIZE} of those rows, lowest id first. */
+  unreadableRuleRows: RepriceSkippedRow[];
   /** Identifies the pricing policy this preview was priced from; pass it back
    * to {@link applyReprice} so a policy saved in between is refused. */
   policyFingerprint: string;
@@ -522,6 +546,10 @@ export interface RepriceResult {
   /** Left at their current price because the new price failed a price check
    * (below Rp1, or below the SKU's reseller price). */
   blockedCount: number;
+  /** Left at their current price because their category's stored markup rule
+   * cannot be read (only a scope of "all" reaches this; a run scoped to such
+   * a category is refused). */
+  unreadableRuleCount: number;
 }
 
 /** Apply now committed every batch, but its final audit row failed. */
@@ -578,24 +606,42 @@ interface LoadedPolicy {
   rounding: RoundingPolicy;
   lowMarginWarnPct: Decimal | null;
   categoryRules: Map<number, MarkupRule>;
+  /** Categories whose stored rule cannot be read (id → name). Their rows are
+   * never priced (never silently from the global rule). */
+  unreadableCategories: Map<number, string>;
 }
 
-async function loadUsablePolicy(db: Db): Promise<LoadedPolicy> {
+/**
+ * The policy a run prices from. An unreadable global markup or rounding stops
+ * every run. An unreadable category rule stops only a run scoped to that
+ * category; a run over "all" carries it in `unreadableCategories` and leaves
+ * that category's rows alone, like the catalog sync (review M3).
+ */
+async function loadUsablePolicy(db: Db, scope: RepriceScope): Promise<LoadedPolicy> {
   const policy = await getPricingPolicy(db);
   if (!policy.globalRuleReadable || policy.globalRule === null) throw new PricingPolicyUnreadableError("markup");
   if (!policy.roundingReadable) throw new PricingPolicyUnreadableError("rounding");
+  const { rules, unreadableById } = await readCategoryRules(db);
+  if (scope !== "all") {
+    const name = unreadableById.get(scope);
+    if (name !== undefined) throw new PricingPolicyUnreadableError("category", [name]);
+  }
   return {
     globalRule: policy.globalRule,
     rounding: policy.rounding,
     lowMarginWarnPct: policy.lowMarginWarnPct,
-    categoryRules: await getCategoryRuleMap(db),
+    categoryRules: rules,
+    unreadableCategories: unreadableById,
   };
 }
 
+/** The rule price of an eligible row; null when its category's stored rule
+ * cannot be read (the row must be left alone, not priced). */
 function newPriceFor(
   policy: LoadedPolicy,
   row: { price: Prisma.Decimal; costPrice: Prisma.Decimal | null; categoryId: number },
-): Decimal {
+): Decimal | null {
+  if (policy.unreadableCategories.has(row.categoryId)) return null;
   const resolved = resolveDenominationPrice({
     cost: new Decimal(row.costPrice!.toString()),
     priceOverridden: false,
@@ -610,11 +656,16 @@ function newPriceFor(
 }
 
 /** A stable digest of everything that decides an Apply-now price: the global
- * rule, rounding and every category rule. The low-margin warning is left out
- * on purpose (it never changes a price). */
+ * rule, rounding, every category rule and which categories are unreadable
+ * (their rows are skipped, so a rule turning unreadable or readable again
+ * changes what Apply now does). The low-margin warning is left out on purpose
+ * (it never changes a price). */
 function policyFingerprint(policy: LoadedPolicy): string {
   const ruleKey = (r: MarkupRule) => `${r.type ?? ""}:${r.type === null ? "0" : r.value.toFixed()}`;
-  const categories = [...policy.categoryRules.entries()].sort(([a], [b]) => a - b).map(([id, r]) => `${id}=${ruleKey(r)}`);
+  const categories = [
+    ...[...policy.categoryRules.entries()].map(([id, r]) => [id, ruleKey(r)] as const),
+    ...[...policy.unreadableCategories.keys()].map((id) => [id, "unreadable"] as const),
+  ].sort(([a], [b]) => a - b).map(([id, key]) => `${id}=${key}`);
   const text = [ruleKey(policy.globalRule), policy.rounding, ...categories].join("|");
   return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
@@ -623,7 +674,7 @@ function policyFingerprint(policy: LoadedPolicy): string {
  * same price checks Apply now runs, so the preview matches the apply. Throws
  * PricingPolicyUnreadableError instead of pricing from an unreadable policy. */
 export async function computeRepriceImpact(db: Db, scope: RepriceScope): Promise<RepriceImpact> {
-  const policy = await loadUsablePolicy(db);
+  const policy = await loadUsablePolicy(db, scope);
   const rows = await db.denomination.findMany({
     where: eligibleWhere(scope),
     select: { id: true, name: true, price: true, costPrice: true, resellerPrice: true, product: { select: { name: true, categoryId: true } } },
@@ -633,8 +684,25 @@ export async function computeRepriceImpact(db: Db, scope: RepriceScope): Promise
   let blockedCount = 0;
   const sample: RepriceSampleRow[] = [];
   const blocked: RepriceBlockedRow[] = [];
+  let unreadableRuleCount = 0;
+  const unreadableRuleRows: RepriceSkippedRow[] = [];
   for (const row of rows) {
     const newPrice = newPriceFor(policy, { ...row, categoryId: row.product.categoryId });
+    if (newPrice === null) {
+      unreadableRuleCount++;
+      if (unreadableRuleRows.length < REPRICE_SAMPLE_SIZE) {
+        unreadableRuleRows.push({
+          denominationId: row.id,
+          name: row.name,
+          productName: row.product.name,
+          categoryName: policy.unreadableCategories.get(row.product.categoryId)!,
+          oldPrice: new Decimal(row.price.toString()),
+          cost: new Decimal(row.costPrice!.toString()),
+          reason: "category_rule_unreadable",
+        });
+      }
+      continue;
+    }
     if (moneyEq(newPrice, row.price)) continue;
     const cost = new Decimal(row.costPrice!.toString());
     const resellerPrice = toDecimalOrNull(row.resellerPrice);
@@ -655,7 +723,10 @@ export async function computeRepriceImpact(db: Db, scope: RepriceScope): Promise
     changedCount++;
     if (sample.length < REPRICE_SAMPLE_SIZE) sample.push(base);
   }
-  return { eligibleCount: rows.length, changedCount, sample, blockedCount, blocked, policyFingerprint: policyFingerprint(policy) };
+  return {
+    eligibleCount: rows.length, changedCount, sample, blockedCount, blocked,
+    unreadableRuleCount, unreadableRuleRows, policyFingerprint: policyFingerprint(policy),
+  };
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -686,7 +757,7 @@ export async function applyReprice(
   } = {},
 ): Promise<RepriceResult> {
   // Refuse an unreadable policy before taking the lease.
-  const policy = await loadUsablePolicy(db);
+  const policy = await loadUsablePolicy(db, scope);
   if (opts.expectedPolicyFingerprint !== undefined && opts.expectedPolicyFingerprint !== policyFingerprint(policy)) {
     throw new RepricePolicyChangedError();
   }
@@ -703,7 +774,9 @@ export async function applyReprice(
     const ids = (
       await db.denomination.findMany({ where: eligibleWhere(scope), select: { id: true }, orderBy: { id: "asc" } })
     ).map((r) => r.id);
-    const result: RepriceResult = { eligibleCount: ids.length, updatedCount: 0, unchangedCount: 0, skippedCount: 0, blockedCount: 0 };
+    const result: RepriceResult = { eligibleCount: ids.length, updatedCount: 0, unchangedCount: 0, skippedCount: 0, blockedCount: 0, unreadableRuleCount: 0 };
+    // Categories whose rows were left alone for an unreadable rule, for the audit sentence.
+    const unreadableSeen = new Set<number>();
 
     try {
       for (let i = 0, batchIndex = 0; i < ids.length; i += batchSize, batchIndex++) {
@@ -717,7 +790,7 @@ export async function applyReprice(
             data: { updatedAt: new Date() },
           });
           if (renewed.count !== 1) throw new RepriceLeaseLostError();
-          const c = { updated: 0, unchanged: 0, skipped: 0, blocked: 0 };
+          const c = { updated: 0, unchanged: 0, skipped: 0, blocked: 0, unreadableRule: 0 };
           await tx.$queryRaw`SELECT id FROM denominations WHERE id IN (${Prisma.join(batch)}) ORDER BY id FOR UPDATE`;
           const locked = await tx.denomination.findMany({
             where: { AND: [{ id: { in: batch } }, eligibleWhere(scope)] },
@@ -725,7 +798,13 @@ export async function applyReprice(
           });
           c.skipped = batch.length - locked.length;
           for (const row of locked) {
+            // Decided on the locked row's own category: the same test as the preview.
             const newPrice = newPriceFor(policy, { ...row, categoryId: row.product.categoryId });
+            if (newPrice === null) {
+              c.unreadableRule++;
+              unreadableSeen.add(row.product.categoryId);
+              continue;
+            }
             if (moneyEq(newPrice, row.price)) {
               c.unchanged++;
               continue;
@@ -744,6 +823,7 @@ export async function applyReprice(
         result.unchangedCount += counts.unchanged;
         result.skippedCount += counts.skipped;
         result.blockedCount += counts.blocked;
+        result.unreadableRuleCount += counts.unreadableRule;
       }
     } catch (err) {
       // Earlier batches are committed live prices: they must not go unaudited.
@@ -771,11 +851,16 @@ export async function applyReprice(
     const blockedNote = result.blockedCount > 0
       ? ` ${plural(result.blockedCount, "item was", "items were")} left at ${result.blockedCount === 1 ? "its" : "their"} current price because the new price failed a price check (below Rp1, or below ${result.blockedCount === 1 ? "its" : "their"} reseller price).`
       : "";
+    const unreadableNames = [...unreadableSeen].map((id) => policy.unreadableCategories.get(id)!).sort();
+    const unreadableNote = result.unreadableRuleCount > 0
+      ? ` ${plural(result.unreadableRuleCount, "item was", "items were")} left at ${result.unreadableRuleCount === 1 ? "its" : "their"} current price because the stored markup ${unreadableNames.length === 1 ? "rule of category" : "rules of categories"} ${joinClauses(unreadableNames.map((n) => `"${n}"`))} cannot be read.`
+      : "";
+    const notes = `${skippedNote}${blockedNote}${unreadableNote}`;
     const details = result.eligibleCount === 0
       ? `Found no auto-priced Digiflazz items${where} to reprice from the current pricing rules.`
       : result.updatedCount === 0
-      ? `Checked ${plural(result.eligibleCount, "Digiflazz item", "Digiflazz items")}${where} against the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${skippedNote}${blockedNote}`
-      : `Repriced ${plural(result.updatedCount, "Digiflazz item", "Digiflazz items")}${where} from the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${skippedNote}${blockedNote}`;
+      ? `Checked ${plural(result.eligibleCount, "Digiflazz item", "Digiflazz items")}${where} against the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${notes}`
+      : `Repriced ${plural(result.updatedCount, "Digiflazz item", "Digiflazz items")}${where} from the current pricing rules; ${plural(result.unchangedCount, "was", "were")} already up to date.${notes}`;
     try {
       await logAdminAction(db, {
         adminId,

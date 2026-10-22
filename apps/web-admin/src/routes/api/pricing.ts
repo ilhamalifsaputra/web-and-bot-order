@@ -55,12 +55,21 @@ export default async function pricingApiRoutes(app: FastifyInstance): Promise<vo
     }
   });
   app.setErrorHandler((err, _req, reply) => {
-    if (err instanceof PricingValidationError || err instanceof PricingPolicyUnreadableError) return reply.code(400).send({ error: err.message });
+    if (err instanceof PricingValidationError) return reply.code(400).send({ error: err.message });
+    // error_args says which stored piece is unreadable, so the admin client can
+    // show its own Indonesian sentence next to the button (review M2).
+    if (err instanceof PricingPolicyUnreadableError) {
+      const args: Record<string, string> = { policy: err.what };
+      if (err.what === "category") args.categories = err.categoryNames.join(", ");
+      return reply.code(400).send({ error: err.message, error_args: args });
+    }
+    // error_args names the conflict / failure so the client can word it in Indonesian (round 3b M-1).
     if (err instanceof RepriceBusyError || err instanceof RepriceLeaseLostError || err instanceof RepricePolicyChangedError) {
-      return reply.code(409).send({ error: err.message });
+      const conflict = err instanceof RepriceBusyError ? "busy" : err instanceof RepriceLeaseLostError ? "lease_lost" : "policy_changed";
+      return reply.code(409).send({ error: err.message, error_args: { conflict } });
     }
     // Already logged at error level by applyReprice; the prices are live.
-    if (err instanceof RepriceAuditFailedError) return reply.code(500).send({ error: err.message });
+    if (err instanceof RepriceAuditFailedError) return reply.code(500).send({ error: err.message, error_args: { failure: "audit" } });
     throw err;
   });
   app.get("/api/pricing", { preHandler: currentAdmin }, async (req) => {

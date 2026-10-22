@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { Decimal } from "decimal.js";
 import { AlertCircle, AlertTriangle } from "lucide-react";
 import { formatCurrencyDisplay } from "../shared/CurrencyAmount.helpers";
+import { ERROR_ALERT_CLASS } from "../../lib/errorAlert";
 
 export interface CatalogPricingInfo {
   /** The admin may pick Auto/Manual on the edit form (Game Top Up only). */
@@ -38,10 +39,19 @@ const WARNINGS: Record<string, { tone: "error" | "warning"; title: string; text:
 function PricingWarning({ code }: { code: string }) {
   const w = WARNINGS[code]!;
   if (w.tone === "error") {
-    return <Alert variant="destructive"><AlertCircle aria-hidden="true" /><AlertTitle>{w.title}</AlertTitle><AlertDescription>{w.text}</AlertDescription></Alert>;
+    // Filled rust tint + border so the error reads stronger than the amber warning (review M1);
+    // rust-dark text, since rust on rust-tint is only 4.08:1 (rust-dark 5.47:1, round 3b I1).
+    return <Alert variant="destructive" className={ERROR_ALERT_CLASS}><AlertCircle aria-hidden="true" /><AlertTitle>{w.title}</AlertTitle><AlertDescription>{w.text}</AlertDescription></Alert>;
   }
   // A standing state of the SKU, not an event: role="status" (same pattern as OrderDetailPage's amber notice).
   return <Alert role="status" className="border-amberx/40 bg-amberx-tint text-ink"><AlertTriangle className="text-amberx" aria-hidden="true" /><AlertTitle>{w.title}</AlertTitle><AlertDescription className="text-ink">{w.text}</AlertDescription></Alert>;
+}
+/** Known warnings, errors first; low_margin is dropped next to below_cost
+ * (a negative margin is always below the threshold, so it adds nothing). */
+function shownWarnings(codes: string[]): string[] {
+  const belowCost = codes.includes("below_cost");
+  const known = codes.filter(w => WARNINGS[w] && !(w === "low_margin" && belowCost));
+  return [...known.filter(w => WARNINGS[w]!.tone === "error"), ...known.filter(w => WARNINGS[w]!.tone !== "error")];
 }
 export function PricingSummary({ pricing }: { pricing: CatalogPricingInfo }) {
   return <section aria-label="Ringkasan harga" className="space-y-3 border-t border-line pt-4">
@@ -54,6 +64,6 @@ export function PricingSummary({ pricing }: { pricing: CatalogPricingInfo }) {
     <p className="text-xs text-ink-soft">Berdasarkan harga tersimpan, sebelum biaya/diskon. Perubahan draft dihitung saat disimpan.</p>
     {pricing.source === "manual_no_cost" && <p className="text-xs text-ink-soft">Menunggu HPP: sync berikutnya mengisi HPP lalu menghitung harga dari aturan.</p>}
     {pricing.pendingReprice && <p className="text-xs text-ink-soft">Aturan baru belum diterapkan pada harga aktif. Gunakan sync atau Terapkan sekarang.</p>}
-    {pricing.warnings.filter(w => WARNINGS[w]).map(w => <PricingWarning key={w} code={w} />)}
+    {shownWarnings(pricing.warnings).map(w => <PricingWarning key={w} code={w} />)}
   </section>;
 }

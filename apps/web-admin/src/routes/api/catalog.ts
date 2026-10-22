@@ -22,6 +22,8 @@ import {
   getBulkPricingForDenomination,
   upsertBulkPricing,
   deleteBulkPricing,
+  listTiers,
+  saveTieredPricing,
   createCatalogProduct,
   createCategory,
   createDenomination,
@@ -47,6 +49,8 @@ import { catalogPricing } from "../../lib/catalogPricing";
 import { denominationPriceError, isDenominationBelowCost } from "@app/core/denominationPrices";
 import { readMoneyField, readPercentField, moneyFieldError, percentFieldError, exactFields } from "../../lib/moneyField";
 import { isFlashActive } from "@app/core/flash";
+import { TieredPricingError } from "@app/core/bulk";
+import { readTierInputs, serializeTierState, TIER_ERRORS_SUMMARY } from "../../lib/pricingTiers";
 import { fulfillmentSourceOf, usesLocalInventory } from "@app/core/productAvailability";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -1039,6 +1043,43 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({ ok: true, removed });
   });
 
+  // ---- Volume ("tiered") pricing: the tier editor on the denomination page ----
+
+  app.get("/api/catalog/denominations/:id/pricing-tiers", { preHandler: currentAdmin }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "ID denominasi tidak valid." });
+    const existing = await getDenominationWithProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denominasi tidak ditemukan." });
+    return reply.send(serializeTierState(existing, existing.tieredPricingEnabled, await listTiers(prisma, id)));
+  });
+
+  // Saves the whole tier set and the on/off toggle together (one transaction,
+  // audited by saveTieredPricing). Warnings in `analysis` never block a save.
+  app.put("/api/catalog/denominations/:id/pricing-tiers", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "ID denominasi tidak valid." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.enabled !== "boolean" || !Array.isArray(body.tiers)) {
+      return reply.code(400).send({ error: "Kirim status aktif (enabled) dan daftar tier (tiers)." });
+    }
+    const existing = await getDenominationWithProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denominasi tidak ditemukan." });
+
+    const read = readTierInputs(body.tiers);
+    if (!read.ok) return reply.code(400).send({ error: TIER_ERRORS_SUMMARY, tier_errors: read.errors });
+    let saved: Awaited<ReturnType<typeof saveTieredPricing>>;
+    try {
+      saved = await saveTieredPricing(prisma, id, { enabled: body.enabled, tiers: read.tiers }, { adminId: req.admin!.userId });
+    } catch (e) {
+      // A backstop: readTierInputs already ran the engine's validation and mapped it to rows.
+      if (e instanceof TieredPricingError) return reply.code(400).send({ error: TIER_ERRORS_SUMMARY });
+      // error.product_unavailable: the denomination was deleted between the lookup and the save.
+      if (e instanceof ValidationError) return reply.code(404).send({ error: "Denominasi tidak ditemukan." });
+      throw e;
+    }
+    return reply.send(serializeTierState(existing, saved.enabled, saved.tiers));
+  });
+
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     if (!Number.isInteger(productId)) return reply.code(404).send({ error: "Product not found." });
@@ -1063,6 +1104,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
         usesLocalInventory: usesLocalInventory(d),
         waiting: await countRestockSubscribers(prisma, d.id),
         rule: await getBulkPricingForDenomination(prisma, d.id),
+        // The tier editor's summary; `rule` above stays the legacy single-rule view.
+        pricingTiers: { enabled: d.tieredPricingEnabled, count: (await listTiers(prisma, d.id)).length },
         // Percent + whether the window is live right now, so the product
         // list can badge the row (editing a flash sale itself happens on the
         // bulk Flash Sales page, not here).

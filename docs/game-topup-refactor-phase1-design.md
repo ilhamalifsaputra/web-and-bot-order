@@ -220,7 +220,7 @@ Perintah verifikasi mengikuti AGENTS.md: `pnpm exec vitest run <path>` / `pnpm t
 Catatan 2026-10-19: flag alur Game Top-up v2 dihapus atas keputusan pemilik; label `From`, hint, dan `/search` baru kini selalu aktif untuk Game Top-up (dipilih lewat `category.group`) dan tidak pernah muncul untuk Premium Apps. Tidak ada perubahan skema atau kontrak data pada Phase 2: pada data Digiflazz region = server, jadi tidak ada level Server terpisah.
 
 Selesai:
-- Label harga `From <harga>` pada daftar produk Game Top-up.
+- Label harga pada daftar produk Game Top-up (bot menampilkan `mulai <harga>` / `from <price>` sesuai bahasa pembeli).
 - Hint satu baris `hint.*` per layar (tabel di bawah).
 - `/search` khusus Game Top-up: berperingkat, label tipe layanan, halaman, "Search again". Alias dibaca dari tabel basis pengetahuan deteksi `detection_aliases`; daftar bawaannya **kosong**, jadi alias baru bekerja setelah admin menambahkan baris.
 

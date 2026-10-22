@@ -340,11 +340,40 @@ export async function transitionRefundStatus(
 }
 
 /**
+ * An OrderItem's IDR value net of its prorated share of the order's
+ * `bulkDiscountAmount` — the per-item refund budget.
+ *
+ * `OrderItem.unitPrice` is the PRE-bulk unit (the volume discount lives only
+ * on the Order row), so budgeting a unit at its raw unitPrice let one unit of
+ * a tier-discounted order be refunded for more than the buyer paid for it (5
+ * units at Rp10.000 under a Rp6.000 tier: Rp10.000 back for a Rp6.000 unit),
+ * with only the order-wide ceiling standing in the way. The share is split by
+ * the line's part of `subtotalAmount`, multiply-before-divide, exactly as
+ * `revenue.ts` (`orderItemRevenueIdr`) and `stockReplacement.ts`
+ * (`refundableAmountForUnit`) prorate, and quantized to 4dp like the latter.
+ *
+ * The voucher (`discountAmount`) is deliberately NOT subtracted here, keeping
+ * this change to the bulk discount: `stockReplacement` already pays a unit
+ * net of both, which stays within this budget.
+ */
+function lineNetOfBulkDiscount(
+  order: { subtotalAmount: Decimal.Value; bulkDiscountAmount: Decimal.Value },
+  item: { unitPrice: Decimal.Value; quantity: number },
+): Decimal {
+  const lineGross = new Decimal(item.unitPrice).times(item.quantity);
+  const bulk = new Decimal(order.bulkDiscountAmount);
+  const orderSubtotal = new Decimal(order.subtotalAmount);
+  if (!bulk.greaterThan(0) || !orderSubtotal.greaterThan(0)) return lineGross;
+  return quantizeMoney(lineGross.minus(bulk.times(lineGross).div(orderSubtotal)), 4);
+}
+
+/**
  * Create a per-line RefundItem, enforcing the cross-row sum invariant that
  * RefundItem's own schema doc comment defers to the application layer: the
  * sum of every RefundItem.amount already recorded against this OrderItem,
- * plus this new amount, must never exceed the OrderItem's own subtotal
- * (`unitPrice * quantity`). Reads every sibling RefundItem row for this
+ * plus this new amount, must never exceed the OrderItem's own subtotal net of
+ * its prorated bulk discount (`lineNetOfBulkDiscount`; `unitPrice * quantity`
+ * when the order had none). Reads every sibling RefundItem row for this
  * `orderItemId` (across ALL Refunds, not just the current one) to compute
  * that sum — a partial refund history can span more than one Refund request
  * over time (e.g. buy 3, one turns out dead now and another later).
@@ -458,7 +487,7 @@ async function createRefundItemLocked(
   const amount = parseRefundAmount(args.amount);
   const order = await db.order.findUniqueOrThrow({ where: { id: refund.orderId } });
   if (order.currency !== refund.currency) throw new ValidationError("error.refund_currency_mismatch", { refundCurrency: refund.currency, orderCurrency: order.currency });
-  const subtotal = refundCurrencyAmount(new Decimal(orderItem.unitPrice).times(orderItem.quantity), "IDR", order);
+  const subtotal = refundCurrencyAmount(lineNetOfBulkDiscount(order, orderItem), "IDR", order);
 
   const existing = await db.refundItem.aggregate({
     where: {

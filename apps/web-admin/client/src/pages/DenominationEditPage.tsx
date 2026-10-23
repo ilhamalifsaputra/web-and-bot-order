@@ -9,12 +9,12 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { apiDelete, apiGet, apiPatch, apiPost } from "../api/client";
+import { apiGet, apiPatch } from "../api/client";
 import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
 import { PricingSummary, type CatalogPricingInfo } from "../components/catalog/PricingSummary";
+import { TieredPricingCard } from "../components/catalog/TieredPricingCard";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
 import { DenominationIdentityFields } from "../components/shared/DenominationIdentityFields";
@@ -68,11 +68,6 @@ function parseStoredAdditionalFields(json: string | null): AdditionalFieldDraft[
   }
 }
 
-interface BulkPricingRule {
-  minQuantity: number;
-  discountPercent: string;
-}
-
 interface ProductDetailForEdit {
   product: {
     id: number;
@@ -81,7 +76,7 @@ interface ProductDetailForEdit {
     category: { id: number; name: string; group?: string | null } | null;
     denominations: EditableDenomination[];
   };
-  statsByDenom: Record<number, { rule: BulkPricingRule | null; pricing?: CatalogPricingInfo }>;
+  statsByDenom: Record<number, { pricing?: CatalogPricingInfo }>;
 }
 
 interface SiblingProduct {
@@ -125,7 +120,7 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
     (p) => p.category?.id === data?.product.category?.id,
   );
 
-  const { pricingMode, setPricingMode, name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule, initialPricingMode } = useDenominationDraft({ data, denomId, denomination: denomination!, pricing, productId });
+  const { pricingMode, setPricingMode, name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, pricePrefill, initialPricingMode } = useDenominationDraft({ denomination: denomination!, pricing, productId });
 
   // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
   // every other field on this form.
@@ -184,35 +179,6 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
     },
     onError: (e: Error) => setError(e.message),
   });
-
-  const saveBulkPricing = useMutation({
-    mutationFn: () =>
-      apiPost(`/api/catalog/denominations/${denomId}/bulk-pricing`, {
-        minQuantity: Number(bulkMinQuantity.trim()),
-        discountPercent: bulkDiscountPercent.trim(),
-        exact_fields: exactFieldsOf({ discountPercent: bulkDiscountPercent.trim() }, bulkPrefill, ["discountPercent"]),
-      }),
-    onMutate: () => setBulkError(null),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog", productId] }),
-    onError: (e: Error) => setBulkError(e.message),
-  });
-
-  const removeBulkPricing = useMutation({
-    mutationFn: () => apiDelete(`/api/catalog/denominations/${denomId}/bulk-pricing`),
-    onMutate: () => setBulkError(null),
-    onSuccess: () => {
-      setBulkMinQuantity("");
-      setBulkDiscountPercent("");
-      void qc.invalidateQueries({ queryKey: ["catalog", productId] });
-    },
-    onError: (e: Error) => setBulkError(e.message),
-  });
-
-  const canSaveBulkPricing =
-    Number.isInteger(Number(bulkMinQuantity.trim())) &&
-    Number(bulkMinQuantity.trim()) >= 1 &&
-    bulkDiscountPercent.trim() !== "" &&
-    !Number.isNaN(Number(bulkDiscountPercent.trim()));
 
   const { canSubmit } = denominationSubmission({ name, type, durationLabel, price, deliveryType, additionalFields, autoDeliverySource, supplierSku });
 
@@ -317,71 +283,10 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
           {save.isPending ? "Saving…" : "Save Changes"}
         </Button>
 
-        <DenominationEditBulkPricing fieldId={fieldId} bulkMinQuantity={bulkMinQuantity} setBulkMinQuantity={setBulkMinQuantity} bulkDiscountPercent={bulkDiscountPercent} setBulkDiscountPercent={setBulkDiscountPercent} canSaveBulkPricing={canSaveBulkPricing} saveBulkPricing={saveBulkPricing} existingRule={existingRule} removeBulkPricing={removeBulkPricing} bulkError={bulkError} />
+        <TieredPricingCard denominationId={Number(denomId)} productId={productId} isGame={isGame} />
       </div>
     </PageLayout>
   );
-}
-
-function DenominationEditBulkPricing({ fieldId, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, canSaveBulkPricing, saveBulkPricing, existingRule, removeBulkPricing, bulkError }: {
-  fieldId: string;
-  bulkMinQuantity: string;
-  setBulkMinQuantity: import("react").Dispatch<import("react").SetStateAction<string>>;
-  bulkDiscountPercent: string;
-  setBulkDiscountPercent: import("react").Dispatch<import("react").SetStateAction<string>>;
-  canSaveBulkPricing: boolean;
-  saveBulkPricing: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, void>;
-  existingRule: BulkPricingRule | null;
-  removeBulkPricing: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, void>;
-  bulkError: string | null;
-}) {
-  return (<div className="mt-4 border-t border-line pt-4">
-    <h2 className="text-sm font-medium text-ink">Bulk Pricing</h2>
-    <p className="mt-1 text-xs text-ink-soft">
-      Give a quantity discount when a customer buys this denomination in bulk.
-    </p>
-
-    <div className="mt-3 flex items-end gap-3">
-      <div>
-        <label htmlFor={`${fieldId}-min-quantity-14`} className="block text-sm font-medium text-ink">Min Quantity</label>
-        <Input id={`${fieldId}-min-quantity-14`}
-          className="mt-1 w-28"
-          placeholder="e.g. 5"
-          value={bulkMinQuantity}
-          onChange={(e) => setBulkMinQuantity(e.target.value)}
-        />
-      </div>
-      <div>
-        <label htmlFor={`${fieldId}-discount-15`} className="block text-sm font-medium text-ink">Discount %</label>
-        <Input id={`${fieldId}-discount-15`}
-          className="mt-1 w-28"
-          placeholder="e.g. 10"
-          value={bulkDiscountPercent}
-          onChange={(e) => setBulkDiscountPercent(e.target.value)}
-        />
-      </div>
-      <Button
-        variant="outline"
-        disabled={!canSaveBulkPricing || saveBulkPricing.isPending}
-        onClick={() => saveBulkPricing.mutate()}
-      >
-        <Save className="h-4 w-4" />
-        {saveBulkPricing.isPending ? "Saving…" : existingRule ? "Update" : "Save"}
-      </Button>
-      {existingRule && (
-        <Button
-          variant="ghost"
-          disabled={removeBulkPricing.isPending}
-          onClick={() => removeBulkPricing.mutate()}
-          className="text-rust"
-        >
-          <Trash2 className="h-4 w-4" />
-          Remove
-        </Button>
-      )}
-    </div>
-    {bulkError && <p className="mt-2 text-sm text-rust">{bulkError}</p>}
-  </div>);
 }
 
 function DenominationEditModeHarga({ isGame, autoDeliverySource, deliveryType, fieldId, pricingMode, setAutoConfirm, setPricingMode, costPrice }: {
@@ -428,16 +333,13 @@ function denominationSubmission({ name, type, durationLabel, price, deliveryType
   return { canSubmit };
 }
 
-function useDenominationDraft({ data, denomId, denomination, pricing, productId }: {
-  data: ProductDetailForEdit;
-  denomId: string | undefined;
+function useDenominationDraft({ denomination, pricing, productId }: {
   denomination: EditableDenomination;
   pricing: CatalogPricingInfo | undefined;
   productId: string | undefined;
 }) {
-  const existingRule = data.statsByDenom?.[Number(denomId)]?.rule ?? null;
   // Keep the exact stored values from the first loaded render for untouched money fields.
-  const [initial] = useState(() => ({ denomination, existingRule, productId, pricing }));
+  const [initial] = useState(() => ({ denomination, productId, pricing }));
   const [initialPricingMode] = useState<"auto" | "manual">(() => initial.pricing?.automaticAvailable && !initial.denomination.priceOverridden ? "auto" : "manual");
   const [pricingMode, setPricingMode] = useState<"auto" | "manual">(initialPricingMode);
   const [name, setName] = useState(() => (initial.denomination.name));
@@ -459,12 +361,8 @@ function useDenominationDraft({ data, denomId, denomination, pricing, productId 
   const [qtyValue, setQtyValue] = useState(() => (initial.denomination.qtyValue != null ? String(initial.denomination.qtyValue) : ""));
   const [qtyUnit, setQtyUnit] = useState(() => (initial.denomination.qtyUnit ?? ""));
   const [error, setError] = useState<string | null>(null);
-  const [bulkMinQuantity, setBulkMinQuantity] = useState(() => (initial.existingRule ? String(initial.existingRule.minQuantity) : ""));
-  const [bulkDiscountPercent, setBulkDiscountPercent] = useState(() => (initial.existingRule ? initial.existingRule.discountPercent : ""));
-  const [bulkError, setBulkError] = useState<string | null>(null);
   const pricePrefill: PriceFields = { price: initial.denomination.price, costPrice: initial.denomination.costPrice ?? "", resellerPrice: initial.denomination.resellerPrice ?? "" };
-  const bulkPrefill = initial.existingRule ? { discountPercent: initial.existingRule.discountPercent } : null;
-  return { name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, bulkMinQuantity, setBulkMinQuantity, bulkDiscountPercent, setBulkDiscountPercent, pricePrefill, bulkPrefill, bulkError, setBulkError, existingRule, pricingMode, setPricingMode, initialPricingMode };
+  return { name, setName, type, setType, durationLabel, setDurationLabel, price, setPrice, costPrice, setCostPrice, resellerPrice, setResellerPrice, warrantyDays, setWarrantyDays, description, setDescription, sortOrder, setSortOrder, moveToProductId, setMoveToProductId, deliveryType, setDeliveryType, additionalFields, setAdditionalFields, autoDeliverySource, setAutoDeliverySource, supplierSku, setSupplierSku, nicknameCheckGameCode, setNicknameCheckGameCode, providerInputMapping, setProviderInputMapping, qtyValue, setQtyValue, qtyUnit, setQtyUnit, error, setError, pricePrefill, pricingMode, setPricingMode, initialPricingMode };
 }
 
 export function DenominationEditPage() {

@@ -62,6 +62,10 @@ describe("parseAccountMessage — two fields (ID + Zone)", () => {
     // The split ID is still validated: 1 digit is below user_id's minLength.
     expect(parseAccountMessage([userId, fixedZone(4)], "12345")).toMatchObject({ ok: false, reason: "invalid_value", field: "user_id", errorKey: "error.field_invalid_length" });
   });
+  it("splits only on the LAST field's fixed length; a fixed first field stays ambiguous", () => {
+    const fixedUser = { ...userId, minLength: 9, maxLength: 9 };
+    expect(parseAccountMessage([fixedUser, zoneId], "1234567891234")).toEqual({ ok: false, reason: "ambiguous", field: "zone_id" });
+  });
   it("never splits a token no longer than the fixed zone into an empty ID", () => {
     for (const text of ["1234", "123", "0"]) {
       const result = parseAccountMessage([userId, fixedZone(4)], text);
@@ -94,6 +98,16 @@ describe("parseAccountMessage — two fields (ID + Zone)", () => {
       expect(parseAccountMessage([textField("name")], `${ch}Bob`)).toMatchObject({ ok: false, reason: "invalid_value", field: "name" });
       expect(parseAccountMessage([textField("name")], `Bob${ch}`)).toMatchObject({ ok: false, reason: "invalid_value", field: "name" });
     }
+  });
+  it("rejects invisible fillers, variation selectors, tag characters and interlinear marks in a free-text field", () => {
+    const chars = ["\u034f", "\u115f", "\u1160", "\u3164", "\uffa0", "\ufe00", "\ufe0f", "\u{e0000}", "\u{e0041}", "\u{e007f}", "\ufff9", "\ufffa", "\ufffb", "\u2800"];
+    for (const ch of chars) {
+      expect(parseAccountMessage([textField("name")], `Bo${ch}b`)).toMatchObject({ ok: false, reason: "invalid_value", field: "name", errorKey: "error.field_invalid_pattern" });
+      expect(parseAccountMessage([textField("name")], `${ch}Bob`)).toMatchObject({ ok: false, reason: "invalid_value", field: "name" });
+      expect(parseAccountMessage([textField("name"), textField("server")], `Bob 12${ch}34`)).toMatchObject({ ok: false, reason: "invalid_value", field: "server" });
+    }
+    expect(parseAccountMessage([textField("name")], "Bob")).toEqual(ok({ name: "Bob" }));
+    expect(parseAccountMessage([textField("name")], "Bob\u00e9")).toEqual(ok({ name: "Bob\u00e9" }));
   });
   it("returns empty for empty or whitespace-only text", () => {
     for (const text of ["", "   ", "\n\t ", "\u00a0\u3000"]) {
@@ -155,24 +169,43 @@ describe("parseAccountMessage — totality", () => {
     expect(parseAccountMessage(idZone, undefined as unknown as string)).toEqual({ ok: false, reason: "empty" });
     expect(parseAccountMessage(idZone, 1234 as unknown as string)).toEqual({ ok: false, reason: "empty" });
   });
+  it("caps very long input before any regex work (linear time, too_many)", () => {
+    const started = performance.now();
+    const ws = " ".repeat(100_000);
+    for (const text of [ws, `1234${ws}5678`, `${ws}x${ws}`, "\t ".repeat(50_000) + "!"]) {
+      expect(parseAccountMessage(idZone, text)).toEqual({ ok: false, reason: "too_many" });
+      expect(parseAccountMessage([userId], text)).toEqual({ ok: false, reason: "too_many" });
+    }
+    expect(performance.now() - started).toBeLessThan(200);
+    // The bound is Telegram's message cap: 4096 characters still parse, 4097 do not.
+    expect(parseAccountMessage([userId], "1".repeat(4096))).toMatchObject({ ok: false, reason: "invalid_value" });
+    expect(parseAccountMessage([userId], "1".repeat(4097))).toEqual({ ok: false, reason: "too_many" });
+  });
   it("round-trips 100 random digit pairs and separators without throwing", () => {
-    let seed = 20261023;
+    // mulberry32: a proper seeded 32-bit generator, deterministic across runs.
+    let state = 20261023;
     const rand = (n: number) => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed % n;
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) % n;
     };
     const digits = (len: number) => Array.from({ length: len }, () => String(rand(10))).join("");
     const seps = [" ", ",", ":", " , ", "  ", "\t", "\n", ": ", ",,", " :\u00a0"];
+    const drawnSeps = new Set<number>();
     for (let i = 0; i < 100; i++) {
       const id = digits(4 + rand(17));
       const zone = digits(1 + rand(6));
-      const sep = seps[rand(seps.length)]!;
+      const sepIndex = rand(seps.length);
+      drawnSeps.add(sepIndex);
+      const sep = seps[sepIndex]!;
       const result = parseAccountMessage(idZone, `${id}${sep}${zone}`);
       expect(result).toEqual(ok({ user_id: id, zone_id: zone }));
-      if (result.ok) expect(`${result.values.user_id} ${result.values.zone_id}`).toBe(`${id} ${zone}`);
       const junk = Array.from({ length: rand(12) }, () => String.fromCharCode(rand(0x3100))).join("");
       expect(() => parseAccountMessage(idZone, junk)).not.toThrow();
       expect(() => parseAccountMessage([userId, fixedZone(1 + rand(5))], junk + id)).not.toThrow();
     }
+    // Every separator is exercised (the old generator only ever drew six of them).
+    expect([...drawnSeps].sort((a, b) => a - b)).toEqual(seps.map((_, i) => i));
   });
 });

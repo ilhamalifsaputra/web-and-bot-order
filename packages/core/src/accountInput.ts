@@ -41,7 +41,12 @@ const HAS_SEPARATOR_RE = new RegExp(`[${WS},:]`);
 const PAREN_FORM_RE = new RegExp(`^([^()${WS},:]+)[${WS}]*\\(([^()${WS},:]+)\\)$`);
 // Control, zero-width, bidi and other invisible characters. A value containing
 // one is refused: it can make two different accounts look identical on screen.
-const FORBIDDEN_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/;
+// Also: combining grapheme joiner, Hangul and halfwidth fillers, braille blank,
+// variation selectors, interlinear annotation marks and tag characters.
+const FORBIDDEN_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}]/u;
+// Telegram's message cap; longer input is refused before any regex work so a
+// huge whitespace run cannot make the trim/split patterns slow.
+const MAX_TEXT_LENGTH = 4096;
 const ASCII_DIGITS_RE = /^[0-9]+$/;
 
 /** A field whose value can only be ASCII digits (NUMBER type or a digit pattern). */
@@ -94,8 +99,15 @@ function validateAll(fields: AdditionalField[], tokens: string[]): ParseAccountR
  * - Too few values: a single all-digit value for 2 fields is split only when the
  *   last field has a fixed digit length; otherwise ambiguous (the digits could
  *   hide the missing value) or missing_field.
+ *
+ * Caller notes: free-text fields with 2+ fields split on spaces, so multi-word
+ * text fields must go through the per-field flow instead; optional fields must
+ * be left out of `fields` by the caller if they are to be skipped. `fields = []`
+ * and non-string text are handled without throwing; text over 4096 characters
+ * is refused as too_many.
  */
 export function parseAccountMessage(fields: AdditionalField[], text: string): ParseAccountResult {
+  if (typeof text === "string" && text.length > MAX_TEXT_LENGTH) return { ok: false, reason: "too_many" };
   const trimmed = typeof text === "string" ? text.replace(TRIM_RE, "") : "";
   if (!trimmed) return { ok: false, reason: "empty" };
   const n = fields.length;

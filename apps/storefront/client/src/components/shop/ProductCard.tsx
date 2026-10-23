@@ -39,8 +39,13 @@ export interface ProductCardData {
   available: number;
   rating: number | null;
   rating_count: number;
+  /** Best volume-tier saving across the product's plans, as a percent string. */
   bulk_discount: string | null;
   bulk_min_qty: number | null;
+  /** True when that percent was derived from a fixed-amount/fixed-price tier
+   * (server-rounded down) — the badge and hint then say "up to". Optional so
+   * older payloads and fixtures still type-check. */
+  bulk_up_to?: boolean;
   /** Live flash discount on the plan behind `from_price`, or null/absent.
    * `from_price` ALREADY reflects it — this only drives the ⚡ badge. Optional
    * so a payload predating flash sales still type-checks. */
@@ -70,7 +75,9 @@ export interface ProductCardProps {
 }
 
 export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
-  const bulkPercent = p.bulk_discount ? Math.round(Number(p.bulk_discount)) : null;
+  // Rounded DOWN for display: a 12.5% tier is shown as 12%, never 13% — the
+  // badge must not claim more than checkout takes off.
+  const bulkPercent = p.bulk_discount ? Math.floor(Number(p.bulk_discount)) : null;
   const preSale = p.flash_discount ? (p.from_base_price ?? null) : null;
   return (
     <MotionLink
@@ -130,7 +137,7 @@ function ProductCardImage({ p, bulkPercent }: {
         )}
         {p.bulk_discount && (
           <span className="inline-flex items-center rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark shadow-xs">
-            −{bulkPercent}%
+            {p.bulk_up_to ? t("shop.bulk_badge_up_to", { percent: bulkPercent ?? 0 }) : `−${bulkPercent}%`}
           </span>
         )}
       </div>
@@ -207,7 +214,7 @@ function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
     {p.bulk_discount && p.bulk_min_qty && (
       <div className="text-xs text-grass-dark font-medium flex items-center gap-1 mt-2">
         <Tag className="w-3 h-3" />
-        {t("web.bulk_hint", { qty: p.bulk_min_qty, percent: bulkPercent ?? 0 })}
+        {t(p.bulk_up_to ? "shop.bulk_hint_up_to" : "web.bulk_hint", { qty: p.bulk_min_qty, percent: bulkPercent ?? 0 })}
       </div>
     )}
   </div>);

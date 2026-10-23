@@ -176,3 +176,80 @@ describe("OrderSummaryCard — total emphasis", () => {
     expect(row.querySelector(".text-lg")).toBeNull();
   });
 });
+
+describe("OrderSummaryCard — volume tiers and the changed-price notice", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  function renderWith(data: CheckoutData, quoteChanged = false) {
+    const ctx: ShopContext = { ...baseContext, currency: "IDR" };
+    (apiGet as Mock).mockResolvedValue(ctx);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["context"], ctx);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <OrderSummaryCard
+            totals={data}
+            method="binance"
+            fx="16000"
+            voucherInput=""
+            onVoucherInputChange={() => {}}
+            onVoucherApply={() => {}}
+            onVoucherKeyDown={() => {}}
+            voucherPending={false}
+            showDesktopSubmit={false}
+            submitLabel="Place order"
+            submitDisabled={false}
+            submitBlocked={false}
+            onSubmit={() => {}}
+            submitPending={false}
+            quoteChanged={quoteChanged}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return document.querySelector("#checkout-summary")!;
+  }
+
+  const tiered: CheckoutData = {
+    ...totals,
+    items: [{
+      denomination_id: 1, delivery_type: "auto", additional_fields: [], qty: 6,
+      pricing: {
+        quantity: 6, base_unit_price: "10000", final_unit_price: "6000", original_subtotal: "60000",
+        final_subtotal: "36000", savings: "24000",
+        applied_tier: { min_quantity: 5, discount_type: "FIXED_UNIT_PRICE", discount_value: "6000" },
+      },
+    }],
+    subtotal: "60000",
+    bulk_discount: "24000",
+    total: "36000",
+  };
+
+  it("lists the tier-priced line under the quantity deal row at the server's figures", () => {
+    const summary = renderWith(tiered);
+    expect(summary).toHaveTextContent("Quantity deal−Rp24,000");
+    const note = summary.querySelector('[data-testid="tier-line-note"]')!;
+    expect(note).toHaveTextContent("6 × Rp6,000");
+    expect(note).toHaveTextContent("Rp36,000");
+    expect(note).toHaveTextContent("Quantity deal: you save Rp24,000");
+    expect(summary.querySelector('[data-testid="quote-changed"]')).toBeNull();
+  });
+
+  it("says the price changed, as a warning above the new figures, when asked to", () => {
+    const summary = renderWith(tiered, true);
+    const notice = summary.querySelector('[data-testid="quote-changed"]')!;
+    expect(notice).toHaveAttribute("role", "alert");
+    expect(notice).toHaveTextContent("The price changed");
+    expect(notice).toHaveTextContent("nothing was charged");
+  });
+
+  it("shows no tier rows when nothing was discounted", () => {
+    const summary = renderWith(totals);
+    expect(summary.querySelector('[data-testid="tier-line-note"]')).toBeNull();
+    expect(summary).not.toHaveTextContent("Quantity deal");
+  });
+});

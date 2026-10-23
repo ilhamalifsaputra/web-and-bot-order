@@ -10,8 +10,14 @@
  */
 import en from "../../../../../packages/core/locales/en.json";
 import id from "../../../../../packages/core/locales/id.json";
+import { SHOP_STRINGS } from "./shopStrings";
 
-const LOCALES: Record<string, Record<string, string>> = { en, id };
+// Storefront-only `shop.*` copy (lib/shopStrings.ts) sits beside the shared
+// locales; a shared key always wins, and the test forbids any overlap.
+const LOCALES: Record<string, Record<string, string>> = {
+  en: { ...SHOP_STRINGS.en, ...en },
+  id: { ...SHOP_STRINGS.id, ...id },
+};
 
 /** "en" | "id" from <html lang>; anything else (e.g. the raw __LANG__
  * placeholder under `vite dev`) falls back to "en". */

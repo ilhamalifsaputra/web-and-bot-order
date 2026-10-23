@@ -32,12 +32,14 @@ import Spinner from "../components/shop/Spinner";
 import Stars from "../components/shop/Stars";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import StockBadge from "../components/shop/StockBadge";
+import { QuantityQuote, TierLadder } from "../components/shop/TierPricing";
 import Alert from "../components/ui/Alert";
 import { tError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
 import { t, tCount } from "../lib/i18n";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { useLineQuote } from "../lib/useLineQuote";
 import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
 import InstantBuyPage from "./InstantBuyPage";
@@ -660,6 +662,8 @@ function ProductProductDetail({ product, denominations, fx, low_threshold, selec
         )}
         {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
+        <ProductTierPricing selected={selected} qty={qty} ctx={ctx} />
+
         {cartError !== null && (
           <Alert variant="banner" tone="error" className="mt-3 mb-0">
             {tError(cartError)}
@@ -670,6 +674,35 @@ function ProductProductDetail({ product, denominations, fx, low_threshold, selec
       </div>
     </div>
   </div>);
+}
+
+/**
+ * The selected plan's volume tiers: its server-priced ladder, and the server's
+ * price for exactly the typed quantity (useLineQuote: debounced, stale answers
+ * dropped). Nothing renders
+ * for a plan without tiers. Wording is the neutral "items", so a Premium Apps
+ * plan keeps its plan/account picker vocabulary untouched.
+ */
+function ProductTierPricing({ selected, qty, ctx }: {
+  selected: import("../api/types").ProductDenomination;
+  qty: number;
+  ctx: NoInfer<import("../api/types").ShopContext> | undefined;
+}) {
+  const ladder = selected.tier_ladder ?? [];
+  const hasTiers = ladder.length > 0 && purchasable(selected);
+  const state = useLineQuote({
+    denominationId: selected.id,
+    qty,
+    enabled: hasTiers,
+    pricingContext: [ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
+  });
+  if (!hasTiers) return null;
+  return (
+    <>
+      <TierLadder steps={ladder} activeMinQuantity={state.quote?.applied_tier?.min_quantity ?? null} />
+      <QuantityQuote state={state} qty={qty} />
+    </>
+  );
 }
 
 function useProductPurchase({ queryClient, setCartError, navigate }: {

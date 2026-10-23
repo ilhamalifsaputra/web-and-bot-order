@@ -49,6 +49,13 @@ const FORBIDDEN_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad
 const MAX_TEXT_LENGTH = 4096;
 const ASCII_DIGITS_RE = /^[0-9]+$/;
 
+/** True when `value` holds a control, zero-width, bidi or other invisible
+ *  character this parser refuses in an account value. Exported so a caller
+ *  that reads a value without the parser applies the same rule. */
+export function hasForbiddenAccountCharacter(value: string): boolean {
+  return FORBIDDEN_RE.test(value);
+}
+
 /** A field whose value can only be ASCII digits (NUMBER type or a digit pattern). */
 function isDigitField(field: AdditionalField): boolean {
   return field.type === AdditionalFieldType.NUMBER || field.pattern === "^[0-9]+$";
@@ -78,7 +85,7 @@ function validateAll(fields: AdditionalField[], tokens: string[]): ParseAccountR
     }
     // validateFieldAnswer's trim() strips U+FEFF/U+2028 at the edges, so check
     // the raw token, not the returned value.
-    if (FORBIDDEN_RE.test(token)) {
+    if (hasForbiddenAccountCharacter(token)) {
       return { ok: false, reason: "invalid_value", field: field.key, errorKey: "error.field_invalid_pattern", errorArgs: { key: field.key } };
     }
     entries.push([field.key, value]);

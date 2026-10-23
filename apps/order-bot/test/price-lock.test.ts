@@ -296,6 +296,12 @@ function expectOneEditOnly(sink: SentCall[]) {
   }
 }
 
+/** What the current code answers a repeated pay tap with: the gateway rails'
+ *  duplicate pre-check alert; the wallet rail (which settles in one step, so
+ *  there is no pending order to find) the stale-screen toast and a re-render. */
+const OBSERVED_SECOND_TAP_TOAST = (rail: Rail, ctx: MyContext) =>
+  rail.method === PaymentMethod.WALLET ? t(ctx, "error.stale_screen") : t(ctx, "checkout.duplicate_pending");
+
 describe.each(RAILS)("price lock: $name", (rail) => {
   beforeEach(async () => {
     await rail.setup();
@@ -403,6 +409,32 @@ describe.each(RAILS)("price lock: $name", (rail) => {
     const orders = await ordersOf();
     expect(orders).toHaveLength(1);
     expect(netIdr(orders[0]!).equals(81000)).toBe(true);
+  });
+
+  it("the same pay callback sent twice: the second tap creates no second order, debit, delivery or gateway call, and the quote stays consumed", async () => {
+    const session = await buyerSession(rail);
+    const nonce = await render(rail, session);
+    await payWith(rail, session, nonce);
+    expect(await ordersOf()).toHaveLength(1);
+    const balanceAfterPay = (await getUser(prisma, sample.user.id))!;
+    const soldAfterPay = await prisma.stockItem.count({ where: { productId: sample.product.id, status: "SOLD" } });
+    const createCalls = vi.mocked(createOrderDirect).mock.calls.length;
+    expect(session.scratch.quoteNonce).toBeUndefined();
+
+    const sink: SentCall[] = [];
+    const ctx = await payWith(rail, session, nonce, sink);
+
+    expect(await ordersOf()).toHaveLength(1);
+    expect(await voucherUses()).toBe(1);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(new Decimal(after.walletBalance).equals(balanceAfterPay.walletBalance)).toBe(true);
+    expect(new Decimal(after.walletBalanceUsdt).equals(balanceAfterPay.walletBalanceUsdt)).toBe(true);
+    expect(await prisma.stockItem.count({ where: { productId: sample.product.id, status: "SOLD" } })).toBe(soldAfterPay);
+    // The second tap never reached the order writer (and so no gateway call).
+    expect(vi.mocked(createOrderDirect).mock.calls.length).toBe(createCalls);
+    expect(toasts(sink)).toEqual([OBSERVED_SECOND_TAP_TOAST(rail, ctx)]);
+    // The consumed nonce can never pay again.
+    expect(session.scratch.quoteNonce === nonce).toBe(false);
   });
 
   it("missing quote (stale session): re-renders the payment screen in one edit instead of paying", async () => {
@@ -546,7 +578,9 @@ describe("price lock: what the quote is bound to", () => {
     expect(await ordersOf()).toHaveLength(0);
     expectOneEditOnly(sink);
     expect(toasts(sink)).toEqual([t(ctx, "error.stale_screen")]);
-    expect(sentIncludes(sink, "⚠️")).toBe(false);
+    // Not the price-changed line (any price, so the money placeholder is a wildcard).
+    const [changedHead] = coreT("checkout.price_changed", "en", { total: " " }).split(" ");
+    expect(sentIncludes(sink, changedHead!)).toBe(false);
     // The re-render quotes the quantity the buyer is now looking at.
     expect(session.scratch.quoteFor).toBe(`${sample.product.id}:2`);
     expect(session.scratch.quoteNonce).not.toBe(nonce);
@@ -554,14 +588,35 @@ describe("price lock: what the quote is bound to", () => {
 
   it("a malformed nonce is stale and never pays", async () => {
     const session = await buyerSession(RAILS[0]!);
-    const nonce = await render(RAILS[0]!, session);
-    for (const bad of [nonce.toUpperCase() === nonce ? "ZZZZZZ" : nonce.toUpperCase(), `${nonce}0`, "", "      "]) {
+    const first = await render(RAILS[0]!, session);
+    for (const bad of [first.toUpperCase() === first ? "ZZZZZZ" : first.toUpperCase(), `${first}0`, "", "      "]) {
+      // Every stale re-render rotates the stored nonce; put a valid one back so
+      // each malformed value is judged on its shape alone.
+      const valid = await render(RAILS[0]!, session);
+      expect(bad).not.toBe(valid);
+      expect(session.scratch.quoteNonce).toBe(valid);
       const sink: SentCall[] = [];
       const { ctx } = tap(session, "v1:payq", sink, bad);
       await checkout.buyNowTokopay(ctx, sample.product.id, 1, bad);
       expect(await ordersOf()).toHaveLength(0);
       expect(toasts(sink)).toEqual([t(ctx, "error.stale_screen")]);
     }
+  });
+
+  it("a stale tap into the out-of-stock re-render answers the callback once, and the replacement edit still happens", async () => {
+    const session = await buyerSession(RAILS[0]!);
+    await render(RAILS[0]!, session);
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: "SOLD" } });
+
+    const sink: SentCall[] = [];
+    const { ctx } = tap(session, "v1:payq", sink, "abc123");
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, "abc123");
+
+    expect(await ordersOf()).toHaveLength(0);
+    expect(calls(sink, "answerCallbackQuery")).toHaveLength(1);
+    expect(toasts(sink)).toEqual([t(ctx, "error.stale_screen")]);
+    expect(calls(sink, "editMessageText")).toHaveLength(1);
+    expect(sentIncludes(sink, t(ctx, "error.out_of_stock", { product: sample.product.name }))).toBe(true);
   });
 
   it("a price change whose re-render returns early (out of stock) leaves no quote for a screen the buyer never saw", async () => {

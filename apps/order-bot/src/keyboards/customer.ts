@@ -701,7 +701,7 @@ export function editInfoCancelKb(orderId: number, lang: string): InlineKeyboard 
  * re-renders the screen instead of paying.
  */
 function payCb(domain: string, productId: number, qty: number, quoteNonce: string): string {
-  return quoteNonce ? cb(domain, productId, qty, quoteNonce) : cb(domain, productId, qty);
+  return cb(domain, productId, qty, quoteNonce);
 }
 
 export function orderConfirmKb(
@@ -719,7 +719,7 @@ export function orderConfirmKb(
   usdtBalance: Decimal | null = null,
   walletDeduction: { currency: "IDR" | "USDT"; amount: string } | null = null,
   fullyCovered = false,
-  quoteNonce = "",
+  quoteNonce: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   const pay = (domain: string) => payCb(domain, productId, qty, quoteNonce);
@@ -781,7 +781,7 @@ export function usdtMethodsKb(
   bybitEnabled = false,
   nowpaymentsEnabled = false,
   bybitBscEnabled = false,
-  quoteNonce = "",
+  quoteNonce: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   const pay = (domain: string) => payCb(domain, productId, qty, quoteNonce);

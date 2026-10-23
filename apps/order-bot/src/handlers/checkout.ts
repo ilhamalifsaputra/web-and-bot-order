@@ -348,6 +348,20 @@ interface ConfirmRender {
   closingLine: string;
 }
 
+/** Callback queries this update already answered. Telegram accepts one answer
+ *  per query and rejects the second (the throw would skip the edit that
+ *  follows), so a stale-tap toast followed by a re-render whose early branch
+ *  toasts again must answer once. Keyed by the query object: one per update. */
+const answeredCallbackQueries = new WeakSet<object>();
+
+/** Answer the tapped callback query unless this update already did. */
+async function answerCallbackOnce(ctx: MyContext, other: Parameters<MyContext["answerCallbackQuery"]>[0]): Promise<void> {
+  const query = ctx.callbackQuery;
+  if (!query || answeredCallbackQueries.has(query)) return;
+  answeredCallbackQueries.add(query);
+  await ctx.answerCallbackQuery(other);
+}
+
 type CheckoutDenomination = NonNullable<Awaited<ReturnType<typeof getDenominationWithProduct>>>;
 
 /** Resolve a still-buyable denomination and replace stale checkout UI on failure. */
@@ -361,7 +375,7 @@ async function availableCheckoutDenomination(ctx: MyContext, productId: number):
   } else {
     return product;
   }
-  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
+  await answerCallbackOnce(ctx, { text: t(ctx, key), show_alert: true });
   // menuAnchor: at the end of a typed wizard step this edits the wizard
   // bubble instead of sending a new one (a tap still edits the tapped bubble).
   await menuAnchor(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
@@ -585,8 +599,13 @@ const NONCE_SHAPE = /^[0-9a-z]{6}$/;
 const NONCE_SPACE = 36 ** 6;
 
 /** A fresh random quote nonce (a plain string, so the session stays JSON). */
-function newQuoteNonce(): string {
-  return (randomBytes(4).readUInt32BE(0) % NONCE_SPACE).toString(36).padStart(6, "0");
+function newQuoteNonce(previous?: unknown): string {
+  // Never repeat the stored nonce, so a button of the render being replaced can
+  // never match the render that replaces it.
+  for (;;) {
+    const nonce = (randomBytes(4).readUInt32BE(0) % NONCE_SPACE).toString(36).padStart(6, "0");
+    if (nonce !== previous) return nonce;
+  }
 }
 
 function quoteKeyFor(productId: number, quantity: number): string {
@@ -626,7 +645,7 @@ export async function quoteConfirmation(
     clearQuote(ctx);
     return null;
   }
-  const nonce = newQuoteNonce();
+  const nonce = newQuoteNonce(ctx.session.scratch[QUOTE_NONCE_KEY]);
   ctx.session.scratch[QUOTE_KEY] = r.subtotalBeforeWallet.toFixed();
   ctx.session.scratch[QUOTE_NONCE_KEY] = nonce;
   ctx.session.scratch[QUOTE_FOR_KEY] = quoteKeyFor(productId, quantity);
@@ -683,7 +702,7 @@ async function quoteForTap(
     nonce === stored &&
     scratch[QUOTE_FOR_KEY] === quoteKeyFor(productId, quantity);
   if (bound) return { currency: OrderCurrency.IDR, amount: raw };
-  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+  await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
   await renderPayScreen(ctx, productId, quantity, screen);
   return null;
 }
@@ -751,8 +770,7 @@ export async function showOrderConfirmation(
       // Stock disappeared under the user. Toast, then replace the now-invalid
       // confirmation bubble with an out-of-stock notice + a forward action so the
       // dead "Confirm & Pay" button is gone (never strand the user).
-      if (ctx.callbackQuery)
-        await ctx.answerCallbackQuery({ text: t(ctx, "error.out_of_stock", { product: product.name }), show_alert: true });
+      await answerCallbackOnce(ctx, { text: t(ctx, "error.out_of_stock", { product: product.name }), show_alert: true });
       await smartEdit(
         ctx,
         t(ctx, "error.out_of_stock", { product: esc(product.name) }),
@@ -1066,7 +1084,7 @@ async function refuseGatewayTapOverWalletCredit(ctx: MyContext, productId: numbe
   // already replaced the screen saying so.
   if (priced === null) return true;
   if (priced.walletDeduction) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
     await showOrderConfirmation(ctx, productId, quantity);
     return true;
   }
@@ -2145,7 +2163,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       // Genuinely a stale tap on an old bubble whose credit toggle no longer
       // applies — re-render a fresh, correct confirmation instead of
       // stranding the user.
-      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
       await showOrderConfirmation(ctx, productId, quantity);
       return;
     }

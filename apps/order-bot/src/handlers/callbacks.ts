@@ -152,6 +152,20 @@ const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
   }
 };
 
+const dispatchReview: DomainDispatcher = async (ctx, parts) => {
+  // v1:rev:go|chg:<pid>:<qty> — the Game Top-up review screen. Each handler
+  // answers a tap whose account data is gone or belongs to another quantity
+  // with the stale-screen toast.
+  const action = parts[2];
+  const productId = Number(parts[3]);
+  const qty = Number(parts[4]);
+  if (!Number.isSafeInteger(productId) || !Number.isSafeInteger(qty) || qty < 1) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+  } else if (action === "go") await checkout.reviewContinue(ctx, productId, qty);
+  else if (action === "chg") await checkout.reviewChangeDetails(ctx, productId, qty);
+  else await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+};
+
 const dispatchCheckout: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "cancel") await checkout.cancelPendingOrder(ctx, parseInt(parts[3]!, 10));
@@ -306,6 +320,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   qty: dispatchQty,
   ref: dispatchRef,
   restock: dispatchRestock,
+  rev: dispatchReview,
   search: dispatchSearch,
   ticket: dispatchTicket,
   topup: dispatchTopup,

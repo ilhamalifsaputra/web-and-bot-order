@@ -34,6 +34,8 @@ import {
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { serviceForCategoryGroup } from "@app/core/services";
 import {
   prisma,
   getOrder,
@@ -741,6 +743,171 @@ function priceChangedLine(ctx: MyContext, r: ConfirmRender, prices: UserPriceFor
   return t(ctx, "checkout.price_changed", { total: prices.price(r.subtotalBeforeWallet) }) + "\n\n";
 }
 
+// ---------------------------------------------------------------------------
+// Game Top-up review screen: what the buyer typed, before the payment screen
+// ---------------------------------------------------------------------------
+
+/** True when a category group is Game Top-up, through the same resolver every
+ *  service switch uses (a legacy null group resolves to Premium Apps). */
+export function isGameTopupGroup(group: string | null | undefined): boolean {
+  return serviceForCategoryGroup((group ?? null) as CategoryGroup | null).id === "game_topup";
+}
+
+/** What the advisory nickname lookup said about the typed account, kept for
+ *  the review screen only (display state, never part of the order). */
+export type NicknameCheck = "found" | "not_found" | "unchecked";
+
+/**
+ * Session keys of the review screen, cleared with the account data they
+ * describe (`clearPlayerInputScratch`, the owner-change reset below, Change
+ * details):
+ * - `reviewShownFor`: the input owner (see `inputOwnerOf`) whose review the
+ *   buyer passed with Continue. While it equals the current owner, the
+ *   checkout shows the payment screen; otherwise it shows the review first.
+ * - `verifiedNickname`: the account name the lookup found, display only.
+ * - `nicknameCheck`: a `NicknameCheck`.
+ */
+export const REVIEW_SCRATCH_KEYS = ["reviewShownFor", "verifiedNickname", "nicknameCheck"] as const;
+
+/** The configuration the buyer's account data was typed for: product,
+ *  quantity and the denomination's input settings. Data typed for another
+ *  owner is never reused. */
+function inputOwnerOf(productId: number, quantity: number, product: CheckoutDenomination): string {
+  return JSON.stringify([productId, quantity, product.additionalFields, product.providerInputMapping, product.nicknameCheckGameCode]);
+}
+
+/** Forget the typed account data and everything bound to it: the review
+ *  state, the checkout intent and the quote. */
+function clearAccountInput(ctx: MyContext): void {
+  for (const key of ["customerData", "customerInputOwner", "prefilledCustomerDataUnit", "checkoutIntentId", ...REVIEW_SCRATCH_KEYS]) {
+    delete ctx.session.scratch[key];
+  }
+  clearQuote(ctx);
+}
+
+/** The account data in the session belongs to this Game Top-up product and
+ *  quantity, so its review screen (and its buttons) are current. */
+function reviewIsCurrent(ctx: MyContext, productId: number, quantity: number, product: CheckoutDenomination): boolean {
+  const scratch = ctx.session.scratch;
+  return (
+    isGameTopupGroup(product.product.category.group) &&
+    typeof scratch.customerData === "string" &&
+    scratch.customerInputOwner === inputOwnerOf(productId, quantity, product)
+  );
+}
+
+/**
+ * The Game Top-up review screen: game (edition and region only when the
+ * product has them and that browse level was not skipped), pack, quantity
+ * when above one, every account field on its own labelled line (per unit when
+ * buying several, so a value that slid into the wrong field is easy to spot),
+ * the nickname the lookup verified or a warning when it definitively found no
+ * account, and the total in the buyer's display currency. Buttons: Continue to
+ * payment, Change details, Back.
+ *
+ * It never pays and stores no quote: Continue renders the payment screen,
+ * which stores its own quote and nonce. Any stored quote is dropped here, so
+ * the pay buttons of an earlier payment screen stop paying once the review is
+ * back on screen. One message: a tap edits the tapped bubble, typed input
+ * edits the wizard bubble (menuAnchor).
+ */
+export async function renderAccountReview(
+  ctx: MyContext,
+  productId: number,
+  quantity: number,
+  loadedProduct?: CheckoutDenomination,
+): Promise<void> {
+  const lang = ctx.session.lang;
+  const product = loadedProduct ?? (await availableCheckoutDenomination(ctx, productId));
+  if (!product) return;
+  const scratch = ctx.session.scratch;
+  if (!reviewIsCurrent(ctx, productId, quantity, product)) {
+    // The data was typed for another configuration (an admin changed the
+    // fields meanwhile): never show it as this product's account.
+    clearAccountInput(ctx);
+    await menuAnchor(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
+    return;
+  }
+  clearQuote(ctx);
+
+  const rate = await currentUsdtRate();
+  const r = await computeConfirmation(ctx, productId, quantity, rate, product);
+  if (!r) return;
+  const prices = ctxPriceFormatter(ctx, rate);
+
+  const lines: string[] = [t(ctx, "checkout.review_title"), ""];
+  lines.push(t(ctx, "checkout.review_game", { game: esc(product.product.name) }));
+  const variant = product.product.gameVariant?.trim();
+  if (variant && !scratch.gameVariantDimensionSkipped) lines.push(t(ctx, "checkout.review_variant", { variant: esc(variant) }));
+  const region = product.product.gameRegion?.trim();
+  if (region && !scratch.gameRegionDimensionSkipped) lines.push(t(ctx, "checkout.review_region", { region: esc(region) }));
+  lines.push(t(ctx, "checkout.review_pack", { pack: esc(product.name) }));
+  if (quantity > 1) lines.push(t(ctx, "checkout.review_qty", { qty: quantity }));
+
+  const fields = parseAdditionalFields(product.additionalFields);
+  const units = parseCustomerData(scratch.customerData as string);
+  units.forEach((unit, i) => {
+    lines.push("");
+    if (quantity > 1) lines.push(t(ctx, "checkout.review_unit", { unit: i + 1 }));
+    for (const field of fields) {
+      const value = unit[field.key];
+      if (!value) continue;
+      const label = esc((field.label as Record<string, string>)[lang] ?? field.label.en);
+      lines.push(t(ctx, "checkout.review_field", { label, value: esc(value) }));
+    }
+    // The lookup checks the first unit's account, so its result sits there.
+    if (i === 0) {
+      const nickname = scratch.verifiedNickname;
+      if (scratch.nicknameCheck === "found" && typeof nickname === "string" && nickname) {
+        lines.push(t(ctx, "checkout.review_nickname", { nickname: esc(nickname) }));
+      } else if (scratch.nicknameCheck === "not_found") {
+        lines.push(t(ctx, "checkout.review_not_found"));
+      }
+    }
+  });
+
+  lines.push("", t(ctx, "checkout.review_total", { total: prices.price(r.subtotalBeforeWallet) }) + prices.rateNotice(lang));
+  lines.push("", t(ctx, "hint.review"));
+  await menuAnchor(ctx, lines.join("\n"), ckb.accountReviewKb(productId, quantity, lang));
+}
+
+/**
+ * Continue to payment (`v1:rev:go:<pid>:<qty>`): mark this data's review as
+ * passed and render the existing payment screen, which stores the quote and
+ * nonce its pay buttons carry. From then on every way back to the payment
+ * screen (Back, voucher, wallet, Buy again) shows the payment screen, not the
+ * review. A second tap renders it once more; it never creates an order. A tap
+ * for data that is gone or belongs to another quantity is stale.
+ */
+export async function reviewContinue(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const product = await availableCheckoutDenomination(ctx, productId);
+  if (!product) return;
+  if (!reviewIsCurrent(ctx, productId, quantity, product)) {
+    await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  ctx.session.scratch.reviewShownFor = inputOwnerOf(productId, quantity, product);
+  await showOrderConfirmation(ctx, productId, quantity);
+}
+
+/**
+ * Change details (`v1:rev:chg:<pid>:<qty>`): forget the typed data, the
+ * review state, the quote and the checkout intent (a new data set must not
+ * share an intent id with the old one), then go through the checkout gate
+ * again, which re-enters the input conversation and edits this bubble into
+ * the prompt.
+ */
+export async function reviewChangeDetails(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const product = await availableCheckoutDenomination(ctx, productId);
+  if (!product) return;
+  if (!reviewIsCurrent(ctx, productId, quantity, product)) {
+    await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  clearAccountInput(ctx);
+  await showOrderConfirmation(ctx, productId, quantity);
+}
+
 export async function showOrderConfirmation(
   ctx: MyContext,
   productId: number,
@@ -751,13 +918,9 @@ export async function showOrderConfirmation(
 
   const product = await availableCheckoutDenomination(ctx, productId);
   if (!product) return;
-  const inputOwner = JSON.stringify([productId, quantity, product.additionalFields, product.providerInputMapping, product.nicknameCheckGameCode]);
+  const inputOwner = inputOwnerOf(productId, quantity, product);
   if (ctx.session.scratch.customerData && ctx.session.scratch.customerInputOwner !== inputOwner) {
-    delete ctx.session.scratch.customerData;
-    delete ctx.session.scratch.customerInputOwner;
-    delete ctx.session.scratch.prefilledCustomerDataUnit;
-    delete ctx.session.scratch.checkoutIntentId;
-    clearQuote(ctx);
+    clearAccountInput(ctx);
   }
   // Stock rows only ever exist for local-inventory SKUs
   // (@app/core/productAvailability; order creation skips reservation for the
@@ -778,6 +941,14 @@ export async function showOrderConfirmation(
       );
       return;
     }
+  }
+
+  // Game Top-up: account data the buyer has not yet confirmed on the review
+  // screen is shown there first. Continue (reviewContinue) records the owner,
+  // so every later render of this checkout is the payment screen.
+  if (typeof ctx.session.scratch.customerData === "string" && isGameTopupGroup(product.product.category.group) && ctx.session.scratch.reviewShownFor !== inputOwner) {
+    await renderAccountReview(ctx, productId, quantity, product);
+    return;
   }
 
   // Game Top-Up nickname-check gate — resolved once, ahead of the

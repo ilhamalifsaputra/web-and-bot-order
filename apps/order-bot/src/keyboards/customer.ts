@@ -875,6 +875,18 @@ export function nicknameNotFoundKb(productId: number, qty: number, lang: string)
   ]);
 }
 
+/** Game Top-up review screen (checkout.ts renderAccountReview). Continue
+ * renders the payment screen; Change details asks for the account data again;
+ * Back returns to the pack. It carries no pay button: only the payment screen
+ * does, bound to its own quote. */
+export function accountReviewKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.review_continue_btn", lang), data: cb("rev", "go", productId, qty) }],
+    [{ text: coreT("checkout.review_change_btn", lang), data: cb("rev", "chg", productId, qty) }],
+    [{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }],
+  ]);
+}
+
 /**
  * Auto USDT rails' waiting screen (Binance Internal, Bybit). 'Cancel Order' is
  * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves

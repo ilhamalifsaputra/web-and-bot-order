@@ -9,7 +9,14 @@ import { menuAnchor, consumeInput } from "../util/chat";
 import { esc } from "../util/format";
 import { coreT } from "../util/i18n";
 import * as ckb from "../keyboards/customer";
-import { QUOTE_SCRATCH_KEYS, renderOrderConfirmation } from "../handlers/checkout";
+import {
+  QUOTE_SCRATCH_KEYS,
+  REVIEW_SCRATCH_KEYS,
+  isGameTopupGroup,
+  renderAccountReview,
+  renderOrderConfirmation,
+  type NicknameCheck,
+} from "../handlers/checkout";
 import { startCommand, handleProductNumber } from "../handlers/customer";
 import { customerInfoConversation } from "./customerInfo";
 
@@ -20,7 +27,16 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
 }
 
 export function clearPlayerInputScratch(ctx: MyContext): void {
-  for (const key of ["customerData", "customerInputOwner", "pendingInfoProductId", "pendingInfoQuantity", "pendingNicknameProductId", "pendingNicknameQuantity", "prefilledCustomerDataUnit", "checkoutIntentId", ...QUOTE_SCRATCH_KEYS]) delete ctx.session.scratch[key];
+  for (const key of ["customerData", "customerInputOwner", "pendingInfoProductId", "pendingInfoQuantity", "pendingNicknameProductId", "pendingNicknameQuantity", "prefilledCustomerDataUnit", "checkoutIntentId", ...QUOTE_SCRATCH_KEYS, ...REVIEW_SCRATCH_KEYS]) delete ctx.session.scratch[key];
+}
+
+/** What the advisory lookup said, for the Game Top-up review screen: only a
+ *  found account or a definitive "not found" is shown; anything else
+ *  (no provider, a timeout, a retryable miss) is "unchecked". */
+function nicknameCheckOf(result: Awaited<ReturnType<NicknameService["checkNickname"]>> | null): NicknameCheck {
+  if (result?.status === "found") return "found";
+  if (result?.status === "not_found" && result.definitive) return "not_found";
+  return "unchecked";
 }
 
 export async function confirmCustomerInputs(conversation: MyConversation, ctx: MyContext, productId: number, quantity: number, fields: AdditionalField[], answers: Array<Record<string, string>>): Promise<void> {
@@ -41,9 +57,26 @@ export async function confirmCustomerInputs(conversation: MyConversation, ctx: M
     } catch (err) {
       logger.warn({ err, denominationId: productId }, "The bot's nickname lookup failed unexpectedly, so the buyer continues to order confirmation without a verified nickname.");
     }
-    return { normalized, result, owner: JSON.stringify([productId, quantity, denom.additionalFields, denom.providerInputMapping, denom.nicknameCheckGameCode]) };
+    return {
+      normalized,
+      result,
+      owner: JSON.stringify([productId, quantity, denom.additionalFields, denom.providerInputMapping, denom.nicknameCheckGameCode]),
+      isGame: isGameTopupGroup(denom.product.category.group),
+    };
   });
   if (!checked) { clearPlayerInputScratch(ctx); await startCommand(ctx); return; }
+  if (checked.isGame) {
+    // Game Top-up: no separate nickname confirm screen. The lookup result
+    // rides along as display-only state and the review screen shows it next
+    // to the typed fields; the buyer confirms both there.
+    clearPlayerInputScratch(ctx);
+    ctx.session.scratch.customerData = JSON.stringify(checked.normalized);
+    ctx.session.scratch.customerInputOwner = checked.owner;
+    ctx.session.scratch.nicknameCheck = nicknameCheckOf(checked.result);
+    if (checked.result?.status === "found") ctx.session.scratch.verifiedNickname = checked.result.nickname;
+    await renderAccountReview(ctx, productId, quantity);
+    return;
+  }
   const finalize = async (u: MyContext) => {
     clearPlayerInputScratch(u);
     u.session.scratch.customerData = JSON.stringify(checked.normalized);

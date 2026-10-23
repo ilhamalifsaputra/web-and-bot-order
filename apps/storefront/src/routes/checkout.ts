@@ -89,6 +89,7 @@ import {
   buildDigiflazzCustomerNo,
   triggerDigiflazzDispatch,
   type QuoteMismatchError,
+  type ExpectedTotal,
 } from "@app/db";
 import { readCanonicalMoney } from "@app/core/moneyFormat";
 import { type Customer } from "../plugins/auth";
@@ -124,6 +125,7 @@ import { normalizeProviderStatus, StatusProvider } from "@app/core/payments/paym
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
+import { linePricingView } from "../tierView";
 import { resolveBotUsername, resolveSupportTelegramUrl, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
 
 /** Per-buyer cap on simultaneously unpaid orders. Exported so every
@@ -311,6 +313,9 @@ async function computeTotals(
     qrisAdminFee,
     qrisGrandTotal,
     lines,
+    // Index-aligned with `lines`: each line's engine result, so the summary can
+    // show the per-line tier figures behind `bulkDiscount` without re-pricing.
+    bulkLines: bulkQuote.lines,
     isReseller,
     pricedAt,
   };
@@ -459,7 +464,11 @@ export async function checkoutView(
       flash: flashViewFor(
         ci.product,
         effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt),
+        totals.pricedAt,
       ),
+      // The line at its quantity through the volume-tier engine — the very
+      // result `bulk_discount` below sums. Additive.
+      pricing: linePricingView(totals.bulkLines[index]!.priced),
     })),
     subtotal: totals.subtotal.toString(),
     bulk_discount: totals.bulkDiscount.toString(),
@@ -696,6 +705,18 @@ async function resolveGatewayPaymentChoice(method: string): Promise<GatewayPayme
 }
 
 /**
+ * A gateway rail's quote binding: the preview's IDR `total` (after volume
+ * tiers and voucher, before the QRIS fee and unique cents), compared by
+ * `assertQuotedTotal` with what the order would now charge. Every gateway
+ * rail — IDR or USDT — is bound to that same IDR figure: it is the one total
+ * the summary always shows, and the USDT conversion happens later at pay time
+ * against the rate the pay page itself displays.
+ */
+function gatewayExpectedTotal(amount: Decimal | null | undefined): ExpectedTotal | null {
+  return amount ? { currency: OrderCurrency.IDR, amount } : null;
+}
+
+/**
  * Validate the chosen payment method, then run the order-creation transaction
  * (countUserPendingOrders → createOrderFromCart → finalizeOrderPayment) — the
  * one implementation of checkout's business rules the JSON API's POST
@@ -715,6 +736,8 @@ export async function performCheckout(
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
+  /** The IDR total the summary showed (A6 for gateway rails). Null: no binding. */
+  expectedTotal?: Decimal | null,
 ): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
@@ -788,6 +811,9 @@ export async function performCheckout(
       },
       voucherCode,
       customerData: customerDataJson,
+      // Throws QuoteMismatchError before anything is written when the live
+      // total (after volume tiers and voucher) differs from the one shown.
+      expectedTotal: gatewayExpectedTotal(expectedTotal),
     });
     if (!created) throw new ValidationError("error.generic");
     // A voucher or bulk rule can cover the whole cart, leaving nothing for the
@@ -899,6 +925,8 @@ export async function performDirectCheckout(
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
+  /** The IDR total the preview showed (A6 for gateway rails). Null: no binding. */
+  expectedTotal?: Decimal | null,
 ): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
@@ -919,6 +947,7 @@ export async function performDirectCheckout(
       quantity: line.quantity,
       voucherCode,
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
+      expectedTotal: gatewayExpectedTotal(expectedTotal),
     });
     if (!created) throw new ValidationError("error.generic");
     // Same zero-total routing as performCheckout above — see its comment,

@@ -4,7 +4,8 @@ import "./setup-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Api } from "grammy";
 import { logger } from "@app/core/logger";
-import { config } from "@app/core/config";
+import { config, Env } from "@app/core/config";
+import { reconcileBudgetForWindow } from "@app/core/payments/reconcileCycleBudget";
 
 /**
  * @app/db is fully mocked: every export any of the seven payment modules
@@ -537,26 +538,30 @@ describe("triggerImmediatePoll after startPolling runs a cycle immediately", () 
   });
 });
 
-// Task 11 review follow-up, Minor #4: RECONCILE_CYCLE_TIMEOUT_MS's own
-// doc-comment in each QRIS/NOWPayments reconcile module narrates a sanity
-// check against PAYMENT_WINDOW_MINUTES ("a cycle deadline shouldn't eat more
-// than half an order's payment window") but hardcoded the 30-minute default
-// into the narration instead of reading the live, operator-configurable
-// PAYMENT_WINDOW_MINUTES (default 30 — packages/core/src/config.ts) — so an
-// operator setting it to, say, 15 would silently put the deadline at 63% of
-// the window (worse than the 57% a review round already rejected) with
-// nothing to catch it. Enforced here against the live config values
-// themselves, not hardcoded copies, so it re-fails automatically if either
-// side of the ratio drifts.
+// Task 11 review follow-up, Minor #4: a reconcile cycle deadline must not
+// eat more than half an order's payment window, or one hung cycle switches
+// the safety net off for most of that order's life. Enforced here against
+// the live config values themselves, not hardcoded copies, so it re-fails
+// automatically if either side of the ratio drifts — an operator setting a
+// window in `.env` is exactly the case this exists for.
 //
 // Each rail is checked against the key that actually governs ITS order
 // expiry. NOWPayments has its own, independently tunable
 // NOWPAYMENTS_PAYMENT_WINDOW_MINUTES (packages/db/src/crud/pricing.ts,
-// wallet_topup.ts) — it merely happens to default to the same 30 minutes as
-// the shared PAYMENT_WINDOW_MINUTES the IDR rails use. Comparing it against
-// the shared key would pass today by coincidence and give false assurance the
-// moment an operator tuned the NOWPayments window down on its own — exactly
-// the silent misconfiguration this check exists to catch.
+// wallet_topup.ts); comparing it against the shared PAYMENT_WINDOW_MINUTES
+// the IDR rails use would give false assurance the moment an operator tuned
+// one of the two on its own.
+//
+// Since the payment-TTL change (TokoPay/PayDisini default to a 10-minute
+// window, NOWPayments to 30) the QRIS rails' budget is DERIVED from that
+// window (`reconcileBudgetForWindow`, packages/core/src/payments/
+// reconcileCycleBudget.ts) instead of being a fixed 780s that would be 130%
+// of a 10-minute window. The live check below runs against whatever window
+// the test environment configures; the schema-default check runs the same
+// derivation against the defaults a deployment without an explicit `.env`
+// value boots with, so neither configuration can drift past the line alone.
+const SCHEMA_DEFAULTS = Env.parse({ DATABASE_URL_PRISMA: "postgresql://user:pass@localhost:5432/db" });
+
 describe("reconcile cycle timeouts stay well clear of the payment window (Task 11 review follow-up, Minor #4)", () => {
   it.each([
     ["TokoPay", TOKOPAY_CYCLE_TIMEOUT_MS, config.PAYMENT_WINDOW_MINUTES],
@@ -565,18 +570,44 @@ describe("reconcile cycle timeouts stay well clear of the payment window (Task 1
   ])("%s's RECONCILE_CYCLE_TIMEOUT_MS is under half of its own payment window", (_name, cycleTimeoutMs, windowMinutes) => {
     expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
   });
+
+  it("each rail's RECONCILE_CYCLE_TIMEOUT_MS is the budget derived from its own configured window", () => {
+    expect(TOKOPAY_CYCLE_TIMEOUT_MS).toBe(reconcileBudgetForWindow(config.PAYMENT_WINDOW_MINUTES).cycleTimeoutMs);
+    expect(PAYDISINI_CYCLE_TIMEOUT_MS).toBe(reconcileBudgetForWindow(config.PAYMENT_WINDOW_MINUTES).cycleTimeoutMs);
+    expect(NOWPAYMENTS_CYCLE_TIMEOUT_MS).toBe(
+      reconcileBudgetForWindow(config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES).cycleTimeoutMs,
+    );
+  });
+
+  it.each([
+    ["TokoPay / PayDisini", SCHEMA_DEFAULTS.PAYMENT_WINDOW_MINUTES],
+    ["NOWPayments", SCHEMA_DEFAULTS.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES],
+  ])("%s's derived budget stays under half of the schema-default window", (_name, windowMinutes) => {
+    expect(reconcileBudgetForWindow(windowMinutes).cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
+  });
 });
 
 // Finding #2 (followup-review-fixes-2): the same sanity check as above,
-// pinned against the two Bybit deposit rails' own new explicit cycleTimeoutMs
-// (see each rail's own derivation comment above its createPollLoop call).
-// BYBIT_BSC_PAYMENT_WINDOW_MINUTES (15 minutes) is the shortest payment
-// window of any rail in this codebase — the tightest real check of the two.
-describe("Bybit deposit rails' cycle timeouts stay well clear of their own payment window (followup-review-fixes-2, Finding #2)", () => {
+// pinned against the deposit rails' own fixed cycleTimeoutMs (see each
+// rail's own derivation comment above its createPollLoop call) — Binance
+// Internal Transfer (90s), Bybit Internal Transfer and Bybit BSC (190s each).
+// These do not scale with the window, so they are checked against both the
+// live configuration and the schema defaults; the tightest real check is the
+// 10-minute default for Binance Pay and Bybit UID (300s half-window).
+describe("Deposit rails' cycle timeouts stay well clear of their own payment window (followup-review-fixes-2, Finding #2)", () => {
   it.each([
+    ["Binance Internal Transfer", BINANCE_CYCLE_TIMEOUT_MS, config.INTERNAL_PAYMENT_WINDOW_MINUTES],
     ["Bybit Internal Transfer", BYBIT_CYCLE_TIMEOUT_MS, config.BYBIT_PAYMENT_WINDOW_MINUTES],
     ["Bybit BSC", BYBIT_BSC_CYCLE_TIMEOUT_MS, config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES],
   ])("%s's cycleTimeoutMs is under half of its own payment window", (_name, cycleTimeoutMs, windowMinutes) => {
+    expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
+  });
+
+  it.each([
+    ["Binance Internal Transfer", BINANCE_CYCLE_TIMEOUT_MS, SCHEMA_DEFAULTS.INTERNAL_PAYMENT_WINDOW_MINUTES],
+    ["Bybit Internal Transfer", BYBIT_CYCLE_TIMEOUT_MS, SCHEMA_DEFAULTS.BYBIT_PAYMENT_WINDOW_MINUTES],
+    ["Bybit BSC", BYBIT_BSC_CYCLE_TIMEOUT_MS, SCHEMA_DEFAULTS.BYBIT_BSC_PAYMENT_WINDOW_MINUTES],
+  ])("%s's cycleTimeoutMs is under half of its schema-default payment window", (_name, cycleTimeoutMs, windowMinutes) => {
     expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
   });
 });

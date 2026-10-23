@@ -1918,12 +1918,13 @@ describe("binancePollWatchdog admin DM wording (Important #1 regression guard)",
 // until now nothing read them, so a rail whose webhook callback was never
 // reachable AND whose reconcile poller had also died left orders piling up
 // PENDING_PAYMENT with no one paged (docs/TROUBLESHOOTING.md's "webhook
-// gateway tidak pernah sampai" scenario). These pollers make up to 50
-// sequential gateway calls per cycle, so their own cycleTimeoutMs (~780s for
-// all three, TokoPay/PayDisini/NOWPayments alike) is already well past the
-// crypto rails' 5-minute staleness default — a legitimately slow (not
-// hung) cycle must not trip a watchdog sized for the crypto rails' much
-// lighter cadence.
+// gateway tidak pernah sampai" scenario). These pollers make many
+// sequential gateway calls per cycle, so their own cycleTimeoutMs (derived
+// from each rail's payment window — 720s on the 30-minute window this test
+// environment configures, see packages/core/src/payments/
+// reconcileCycleBudget.ts) is well past the crypto rails' 5-minute staleness
+// default — a legitimately slow (not hung) cycle must not trip a watchdog
+// sized for the crypto rails' much lighter cadence.
 describe("tokopayPollWatchdog (Task 12)", () => {
   async function setTokopayCreds() {
     await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
@@ -1971,9 +1972,10 @@ describe("tokopayPollWatchdog (Task 12)", () => {
   });
 
   it("does not page for a cycle older than 5 minutes but still within TokoPay's own wider staleness window", async () => {
-    // TokoPay's cycleTimeoutMs is ~780s (~13m) because one cycle can make
-    // up to 50 sequential gateway calls — a cycle that finishes at, say, 10
-    // minutes is unremarkable, not a hang. Using the crypto rails' flat
+    // TokoPay's cycleTimeoutMs is 720s (12m) on the 30-minute
+    // PAYMENT_WINDOW_MINUTES apps/order-bot/test/setup-db.ts pins, because
+    // one cycle can make up to 46 sequential gateway calls — a cycle that
+    // finishes at, say, 10 minutes is unremarkable, not a hang. Using the crypto rails' flat
     // 5-minute threshold here would page admins on ordinary slowness.
     await setTokopayCreds();
     await stampTokopayHealth(10 * 60_000);

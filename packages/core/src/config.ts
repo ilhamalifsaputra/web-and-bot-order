@@ -81,7 +81,13 @@ export const Env = z.object({
   BINANCE_PAY_ID: z.string().default(""),
   BINANCE_QR_PATH: z.string().optional(),
   CURRENCY: z.string().default("USDT"),
-  PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
+  // Payment windows per rail (owner decision, Game Top-up refactor Phase 4):
+  // this one covers TokoPay QRIS and PayDisini, and is also the initial
+  // `expiresAt` stamp every order gets before `finalizeOrderPayment` restamps
+  // it with the chosen rail's own window. An explicit `.env` value always
+  // overrides these defaults. Orders already created keep their stored
+  // `expiresAt`; a changed window only applies to new orders.
+  PAYMENT_WINDOW_MINUTES: z.coerce.number().default(10),
   USE_UNIQUE_CENTS: looseBool.default(true),
 
   // ---- Binance Internal Transfer (UID-based, auto-confirmed) ----
@@ -102,7 +108,8 @@ export const Env = z.object({
     .string()
     .default("https://api1.binance.com,https://api2.binance.com,https://api3.binance.com,https://api4.binance.com,https://api-gcp.binance.com"),
   POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
-  INTERNAL_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(15),
+  // Binance Pay (Internal Transfer) window.
+  INTERNAL_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(10),
 
   // ---- Bybit Internal Transfer (UID→UID, off-chain, instant) ----
   // Our Bybit UID buyers send USDT to via Bybit's own "Internal Transfer"
@@ -128,19 +135,21 @@ export const Env = z.object({
   // Indonesian networks (confirmed: consistent ConnectTimeoutError to its CDN
   // IPs from a production VPS; bytick.com, different IPs, unaffected).
   BYBIT_API_BASE: z.string().default("https://api.bytick.com"),
-  // Window for the auto-confirm path. Internal transfers are instant, but keep
-  // a little headroom for poll latency + the buyer's transfer time.
-  BYBIT_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
+  // Window for the auto-confirm path. Internal transfers are instant, so ten
+  // minutes still leaves headroom for poll latency + the buyer's transfer time.
+  BYBIT_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(10),
   // Independent of POLL_INTERVAL_SECONDS (which governs Binance) so Bybit's
   // cadence can be tuned without touching Binance's. 5s default is a
   // conservative starting point pending real rate-limit headroom data (see
   // the X-Bapi-Limit-* debug logs in bybitDeposit.ts's bybitGet()).
   BYBIT_POLL_INTERVAL_SECONDS: z.coerce.number().default(5),
-  // Window for the BSC on-chain auto-confirm path. Shorter than Internal
-  // Transfer's 30 min default — on-chain only needs headroom for the ~1-2 min
-  // block-confirmation floor plus a few poll cycles, not a full instant-rail
-  // window.
-  BYBIT_BSC_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(15),
+  // Window for the BSC on-chain auto-confirm path. Longer than Internal
+  // Transfer's 10 min default: the buyer usually sends from another wallet or
+  // exchange (a withdrawal can sit in that exchange's own queue), and the
+  // deposit still needs the block-confirmation floor plus a few poll cycles
+  // before Bybit reports it. A deposit landing after `expiresAt` stays
+  // unmatched (no grace), so this window is the whole budget.
+  BYBIT_BSC_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
   // Independent poll cadence for the BSC on-chain poller — tunable separately
   // from both Binance's and Bybit Internal Transfer's intervals.
   BYBIT_BSC_POLL_INTERVAL_SECONDS: z.coerce.number().default(5),

@@ -25,7 +25,7 @@ import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { checkTransaction, qrisChargeAmount, RateLimitedError } from "@app/core/payments/tokopay";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import {
-  MAX_ORDERS_PER_CYCLE,
+  TOKOPAY_MAX_ORDERS_PER_CYCLE as MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
   TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS,
 } from "@app/core/payments/reconcileCycleBudget";
@@ -303,7 +303,9 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
 // RECONCILE_CYCLE_TIMEOUT_MS (this rail's cycleTimeoutMs, passed to
 // createPollLoop below) both now live in
 // packages/core/src/payments/reconcileCycleBudget.ts as
-// TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS (Task 13 review follow-up) — see that
+// TOKOPAY_MAX_ORDERS_PER_CYCLE / TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS (Task 13
+// review follow-up; both derived from PAYMENT_WINDOW_MINUTES since the
+// payment-TTL change) — see that
 // module for the full derivation, including the PAYMENT_WINDOW_MINUTES
 // sanity check (enforced as a test in poll-loop-wiring.test.ts). Re-exported
 // under this file's original name so existing imports (the wiring test,
@@ -312,7 +314,7 @@ export const RECONCILE_CYCLE_TIMEOUT_MS = TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS;
 
 // MAX_ORDERS_PER_CYCLE caps how many of the pending backlog one cycle checks
 // against the gateway — listPendingTokopayOrders orders oldest-first, so
-// without rotation a backlog over the cap would starve orders 51+ until
+// without rotation a backlog over the cap would starve the newer orders until
 // enough older ones expire out (followup-review-fixes-2). `cursor` rotates
 // WHICH slice of that oldest-first list gets checked each cycle instead —
 // same fix bybitBscConfirmationTracker.ts already applies to its own capped
@@ -423,7 +425,9 @@ let boundApi: Api | undefined;
 // cycleTimeoutMs is RECONCILE_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
 // own worst case for the reconcile loop (see
 // packages/core/src/payments/reconcileCycleBudget.ts's derivation comment —
-// 780s; it no longer carries a per-rail bubble-sweep term now that the
+// both derived from PAYMENT_WINDOW_MINUTES, 240s on the 10-minute default
+// and 720s on a 30-minute window; it no longer carries a per-rail
+// bubble-sweep term now that the
 // generic sweepPaidOrderBubbles, apps/order-bot/src/jobs/index.ts, Task
 // T2-E, replaced this rail's own per-rail sweep). Without this the default
 // `max(3 * intervalMs, 60_000)` (60s at the default POLL_INTERVAL_SECONDS)

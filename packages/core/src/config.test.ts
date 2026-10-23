@@ -36,4 +36,23 @@ describe("config schema", () => {
     expect(Env.parse({ ...baseEnv, BOT_USERNAME: "" }).BOT_USERNAME).toBeUndefined();
     expect(Env.parse({ ...baseEnv, BOT_USERNAME: "  " }).BOT_USERNAME).toBeUndefined();
   });
+
+  // Owner decision (Game Top-up refactor, Phase 4): the per-rail payment
+  // windows. Parsed from an env with none of the window keys set, so this
+  // pins the schema defaults themselves — the test harnesses and a local
+  // `.env` may still set explicit values, and an explicit value always wins.
+  it("defaults each rail's payment window to the owner-approved minutes", () => {
+    const parsed = Env.parse(baseEnv);
+    expect(parsed.PAYMENT_WINDOW_MINUTES).toBe(10); // TokoPay QRIS, PayDisini, initial stamp
+    expect(parsed.INTERNAL_PAYMENT_WINDOW_MINUTES).toBe(10); // Binance Pay
+    expect(parsed.BYBIT_PAYMENT_WINDOW_MINUTES).toBe(10); // Bybit UID
+    expect(parsed.BYBIT_BSC_PAYMENT_WINDOW_MINUTES).toBe(30); // Bybit BSC on-chain
+    expect(parsed.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES).toBe(30); // NOWPayments hosted invoice
+  });
+
+  it("lets an explicit env value override a payment window default", () => {
+    const parsed = Env.parse({ ...baseEnv, PAYMENT_WINDOW_MINUTES: "30", BYBIT_BSC_PAYMENT_WINDOW_MINUTES: "15" });
+    expect(parsed.PAYMENT_WINDOW_MINUTES).toBe(30);
+    expect(parsed.BYBIT_BSC_PAYMENT_WINDOW_MINUTES).toBe(15);
+  });
 });

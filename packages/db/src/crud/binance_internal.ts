@@ -45,6 +45,7 @@ import {
   ORDER_USER_SELECT,
   withoutDeliveredContent,
   type SettleResult,
+  type ExpectedTotal,
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
@@ -159,6 +160,12 @@ export async function createInternalOrder(
      * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
      * contract this enforces. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted (A6), forwarded to createOrderDirect via
+     * the same spread and checked there before anything is written. The bot
+     * quotes it in IDR (the figure before this rail's USDT conversion), which
+     * leaves a moved rate to finalizeOrderPayment's FX freshness guard. Absent:
+     * no quote check, as before. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;

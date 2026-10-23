@@ -25,7 +25,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { ServiceChannel } from "@app/core/services";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
+import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder, type ExpectedTotal } from "./orders";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
@@ -128,6 +128,12 @@ export async function createBybitOrder(
      * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
      * contract this enforces. */
     checkoutIntentId?: string | null;
+    /** The total the buyer was quoted (A6), forwarded to createOrderDirect via
+     * the same spread and checked there before anything is written. The bot
+     * quotes it in IDR (the figure before this rail's USDT conversion), which
+     * leaves a moved rate to finalizeOrderPayment's FX freshness guard. Absent:
+     * no quote check, as before. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;

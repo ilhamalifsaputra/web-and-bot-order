@@ -693,6 +693,17 @@ export function editInfoCancelKb(orderId: number, lang: string): InlineKeyboard 
 // Checkout
 // ---------------------------------------------------------------------------
 
+/**
+ * A pay button's callback: `v1:<domain>:<pid>:<qty>:<quoteNonce>`. The nonce is
+ * the one the render stored with its quote (`quoteConfirmation`,
+ * handlers/checkout.ts); a pay handler charges only a tap whose nonce is the
+ * stored one, so a button from an older render, or one built without a nonce,
+ * re-renders the screen instead of paying.
+ */
+function payCb(domain: string, productId: number, qty: number, quoteNonce: string): string {
+  return quoteNonce ? cb(domain, productId, qty, quoteNonce) : cb(domain, productId, qty);
+}
+
 export function orderConfirmKb(
   productId: number,
   qty: number,
@@ -708,8 +719,10 @@ export function orderConfirmKb(
   usdtBalance: Decimal | null = null,
   walletDeduction: { currency: "IDR" | "USDT"; amount: string } | null = null,
   fullyCovered = false,
+  quoteNonce = "",
 ): InlineKeyboard {
   const rows: Btn[][] = [];
+  const pay = (domain: string) => payCb(domain, productId, qty, quoteNonce);
   if (fullyCovered) {
     // The active wallet credit already brings the total to zero — a gateway
     // button here would mean charging Rp0/​$0 through TokoPay/PayDisini/USDT,
@@ -717,7 +730,7 @@ export function orderConfirmKb(
     // zero total, so the screen collapses to the one action that applies:
     // Complete Order. The persistent menu keyboard stays the escape hatch.
     rows.push([
-      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
+      { text: coreT("checkout.complete_order_btn", lang), data: pay("walletpay") },
     ]);
     return ik(rows);
   }
@@ -745,8 +758,8 @@ export function orderConfirmKb(
     ]);
   }
   const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
-  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
-  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
+  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: pay("payq") }]);
+  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: pay("payd") }]);
   if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "denom", productId) },
@@ -768,12 +781,14 @@ export function usdtMethodsKb(
   bybitEnabled = false,
   nowpaymentsEnabled = false,
   bybitBscEnabled = false,
+  quoteNonce = "",
 ): InlineKeyboard {
   const rows: Btn[][] = [];
-  if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
-  if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
-  if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("paybc", productId, qty) }]);
-  if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("payn", productId, qty) }]);
+  const pay = (domain: string) => payCb(domain, productId, qty, quoteNonce);
+  if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: pay("payx") }]);
+  if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: pay("payb") }]);
+  if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: pay("paybc") }]);
+  if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: pay("payn") }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
   return ik(rows);
 }

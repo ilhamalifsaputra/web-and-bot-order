@@ -110,34 +110,38 @@ const dispatchUsdt: DomainDispatcher = async (ctx, parts) => {
   await checkout.showUsdtMethods(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
+// The pay domains below carry the quote nonce of the render that drew the
+// button as their last segment (keyboards/customer.ts payCb). The handler pays
+// only when it matches the session's; a missing or older nonce re-renders the
+// payment screen with the stale-screen toast (checkout.ts quoteForTap).
 const dispatchPayInternal: DomainDispatcher = async (ctx, parts) => {
-  // v1:payx:<pid>:<qty> → Binance Internal Transfer (auto-confirmed)
-  await checkout.buyNowInternal(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payx:<pid>:<qty>:<quoteNonce> → Binance Internal Transfer (auto-confirmed)
+  await checkout.buyNowInternal(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayBybit: DomainDispatcher = async (ctx, parts) => {
-  // v1:payb:<pid>:<qty> → Bybit Internal Transfer deposit (auto-confirmed)
-  await checkout.buyNowBybit(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payb:<pid>:<qty>:<quoteNonce> → Bybit Internal Transfer deposit (auto-confirmed)
+  await checkout.buyNowBybit(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayBybitBsc: DomainDispatcher = async (ctx, parts) => {
-  // v1:paybc:<pid>:<qty> → Bybit BSC on-chain deposit (auto-confirmed)
-  await checkout.buyNowBybitBsc(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:paybc:<pid>:<qty>:<quoteNonce> → Bybit BSC on-chain deposit (auto-confirmed)
+  await checkout.buyNowBybitBsc(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayTokopay: DomainDispatcher = async (ctx, parts) => {
-  // v1:payq:<pid>:<qty> → QRIS (TokoPay) order (auto-confirmed by webhook)
-  await checkout.buyNowTokopay(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payq:<pid>:<qty>:<quoteNonce> → QRIS (TokoPay) order (auto-confirmed by webhook)
+  await checkout.buyNowTokopay(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayPaydisini: DomainDispatcher = async (ctx, parts) => {
-  // v1:payd:<pid>:<qty> → PayDisini (QRIS / e-wallet) order (auto-confirmed)
-  await checkout.buyNowPaydisini(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payd:<pid>:<qty>:<quoteNonce> → PayDisini (QRIS / e-wallet) order (auto-confirmed)
+  await checkout.buyNowPaydisini(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayNowpayments: DomainDispatcher = async (ctx, parts) => {
-  // v1:payn:<pid>:<qty> → NOWPayments hosted USDT invoice (auto-confirmed)
-  await checkout.buyNowNowpayments(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payn:<pid>:<qty>:<quoteNonce> → NOWPayments hosted USDT invoice (auto-confirmed)
+  await checkout.buyNowNowpayments(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
@@ -196,9 +200,9 @@ const dispatchWalletMenu: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchWalletPay: DomainDispatcher = async (ctx, parts) => {
-  // v1:walletpay:<pid>:<qty> — the order's active wallet credit already
+  // v1:walletpay:<pid>:<qty>:<quoteNonce> — the order's active wallet credit already
   // covers the total; complete it with no gateway.
-  await checkout.completeOrderWithWallet(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  await checkout.completeOrderWithWallet(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchTopup: DomainDispatcher = async (ctx, parts) => {

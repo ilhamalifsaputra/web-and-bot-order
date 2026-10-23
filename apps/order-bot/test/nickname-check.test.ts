@@ -40,7 +40,7 @@ import {
   assertNoFunctionProps,
   type SentCall,
 } from "./helpers/ctx";
-import { primeQuote } from "./helpers/quote";
+import { primeQuote, quoteNonce } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
@@ -519,7 +519,7 @@ describe("buyNowTokopay — nickname customerData threading", () => {
     const { ctx } = customerCtx({ session: { ...userSession(), scratch: { customerData } } });
     await primeQuote(ctx, denom.id, 1);
 
-    await checkout.buyNowTokopay(ctx, denom.id, 1);
+    await checkout.buyNowTokopay(ctx, denom.id, 1, quoteNonce(ctx));
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);

@@ -9,7 +9,7 @@ import { menuAnchor, consumeInput } from "../util/chat";
 import { esc } from "../util/format";
 import { coreT } from "../util/i18n";
 import * as ckb from "../keyboards/customer";
-import { renderOrderConfirmation } from "../handlers/checkout";
+import { QUOTE_SCRATCH_KEYS, renderOrderConfirmation } from "../handlers/checkout";
 import { startCommand, handleProductNumber } from "../handlers/customer";
 import { customerInfoConversation } from "./customerInfo";
 
@@ -20,7 +20,7 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
 }
 
 export function clearPlayerInputScratch(ctx: MyContext): void {
-  for (const key of ["customerData", "customerInputOwner", "pendingInfoProductId", "pendingInfoQuantity", "pendingNicknameProductId", "pendingNicknameQuantity", "prefilledCustomerDataUnit", "checkoutIntentId", "quotedTotalIdr"]) delete ctx.session.scratch[key];
+  for (const key of ["customerData", "customerInputOwner", "pendingInfoProductId", "pendingInfoQuantity", "pendingNicknameProductId", "pendingNicknameQuantity", "prefilledCustomerDataUnit", "checkoutIntentId", ...QUOTE_SCRATCH_KEYS]) delete ctx.session.scratch[key];
 }
 
 export async function confirmCustomerInputs(conversation: MyConversation, ctx: MyContext, productId: number, quantity: number, fields: AdditionalField[], answers: Array<Record<string, string>>): Promise<void> {

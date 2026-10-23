@@ -281,7 +281,7 @@
   "checkout.qris_wallet_line": "💳 Kredit IDR: −{amount}\n",
   "checkout.min_amount_note": "ℹ️ Minimum pembayaran untuk metode ini: {min}.",
   "checkout.price_and_pay": "Harga {price} · Bayar {pay}",
-  "checkout.price_changed": "Harganya berubah jadi {total}. Cek lagi, lalu ketuk bayar sekali lagi.",
+  "checkout.price_changed": "⚠️ Harga berubah menjadi {total}. Silakan cek lagi, lalu konfirmasi ulang.",
   "checkout.no_method_for_total": "Total ini di bawah minimum yang diterima semua metode pembayaran yang tersedia. Tambah barang, atau beli paket yang lebih besar.",
   "checkout.payment_unavailable": "Metode pembayaran ini lagi tidak tersedia. Silakan coba metode pembayaran lain, atau kembali lagi nanti ya.",
   "checkout.rail_changed_toast": "Metode pembayaran untuk pesanan ini sudah diperbarui.",

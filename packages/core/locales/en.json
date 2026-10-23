@@ -281,7 +281,7 @@
   "checkout.qris_wallet_line": "💳 IDR Credit: −{amount}\n",
   "checkout.min_amount_note": "ℹ️ Minimum payment for this method: {min}.",
   "checkout.price_and_pay": "Price {price} · Pay {pay}",
-  "checkout.price_changed": "The price changed to {total}. Review it and tap pay again.",
+  "checkout.price_changed": "⚠️ The price has changed to {total}. Please check it, then confirm again.",
   "checkout.no_method_for_total": "This total is below the minimum every available payment method accepts. Add more items, or buy a larger package.",
   "checkout.payment_unavailable": "This payment method isn't available right now. Please try a different payment method, or come back a little later.",
   "checkout.rail_changed_toast": "Payment method updated for this order.",

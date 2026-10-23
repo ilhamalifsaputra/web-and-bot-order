@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { Decimal } from "@app/core/money";
 import { orderConfirmKb, usdtMethodsKb } from "../src/keyboards/customer";
 
 interface FlatBtn {
@@ -87,6 +88,25 @@ describe("payment method menu", () => {
 
     const withoutNowpayments = data(usdtMethodsKb(1, 1, "en", false, false, false));
     expect(withoutNowpayments.some((x) => x.startsWith("v1:payn:"))).toBe(false);
+  });
+
+  it("every pay button carries the render's quote nonce, and the longest callback stays within 64 bytes", () => {
+    // The largest ids a callback can carry: a Postgres int4 product id and a
+    // quantity far past any order cap; the nonce is always six characters.
+    const pid = 2147483647;
+    const qty = 999999;
+    const nonce = "zzzzzz";
+    const all = [
+      ...data(orderConfirmKb(pid, qty, "en", "", true, true, true, true, true, true, new Decimal(1), new Decimal(1), null, false, nonce)),
+      ...data(orderConfirmKb(pid, qty, "en", "", true, true, true, true, true, true, new Decimal(1), new Decimal(1), { currency: "IDR", amount: "1" }, true, nonce)),
+      ...data(usdtMethodsKb(pid, qty, "en", true, true, true, true, nonce)),
+    ];
+    const pay = all.filter((d) => /^v1:(payq|payd|payx|payb|paybc|payn|walletpay):/.test(d));
+    expect(pay.map((d) => d.split(":")[1]).sort()).toEqual(["payb", "paybc", "payd", "payn", "payq", "payx", "walletpay"]);
+    for (const d of pay) expect(d).toBe(`${d.split(":").slice(0, 4).join(":")}:${nonce}`);
+    const longest = Math.max(...all.map((d) => Buffer.byteLength(d, "utf8")));
+    expect(longest).toBe(Buffer.byteLength(`v1:walletpay:${pid}:${qty}:${nonce}`, "utf8"));
+    expect(longest).toBeLessThanOrEqual(64);
   });
 
   it("USDT submenu lists Binance + Bybit + NOWPayments together when all three are enabled", () => {

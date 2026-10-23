@@ -8,7 +8,7 @@
  * instructions. Every rail auto-confirms and delivers on its own; the legacy
  * manual Binance-Pay proof/verification path is retired.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { InlineKeyboard } from "grammy";
 import { FulfillmentMessageWorker } from "@app/outbox-dispatcher";
 import { config } from "@app/core/config";
@@ -480,6 +480,13 @@ async function computeConfirmation(
   // toggle on in that case (rejection popup), so this branch only ever fires
   // for a genuinely-covering balance; the >= guards stay as a defensive net
   // against a balance that moved after the toggle was set.
+  //
+  // Clamped at zero exactly as createOrderDirect clamps its `afterDiscount`
+  // (packages/db/src/crud/orders.ts): the voucher cap makes a negative
+  // unreachable today, but if a discount's own guard ever slipped, this screen
+  // would quote a negative total the order can never match, and every pay tap
+  // would loop on "the price changed".
+  subtotal = Decimal.max(0, subtotal);
   const subtotalBeforeWallet = subtotal;
   let walletLine = "";
   let walletDeduction: ConfirmRender["walletDeduction"] = null;
@@ -547,8 +554,53 @@ async function computeConfirmation(
  */
 const QUOTE_KEY = "quotedTotalIdr";
 
+/**
+ * Session key holding the nonce of the render that stored the quote. Every pay
+ * button of that render carries it as its last callback segment, and a tap is
+ * paid only when its nonce is the stored one. Without it, a second tap queued
+ * from the same screen (updates for one chat run one at a time,
+ * `sequentialize` in main.ts) was processed after the first tap's mismatch had
+ * stored the NEW total, found a valid quote and paid a price its sender never
+ * saw. Each render issues a fresh nonce, so a tap can only pay from the screen
+ * the stored quote describes.
+ */
+const QUOTE_NONCE_KEY = "quoteNonce";
+
+/**
+ * Session key holding which `productId:quantity` the stored quote prices. A tap
+ * for another product or quantity has no quote, rather than a changed price.
+ */
+const QUOTE_FOR_KEY = "quoteFor";
+
+/** Every scratch key of the price lock; cleared together. Read by
+ *  `clearPlayerInputScratch` (conversations/nicknameCheck.ts). */
+export const QUOTE_SCRATCH_KEYS = [QUOTE_KEY, QUOTE_NONCE_KEY, QUOTE_FOR_KEY] as const;
+
 /** Plain decimal notation, which is what `Decimal#toFixed()` writes. */
 const QUOTE_SHAPE = /^\d+(\.\d+)?$/;
+
+/** A quote nonce: six base-36 characters, short enough to keep every pay
+ *  callback well under Telegram's 64-byte limit. */
+const NONCE_SHAPE = /^[0-9a-z]{6}$/;
+const NONCE_SPACE = 36 ** 6;
+
+/** A fresh random quote nonce (a plain string, so the session stays JSON). */
+function newQuoteNonce(): string {
+  return (randomBytes(4).readUInt32BE(0) % NONCE_SPACE).toString(36).padStart(6, "0");
+}
+
+function quoteKeyFor(productId: number, quantity: number): string {
+  return `${productId}:${quantity}`;
+}
+
+/** Drop the stored quote, its nonce and its key. */
+function clearQuote(ctx: MyContext): void {
+  for (const key of QUOTE_SCRATCH_KEYS) delete ctx.session.scratch[key];
+}
+
+/** A confirmation render bound to the quote it stored: `nonce` goes into every
+ *  pay button the render draws. */
+type QuotedRender = ConfirmRender & { nonce: string };
 
 /**
  * `computeConfirmation` for a screen that is about to be SHOWN: records its
@@ -556,9 +608,11 @@ const QUOTE_SHAPE = /^\d+(\.\d+)?$/;
  * payment screen call this; the checks that price the order without showing it
  * (`refuseGatewayTapOverWalletCredit`, `toggleWalletCredit`'s coverage check,
  * the Complete Order re-price) call `computeConfirmation` directly, so the
- * quote always describes what the buyer saw. Exported so a test that taps a
- * pay button without rendering first can record the quote that screen would
- * have (apps/order-bot/test/helpers/quote.ts).
+ * quote always describes what the buyer saw. Callers render right after it,
+ * past every early return, so no quote outlives a screen that was never shown.
+ * Each call issues a fresh nonce, which retires the pay buttons of every older
+ * render. Exported so a test that taps a pay button without rendering first can
+ * record the quote that screen would have (apps/order-bot/test/helpers/quote.ts).
  */
 export async function quoteConfirmation(
   ctx: MyContext,
@@ -566,11 +620,17 @@ export async function quoteConfirmation(
   quantity: number,
   rate: Decimal | null,
   loadedProduct?: CheckoutDenomination,
-): Promise<ConfirmRender | null> {
+): Promise<QuotedRender | null> {
   const r = await computeConfirmation(ctx, productId, quantity, rate, loadedProduct);
-  if (r) ctx.session.scratch[QUOTE_KEY] = r.subtotalBeforeWallet.toFixed();
-  else delete ctx.session.scratch[QUOTE_KEY];
-  return r;
+  if (!r) {
+    clearQuote(ctx);
+    return null;
+  }
+  const nonce = newQuoteNonce();
+  ctx.session.scratch[QUOTE_KEY] = r.subtotalBeforeWallet.toFixed();
+  ctx.session.scratch[QUOTE_NONCE_KEY] = nonce;
+  ctx.session.scratch[QUOTE_FOR_KEY] = quoteKeyFor(productId, quantity);
+  return { ...r, nonce };
 }
 
 /** Which screen a pay button lives on, so a refused tap re-renders that one. */
@@ -594,20 +654,35 @@ async function renderPayScreen(
 }
 
 /**
- * The stored quote as an `expectedTotal`, or null after re-rendering the
- * payment screen when there is none (a session from before the price lock, or
- * one that lost its scratch): with no quote there is no proof the buyer saw the
- * total, so the tap shows it to them instead of charging it. The re-render
- * stores a fresh quote, so the next tap pays.
+ * The stored quote as an `expectedTotal`, when the tap came from the render
+ * that stored it: the tap's `nonce` (the pay callback's last segment) equals the
+ * stored nonce and the quote prices this product and quantity. Otherwise the
+ * tap is stale and pays nothing: there is no quote (a session from before the
+ * price lock, or one that lost its scratch), the button is from an older render
+ * (a tap queued behind a "price changed" re-render, or a bubble from before
+ * the nonce existed, which carries none), or the quote is for another product
+ * or quantity. Any of those re-renders the payment screen with the stale-screen
+ * toast and returns null; the re-render issues a new nonce, so only a tap from
+ * the screen now shown can pay.
  */
 async function quoteForTap(
   ctx: MyContext,
   productId: number,
   quantity: number,
   screen: PayScreen,
+  nonce: string | undefined,
 ): Promise<ExpectedTotal | null> {
-  const raw = ctx.session.scratch[QUOTE_KEY];
-  if (typeof raw === "string" && QUOTE_SHAPE.test(raw)) return { currency: OrderCurrency.IDR, amount: raw };
+  const scratch = ctx.session.scratch;
+  const raw = scratch[QUOTE_KEY];
+  const stored = scratch[QUOTE_NONCE_KEY];
+  const bound =
+    typeof raw === "string" &&
+    QUOTE_SHAPE.test(raw) &&
+    typeof nonce === "string" &&
+    NONCE_SHAPE.test(nonce) &&
+    nonce === stored &&
+    scratch[QUOTE_FOR_KEY] === quoteKeyFor(productId, quantity);
+  if (bound) return { currency: OrderCurrency.IDR, amount: raw };
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
   await renderPayScreen(ctx, productId, quantity, screen);
   return null;
@@ -620,6 +695,11 @@ async function quoteForTap(
  * same `customerData`, voucher and `checkoutIntentId`. The same bubble is
  * re-rendered with the new total and a "price changed" line, and the buyer's
  * next tap is their confirmation of it.
+ *
+ * The old quote is dropped, not replaced by the new total: only the render
+ * itself stores a quote (with a fresh nonce), so when it does not happen (the
+ * product went out of stock or unavailable, or the checkout diverted to a
+ * wizard) no quote is left for a screen the buyer never saw.
  */
 async function showChangedQuote(
   ctx: MyContext,
@@ -632,7 +712,7 @@ async function showChangedQuote(
     { userId: ctx.session.dbUser?.id, productId, quantity },
     `Refused a bot checkout because the total changed from the quoted ${e.expectedTotal} to ${e.currentTotal} ${e.currency} after the payment screen was shown; showing the new total so the buyer can confirm it.`,
   );
-  ctx.session.scratch[QUOTE_KEY] = new Decimal(e.currentTotal).toFixed();
+  clearQuote(ctx);
   await renderPayScreen(ctx, productId, quantity, screen, { priceChanged: true });
 }
 
@@ -658,7 +738,7 @@ export async function showOrderConfirmation(
     delete ctx.session.scratch.customerInputOwner;
     delete ctx.session.scratch.prefilledCustomerDataUnit;
     delete ctx.session.scratch.checkoutIntentId;
-    delete ctx.session.scratch[QUOTE_KEY];
+    clearQuote(ctx);
   }
   // Stock rows only ever exist for local-inventory SKUs
   // (@app/core/productAvailability; order creation skips reservation for the
@@ -767,6 +847,7 @@ export async function showOrderConfirmation(
       r.usdtBalance,
       r.walletDeduction,
       r.fullyCovered,
+      r.nonce,
     ),
   );
 }
@@ -850,6 +931,7 @@ export async function renderOrderConfirmation(
       r.usdtBalance,
       r.walletDeduction,
       r.fullyCovered,
+      r.nonce,
     ),
   );
 }
@@ -876,7 +958,7 @@ export async function showUsdtMethods(
   await smartEdit(
     ctx,
     priceChangedLine(ctx, r, prices, opts) + confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), prices),
-    ckb.usdtMethodsKb(productId, quantity, lang, rails.binance, rails.bybit, rails.nowpayments, rails.bybitBsc),
+    ckb.usdtMethodsKb(productId, quantity, lang, rails.binance, rails.bybit, rails.nowpayments, rails.bybitBsc, r.nonce),
   );
 }
 
@@ -998,7 +1080,7 @@ async function refuseGatewayTapOverWalletCredit(ctx: MyContext, productId: numbe
  * (edited in place), and store the message anchor so the poller can edit it to
  * a success message once the transfer is auto-confirmed.
  */
-export async function buyNowInternal(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function buyNowInternal(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
@@ -1022,7 +1104,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt", nonce);
   if (!expectedTotal) return;
 
   const checkoutIntentId =
@@ -1086,7 +1168,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1128,7 +1210,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
  * and anchor the message so the deposit poller can flip it to success on
  * auto-confirm. See {@link buyNowBybitBsc} for the on-chain BSC alternative.
  */
-export async function buyNowBybit(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function buyNowBybit(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
@@ -1152,7 +1234,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt", nonce);
   if (!expectedTotal) return;
 
   const checkoutIntentId =
@@ -1214,7 +1296,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1253,7 +1335,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
  * confirmation, ~1-2 min) but accepts a deposit from any BEP20 wallet/
  * exchange, including a Binance withdrawal.
  */
-export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
@@ -1277,7 +1359,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt", nonce);
   if (!expectedTotal) return;
 
   const checkoutIntentId =
@@ -1340,7 +1422,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1387,7 +1469,7 @@ const shopPublicUrl = (): string | null => config.SHOP_PUBLIC_URL ?? config.PUBL
  * the order will stall then auto-cancel unless the reconcile poller
  * (`payments/nowpaymentsReconcile.ts`) catches it.
  */
-export async function buyNowNowpayments(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function buyNowNowpayments(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
@@ -1413,7 +1495,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt", nonce);
   if (!expectedTotal) return;
 
   const checkoutIntentId =
@@ -1456,7 +1538,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -1564,7 +1646,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
  * existing TokoPay webhook auto-confirm. No proof upload. ⚠ Needs the public
  * callback URL configured (DOCS §15.5) or the order will stall then auto-cancel.
  */
-export async function buyNowTokopay(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function buyNowTokopay(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const chatId = ctx.chat!.id;
@@ -1588,7 +1670,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm", nonce);
   if (!expectedTotal) return;
 
   const checkoutIntentId =
@@ -1636,7 +1718,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // Based on order.totalAmount (what's actually sent to the gateway as
   // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
@@ -1777,7 +1859,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
  * ⚠ Needs the public callback URL configured (DOCS §15.5) or the order will
  * stall then auto-cancel unless the reconcile poller catches it.
  */
-export async function buyNowPaydisini(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function buyNowPaydisini(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const chatId = ctx.chat!.id;
@@ -1801,7 +1883,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm", nonce);
   if (!expectedTotal) return;
 
   const checkoutIntentId =
@@ -1849,7 +1931,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
@@ -2033,7 +2115,7 @@ async function tickStatusMessageAfterWalletCheckout(ctx: MyContext, orderId: num
   }
 }
 
-export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
@@ -2070,7 +2152,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   }
   // Both tracks, and the discount-covered path, are quoted in IDR: the total
   // before credit that the Complete Order screen showed.
-  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm");
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm", nonce);
   if (!expectedTotal) return;
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
@@ -2173,7 +2255,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[QUOTE_KEY];
+  clearQuote(ctx);
 
   // A synchronous wallet checkout uses the same coordinator as gateway rails.
   // Its known checkout screen is already adopted inside the settlement commit.

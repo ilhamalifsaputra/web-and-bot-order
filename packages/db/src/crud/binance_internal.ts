@@ -295,8 +295,9 @@ export async function clearPaymentMessageAnchorsAt(
  * the buyer pays to nowhere. A lost tracking screen is recoverable; a
  * destroyed deposit address is money. Nothing in the bot blocks two parallel
  * checkouts in one chat, so this is a reachable path, not a theoretical one —
- * handlers/checkout/timers.ts used to carry a map that looked like such a
- * guard but was never read; see its header.
+ * handlers/checkout/timers.ts (since deleted) used to carry an in-memory
+ * chat-to-order map that looked like such a guard but was never read, so it
+ * never guarded anything.
  */
 export async function setOrderPaymentMessage(db: Db, orderId: number, chatId: number | bigint, messageId: number) {
   await db.order.update({

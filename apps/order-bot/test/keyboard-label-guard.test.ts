@@ -228,7 +228,6 @@ describe("keyboard label guard: icons come only from the unit dictionary", () =>
     join(ROOT, "src", "util", "canonicalPresenter.ts"),
     ...tsFilesIn("src", "keyboards"),
     ...tsFilesIn("src", "handlers"),
-    ...tsFilesIn("src", "handlers", "checkout"),
   ];
   // Hand-made abbreviations are as forbidden as hand-made icons: the dictionary's short forms live only in the dictionary.
   const shortForms = [...new Set([...ABBREVIATIONS.map((entry) => entry.short), ...UNITS.flatMap((unit) => unit.short ? [unit.short] : [])])];

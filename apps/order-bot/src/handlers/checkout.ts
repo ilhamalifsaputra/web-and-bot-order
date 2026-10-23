@@ -119,11 +119,6 @@ import { currentUsdtRate } from "../util/rate";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import * as ckb from "../keyboards/customer";
 import * as customer from "./customer";
-import { cancelPaymentJobs } from "./checkout/timers";
-
-// Re-export the timer surface so `import * as checkout` callers (callbacks,
-// conversations) keep working unchanged after the A-02 extraction.
-export { cancelPaymentJobs };
 
 const MAX_PENDING_ORDERS = 10;
 // USDT figures only (the charged total of Binance orders). Catalog/confirmation
@@ -2575,7 +2570,6 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   }
 
   const chatId = ctx.chat!.id;
-  cancelPaymentJobs(orderId);
   const canonical = await prisma.fulfillmentMessage.findUnique({ where: { orderId }, select: { chatId: true, messageId: true } });
   const canonicalMessageId = canonical?.chatId === BigInt(chatId) ? canonical.messageId : null;
 

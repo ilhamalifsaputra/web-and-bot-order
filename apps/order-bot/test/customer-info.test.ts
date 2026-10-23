@@ -41,6 +41,7 @@ import { DeliveryType, OrderStatus } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, FakeConversation, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
+import { primeQuote } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
@@ -625,6 +626,7 @@ describe("product QR send: a failed cleanup after the photo never renders a seco
       cbMessage: { message_id: WIZARD_BUBBLE, chat: { id: 42, type: "private" }, date: 0 },
       replyWithPhotoResult: { photo: [{ file_id: "qr" }] },
     }).ctx;
+    await primeQuote(ctx, sample.product.id, 1);
     const restore = failFirstOwnershipReadOf(WIZARD_BUBBLE);
     try {
       if (rail === "TokoPay") await checkout.buyNowTokopay(ctx, sample.product.id, 1);
@@ -706,6 +708,7 @@ describe("buyNowTokopay — customerData threading", () => {
     const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
     const customerData = JSON.stringify([{ game_id: "GID-999" }]);
     const { ctx } = customerCtx({ session: { ...userSession(), scratch: { customerData } } });
+    await primeQuote(ctx, denom.id, 1);
 
     await checkout.buyNowTokopay(ctx, denom.id, 1);
 
@@ -721,6 +724,7 @@ describe("buyNowTokopay — customerData threading", () => {
     await setSetting(prisma, "tokopay_secret", "S1");
     // sample.product is AUTO — the ordinary path, no gate ever fires.
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });

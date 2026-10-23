@@ -49,6 +49,7 @@ import { formatUsdtAmount } from "@app/core/formatters";
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, sentIncludes, calls, type SentCall } from "./helpers/ctx";
+import { primeQuote } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { resetBotIdentity } from "@app/core/runtime";
@@ -298,6 +299,7 @@ describe("payment screens", () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
     const { ctx, sink } = customerCtx(cur);
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
@@ -328,6 +330,7 @@ describe("payment screens", () => {
     await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
     await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
     const { ctx, sink } = customerCtx(DisplayCurrency.USD);
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     expect(order.currency).toBe(OrderCurrency.IDR);
@@ -349,6 +352,7 @@ describe("payment screens", () => {
     await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
     await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
     const { ctx, sink } = customerCtx(DisplayCurrency.USD);
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowInternal(ctx, sample.product.id, 1);
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     expect(order.currency).toBe(OrderCurrency.USDT);
@@ -397,6 +401,7 @@ describe("prices follow the buyer's language on every screen", () => {
     expect(confirmation).toContain(`<b>${want}</b>`);
 
     const pay = ctxFor(lang, cur);
+    await primeQuote(pay.ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(pay.ctx, sample.product.id, 1);
     const caption = (calls(pay.sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
     // IDR buyer: the subtotal line is the same amount; USD buyer: the "Price $…" line.

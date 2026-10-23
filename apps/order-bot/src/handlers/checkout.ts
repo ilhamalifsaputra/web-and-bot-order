@@ -52,6 +52,8 @@ import {
   countUserPendingOrders,
   createOrderDirect,
   DuplicateCheckoutIntentError,
+  QuoteMismatchError,
+  type ExpectedTotal,
   createInternalOrder,
   createBybitOrder,
   createBybitBscOrder,
@@ -386,7 +388,13 @@ async function computeConfirmation(
   // Voucher amounts are IDR-canonical; shown in the buyer's display currency.
   const prices = ctxPriceFormatter(ctx, rate);
 
-  const isReseller = info.role === UserRole.RESELLER;
+  // The role just read from the database, as createOrderDirect reads it — not
+  // the session's cached copy (`info`, the warm user snapshot, up to five
+  // minutes old). A role changed from web-admin inside that window used to
+  // price this screen at the old role, and with the quote now bound to the
+  // order, every pay tap was refused against a re-render quoting the same
+  // stale figure.
+  const isReseller = user.role === UserRole.RESELLER;
   // Same helper createOrderDirect prices with, so the confirmation screen can
   // never quote a figure the order itself won't charge.
   const unitPrice = effectiveUnitPrice(product, isReseller);
@@ -522,10 +530,123 @@ async function computeConfirmation(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Price lock: the quote a pay tap is bound to
+// ---------------------------------------------------------------------------
+
+/**
+ * Session key holding the IDR total the payment screen last showed: the
+ * `subtotalBeforeWallet` of the render the buyer is looking at (after bulk
+ * discount and voucher, before any wallet credit), as a plain Decimal string,
+ * never a formatted or display-rounded one. Every pay handler sends it as
+ * `expectedTotal`, so `createOrderDirect` refuses a price that moved between
+ * the screen and the tap instead of charging it (packages/db/src/crud/orders.ts,
+ * `assertQuotedTotal`). It is IDR on every rail; a moved USDT rate is left to
+ * `finalizeOrderPayment`'s FX freshness guard. Cleared with `checkoutIntentId`
+ * once an order exists, and by `clearPlayerInputScratch`.
+ */
+const QUOTE_KEY = "quotedTotalIdr";
+
+/** Plain decimal notation, which is what `Decimal#toFixed()` writes. */
+const QUOTE_SHAPE = /^\d+(\.\d+)?$/;
+
+/**
+ * `computeConfirmation` for a screen that is about to be SHOWN: records its
+ * total as the quote the next pay tap is bound to. Only the four renders of the
+ * payment screen call this; the checks that price the order without showing it
+ * (`refuseGatewayTapOverWalletCredit`, `toggleWalletCredit`'s coverage check,
+ * the Complete Order re-price) call `computeConfirmation` directly, so the
+ * quote always describes what the buyer saw. Exported so a test that taps a
+ * pay button without rendering first can record the quote that screen would
+ * have (apps/order-bot/test/helpers/quote.ts).
+ */
+export async function quoteConfirmation(
+  ctx: MyContext,
+  productId: number,
+  quantity: number,
+  rate: Decimal | null,
+  loadedProduct?: CheckoutDenomination,
+): Promise<ConfirmRender | null> {
+  const r = await computeConfirmation(ctx, productId, quantity, rate, loadedProduct);
+  if (r) ctx.session.scratch[QUOTE_KEY] = r.subtotalBeforeWallet.toFixed();
+  else delete ctx.session.scratch[QUOTE_KEY];
+  return r;
+}
+
+/** Which screen a pay button lives on, so a refused tap re-renders that one. */
+type PayScreen = "confirm" | "usdt";
+
+/** Options for a payment-screen render. `priceChanged` adds the line telling
+ *  the buyer the total moved since the screen they tapped. */
+interface PayScreenOptions {
+  priceChanged?: boolean;
+}
+
+async function renderPayScreen(
+  ctx: MyContext,
+  productId: number,
+  quantity: number,
+  screen: PayScreen,
+  opts: PayScreenOptions = {},
+): Promise<void> {
+  if (screen === "usdt") await showUsdtMethods(ctx, productId, quantity, opts);
+  else await showOrderConfirmation(ctx, productId, quantity, opts);
+}
+
+/**
+ * The stored quote as an `expectedTotal`, or null after re-rendering the
+ * payment screen when there is none (a session from before the price lock, or
+ * one that lost its scratch): with no quote there is no proof the buyer saw the
+ * total, so the tap shows it to them instead of charging it. The re-render
+ * stores a fresh quote, so the next tap pays.
+ */
+async function quoteForTap(
+  ctx: MyContext,
+  productId: number,
+  quantity: number,
+  screen: PayScreen,
+): Promise<ExpectedTotal | null> {
+  const raw = ctx.session.scratch[QUOTE_KEY];
+  if (typeof raw === "string" && QUOTE_SHAPE.test(raw)) return { currency: OrderCurrency.IDR, amount: raw };
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+  await renderPayScreen(ctx, productId, quantity, screen);
+  return null;
+}
+
+/**
+ * The order was refused because its total is no longer the one quoted. Nothing
+ * was written (the check runs before the order row, the stock reservation, the
+ * voucher use or the wallet debit), so the checkout attempt stays as it was:
+ * same `customerData`, voucher and `checkoutIntentId`. The same bubble is
+ * re-rendered with the new total and a "price changed" line, and the buyer's
+ * next tap is their confirmation of it.
+ */
+async function showChangedQuote(
+  ctx: MyContext,
+  e: QuoteMismatchError,
+  productId: number,
+  quantity: number,
+  screen: PayScreen,
+): Promise<void> {
+  logger.info(
+    { userId: ctx.session.dbUser?.id, productId, quantity },
+    `Refused a bot checkout because the total changed from the quoted ${e.expectedTotal} to ${e.currentTotal} ${e.currency} after the payment screen was shown; showing the new total so the buyer can confirm it.`,
+  );
+  ctx.session.scratch[QUOTE_KEY] = new Decimal(e.currentTotal).toFixed();
+  await renderPayScreen(ctx, productId, quantity, screen, { priceChanged: true });
+}
+
+/** The "price changed" line above the summary, with the newly quoted total. */
+function priceChangedLine(ctx: MyContext, r: ConfirmRender, prices: UserPriceFormatter, opts: PayScreenOptions): string {
+  if (!opts.priceChanged) return "";
+  return t(ctx, "checkout.price_changed", { total: prices.price(r.subtotalBeforeWallet) }) + "\n\n";
+}
+
 export async function showOrderConfirmation(
   ctx: MyContext,
   productId: number,
   quantity: number,
+  opts: PayScreenOptions = {},
 ): Promise<void> {
   const lang = ctx.session.lang;
 
@@ -537,6 +658,7 @@ export async function showOrderConfirmation(
     delete ctx.session.scratch.customerInputOwner;
     delete ctx.session.scratch.prefilledCustomerDataUnit;
     delete ctx.session.scratch.checkoutIntentId;
+    delete ctx.session.scratch[QUOTE_KEY];
   }
   // Stock rows only ever exist for local-inventory SKUs
   // (@app/core/productAvailability; order creation skips reservation for the
@@ -611,7 +733,7 @@ export async function showOrderConfirmation(
   }
 
   const rate = await currentUsdtRate();
-  const r = await computeConfirmation(ctx, productId, quantity, rate, product);
+  const r = await quoteConfirmation(ctx, productId, quantity, rate, product);
   if (!r) return;
 
   // Mint the checkoutIntentId for this attempt the first time the "Confirm &
@@ -626,9 +748,10 @@ export async function showOrderConfirmation(
   }
 
   const rails = await offerableRails(r.subtotal, rate);
+  const prices = ctxPriceFormatter(ctx, rate);
   await smartEdit(
     ctx,
-    confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
+    priceChangedLine(ctx, r, prices, opts) + confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), prices),
     ckb.orderConfirmKb(
       productId,
       quantity,
@@ -699,7 +822,7 @@ export async function renderOrderConfirmation(
 ): Promise<void> {
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
-  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  const r = await quoteConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
   // Same mint as showOrderConfirmation. The wizards reach the summary here,
   // not through showOrderConfirmation, and clearPlayerInputScratch drops any
@@ -737,16 +860,22 @@ export async function renderOrderConfirmation(
  * on-chain / NOWPayments). Reached from the "USDT" entry on the confirmation
  * screen; Back returns to {@link showOrderConfirmation}.
  */
-export async function showUsdtMethods(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+export async function showUsdtMethods(
+  ctx: MyContext,
+  productId: number,
+  quantity: number,
+  opts: PayScreenOptions = {},
+): Promise<void> {
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
-  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  const r = await quoteConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
 
   const rails = await offerableRails(r.subtotal, rate);
+  const prices = ctxPriceFormatter(ctx, rate);
   await smartEdit(
     ctx,
-    confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
+    priceChangedLine(ctx, r, prices, opts) + confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), prices),
     ckb.usdtMethodsKb(productId, quantity, lang, rails.binance, rails.bybit, rails.nowpayments, rails.bybitBsc),
   );
 }
@@ -760,7 +889,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
 export async function showWalletCreditMenu(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
-  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  const r = await quoteConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
 
   await smartEdit(
@@ -893,6 +1022,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  if (!expectedTotal) return;
 
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
@@ -908,11 +1039,16 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
         rate,
         customerData,
         checkoutIntentId,
+        expectedTotal,
       }),
     );
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "usdt");
       return;
     }
     if (e instanceof ValidationError) {
@@ -950,6 +1086,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1015,6 +1152,8 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  if (!expectedTotal) return;
 
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
@@ -1030,11 +1169,16 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
         rate,
         customerData,
         checkoutIntentId,
+        expectedTotal,
       }),
     );
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "usdt");
       return;
     }
     if (e instanceof ValidationError) {
@@ -1070,6 +1214,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1132,6 +1277,8 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  if (!expectedTotal) return;
 
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
@@ -1147,11 +1294,16 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
         rate,
         customerData,
         checkoutIntentId,
+        expectedTotal,
       }),
     );
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "usdt");
       return;
     }
     if (e instanceof ValidationError) {
@@ -1188,6 +1340,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1260,13 +1413,15 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "usdt");
+  if (!expectedTotal) return;
 
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, channel: "bot", productId, quantity, voucherCode, customerData, checkoutIntentId });
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, channel: "bot", productId, quantity, voucherCode, customerData, checkoutIntentId, expectedTotal });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
@@ -1277,6 +1432,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "usdt");
       return;
     }
     if (e instanceof ValidationError) {
@@ -1297,6 +1456,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -1428,6 +1588,8 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm");
+  if (!expectedTotal) return;
 
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
@@ -1442,6 +1604,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         voucherCode,
         customerData,
         checkoutIntentId,
+        expectedTotal,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
@@ -1449,6 +1612,10 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "confirm");
       return;
     }
     if (e instanceof ValidationError) {
@@ -1469,6 +1636,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // Based on order.totalAmount (what's actually sent to the gateway as
   // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
@@ -1633,6 +1801,8 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
   if (await refuseGatewayTapOverWalletCredit(ctx, productId, quantity)) return;
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm");
+  if (!expectedTotal) return;
 
   const checkoutIntentId =
     typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
@@ -1647,6 +1817,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         voucherCode,
         customerData,
         checkoutIntentId,
+        expectedTotal,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI });
@@ -1654,6 +1825,10 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "confirm");
       return;
     }
     if (e instanceof ValidationError) {
@@ -1674,6 +1849,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
@@ -1821,6 +1997,8 @@ async function settleDiscountCoveredOrder(
     voucherCode: string | null;
     customerData: string | null;
     checkoutIntentId?: string;
+    /** The IDR total the Complete Order screen showed — zero on this path. */
+    expectedTotal: ExpectedTotal;
   },
 ): Promise<Awaited<ReturnType<typeof completeOrderWithWalletCredit>>> {
   const created = await createOrderDirect(tx, {
@@ -1831,6 +2009,7 @@ async function settleDiscountCoveredOrder(
     voucherCode: args.voucherCode,
     customerData: args.customerData,
     checkoutIntentId: args.checkoutIntentId,
+    expectedTotal: args.expectedTotal,
   });
   if (!created) throw new ValidationError("error.order_not_found");
   return settleFullyDiscountedOrder(tx, created.id);
@@ -1889,6 +2068,10 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       return;
     }
   }
+  // Both tracks, and the discount-covered path, are quoted in IDR: the total
+  // before credit that the Complete Order screen showed.
+  const expectedTotal = await quoteForTap(ctx, productId, quantity, "confirm");
+  if (!expectedTotal) return;
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
   const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
@@ -1919,6 +2102,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
             rate: rate ?? undefined,
             customerData,
             checkoutIntentId,
+            expectedTotal,
           })
         : await settleDiscountCoveredOrder(tx, {
             user: { id: user.id, role: user.role },
@@ -1927,6 +2111,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
             voucherCode,
             customerData,
             checkoutIntentId,
+            expectedTotal,
           });
       // No external gateway call follows (unlike the buyNow<Rail> functions) —
       // this transaction IS the complete unit of "order created and paid", so
@@ -1951,6 +2136,10 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   } catch (e) {
     if (e instanceof DuplicateCheckoutIntentError) {
       await notifyDuplicateCheckout(ctx);
+      return;
+    }
+    if (e instanceof QuoteMismatchError) {
+      await showChangedQuote(ctx, e, productId, quantity, "confirm");
       return;
     }
     if (e instanceof ValidationError) {
@@ -1984,6 +2173,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
+  delete ctx.session.scratch[QUOTE_KEY];
 
   // A synchronous wallet checkout uses the same coordinator as gateway rails.
   // Its known checkout screen is already adopted inside the settlement commit.

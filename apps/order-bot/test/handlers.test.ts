@@ -83,6 +83,7 @@ import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, telegramError, type SentCall } from "./helpers/ctx";
+import { primeQuote } from "./helpers/quote";
 import {
   makeSettledAnchoredOrder as makeSettledAnchoredOrderShared,
   onlyBubbleEdit as onlyBubbleEditShared,
@@ -4321,6 +4322,7 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
     const { ctx, sink } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     const order = orders[0]!;
@@ -4386,6 +4388,7 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "tokopay_secret", "S1");
     vi.mocked(mockedCreateTokopayTransaction).mockRejectedValueOnce(new Error("gateway down"));
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     // No orphan PENDING_PAYMENT order left behind — it was cancelled, not
@@ -4428,6 +4431,7 @@ describe("checkout handlers", () => {
     // — so assert no NEW call was added, rather than "never called at all".
     const callsBefore = vi.mocked(mockedCreateTokopayTransaction).mock.calls.length;
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     // The bot never called TokoPay a second time for this order.
@@ -4451,6 +4455,7 @@ describe("checkout handlers", () => {
     const { ctx, sink } = customerCtx({
       session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
     });
+    await primeQuote(ctx, sample.product.id, 2);
     await checkout.buyNowTokopay(ctx, sample.product.id, 2); // 10.00, SAVE10 = 10% -> 1
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     expect(new Decimal(order.discountAmount).toString()).toBe("1");
@@ -4472,6 +4477,7 @@ describe("checkout handlers", () => {
     const { ctx } = customerCtx({
       session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
@@ -4485,6 +4491,7 @@ describe("checkout handlers", () => {
     const { ctx } = customerCtx({
       session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
@@ -4495,11 +4502,13 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
     const first = customerCtx({ callbackData: "v1:payq:1:1" });
+    await primeQuote(first.ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(first.ctx, sample.product.id, 1);
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
 
     // Second tap — same user, same product, same rail, immediately after.
     const second = customerCtx({ callbackData: "v1:payq:1:1" });
+    await primeQuote(second.ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(second.ctx, sample.product.id, 1);
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1); // still just the one order
     const alert = calls(second.sink, "answerCallbackQuery").find(
@@ -4521,6 +4530,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other1@x.com:pw"]);
 
     const first = customerCtx({ callbackData: "v1:payq:1:1" });
+    await primeQuote(first.ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(first.ctx, sample.product.id, 1);
     // The shared TokoPay mock always resolves the same trxId; give the 2nd
     // order a distinct one so its paymentRef cache write doesn't collide with
@@ -4529,6 +4539,7 @@ describe("checkout handlers", () => {
       trxId: "TP-TEST-2", payUrl: null, qrLink: "https://x/qr2.png", qrString: "001", totalBayar: "100",
     });
     const second = customerCtx({ callbackData: "v1:payq:2:1" });
+    await primeQuote(second.ctx, other.id, 1);
     await checkout.buyNowTokopay(second.ctx, other.id, 1);
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(2);
@@ -4584,6 +4595,7 @@ describe("checkout handlers", () => {
       callbackData: "v1:payq:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     // No second order — the collision was refused, not raced through.
@@ -4632,6 +4644,7 @@ describe("checkout handlers", () => {
       callbackData: "v1:payx:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowInternal(ctx, sample.product.id, 1);
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
@@ -4670,6 +4683,7 @@ describe("checkout handlers", () => {
       callbackData: "v1:payb:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowBybit(ctx, sample.product.id, 1);
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
@@ -4708,6 +4722,7 @@ describe("checkout handlers", () => {
       callbackData: "v1:paybc:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
@@ -4753,6 +4768,7 @@ describe("checkout handlers", () => {
       callbackData: `v1:walletpay:${sample.product.id}:1`,
       session: { ...userSession(), scratch: { useWalletIdr: true, checkoutIntentId } },
     });
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
 
     // No second order…
@@ -4784,6 +4800,7 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx, sink } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowInternal(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -4828,6 +4845,7 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"]);
 
     const { ctx } = customerCtx();
+    await primeQuote(ctx, denom.id, 1);
     await checkout.buyNowInternal(ctx, denom.id, 1);
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -4920,6 +4938,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowBybit(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -4937,6 +4956,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -4952,6 +4972,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowNowpayments(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -4966,6 +4987,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
     await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
     const { ctx } = customerCtx();
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -5191,6 +5213,7 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
       session: { ...userSession(), scratch: { useWalletIdr: true } },
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await routeCallback(ctx);
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
@@ -5249,6 +5272,7 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
       session: { ...userSession(), scratch: { useWalletUsdt: true } },
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await routeCallback(ctx);
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
@@ -5327,6 +5351,7 @@ describe("gateway rail tapped with a stale wallet-credit flag", () => {
       session: { ...userSession(), scratch: { useWalletUsdt: true } },
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowInternal(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
@@ -5347,6 +5372,7 @@ describe("gateway rail tapped with a stale wallet-credit flag", () => {
       session: { ...userSession(), scratch: { useWalletIdr: true } },
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
@@ -6978,6 +7004,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
       telegramCallsAtTrigger = sink.length;
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
 
     const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
@@ -6999,6 +7026,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
       session: { ...userSession(), menuMsgId: 888, scratch: { useWalletIdr: true, customerData: provider === "DIGIFLAZZ" ? DIGIFLAZZ_CUSTOMER_DATA : undefined } },
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
@@ -7024,6 +7052,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
       session: { ...userSession(), scratch: { useWalletIdr: true } },
     });
 
+    await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
 
     const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
@@ -7042,6 +7071,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     // the bot's generic error reply.
     const tick = vi.spyOn(FulfillmentMessageWorker.prototype, "tick").mockRejectedValue(new Error("database unavailable"));
     try {
+      await primeQuote(ctx, sample.product.id, 1);
       await expect(checkout.completeOrderWithWallet(ctx, sample.product.id, 1)).resolves.toBeUndefined();
       expect(tick).toHaveBeenCalledTimes(2);
     } finally {

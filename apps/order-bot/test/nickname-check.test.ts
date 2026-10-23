@@ -40,6 +40,7 @@ import {
   assertNoFunctionProps,
   type SentCall,
 } from "./helpers/ctx";
+import { primeQuote } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
@@ -516,6 +517,7 @@ describe("buyNowTokopay — nickname customerData threading", () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
     const customerData = JSON.stringify([{ target: "GID-999", nickname: "ThreadedPlayer" }]);
     const { ctx } = customerCtx({ session: { ...userSession(), scratch: { customerData } } });
+    await primeQuote(ctx, denom.id, 1);
 
     await checkout.buyNowTokopay(ctx, denom.id, 1);
 

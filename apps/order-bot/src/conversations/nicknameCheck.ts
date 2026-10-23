@@ -20,7 +20,7 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
 }
 
 export function clearPlayerInputScratch(ctx: MyContext): void {
-  for (const key of ["customerData", "customerInputOwner", "pendingInfoProductId", "pendingInfoQuantity", "pendingNicknameProductId", "pendingNicknameQuantity", "prefilledCustomerDataUnit", "checkoutIntentId"]) delete ctx.session.scratch[key];
+  for (const key of ["customerData", "customerInputOwner", "pendingInfoProductId", "pendingInfoQuantity", "pendingNicknameProductId", "pendingNicknameQuantity", "prefilledCustomerDataUnit", "checkoutIntentId", "quotedTotalIdr"]) delete ctx.session.scratch[key];
 }
 
 export async function confirmCustomerInputs(conversation: MyConversation, ctx: MyContext, productId: number, quantity: number, fields: AdditionalField[], answers: Array<Record<string, string>>): Promise<void> {

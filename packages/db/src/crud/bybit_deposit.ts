@@ -25,7 +25,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { ServiceChannel } from "@app/core/services";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
+import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder, type ExpectedTotal } from "./orders";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
@@ -128,6 +128,10 @@ export async function createBybitOrder(
      * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
      * contract this enforces. */
     checkoutIntentId?: string | null;
+    /** The IDR total the buyer was shown (A6) — forwarded to createOrderDirect,
+     * which refuses with QuoteMismatchError before anything is written when the
+     * server's price no longer matches it. Absent: no quote check, as before. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;

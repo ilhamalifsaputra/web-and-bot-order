@@ -45,6 +45,7 @@ import {
   ORDER_USER_SELECT,
   withoutDeliveredContent,
   type SettleResult,
+  type ExpectedTotal,
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
@@ -159,6 +160,10 @@ export async function createInternalOrder(
      * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
      * contract this enforces. */
     checkoutIntentId?: string | null;
+    /** The IDR total the buyer was shown (A6) — forwarded to createOrderDirect,
+     * which refuses with QuoteMismatchError before anything is written when the
+     * server's price no longer matches it. Absent: no quote check, as before. */
+    expectedTotal?: ExpectedTotal | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;

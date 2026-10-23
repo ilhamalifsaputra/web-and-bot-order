@@ -1,8 +1,17 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, bulkAddStock, replaceTiers, setTieredPricingEnabled, MAX_CART_ORDER_UNITS } from "@app/db";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The TokoPay rail's gateway call, so a payment tap can complete without HTTP.
+vi.mock("@app/core/payments/tokopay", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+  createTransaction: vi.fn().mockResolvedValue({ trxId: "TP-TEST", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: "100" }),
+}));
+
+import { prisma, bulkAddStock, replaceTiers, setTieredPricingEnabled, setSetting, MAX_CART_ORDER_UNITS } from "@app/db";
+import { Decimal } from "@app/core/money";
+import * as checkout from "../src/handlers/checkout";
 import { CategoryGroup } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, type SentCall } from "./helpers/ctx";
@@ -316,5 +325,77 @@ describe("caption limit", () => {
     expect(text).toBe(`${"A".repeat(10)}\n\n${"B".repeat(10)}\n\nd`);
     expect(fitSections([{ text: "A".repeat(50) }, { text: "B", dropRank: 1 }], 10)).toBe("A".repeat(50));
     expect(fitSections([{ text: "short" }, { text: "" }, { text: "x", dropRank: 1 }], 100)).toBe("short\n\nx");
+  });
+});
+
+describe("the payment tap is bound to the total the confirmation showed", () => {
+  const BUBBLE = { message_id: 910, chat: { id: 42, type: "private" }, date: 0 };
+
+  async function enableTokopay() {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+  }
+
+  it("a tier edited between the confirmation and the pay tap redraws the same bubble with the new price and charges nothing", async () => {
+    await enableTokopay();
+    await giveTiers();
+    const shared = { lang: "en", ...session() } as SessionData;
+
+    const confirm = makeCtx({ sharedSession: shared, callbackData: `v1:buy:${sample.product.id}:3`, cbMessage: BUBBLE });
+    await checkout.showOrderConfirmation(confirm.ctx, sample.product.id, 3);
+    expect(renderedBody(confirm.sink)).toContain("Rp24,000");
+
+    // The admin deepens the 3+ tier to 30% while the buyer reads the summary.
+    await replaceTiers(
+      prisma,
+      sample.product.id,
+      [
+        { minQuantity: 3, discountType: "PERCENTAGE", discountValue: "30" },
+        { minQuantity: 5, discountType: "FIXED_UNIT_PRICE", discountValue: "6000" },
+      ],
+      { adminId: null },
+    );
+
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 3);
+    expect(await prisma.order.count()).toBe(0);
+    expect(budget(tap.sink)).toEqual({ ...NONE, editMessageText: 1 });
+    const redrawn = renderedBody(tap.sink);
+    expect(redrawn).toContain("The price changed");
+    expect(redrawn).toContain("Rp21,000");
+    expect(redrawn).not.toContain("Rp24,000");
+
+    // Confirming again charges the new, now-shown figure.
+    const again = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(again.ctx, sample.product.id, 3);
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("21000");
+    expect(shared.scratch.shownQuote).toBeUndefined();
+  });
+
+  it("an unchanged price goes straight through to the order", async () => {
+    await enableTokopay();
+    await giveTiers();
+    const shared = { lang: "en", ...session() } as SessionData;
+    const confirm = makeCtx({ sharedSession: shared, callbackData: `v1:buy:${sample.product.id}:3`, cbMessage: BUBBLE });
+    await checkout.showOrderConfirmation(confirm.ctx, sample.product.id, 3);
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 3);
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("24000");
+    expect(JSON.stringify(tap.sink)).not.toContain("The price changed");
+  });
+
+  it("a quote shown for another quantity does not bind this tap", async () => {
+    await enableTokopay();
+    await giveTiers();
+    const shared = { lang: "en", ...session() } as SessionData;
+    const confirm = makeCtx({ sharedSession: shared, callbackData: `v1:buy:${sample.product.id}:3`, cbMessage: BUBBLE });
+    await checkout.showOrderConfirmation(confirm.ctx, sample.product.id, 3);
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:2`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 2);
+    expect(await prisma.order.count()).toBe(1);
   });
 });

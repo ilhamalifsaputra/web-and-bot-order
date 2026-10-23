@@ -9,12 +9,15 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   createTransaction: vi.fn().mockResolvedValue({ trxId: "TP-TEST", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: "100" }),
 }));
 
-import { prisma, bulkAddStock, replaceTiers, setTieredPricingEnabled, setSetting, MAX_CART_ORDER_UNITS } from "@app/db";
+import { prisma, bulkAddStock, replaceTiers, setTieredPricingEnabled, setSetting, upsertUser, upsertBulkPricing, MAX_CART_ORDER_UNITS } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { UserRole } from "@app/core/enums";
+import { formatIdr } from "@app/core/formatters";
+import { handleAdminCallback } from "../src/handlers/admin";
 import * as checkout from "../src/handlers/checkout";
 import { CategoryGroup } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { resetBotIdentity } from "@app/core/runtime";
@@ -325,6 +328,55 @@ describe("caption limit", () => {
     expect(text).toBe(`${"A".repeat(10)}\n\n${"B".repeat(10)}\n\nd`);
     expect(fitSections([{ text: "A".repeat(50) }, { text: "B", dropRank: 1 }], 10)).toBe("A".repeat(50));
     expect(fitSections([{ text: "short" }, { text: "" }, { text: "x", dropRank: 1 }], 100)).toBe("short\n\nx");
+  });
+});
+
+describe("bot admin bulk pricing screen", () => {
+  async function adminCtx(callbackData: string) {
+    const admin = await upsertUser(prisma, { telegramId: 999, username: "boss", fullName: "Admin Boss" });
+    return makeCtx({
+      from: { id: 999, username: "boss" },
+      callbackData,
+      session: {
+        lang: "en",
+        scratch: {},
+        dbUser: { id: admin.id, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "ADMINREF", walletBalance: "0", preferredCurrency: null },
+      },
+    });
+  }
+
+  function buttons(sink: SentCall[]): string[] {
+    return (lastMarkup(sink)?.inline_keyboard ?? []).flat().map((b) => (b as { callback_data: string }).callback_data);
+  }
+
+  it("a multi-tier set is shown read-only with formatIdr amounts and no Update/Delete", async () => {
+    await giveTiers();
+    const { ctx, sink } = await adminCtx(`v1:adm:bulk:menu:${sample.product.id}`);
+    await handleAdminCallback(ctx, ctx.callbackQuery!.data!.split(":"));
+    const body = renderedBody(sink);
+    expect(body).toContain("<b>3+</b> units: 20% off");
+    expect(body).toContain(`<b>5+</b> units: ${formatIdr("6000")} per unit`);
+    expect(body).toContain("Status: 🟢 Active");
+    expect(body).toContain("web admin");
+    expect(buttons(sink)).not.toContain(`v1:adm:bulk:new:${sample.product.id}`);
+    expect(buttons(sink)).not.toContain(`v1:adm:bulk:del:${sample.product.id}`);
+  });
+
+  it("a stale Delete tap on a multi-tier set keeps every tier", async () => {
+    await giveTiers();
+    const { ctx, sink } = await adminCtx(`v1:adm:bulk:del:${sample.product.id}`);
+    await handleAdminCallback(ctx, ctx.callbackQuery!.data!.split(":"));
+    expect(JSON.stringify(calls(sink, "answerCallbackQuery"))).toContain("managed in the web admin");
+    expect(await prisma.bulkPricingTier.count({ where: { denominationId: sample.product.id } })).toBe(2);
+  });
+
+  it("a single percentage rule keeps the editable screen", async () => {
+    await upsertBulkPricing(prisma, { denominationId: sample.product.id, minQuantity: 1, discountPercent: "5" });
+    const { ctx, sink } = await adminCtx(`v1:adm:bulk:menu:${sample.product.id}`);
+    await handleAdminCallback(ctx, ctx.callbackQuery!.data!.split(":"));
+    expect(renderedBody(sink)).toContain("Min. quantity: <b>1 pcs</b>");
+    expect(buttons(sink)).toContain(`v1:adm:bulk:new:${sample.product.id}`);
+    expect(buttons(sink)).toContain(`v1:adm:bulk:del:${sample.product.id}`);
   });
 });
 

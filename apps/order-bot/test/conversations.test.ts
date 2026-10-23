@@ -18,7 +18,10 @@ import {
   createVoucher,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
+  listTiers,
+  replaceTiers,
 } from "@app/db";
+import { Decimal } from "@app/core/money";
 import { DisplayCurrency, NotificationEvent, OrderStatus, SenderType, StockActorType, StockEventType, TicketStatus, UserRole, VoucherType } from "@app/core/enums";
 import { invalidateRateCache } from "../src/util/rate";
 import { coreT } from "../src/util/i18n";
@@ -887,6 +890,48 @@ describe("admin conversations", () => {
     await bulkPricingConversation(conv.asMyConversation(), entry);
     expect(sink.filter((c) => c.args.some((a) => typeof a === "string" && a.includes(t(entry, "admin.bulk_err_pct")))).length).toBe(1);
     expect(await prisma.bulkPricing.findUnique({ where: { productId: sample.product.id } })).toBeNull();
+  });
+
+  // Same rule as the engine and upsertBulkPricing: a whole number of at least 1.
+  it.each([1, 2, 4])("bulkPricing: a minimum quantity of %s is accepted and written as one percentage tier", async (minQty) => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: String(minQty) }), msg(sink, { text: "10" })]);
+    await bulkPricingConversation(conv.asMyConversation(), entry);
+    expect((await prisma.bulkPricing.findUnique({ where: { productId: sample.product.id } }))!.minQuantity).toBe(minQty);
+    const tiers = await listTiers(prisma, sample.product.id);
+    expect(tiers.map((x) => [x.minQuantity, x.discountType, new Decimal(x.discountValue).toString()])).toEqual([[minQty, "PERCENTAGE", "10"]]);
+    expect((await prisma.denomination.findUnique({ where: { id: sample.product.id } }))!.tieredPricingEnabled).toBe(true);
+  });
+
+  it.each(["0", "-3", "5abc", "2.5", "abc", "99999999999999999999"])("bulkPricing: a minimum quantity of %s gets the minimum error and creates no rule", async (typed) => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: typed }), msg(sink, { text: "/cancel" })]);
+    await bulkPricingConversation(conv.asMyConversation(), entry);
+    expect(sink.filter((c) => c.args.some((a) => typeof a === "string" && a.includes(t(entry, "admin.bulk_err_min")))).length).toBe(1);
+    expect(await prisma.bulkPricing.findUnique({ where: { productId: sample.product.id } })).toBeNull();
+  });
+
+  it("bulkPricing: refuses to overwrite a multi-tier set built in the web admin", async () => {
+    await replaceTiers(
+      prisma,
+      sample.product.id,
+      [
+        { minQuantity: 3, discountType: "PERCENTAGE", discountValue: "10" },
+        { minQuantity: 10, discountType: "FIXED_UNIT_PRICE", discountValue: "3" },
+      ],
+      { adminId: null },
+    );
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
+    const conv = new FakeConversation([]);
+    await bulkPricingConversation(conv.asMyConversation(), entry);
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers).toHaveLength(1);
+    expect(JSON.stringify(answers[0]!.args)).toContain(t(entry, "admin.bulk_tiers_web_only"));
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
+    expect((await listTiers(prisma, sample.product.id)).map((x) => x.minQuantity)).toEqual([3, 10]);
   });
 
   it("ticketReply: saves an ADMIN reply, flips status, DMs the customer", async () => {

@@ -39,6 +39,7 @@ import {
   markStockDead,
   getBulkPricingForDenomination,
   deleteBulkPricing,
+  listTiers,
   listOpenTickets,
   countOpenTickets,
   closeTicket,
@@ -50,6 +51,7 @@ import { BANNER_FILEID_KEY } from "../util/banner";
 import { t } from "../util/i18n";
 import { esc, formatIdr, formatUsdt, mixedAmount } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
+import { adminTierLines, botCanEditTiers } from "../util/adminTiers";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
 
@@ -586,6 +588,18 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;
   }
+  const tiers = await listTiers(prisma, productId);
+  if (!botCanEditTiers(tiers)) {
+    // Several tiers or a fixed-amount tier: the web admin's tier editor owns
+    // this set. Show it read-only, with no Update/Delete that would replace it.
+    const text = t(ctx, "admin.bulk_tiers_readonly", {
+      name: esc(p.name),
+      status: t(ctx, p.tieredPricingEnabled ? "admin.bulk_status_on" : "admin.bulk_status_off"),
+      tiers: adminTierLines(tiers, (key, args) => t(ctx, key, args)),
+    });
+    await adminEdit(ctx, text, akb.bulkPricingKb(productId, false, lang, { readOnly: true }));
+    return;
+  }
   const rule = await getBulkPricingForDenomination(prisma, productId);
   let text: string;
   if (rule) {
@@ -603,6 +617,13 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
 }
 
 async function deleteBulkPricingHandler(ctx: MyContext, productId: number): Promise<void> {
+  // A stale Delete tap from before the web admin added tiers the bot cannot
+  // express must not wipe them.
+  if (!botCanEditTiers(await listTiers(prisma, productId))) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.bulk_tiers_web_only"), show_alert: true });
+    await showBulkPricing(ctx, productId);
+    return;
+  }
   const adminTg = ctx.from!.id;
   const deleted = await prisma.$transaction(async (tx) => {
     const ok = await deleteBulkPricing(tx, productId);

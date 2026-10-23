@@ -8,6 +8,7 @@ export * from "./canonicalProduct";
 export * from "./datetime";
 export * from "./errors";
 export * from "./deliveryFields";
+export * from "./accountInput";
 export * from "./i18n";
 export * from "./logger";
 export * from "./formatters";

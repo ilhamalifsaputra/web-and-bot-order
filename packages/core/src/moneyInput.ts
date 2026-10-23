@@ -1,12 +1,12 @@
 /**
  * The one table that reads a money amount someone TYPED, shared by the order bot and admin server (through
- * `parseMoneyInput` in `packages/core/src/moneyFormat.ts`, which wraps the result in a Decimal) and the storefront
- * wallet top-up form.
+ * `parseMoneyInput` in `packages/core/src/moneyFormat.ts`, which wraps the result in a Decimal), the storefront
+ * wallet top-up form and the admin tier editor's live price preview.
  *
- * Dependency-free and browser-safe on purpose. The storefront client must not import `@app/core`
- * (scripts/check-frontend-boundaries.ts), so `apps/storefront/client/src/lib/moneyInput.ts` is a byte-identical
- * COPY of this file; `packages/core/src/moneyInput.test.ts` fails when the two differ. Edit this file, then copy
- * it over.
+ * Dependency-free and browser-safe on purpose. Neither React client may import `@app/core`
+ * (scripts/check-frontend-boundaries.ts), so `apps/storefront/client/src/lib/moneyInput.ts` and
+ * `apps/web-admin/client/src/lib/moneyInput.ts` are byte-identical COPIES of this file;
+ * `packages/core/src/moneyInput.test.ts` fails when either differs. Edit this file, then copy it over.
  */
 
 /** Drop every group separator, then turn the decimal separator (if any) into ".". */

@@ -65,12 +65,14 @@ import { anyMethodEnabled, defaultMethod, isIdrWalletSufficient, isUsdtWalletSuf
 import Skeleton from "../components/shop/Skeleton";
 import Stepper from "../components/shop/Stepper";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
+import { TierQtyLine } from "../components/shop/TierPricing";
+import { tierApplies } from "../components/shop/TierPricing.helpers";
 import Card from "../components/ui/Card";
 import { cn } from "../components/ui/cn";
 import Input from "../components/ui/Input";
 import Label from "../components/ui/Label";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
-import { humanError } from "../lib/errors";
+import { humanError, isQuoteChanged } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
 import { t } from "../lib/i18n";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
@@ -387,6 +389,10 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
   // fresh one is minted — in short, an unanswered attempt at the identical
   // request keeps its key, and every edit the buyer makes here (method,
   // voucher, guest email, info answers) starts a new one.
+  // Set when the server refused the last attempt because the total changed
+  // (409 error.quote_changed): the summary is re-priced and says so, and the
+  // buyer confirms the new figure with another tap. Nothing auto-resubmits.
+  const [quoteChanged, setQuoteChanged] = useState(false);
   const placeOrderMutation = useMutation({
     mutationFn: () =>
       idempotentPost<PlaceOrderResponse>("/api/v1/checkout", {
@@ -396,7 +402,16 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
         // Sent only in guest mode. The server treats it as the guest account's
         // contact address and ignores it entirely for a signed-in buyer.
         guest_email: page?.is_guest ? guestEmail.trim() : undefined,
+        // Quote binding: the total this summary shows, in the currency the
+        // chosen method charges (USDT credit is debited in USDT; every other
+        // method is compared with the IDR total). A different live total —
+        // a volume tier, price or voucher changed since — is refused with a
+        // 409 before any order exists. The figure is part of the request body,
+        // so a confirmed retry at a new total always carries a fresh
+        // Idempotency-Key (api/idempotency.ts).
+        expected_total: method === "wallet_usdt" ? totals.total_usdt ?? undefined : totals.total,
       }),
+    onMutate: () => setQuoteChanged(false),
     onSuccess: (resp) => {
       // The server mails a guest their order code and reports, in
       // `email_sent`, whether the mail actually went out (SMTP is optional per
@@ -429,7 +444,16 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
       else navigate(resp.pay_url);
     },
     onError: (err) => {
-      setPlaceOrderError(err);
+      if (isQuoteChanged(err)) {
+        // No order was created. Re-price the summary through the same preview
+        // (with the voucher as typed, exactly what the order would apply) and
+        // ask for another tap — never a duplicate order, never a silent charge.
+        setPlaceOrderError(null);
+        setQuoteChanged(true);
+        previewMutation.mutate(voucherInput);
+      } else {
+        setPlaceOrderError(err);
+      }
       // Guest checkout establishes the session BEFORE it tries to place the
       // order, and establishing it migrates the cookie cart into CartItem rows
       // and clears the cookie (routes/auth.ts establishSession). That ordering
@@ -467,7 +491,7 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
 
   // Wallet-credit radios — only offered when credit fully covers the live
   // total (post-voucher); hidden (not disabled) otherwise.
-  const { infoItem, placeOrderBlocked, placeOrderDisabled, checkoutHint } = checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation });
+  const { infoItem, placeOrderBlocked, placeOrderDisabled, checkoutHint } = checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation, repricing: quoteChanged && previewMutation.isPending });
 
   // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
   // ever at most one manual_with_info line.
@@ -496,7 +520,7 @@ function CheckoutForm({ data }: { data: CheckoutData }) {
         <Stepper step={2} />
         <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
 
-        <CheckoutPaymentForm checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} />
+        <CheckoutPaymentForm checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} quoteChanged={quoteChanged} />
       </div>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
@@ -529,7 +553,11 @@ function CheckoutBuyerDetails({ page, guestEmail, setGuestEmail, placeOrderError
       <div className="card card-pad space-y-3">
         {page.items.map((item) => item.canonical && <div key={item.denomination_id} className="break-words [overflow-wrap:anywhere]">
           <p className="font-semibold">{canonicalPurchaseName(item.canonical)}</p>
-          <p className="text-sm text-pine">{item.canonical.formattedPrice} × {item.qty}</p>
+          {tierApplies(item.pricing) ? (
+            <TierQtyLine pricing={item.pricing} />
+          ) : (
+            <p className="text-sm text-pine">{item.canonical.formattedPrice} × {item.qty}</p>
+          )}
         </div>)}
       </div>
     )}
@@ -549,7 +577,8 @@ function CheckoutBuyerDetails({ page, guestEmail, setGuestEmail, placeOrderError
   </div>);
 }
 
-function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation }: {
+function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation, quoteChanged }: {
+  quoteChanged: boolean;
   checkoutHint: string | null;
   placeOrderError: unknown;
   errorBannerRef: import("react").Ref<HTMLDivElement>;
@@ -583,7 +612,7 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
     // plain utility, not a re-derived env()/calc() of its own.
     className={cn("grid gap-6 items-start", !isDesktop && "pb-28")}
   >
-    <CheckoutBuyerDetails page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} />
+    <CheckoutBuyerDetails page={{ ...page, items: totals.items }} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} />
 
     {/* Use live totals so voucher discounts update wallet eligibility. */}
     <div>
@@ -609,6 +638,7 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
         onSubmit={() => placeOrderMutation.mutate()}
         submitPending={placeOrderMutation.isPending}
         backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
+        quoteChanged={quoteChanged}
       />
     </div>
   </form>);
@@ -643,12 +673,15 @@ function CheckoutMobileTotal({ checkoutHint, isDesktop, method, totals, ctx, bar
   ));
 }
 
-function checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation }: {
+function checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation, repricing }: {
   totals: CheckoutData;
   page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
   answers: Record<string, string>[];
   guestEmail: string;
   placeOrderMutation: import("@tanstack/react-query").UseMutationResult<PlaceOrderResponse, Error, void, unknown>;
+  /** The summary is being re-priced after a changed quote — the figures on
+   * screen are not the ones to confirm yet. */
+  repricing: boolean;
 }) {
   const idrWalletSufficient = isIdrWalletSufficient(totals);
 
@@ -664,7 +697,7 @@ function checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderM
 
   const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
 
-  const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
+  const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending || repricing;
   const checkoutHint = !infoValid ? t("web.checkout_account_hint")
     : !guestEmailValid ? t("web.checkout_contact_hint")
     : !anyMethod ? t("web.checkout_payment_hint") : null;

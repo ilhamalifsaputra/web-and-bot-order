@@ -737,6 +737,8 @@ describe("InstantBuyPage", () => {
         voucher_code: "",
         customer_data: [{ user_id: "1234567", zone_id: "1111" }],
         guest_email: undefined,
+        // Quote binding: the total the summary showed.
+        expected_total: "20000",
       }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
     expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
@@ -1355,5 +1357,85 @@ describe("InstantBuyPage", () => {
       const denomList = heading.nextElementSibling as HTMLElement;
       expect(denomList.querySelectorAll("label.denom-card svg")).toHaveLength(0);
     });
+  });
+});
+
+describe("InstantBuyPage — volume tiers (Game Top Up) and the changed-price confirmation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.documentElement.lang = "en";
+  });
+
+  const tierPricing = {
+    quantity: 1,
+    base_unit_price: "20000",
+    final_unit_price: "18000",
+    original_subtotal: "20000",
+    final_subtotal: "18000",
+    savings: "2000",
+    applied_tier: { min_quantity: 1, discount_type: "PERCENTAGE" as const, discount_value: "10" },
+  };
+  const tieredPreview: CheckoutData = {
+    ...checkoutData,
+    items: [{ ...checkoutData.items[0]!, pricing: tierPricing }],
+    bulk_discount: "2000",
+    total: "18000",
+  };
+  const tieredProduct: ProductPageData = {
+    ...productData,
+    denominations: productData.denominations.map((d) => ({
+      ...d,
+      tiers: [{ min_quantity: 1, discount_type: "PERCENTAGE" as const, discount_value: "10" }],
+      tier_ladder: [{ min_quantity: 1, discount_type: "PERCENTAGE" as const, discount_value: "10", unit_price: "18000" }],
+    })),
+  };
+
+  it("keeps the single-unit game flow: the server's tier line in the summary, no quantity field and no ladder", async () => {
+    renderInstantBuy({ product: tieredProduct, checkout: tieredPreview });
+    await screen.findByText("Summary");
+    const summary = document.getElementById("checkout-summary")!;
+    expect(within(summary).getByText("−Rp2,000")).toBeInTheDocument();
+    expect(within(summary).getByTestId("tier-line-note")).toHaveTextContent("1 × Rp18,000");
+    expect(screen.queryByTestId("tier-ladder")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("quantity-quote")).not.toBeInTheDocument();
+    expect(document.querySelector('label[for="qty"]')).toBeNull();
+    expect((apiGet as Mock).mock.calls.some((c) => String(c[0]).startsWith("/api/v1/pricing/quote"))).toBe(false);
+  });
+
+  it("on 409 quote_changed: re-prices with the applied voucher, says so, and only a second tap orders at the new total", async () => {
+    renderInstantBuy({ product: tieredProduct, checkout: tieredPreview });
+    await screen.findByText("Summary");
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+    const repriced: CheckoutData = {
+      ...tieredPreview,
+      bulk_discount: "1000",
+      total: "19000",
+      items: [{ ...tieredPreview.items[0]!, pricing: { ...tierPricing, final_unit_price: "19000", final_subtotal: "19000", savings: "1000" } }],
+    };
+    (apiPost as Mock).mockImplementation(async (path: string, _body: unknown, options?: { onResponse?: (s: number) => void }) => {
+      if (path === "/api/v1/topup/preview") return repriced;
+      options?.onResponse?.(409);
+      throw Object.assign(new Error("error.quote_changed"), { status: 409 });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    expect(await screen.findByTestId("quote-changed")).toHaveTextContent("The price changed");
+    await waitFor(() => expect(within(document.getElementById("checkout-summary")!).getByText("−Rp1,000")).toBeInTheDocument());
+    const orderCalls = () => (apiPost as Mock).mock.calls.filter((c) => c[0] === "/api/v1/topup/order");
+    expect(orderCalls()).toHaveLength(1);
+    expect(orderCalls()[0]![1]).toMatchObject({ expected_total: "18000" });
+    expect(screen.queryByText("pay-page-stub")).not.toBeInTheDocument();
+    expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 1, qty: 1, voucher_code: "" });
+
+    (apiPost as Mock).mockImplementation(async (_path: string, _body: unknown, options?: { onResponse?: (s: number) => void }) => {
+      options?.onResponse?.(201);
+      return { order_code: "ORD9", pay_url: "/checkout/ORD9/pay" };
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Buy now/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
+    expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
+    expect(orderCalls()).toHaveLength(2);
+    expect(orderCalls()[1]![1]).toMatchObject({ expected_total: "19000" });
   });
 });

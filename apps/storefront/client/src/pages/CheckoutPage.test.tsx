@@ -246,6 +246,8 @@ describe("CheckoutPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
         method: "binance",
         voucher_code: "",
+        // Quote binding: the total the summary showed.
+        expected_total: "158000",
       }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
     expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
@@ -531,6 +533,7 @@ describe("CheckoutPage", () => {
             { game_id: "unit1game", email: "unit1@mail.com" },
             { game_id: "unit2game", email: "unit2@mail.com" },
           ],
+          expected_total: "158000",
         }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
     });
@@ -640,6 +643,7 @@ describe("CheckoutPage", () => {
           method: "binance",
           voucher_code: "",
           customer_data: [{ game_id: "abc" }],
+          expected_total: "158000",
         }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
     });
@@ -768,6 +772,7 @@ describe("CheckoutPage", () => {
             method: "binance",
             voucher_code: "",
             guest_email: "guest@example.com",
+            expected_total: "158000",
           }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
         );
         // Full page load, not navigate(): the shell has to re-render so the
@@ -1076,6 +1081,7 @@ describe("CheckoutPage", () => {
         expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
           method: "wallet_idr",
           voucher_code: "",
+          expected_total: "158000",
         }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
       expect(await screen.findByText("order-detail-stub")).toBeInTheDocument();
@@ -1093,6 +1099,8 @@ describe("CheckoutPage", () => {
         expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
           method: "wallet_usdt",
           voucher_code: "",
+          // USDT credit is bound to the USDT figure the summary showed.
+          expected_total: "9.88",
         }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
       expect(await screen.findByText("order-detail-stub")).toBeInTheDocument();
@@ -1248,5 +1256,90 @@ describe("CheckoutPage — Idempotency-Key", () => {
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout/voucher/preview", { voucher_code: "SAVE10" }),
     );
+  });
+});
+
+describe("CheckoutPage — volume tiers and the changed-price confirmation", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  const tieredItem = {
+    denomination_id: 7,
+    delivery_type: "manual",
+    additional_fields: [],
+    qty: 5,
+    canonical: canonicalMonth(7, "Tier Plan"),
+    pricing: {
+      quantity: 5,
+      base_unit_price: "10000",
+      final_unit_price: "6000",
+      original_subtotal: "50000",
+      final_subtotal: "30000",
+      savings: "20000",
+      applied_tier: { min_quantity: 5, discount_type: "FIXED_UNIT_PRICE" as const, discount_value: "6000" },
+    },
+  };
+  const tiered: CheckoutData = {
+    ...checkoutData,
+    items: [tieredItem],
+    subtotal: "50000",
+    bulk_discount: "20000",
+    total: "30000",
+    total_usdt: "1.88",
+  };
+
+  function quoteChangedError() {
+    return Object.assign(new Error("error.quote_changed"), { status: 409 });
+  }
+
+  it("shows each tier-priced line at the server's unit price beside the quantity deal row", async () => {
+    renderCheckout(() => tiered);
+    await screen.findByRole("heading", { name: "Checkout" });
+    const summary = document.getElementById("checkout-summary")!;
+    expect(within(summary).getByText("Quantity deal")).toBeInTheDocument();
+    expect(within(summary).getByText("−Rp20,000")).toBeInTheDocument();
+    const note = within(summary).getByTestId("tier-line-note");
+    expect(note).toHaveTextContent("5 × Rp6,000");
+    expect(note).toHaveTextContent("Rp30,000");
+    expect(note).toHaveTextContent("Quantity deal: you save Rp20,000");
+    // The struck pre-tier unit is read out as "Was …", not as a second price.
+    expect(within(note).getByText("Was Rp10,000")).toHaveClass("sr-only");
+  });
+
+  it("on 409 quote_changed: re-prices, says the price changed, creates nothing, and needs a second tap at the new total", async () => {
+    renderCheckout(() => tiered);
+    await screen.findByRole("heading", { name: "Checkout" });
+    await waitFor(() => expect(screen.getByRole("radio", { name: /BINANCE/ })).toBeChecked());
+    const repriced: CheckoutData = { ...tiered, bulk_discount: "15000", total: "35000", total_usdt: "2.19" };
+    (apiPost as Mock).mockImplementation(async (path: string, _body: unknown, options?: { onResponse?: (s: number) => void }) => {
+      if (path === "/api/v1/checkout/voucher/preview") return repriced;
+      options?.onResponse?.(409);
+      throw quoteChangedError();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+    expect(await screen.findByTestId("quote-changed")).toHaveTextContent("The price changed");
+    await waitFor(() => expect(within(document.getElementById("checkout-summary")!).getAllByText("Rp35,000").length).toBeGreaterThan(0));
+    // No navigation, no generic error banner, exactly one order attempt so far.
+    expect(screen.queryByText("pay-page-stub")).not.toBeInTheDocument();
+    expect(screen.queryByText("error.quote_changed")).not.toBeInTheDocument();
+    const checkoutCalls = () => (apiPost as Mock).mock.calls.filter((c) => c[0] === "/api/v1/checkout");
+    expect(checkoutCalls()).toHaveLength(1);
+    expect(checkoutCalls()[0]![1]).toMatchObject({ expected_total: "30000" });
+
+    (apiPost as Mock).mockImplementation(async (path: string, _body: unknown, options?: { onResponse?: (s: number) => void }) => {
+      options?.onResponse?.(201);
+      return { order_code: "ORD555", pay_url: "/checkout/ORD555/pay" } satisfies PlaceOrderResponse;
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
+    expect(checkoutCalls()).toHaveLength(2);
+    expect(checkoutCalls()[1]![1]).toMatchObject({ expected_total: "35000" });
+    // A confirmed new total is a new request: it never reuses the refused attempt's key.
+    const keys = checkoutCalls().map((c) => (c[2] as { idempotencyKey: string }).idempotencyKey);
+    expect(keys[1]).not.toBe(keys[0]);
   });
 });

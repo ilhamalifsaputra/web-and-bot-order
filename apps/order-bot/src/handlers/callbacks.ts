@@ -156,9 +156,12 @@ const dispatchReview: DomainDispatcher = async (ctx, parts) => {
   // v1:rev:go|chg:<pid>:<qty> — the Game Top-up review screen. Each handler
   // answers a tap whose account data is gone or belongs to another quantity
   // with the stale-screen toast.
+  // Ids are plain decimal digits only: "1e3", "0x10", "12.0" or "-1" are a
+  // malformed (stale or forged) button, not another product.
   const action = parts[2];
-  const productId = Number(parts[3]);
-  const qty = Number(parts[4]);
+  const decimal = (s: string | undefined) => (s !== undefined && /^\d+$/.test(s) ? parseInt(s, 10) : NaN);
+  const productId = decimal(parts[3]);
+  const qty = decimal(parts[4]);
   if (!Number.isSafeInteger(productId) || !Number.isSafeInteger(qty) || qty < 1) {
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
   } else if (action === "go") await checkout.reviewContinue(ctx, productId, qty);

@@ -887,6 +887,15 @@ export function accountReviewKb(productId: number, qty: number, lang: string): I
   ]);
 }
 
+/** The review screen when the review is too large to show: Change details and
+ * Back only, never a Continue next to account data the buyer could not see. */
+export function accountReviewTooLargeKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.review_change_btn", lang), data: cb("rev", "chg", productId, qty) }],
+    [{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }],
+  ]);
+}
+
 /**
  * Auto USDT rails' waiting screen (Binance Internal, Bybit). 'Cancel Order' is
  * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves

@@ -634,6 +634,13 @@ type QuotedRender = ConfirmRender & { nonce: string };
  * Each call issues a fresh nonce, which retires the pay buttons of every older
  * render. Exported so a test that taps a pay button without rendering first can
  * record the quote that screen would have (apps/order-bot/test/helpers/quote.ts).
+ *
+ * It is also the one gate of the Game Top-up review: every payment render
+ * (confirmation, USDT submenu, wallet menu, the end of a wizard or the voucher
+ * conversation, the re-render after a stale pay tap) comes through here, so
+ * account data the buyer has not yet confirmed on the review screen gets the
+ * review instead, and no quote is minted. The caller then sees null and draws
+ * nothing more.
  */
 export async function quoteConfirmation(
   ctx: MyContext,
@@ -642,7 +649,17 @@ export async function quoteConfirmation(
   rate: Decimal | null,
   loadedProduct?: CheckoutDenomination,
 ): Promise<QuotedRender | null> {
-  const r = await computeConfirmation(ctx, productId, quantity, rate, loadedProduct);
+  const product = loadedProduct ?? (await availableCheckoutDenomination(ctx, productId));
+  if (!product) {
+    clearQuote(ctx);
+    return null;
+  }
+  if (reviewPending(ctx, productId, quantity, product)) {
+    clearQuote(ctx);
+    await renderAccountReview(ctx, productId, quantity, product);
+    return null;
+  }
+  const r = await computeConfirmation(ctx, productId, quantity, rate, product);
   if (!r) {
     clearQuote(ctx);
     return null;
@@ -796,6 +813,26 @@ function reviewIsCurrent(ctx: MyContext, productId: number, quantity: number, pr
   );
 }
 
+/** Game Top-up account data the buyer has not yet confirmed on the review
+ *  screen: a payment render shows the review instead (quoteConfirmation). */
+function reviewPending(ctx: MyContext, productId: number, quantity: number, product: CheckoutDenomination): boolean {
+  const scratch = ctx.session.scratch;
+  return (
+    isGameTopupGroup(product.product.category.group) &&
+    typeof scratch.customerData === "string" &&
+    scratch.reviewShownFor !== inputOwnerOf(productId, quantity, product)
+  );
+}
+
+/**
+ * The longest review body, in characters of HTML, that is sent. Telegram
+ * allows 4096 characters of text; the HTML is never shorter than the text it
+ * renders, and a cut body (util/chat.ts truncateText) could split a tag or an
+ * entity, which Telegram refuses outright. A longer review is not cut: a
+ * short "too large" screen replaces it.
+ */
+const REVIEW_BODY_BUDGET = 3500;
+
 /**
  * The Game Top-up review screen: game (edition and region only when the
  * product has them and that browse level was not skipped), pack, quantity
@@ -855,20 +892,35 @@ export async function renderAccountReview(
       const label = esc((field.label as Record<string, string>)[lang] ?? field.label.en);
       lines.push(t(ctx, "checkout.review_field", { label, value: esc(value) }));
     }
-    // The lookup checks the first unit's account, so its result sits there.
+    // The lookup checks the first unit's account, so its result sits there,
+    // saying so when there are other units it did not check.
     if (i === 0) {
       const nickname = scratch.verifiedNickname;
+      let checked = false;
       if (scratch.nicknameCheck === "found" && typeof nickname === "string" && nickname) {
         lines.push(t(ctx, "checkout.review_nickname", { nickname: esc(nickname) }));
+        checked = true;
       } else if (scratch.nicknameCheck === "not_found") {
         lines.push(t(ctx, "checkout.review_not_found"));
+        checked = true;
       }
+      if (checked && quantity > 1) lines.push(t(ctx, "checkout.review_first_unit_only"));
     }
   });
 
-  lines.push("", t(ctx, "checkout.review_total", { total: prices.price(r.subtotalBeforeWallet) }) + prices.rateNotice(lang));
+  lines.push("");
+  // An applied voucher (or the reason one was just dropped) explains the
+  // total, as on the payment screen.
+  if (r.voucherLine) lines.push(r.voucherLine.trimEnd());
+  lines.push(t(ctx, "checkout.review_total", { total: prices.price(r.subtotalBeforeWallet) }) + prices.rateNotice(lang));
   lines.push("", t(ctx, "hint.review"));
-  await menuAnchor(ctx, lines.join("\n"), ckb.accountReviewKb(productId, quantity, lang));
+  const body = lines.join("\n");
+  if (body.length > REVIEW_BODY_BUDGET) {
+    // Fail closed: never truncated account data next to a live Continue.
+    await menuAnchor(ctx, t(ctx, "checkout.review_too_large"), ckb.accountReviewTooLargeKb(productId, quantity, lang));
+    return;
+  }
+  await menuAnchor(ctx, body, ckb.accountReviewKb(productId, quantity, lang));
 }
 
 /**
@@ -893,9 +945,10 @@ export async function reviewContinue(ctx: MyContext, productId: number, quantity
 /**
  * Change details (`v1:rev:chg:<pid>:<qty>`): forget the typed data, the
  * review state, the quote and the checkout intent (a new data set must not
- * share an intent id with the old one), then go through the checkout gate
- * again, which re-enters the input conversation and edits this bubble into
- * the prompt.
+ * share an intent id with the old one), and the voucher and wallet toggles
+ * (the next review must price the new data plainly, not with a choice made
+ * for the old one), then go through the checkout gate again, which re-enters
+ * the input conversation and edits this bubble into the prompt.
  */
 export async function reviewChangeDetails(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const product = await availableCheckoutDenomination(ctx, productId);
@@ -905,6 +958,9 @@ export async function reviewChangeDetails(ctx: MyContext, productId: number, qua
     return;
   }
   clearAccountInput(ctx);
+  delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
   await showOrderConfirmation(ctx, productId, quantity);
 }
 
@@ -941,14 +997,6 @@ export async function showOrderConfirmation(
       );
       return;
     }
-  }
-
-  // Game Top-up: account data the buyer has not yet confirmed on the review
-  // screen is shown there first. Continue (reviewContinue) records the owner,
-  // so every later render of this checkout is the payment screen.
-  if (typeof ctx.session.scratch.customerData === "string" && isGameTopupGroup(product.product.category.group) && ctx.session.scratch.reviewShownFor !== inputOwner) {
-    await renderAccountReview(ctx, productId, quantity, product);
-    return;
   }
 
   // Game Top-Up nickname-check gate — resolved once, ahead of the
@@ -1355,9 +1403,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1483,9 +1529,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1609,9 +1653,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1725,9 +1767,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -1905,9 +1945,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // Based on order.totalAmount (what's actually sent to the gateway as
   // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
@@ -2118,9 +2156,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
@@ -2442,9 +2478,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
-  delete ctx.session.scratch.customerData;
-  delete ctx.session.scratch.checkoutIntentId;
-  clearQuote(ctx);
+  clearAccountInput(ctx);
 
   // A synchronous wallet checkout uses the same coordinator as gateway rails.
   // Its known checkout screen is already adopted inside the settlement commit.

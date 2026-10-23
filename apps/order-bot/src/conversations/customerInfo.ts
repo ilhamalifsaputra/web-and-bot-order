@@ -29,7 +29,7 @@ import {
   validateFieldAnswer,
   type AdditionalField,
 } from "@app/core/deliveryFields";
-import { parseAccountMessage, type ParseAccountResult } from "@app/core/accountInput";
+import { hasForbiddenAccountCharacter, parseAccountMessage, type ParseAccountResult } from "@app/core/accountInput";
 import { prisma, getDenominationWithProduct } from "@app/db";
 import { parseInputFields } from "@app/core/playerInput";
 import { InlineKeyboard } from "grammy";
@@ -137,7 +137,9 @@ function accountPrompt(lang: string, unit: number, quantity: number, fields: Add
       example: esc(accountExample(fields)),
     }),
   );
-  parts.push(coreT(error ? "hint.account_error" : "hint.account_input", lang));
+  // One field: spaces may belong to the value, so the hint does not ask for them.
+  const inputHint = fields.length === 1 ? "hint.account_input_one" : "hint.account_input";
+  parts.push(coreT(error ? "hint.account_error" : inputHint, lang));
   return parts.join("\n\n");
 }
 
@@ -169,9 +171,36 @@ function accountError(lang: string, fields: AdditionalField[], result: Extract<P
  * ("Night Owl#SEA") holds a space the parser would refuse as a second value.
  */
 function readAccountMessage(fields: AdditionalField[], text: string): ParseAccountResult {
+  const parsed = parseLoneFreeText(fields, text) ?? parseAccountMessage(fields, text);
+  if (!parsed.ok) return parsed;
+  // Every value is shown back on the review screen, so none may be longer
+  // than that screen can display.
+  for (const field of fields) {
+    if ((parsed.values[field.key] ?? "").length > MAX_ACCOUNT_VALUE_LENGTH) {
+      return { ok: false, reason: "invalid_value", field: field.key, errorKey: "error.account_value_too_long", errorArgs: { max: MAX_ACCOUNT_VALUE_LENGTH } };
+    }
+  }
+  return parsed;
+}
+
+/** The longest account value a Game Top-up buyer may type; the review screen
+ *  shows each value whole, so this keeps it well inside one message. */
+export const MAX_ACCOUNT_VALUE_LENGTH = 128;
+
+/**
+ * The lone free-text field path: the whole message is the value, validated by
+ * the field spec and the parser's invisible-character rule. Null when the
+ * parser applies instead (several fields, a typed field, or a message the
+ * parser reads as one value anyway).
+ */
+function parseLoneFreeText(fields: AdditionalField[], text: string): ParseAccountResult | null {
+  if (fields.length !== 1 || !isFreeTextField(fields[0]!)) return null;
   const parsed = parseAccountMessage(fields, text);
-  if (parsed.ok || parsed.reason !== "too_many" || fields.length !== 1 || !isFreeTextField(fields[0]!)) return parsed;
+  if (parsed.ok || parsed.reason !== "too_many") return parsed;
   const field = fields[0]!;
+  if (hasForbiddenAccountCharacter(text)) {
+    return { ok: false, reason: "invalid_value", field: field.key, errorKey: "error.field_invalid_pattern", errorArgs: { key: field.key } };
+  }
   try {
     return { ok: true, values: { [field.key]: validateFieldAnswer(field, text) } };
   } catch (e) {

@@ -14,6 +14,17 @@ vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
   checkGameNickname: kokinpayMock.checkGameNickname,
 }));
 
+vi.mock("@app/core/payments/tokopay", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "TP-TEST",
+    payUrl: null,
+    qrLink: "https://x/qr.png",
+    qrString: "000",
+    totalBayar: "100",
+  }),
+}));
+
 import {
   prisma,
   createCategory,
@@ -21,11 +32,16 @@ import {
   createDenomination,
   setSetting,
   KOKINPAY_API_KEY_KEY,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
 } from "@app/db";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { parseAccountMessage } from "@app/core/accountInput";
 import { MAX_LABEL_WIDTH, MAX_LABEL_BYTES, visualWidth } from "@app/core/buttonLimits";
 import { DisplayCurrency } from "@app/core/enums";
+import { primeQuote } from "./helpers/quote";
+import { voucherConversation } from "../src/conversations/checkout";
 import { Decimal } from "@app/core/money";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
@@ -724,5 +740,266 @@ describe("review buttons", () => {
       expect(ctx.session.scratch[key], key).toBeUndefined();
     }
     expect(calls(sink, "conversation.enter").map((c) => c.args[0])).toEqual(["customerInfo"]);
+  });
+});
+
+// ===========================================================================
+// T3b: review fixes
+// ===========================================================================
+
+/** A session holding Game Top-up account data whose review was NOT continued. */
+async function unreviewed(denomId: number, units: Array<Record<string, string>>, quantity = 1) {
+  const sink: SentCall[] = [];
+  const session = { ...userSession(), menuMsgId: BUBBLE } as SessionData;
+  session.scratch.customerData = JSON.stringify(units);
+  session.scratch.customerInputOwner = await ownerOf(denomId, quantity);
+  return { sink, session };
+}
+
+function expectReviewWithoutQuote(state: { sink: SentCall[]; session: SessionData }, from = 0) {
+  const shown = state.sink.slice(from);
+  expect(lastEditText(shown)).toContain(coreT("checkout.review_title", "en"));
+  for (const d of buttonData(shown)) for (const p of PAY_PREFIXES) expect(d.startsWith(p), d).toBe(false);
+  expect(state.session.scratch.quoteNonce).toBeUndefined();
+  expect(state.session.scratch.quotedTotalIdr).toBeUndefined();
+  expect(state.session.scratch.quoteFor).toBeUndefined();
+}
+
+/** Every tag balanced and every `<`/`&` part of a tag or an entity. */
+function expectValidTelegramHtml(html: string) {
+  const stack: string[] = [];
+  const rest = html.replace(/<(\/?)(b|i|code)>/g, (_m, close: string, tag: string) => {
+    if (close) expect(stack.pop()).toBe(tag);
+    else stack.push(tag);
+    return "";
+  });
+  expect(stack).toEqual([]);
+  expect(rest).not.toMatch(/[<>]/);
+  expect(rest.replace(/&(amp|lt|gt|quot|#39);/g, "")).not.toContain("&");
+}
+
+describe("T3b I1: every payment render shows the review first", () => {
+  it("a USDT tap with unreviewed data renders the review and mints no quote", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const state = await unreviewed(denom.id, [{ user_id: "123456789", zone_id: "1234" }]);
+    await routeCallback(tapCtx(state, `v1:usdt:${denom.id}:1`));
+    expectReviewWithoutQuote(state);
+  });
+
+  it("a stale USDT-rail pay tap with unreviewed data renders the review and mints no quote", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    invalidateRateCache();
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const state = await unreviewed(denom.id, [{ user_id: "123456789", zone_id: "1234" }]);
+    await routeCallback(tapCtx(state, `v1:payx:${denom.id}:1:abcdef`));
+    expectReviewWithoutQuote(state);
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it.each([
+    ["the Cancel button", (pid: number) => `tap:v1:buy:${pid}:1`],
+    ["/cancel", () => "/cancel"],
+    ["an applied voucher", () => "SAVE10"],
+  ])("the voucher conversation's exit via %s renders the review and mints no quote", async (_name, step) => {
+    // buildSampleData's voucher SAVE10: 10%, minimum purchase 3.
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const state = await unreviewed(denom.id, [{ user_id: "123456789", zone_id: "1234" }]);
+    const entry = tapCtx(state, `v1:voucher:start:${denom.id}:1`);
+    const s = step(denom.id);
+    const next = () => (s.startsWith("tap:") ? tapCtx(state, s.slice(4)) : makeCtx({ sink: state.sink, sharedSession: state.session, from: { id: 42 }, text: s }).ctx);
+    await voucherConversation(new FakeConversation([next]).asMyConversation(), entry);
+    expectReviewWithoutQuote(state);
+  });
+});
+
+describe("T3b I2: length budget", () => {
+  it("a value over 128 characters is refused in the same bubble, on the parser path and the lone free-text path", async () => {
+    const tooLong = coreT("checkout.account_err_invalid", "en", { label: "User ID", error: coreT("error.account_value_too_long", "en", { max: 128 }) });
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const run = wizardRun(denom.id, [`${"1".repeat(129)} 1234`, `${"1".repeat(128)} 1234`]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(screenCalls(stepSink(run, 0))).toEqual(["deleteMessage", "editMessageText"]);
+    expect(lastEditText(stepSink(run, 0))).toContain(tooLong);
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ user_id: "1".repeat(128), zone_id: "1234" }]);
+
+    const lone = await makeDenom([PLAYER_TEXT]);
+    const loneRun = wizardRun(lone.id, [`a b${"x".repeat(130)}`, "Night Owl#SEA"]);
+    await customerInfoConversation(loneRun.conv.asMyConversation(), loneRun.entry);
+    expect(screenCalls(stepSink(loneRun, 0))).toEqual(["deleteMessage", "editMessageText"]);
+    expect(lastEditText(stepSink(loneRun, 0))).toContain(coreT("checkout.account_err_invalid", "en", { label: "Player ID", error: coreT("error.account_value_too_long", "en", { max: 128 }) }));
+    expect(JSON.parse(loneRun.session.scratch.customerData as string)).toEqual([{ player: "Night Owl#SEA" }]);
+  });
+
+  it("a 128-character value full of &<> keeps the review HTML valid", async () => {
+    const denom = await makeDenom([PLAYER_TEXT]);
+    const value = "&<>".repeat(43).slice(0, 128);
+    const run = wizardRun(denom.id, [value]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ player: value }]);
+    const html = lastEditText(run.sink);
+    expect(html).toContain(coreT("checkout.review_title", "en"));
+    expectValidTelegramHtml(html);
+  });
+
+  it("a review over the budget fails closed: a short message with only Change details and Back, no Continue, no account data", async () => {
+    const denom = await makeDenom([PLAYER_TEXT]);
+    const units = Array.from({ length: 40 }, (_, i) => ({ player: `${i}`.padEnd(128, "&") }));
+    const state = await unreviewed(denom.id, units, 40);
+    await checkout.showOrderConfirmation(tapCtx(state, `v1:buy:${denom.id}:40`), denom.id, 40);
+
+    expect(screenCalls(state.sink)).toEqual(["editMessageText"]);
+    const text = lastEditText(state.sink);
+    expect(text).toContain(coreT("checkout.review_too_large", "en"));
+    expect(text).not.toContain("&amp;&amp;");
+    expect(buttonData(state.sink)).toEqual([`v1:rev:chg:${denom.id}:40`, `v1:browse:denom:${denom.id}`]);
+    expect(state.session.scratch.quoteNonce).toBeUndefined();
+
+    // Change details is live on that screen.
+    const mark = state.sink.length;
+    await routeCallback(tapCtx(state, `v1:rev:chg:${denom.id}:40`));
+    expect(calls(state.sink.slice(mark), "conversation.enter").map((c) => c.args[0])).toEqual(["customerInfo"]);
+    expect(state.session.scratch.customerData).toBeUndefined();
+  });
+});
+
+describe("T3b I3 / M1-M6", () => {
+  it("I3: quantity above one says only the first unit was checked, for found and not found only", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const units = [{ user_id: "1", zone_id: "2" }, { user_id: "3", zone_id: "4" }];
+    for (const [check, qty, shown] of [["found", 2, true], ["not_found", 2, true], ["unchecked", 2, false], ["found", 1, false]] as const) {
+      const state = await unreviewed(denom.id, units.slice(0, qty), qty);
+      state.session.scratch.nicknameCheck = check;
+      if (check === "found") state.session.scratch.verifiedNickname = "Player";
+      await checkout.renderAccountReview(tapCtx(state, `v1:buy:${denom.id}:${qty}`), denom.id, qty);
+      expect(lastEditText(state.sink).includes(coreT("checkout.review_first_unit_only", "en")), `${check} x${qty}`).toBe(shown);
+    }
+  });
+
+  it("M1: placing the order clears the review state with the account data", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const run = wizardRun(denom.id, ["123456789 1234"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    run.session.scratch.verifiedNickname = "Player";
+    run.session.scratch.nicknameCheck = "found";
+    await routeCallback(tapCtx(run, `v1:rev:go:${denom.id}:1`));
+    await routeCallback(tapCtx(run, `v1:payq:${denom.id}:1:${run.session.scratch.quoteNonce as string}`));
+    expect(await prisma.order.count()).toBe(1);
+    for (const key of ["customerData", "customerInputOwner", "reviewShownFor", "verifiedNickname", "nicknameCheck"]) {
+      expect(run.session.scratch[key], key).toBeUndefined();
+    }
+  });
+
+  it("M2: an invisible bidi character in a lone free-text value is refused in the same bubble", async () => {
+    const denom = await makeDenom([PLAYER_TEXT]);
+    const run = wizardRun(denom.id, ["Night‮Owl X", "Night Owl#SEA"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(screenCalls(stepSink(run, 0))).toEqual(["deleteMessage", "editMessageText"]);
+    expect(lastEditText(stepSink(run, 0))).toContain(coreT("checkout.account_err_invalid", "en", { label: "Player ID", error: coreT("error.field_invalid_pattern", "en") }));
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ player: "Night Owl#SEA" }]);
+  });
+
+  it("M3: the review explains an applied voucher; Change details drops the voucher and the wallet toggles", async () => {
+    // buildSampleData's voucher SAVE10: 10%, minimum purchase 3.
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const state = await unreviewed(denom.id, [{ user_id: "1", zone_id: "2" }]);
+    Object.assign(state.session.scratch, { appliedVoucherCode: "SAVE10", useWalletIdr: true });
+    const ctx = tapCtx(state, `v1:buy:${denom.id}:1`);
+    await checkout.showOrderConfirmation(ctx, denom.id, 1);
+    const text = lastEditText(state.sink);
+    const prices = ctxPriceFormatter(ctx, await currentUsdtRate());
+    expect(text).toContain(coreT("checkout.confirm_voucher_line", "en", { code: "SAVE10", discount: prices.price(new Decimal("1000")) }).trim());
+    expect(text).toContain(coreT("checkout.review_total", "en", { total: prices.price(new Decimal("9000")) }));
+
+    await routeCallback(tapCtx(state, `v1:rev:chg:${denom.id}:1`));
+    for (const key of ["appliedVoucherCode", "useWalletIdr", "useWalletUsdt", "customerData"]) expect(state.session.scratch[key], key).toBeUndefined();
+  });
+
+  it("M4: one field gets the single-value hint, two fields the space hint", async () => {
+    const one = await makeDenom([USER_ID]);
+    const a = wizardRun(one.id, ["/cancel"]);
+    await customerInfoConversation(a.conv.asMyConversation(), a.entry);
+    const promptOne = lastEditText(a.sink.slice(0, a.marks[0]));
+    expect(promptOne).toContain(coreT("hint.account_input_one", "en"));
+    expect(promptOne).not.toContain(coreT("hint.account_input", "en"));
+
+    const two = await makeDenom([USER_ID, ZONE_ID]);
+    const b = wizardRun(two.id, ["/cancel"]);
+    await customerInfoConversation(b.conv.asMyConversation(), b.entry);
+    expect(lastEditText(b.sink.slice(0, b.marks[0]))).toContain(coreT("hint.account_input", "en"));
+  });
+
+  it.each(["1e3", "0x10", "12.0", "-1"])("M5: a review callback with a non-decimal id %s is stale and touches nothing", async (bad) => {
+    const state = { sink: [] as SentCall[], session: { ...userSession(), menuMsgId: BUBBLE } as SessionData };
+    for (const data of [`v1:rev:go:${bad}:1`, `v1:rev:go:1:${bad}`]) {
+      const mark = state.sink.length;
+      await routeCallback(tapCtx(state, data));
+      expect(screenCalls(state.sink.slice(mark))).toEqual([]);
+      expect(calls(state.sink.slice(mark), "answerCallbackQuery").some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(makeCtx().ctx, "error.stale_screen"))).toBe(true);
+    }
+  });
+
+  it("M6: rendering the review retires the pay buttons of the payment screen it replaces", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const state = await unreviewed(denom.id, [{ user_id: "1", zone_id: "2" }]);
+    const owner = await ownerOf(denom.id, 1);
+    state.session.scratch.reviewShownFor = owner;
+    const nonce = await primeQuote(tapCtx(state, `v1:buy:${denom.id}:1`), denom.id, 1);
+    expect(typeof nonce).toBe("string");
+    delete state.session.scratch.reviewShownFor;
+
+    await checkout.renderAccountReview(tapCtx(state, `v1:buy:${denom.id}:1`), denom.id, 1);
+    await routeCallback(tapCtx(state, `v1:payq:${denom.id}:1:${nonce!}`));
+    expect(await prisma.order.count()).toBe(0);
+    expect(lastEditText(state.sink)).toContain(coreT("checkout.review_title", "en"));
+  });
+
+  it("M6: /start and a persistent keyboard label typed at the prompt leave it with the state cleared", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    for (const escape of ["/start", ckb.persistentLabel("orders", "en")]) {
+      const run = wizardRun(denom.id, [escape]);
+      await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+      expect(run.session.scratch.pendingInfoProductId, escape).toBeUndefined();
+      expect(run.session.scratch.customerData, escape).toBeUndefined();
+      expect(sentIncludes(run.sink, coreT("checkout.review_title", "en"))).toBe(false);
+    }
+  });
+
+  it("M6: a blank message names the first field as missing", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const run = wizardRun(denom.id, ["   ", "123456789 1234"]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(lastEditText(stepSink(run, 0))).toContain(coreT("checkout.account_err_missing", "en", { label: "User ID" }));
+  });
+
+  it("M6: the review body in Indonesian", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const state = await unreviewed(denom.id, [{ user_id: "123456789", zone_id: "1234" }]);
+    state.session.lang = "id";
+    state.session.scratch.nicknameCheck = "not_found";
+    await checkout.showOrderConfirmation(tapCtx(state, `v1:buy:${denom.id}:1`), denom.id, 1);
+    const text = lastEditText(state.sink);
+    expect(text).toContain(coreT("checkout.review_title", "id"));
+    expect(text).toContain("ID Pengguna: <code>123456789</code>");
+    expect(text).toContain(coreT("checkout.review_pack", "id", { pack: "86 Diamonds" }));
+    expect(text).toContain("⚠️ Akun tidak ditemukan. Cek lagi ID-nya sebelum bayar.");
+    expect(text).toContain(coreT("hint.review", "id"));
+    const kb = lastMarkup(state.sink)!.inline_keyboard!.flat() as Array<{ text: string }>;
+    expect(kb.map((b) => b.text)).toEqual([coreT("checkout.review_continue_btn", "id"), coreT("checkout.review_change_btn", "id"), coreT("menu.back", "id")]);
+  });
+
+  it("M7: the Indonesian copy is the reviewed wording", () => {
+    expect(coreT("hint.account_input", "id")).toBe("Kirim semua data dalam satu pesan, pisahkan dengan spasi.");
+    expect(coreT("hint.account_error", "id")).toBe("Perbaiki, lalu kirim ulang semua data dalam satu pesan.");
+    expect(coreT("checkout.account_err_too_many", "id")).toBe("⚠️ Datanya kelebihan. Kirim hanya data yang diminta.");
+    expect(coreT("checkout.account_err_ambiguous", "id")).toBe("⚠️ Datanya menempel jadi satu. Pisahkan dengan spasi.");
+    expect(coreT("checkout.account_err_unbalanced", "id")).toBe("⚠️ Jangan pakai tanda kurung. Pisahkan data dengan spasi.");
+    expect(coreT("checkout.review_not_found", "id")).toBe("⚠️ Akun tidak ditemukan. Cek lagi ID-nya sebelum bayar.");
   });
 });

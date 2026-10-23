@@ -144,7 +144,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
 // Telegram caption limit. A banner-as-photo render carries the menu text as the
 // photo caption, so anything longer than this can't ride along — we fall back to
 // a plain text render (no banner) for that screen.
-const MAX_CAPTION_LEN = 1024;
+export const MAX_CAPTION_LEN = 1024;
 
 /**
  * Render a menu screen, optionally with a banner image on top. When `photoFileId`

@@ -40,7 +40,8 @@ import {
   countAvailableStock,
   availableStockCountsByDenomination,
   MAX_CART_ORDER_UNITS,
-  getBulkPricingForDenomination,
+  getEffectiveTiers,
+  priceLineWithTiers,
   countUserOrders,
   listUserOrders,
   getOrder,
@@ -64,7 +65,8 @@ import {
   listTicketMessages,
 } from "@app/db";
 import { BotState, type MyContext } from "../context";
-import { smartEdit, renderMenu, consumeInput, menuAnchor } from "../util/chat";
+import { smartEdit, renderMenu, consumeInput, menuAnchor, MAX_CAPTION_LEN } from "../util/chat";
+import { fitSections, tierDiscountApplies, tierSections, type CaptionSection } from "../util/tierDisplay";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
@@ -1169,7 +1171,11 @@ export async function browseDenomination(
   ctx: MyContext,
   denominationId: number,
   qty = 1,
-  opts?: { noticePrefix?: string },
+  opts?: {
+    noticePrefix?: string;
+    /** Typed input (manual quantity): edit the tracked menu bubble instead of sending a new one. */
+    viaAnchor?: boolean;
+  },
 ): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
@@ -1178,7 +1184,7 @@ export async function browseDenomination(
   let stock: number;
   let ratingStr: string;
   let sold: number;
-  let bulkRule: Awaited<ReturnType<typeof getBulkPricingForDenomination>>;
+  let tiers: Awaited<ReturnType<typeof getEffectiveTiers>>;
   try {
     d = await getDenominationWithProduct(prisma, denominationId);
     if (d === null || !d.isActive || !d.product.isActive || d.product.isArchived || !d.product.category.isActive || !(await isServiceActive(prisma, d.product.category.group as CategoryGroup | null, "bot"))) {
@@ -1193,7 +1199,7 @@ export async function browseDenomination(
     const { avg, count } = await productRating(prisma, d.id);
     ratingStr = avg ? `${avg.toFixed(1)}/5 (${count})` : "—";
     sold = await soldCountForDenomination(prisma, d.id);
-    bulkRule = await getBulkPricingForDenomination(prisma, d.id);
+    tiers = await getEffectiveTiers(prisma, d.id);
   } catch (err) {
     // Hard failure (unexpected DB error) — log under a ref and quote it so a
     // customer report maps to the stack trace (§8.6). Forward action (§8.7).
@@ -1205,7 +1211,20 @@ export async function browseDenomination(
   }
 
   const isReseller = info.role === UserRole.RESELLER;
-  const unit = effectiveUnitPrice(d, isReseller);
+  // The quantity is the only thing a callback carries, and it can be forged or
+  // stale (`v1:browse:refresh:<id>:<qty>`, an old stepper bubble): clamp it to
+  // what this buyer can order right now, the same bound qtyChange applies —
+  // local stock for a local-inventory SKU, MAX_CART_ORDER_UNITS otherwise.
+  // Prices are never read from the callback; they are recomputed below.
+  const maxQty = usesLocalInventory(d) ? stock : MAX_CART_ORDER_UNITS;
+  qty = Number.isInteger(qty) ? Math.max(1, Math.min(qty, maxQty)) : 1;
+  // One instant for the unit and the tiers, as createOrderDirect prices them.
+  const pricedAt = new Date();
+  const unit = effectiveUnitPrice(d, isReseller, pricedAt);
+  const priceAt = (quantity: number) =>
+    priceLineWithTiers({ denomination: d, quantity, isReseller, now: pricedAt, tiers });
+  const priced = priceAt(qty);
+  const tierApplies = tierDiscountApplies(priced);
   const rateContext = await getCanonicalRateContext(prisma);
   const rate = rateContext.rate ? new Decimal(rateContext.rate) : null;
   const prices = ctxPriceFormatter(ctx, rate);
@@ -1225,9 +1244,16 @@ export async function browseDenomination(
   const source = fulfillmentSourceOf(d);
   const stockDisplay = source === "INTERNAL_INVENTORY" ? stock : "—";
 
-  const priceText = onSale
-    ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: canonical.formattedPrice })
-    : canonical.formattedPrice;
+  // Price per unit at the selected quantity. A volume tier strikes through the
+  // unit it discounts; with a flash sale too, the struck price is the list
+  // price and the ⚡ stays, so both discounts read as one old → new pair.
+  const priceText = tierApplies
+    ? onSale
+      ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: prices.price(priced.finalUnitPrice) })
+      : t(ctx, "browse.tier_price", { old: canonical.formattedPrice, new: prices.price(priced.finalUnitPrice) })
+    : onSale
+      ? t(ctx, "browse.flash_price", { old: prices.price(d.price), new: canonical.formattedPrice })
+      : canonical.formattedPrice;
   // Game Top Up SKUs (diamonds, UC, …) have no meaningful Duration/Type/
   // Warranty (those are Premium Apps account attributes) and no meaningful
   // stock line either (the one Premium Apps keeps is the one real, buyer-
@@ -1239,7 +1265,7 @@ export async function browseDenomination(
   // PREMIUM_APPS-equivalent, so it keeps the full Duration/Type/Warranty +
   // stock template like Premium Apps.
   const isGame = d.product.category.group === CategoryGroup.GAME_TOPUP;
-  let text = isGame
+  const head = isGame
     ? t(ctx, "browse.denomination_detail_game", {
         product: esc(d.product.name),
         plan: esc(plan),
@@ -1271,40 +1297,65 @@ export async function browseDenomination(
         sold,
         rating: ratingStr,
       });
-  if (onSale) {
-    text +=
-      "\n\n" +
-      t(ctx, "browse.flash_deal", {
-        percent: activeFlashPercent(d)!.toString(),
-        remaining: formatFlashRemaining(d.flashEndsAt!),
-      });
-  }
-  if (bulkRule) {
-    text +=
-      "\n\n" +
-      t(ctx, "browse.bulk_deal", {
-        min_qty: bulkRule.minQuantity,
-        percent: bulkRule.discountPercent,
-      });
-  }
+  const tierText = tierSections({
+    priced,
+    tiers,
+    isGame,
+    maxQty,
+    prices,
+    tr: (key, args) => t(ctx, key, args),
+    priceAt,
+  });
   // Match the picker and service classification: legacy null-group categories
   // are Premium Apps too, so their terms belong to the chosen plan. Only game
   // top-ups share the parent product's description; empty plan terms stay empty.
   const description = (isGame ? d.product.description : d.description)?.trim();
-  if (description) {
-    text += "\n\n" + t(ctx, "browse.description", { description: esc(description) });
-  }
-  if (isGame) {
-    // Also reached directly via the single-denomination collapse, which
-    // skips the picker's game-info block entirely — so show the hint here too.
-    const hint = await gameInputHint(ctx, [d]);
-    if (hint) text += "\n\n" + hint;
-  }
-  text += prices.rateNotice(lang);
-
-  if (opts?.noticePrefix) {
-    text = opts.noticePrefix + "\n\n" + text;
-  }
+  const descriptionText = (raw: string) => t(ctx, "browse.description", { description: esc(raw) });
+  // Also reached directly via the single-denomination collapse, which skips
+  // the picker's game-info block entirely — so show the game hint here too.
+  const hint = isGame ? await gameInputHint(ctx, [d]) : null;
+  // A photo bubble's caption is capped at MAX_CAPTION_LEN. When the full text
+  // would not fit, these give way in this fixed order (dropRank): the
+  // next-tier hint, the game input hint (asked for again at checkout), the
+  // savings line (the struck price and the total still show it), the
+  // description (shortened before it is dropped), then the flash countdown.
+  // Price, quantity, tier, total and the product facts never drop.
+  const sections: CaptionSection[] = [
+    { text: head },
+    {
+      text: onSale
+        ? t(ctx, "browse.flash_deal", { percent: activeFlashPercent(d)!.toString(), remaining: formatFlashRemaining(d.flashEndsAt!) })
+        : "",
+      dropRank: 5,
+    },
+    {
+      text: tierText.summary,
+      dropRank: 3,
+      // Only the savings line gives way; quantity, tier and total stay.
+      shrink: () => tierText.summaryCompact || null,
+    },
+    { text: tierText.nextTier, dropRank: 1 },
+    {
+      text: description ? descriptionText(description) : "",
+      dropRank: 4,
+      shrink: (budget) => {
+        if (!description) return null;
+        let cut = description.slice(0, Math.max(0, budget));
+        while (cut.length > 0 && descriptionText(`${cut.trimEnd()}…`).length > budget) cut = cut.slice(0, -1);
+        return cut.trim().length >= 20 ? descriptionText(`${cut.trimEnd()}…`) : null;
+      },
+    },
+    { text: hint ?? "", dropRank: 2 },
+  ];
+  const prefix = opts?.noticePrefix ? opts.noticePrefix + "\n\n" : "";
+  const suffix = prices.rateNotice(lang);
+  const photoArg = productPhotoArg(d.product);
+  // A caption either way: the product has a photo, or the tapped bubble is one
+  // (smartEdit then edits its caption, which Telegram also caps).
+  const tapped = ctx.callbackQuery?.message;
+  const onPhoto = photoArg !== undefined || (tapped !== undefined && "photo" in tapped && !!tapped.photo);
+  const limit = onPhoto ? MAX_CAPTION_LEN - prefix.length - suffix.length : Number.POSITIVE_INFINITY;
+  const text = prefix + fitSections(sections, limit) + suffix;
 
   // Parent product for Back navigation: the picker we came from, or null when no
   // picker was shown (collapse / deep-link) so Back falls through to the flat
@@ -1312,17 +1363,22 @@ export async function browseDenomination(
   // would immediately re-collapse to this same detail.
   const parentProductId = sc(ctx).productId ?? null;
   const parentPage = parentProductId != null ? (sc(ctx).productPage ?? 0) : 0;
-  const photoArg = productPhotoArg(d.product);
-  if (photoArg) {
+  const keyboard = ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage);
+  if (opts?.viaAnchor && !ctx.callbackQuery) {
+    // Typed quantity: the prompt was drawn into the tracked bubble (photo or
+    // text), so the priced detail goes back into that same bubble — an edit,
+    // never a new message (menuAnchor/editAnchor edit a photo's caption).
+    await menuAnchor(ctx, text, keyboard);
+  } else if (photoArg) {
     await renderMenu(
       ctx,
       text,
-      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage),
+      keyboard,
       photoArg.photo,
       photoArg.needsCache ? cacheProductPhotoFileId(d.product.id) : undefined,
     );
   } else {
-    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage));
+    await smartEdit(ctx, text, keyboard);
   }
   ctx.session.state = BotState.PRODUCT_DETAIL;
   sc(ctx).variantId = denominationId;
@@ -1387,7 +1443,7 @@ async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawTex
   }
 
   ctx.session.awaitingQtyDenomId = undefined;
-  await browseDenomination(ctx, denominationId, parseInt(rawText, 10));
+  await browseDenomination(ctx, denominationId, parseInt(rawText, 10), { viaAnchor: true });
 }
 
 export async function qtyChange(

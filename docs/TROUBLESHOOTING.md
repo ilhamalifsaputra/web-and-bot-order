@@ -162,22 +162,27 @@ cuma webhook-nya) — bukan lagi silent sampai order menumpuk lalu
 auto-cancel. Ketiga rail QRIS/IDR (TokoPay, PayDisini, NOWPayments) sekarang
 punya watchdog sendiri (`tokopayPollWatchdog`/`paydisiniPollWatchdog`/
 `nowpaymentsPollWatchdog` di `apps/order-bot/src/jobs/index.ts`): begitu satu
-siklus tidak selesai dalam jendela stale rail tersebut (~13,7 menit untuk
-ketiga rail — TokoPay, PayDisini, dan NOWPayments — lebih lebar dari 5 menit
-milik rail crypto, karena satu siklus QRIS bisa sampai 50 panggilan gateway
-berurutan), admin di-DM Telegram sekali per insiden dan rail-nya tampil merah
-di kartu Business Health panel admin. Angka ~13,7 menit itu berlaku untuk
+siklus tidak selesai dalam jendela stale rail tersebut, admin di-DM
+Telegram sekali per insiden dan rail-nya tampil merah di kartu Business
+Health panel admin. Jendela stale = cycle-timeout rail + `POLL_INTERVAL_SECONDS`
++ 30 detik, dan cycle-timeout itu diturunkan dari jendela bayar rail
+(`reconcileBudgetForWindow`, `packages/core/src/payments/reconcileCycleBudget.ts`,
+maksimal 40% jendela bayar): dengan default sekarang ~4,7 menit untuk TokoPay
+dan PayDisini (jendela bayar 10 menit, 14 panggilan gateway per siklus,
+cycle-timeout 240 detik) dan ~12,7 menit untuk NOWPayments (jendela 30 menit,
+46 panggilan per siklus, cycle-timeout 720 detik). Angka itu berlaku untuk
 poller yang benar-benar berhenti (proses mati atau loop-nya sudah tidak
 jalan sama sekali, jadi heartbeat memang tidak pernah ditulis) — kalau
 poller-nya masih hidup tapi tiap siklus hang lalu ditinggalkan (abandoned)
 berulang-ulang, staleness check ini justru TIDAK pernah kepicu, karena
 `onCycleTimeout` di tiap rail menulis heartbeat baru (me-refresh `lastRun`)
-persis di titik cycle-timeout rail itu sendiri (~780 detik untuk ketiga rail
-— TokoPay, PayDisini, dan NOWPayments) — selalu lebih cepat dari jendela
-stale-nya sendiri. Untuk kasus hang-berulang ini, yang memicu alert adalah
-rule lain: 3 siklus gagal beruntun (`FAILURE_STREAK_ALERT_THRESHOLD`),
-sekitar 39 menit untuk ketiga rail QRIS/IDR — sudah melewati jendela bayar
-30 menit default, jadi order yang baru dibuat di awal rentang itu bisa keburu
+persis di titik cycle-timeout rail itu sendiri (240 detik untuk TokoPay
+dan PayDisini, 720 detik untuk NOWPayments, dengan default sekarang) — selalu
+lebih cepat dari jendela stale-nya sendiri. Untuk kasus hang-berulang ini,
+yang memicu alert adalah rule lain: 3 siklus gagal beruntun
+(`FAILURE_STREAK_ALERT_THRESHOLD`), sekitar 12 menit untuk TokoPay/PayDisini
+dan 36 menit untuk NOWPayments — tetap sedikit melewati jendela bayar rail
+itu sendiri, jadi order yang baru dibuat di awal rentang itu bisa keburu
 expired sebelum admin sempat di-DM. Watchdog hanya aktif kalau kredensial
 rail terkait sudah diisi di Settings — rail yang memang belum dipakai toko
 tidak akan pernah memicu alert.

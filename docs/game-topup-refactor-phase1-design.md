@@ -150,13 +150,22 @@ Panjang label mengikuti `buttonLimits.ts` dan `keyboard-label-guard`.
 
 Sumber tunggal tetap `packages/core/src/config.ts` (env), tanpa hardcode di handler.
 
-| Variabel | Default sekarang | Default baru |
-|---|---|---|
-| `PAYMENT_WINDOW_MINUTES` (QRIS, PayDisini) | 30 | 10 |
-| `INTERNAL_PAYMENT_WINDOW_MINUTES` (Binance Pay) | 15 | 10 |
-| `BYBIT_PAYMENT_WINDOW_MINUTES` (Bybit UID) | 30 | 10 |
-| `BYBIT_BSC_PAYMENT_WINDOW_MINUTES` | 15 | 30 |
-| `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | 30 | 30 |
+Tabel final (keputusan pemilik, diterapkan di Phase 4 Task 4). Berlaku untuk semua layanan (Game Top-up dan Premium Apps), bot dan storefront, termasuk top-up saldo wallet karena memakai config yang sama.
+
+| Variabel | Rail | Default lama | Default final |
+|---|---|---|---|
+| `PAYMENT_WINDOW_MINUTES` | TokoPay QRIS, PayDisini, juga stempel awal setiap order | 30 | 10 |
+| `INTERNAL_PAYMENT_WINDOW_MINUTES` | Binance Pay | 15 | 10 |
+| `BYBIT_PAYMENT_WINDOW_MINUTES` | Bybit UID | 30 | 10 |
+| `BYBIT_BSC_PAYMENT_WINDOW_MINUTES` | Bybit BSC on-chain | 15 | 30 |
+| `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | NOWPayments | 30 | 30 |
+
+Keputusan pemilik yang mengikat:
+- Order yang sudah dibuat tetap memakai `expiresAt` lamanya; default baru hanya berlaku untuk order baru.
+- Rail deposit (Binance Pay, Bybit UID, Bybit BSC) tetap ketat: deposit setelah `expiresAt` tidak dicocokkan.
+- Rail webhook (TokoPay, PayDisini, NOWPayments): pembayaran yang datang setelah auto-cancel tetap memakai alur "pembayaran basi → alert admin" yang sudah ada; tanpa grace tambahan dan tanpa kredit wallet otomatis.
+
+Anggaran siklus poller rekonsiliasi QRIS/IDR kini diturunkan dari jendela rail-nya (`reconcileBudgetForWindow`, `packages/core/src/payments/reconcileCycleBudget.ts`): satu siklus maksimal 40% jendela, sehingga deadline siklus tetap di bawah setengah jendela (invarian yang diuji di `poll-loop-wiring.test.ts`). Jendela 10 menit → 14 order per siklus, 240 detik; jendela 30 menit → 46 order per siklus, 720 detik. Anggaran tetap lama 780 detik akan menjadi 130% jendela 10 menit.
 
 Peringatan deploy: bila `.env` produksi sudah menetapkan variabel ini, default baru tidak berlaku sampai `.env` diubah. Order lama membawa `expiresAt` lama dan tidak terpengaruh. Perubahan ini masuk checklist deploy dan `docs/ENVIRONMENT_VARIABLES.md`.
 
@@ -172,7 +181,7 @@ Risiko yang diaudit di Phase 4 sebelum default diubah: pembayaran yang terdeteks
 - Isi pesan: nomor order lengkap, sisa waktu aktual, deadline dengan format `yyyy-LL-dd HH:mm WIB` seperti builder rail, plus kalimat bahwa pesanan dibatalkan otomatis setelah batas waktu (auto-cancel memang ada). Tanpa kredensial. Dua bahasa (`en.json`, `id.json`).
 - Kegagalan Telegram: retry dan backoff outbox yang ada (maks. 10 percobaan, DEAD_LETTER); blokir/403 tidak mengubah status order.
 - Saat expiry: jalur `autoCancelExpiredOrders` → `cancelOrder` → `notifyAutoCancelled` dipertahankan. Phase 4 memverifikasi bahwa pesan order/QR ikut diedit menjadi "dibatalkan" (`editPaymentBubble`, `ownsTransactionMessage`, `wakeFulfillmentMessage`); bila belum, tambahkan di jalur itu.
-- Kode mati `handlers/checkout/timers.ts` (`timersByOrder` tidak pernah ditulis) dihapus atau diganti, tidak dihidupkan kembali.
+- Kode mati `handlers/checkout/timers.ts` (`timersByOrder` tidak pernah ditulis) sudah dihapus di Phase 4 Task 4 dan tidak dihidupkan kembali.
 
 ### 9.3 Feature flag
 

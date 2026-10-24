@@ -811,6 +811,21 @@ export const NotificationEvent = {
   // plus order_code, expires_at (ISO), minutes_left and buyer_language —
   // never credentials or amounts.
   PAYMENT_REMINDER_DM: "PAYMENT_REMINDER_DM",
+  // Buyer DM (not a channel post): the one push a Telegram buyer gets when
+  // the expiry sweep (`autoCancelExpiredOrders`) cancels their unpaid order —
+  // product orders and wallet top-ups alike (Phase 4 owner decision). Queued
+  // ONLY when the cancellation itself put no new message in the buyer's chat:
+  // a payment message edited in place makes no sound on Telegram, while a
+  // replacement message or a fallback DM already did, and a second message
+  // then would be a double notification. Never queued for a cancellation by
+  // the buyer or an admin. Dedupe key `order_expired:<orderId>`; the
+  // dispatcher re-reads the order right before sending and SKIPS (keeping the
+  // key) unless it is still CANCELLED with no payment seen — a late wallet
+  // top-up payment can re-open and credit a cancelled top-up. payload carries
+  // `chat_id` plus order_code, buyer_language and is_wallet_topup (a top-up
+  // reserved no stock, so its text has no "stock released" line) — never
+  // credentials or amounts.
+  ORDER_EXPIRED_DM: "ORDER_EXPIRED_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

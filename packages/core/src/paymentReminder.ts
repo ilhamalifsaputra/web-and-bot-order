@@ -36,3 +36,14 @@ export function paymentReminderMinutesLeft(expiresAt: Date, now: Date): number {
 export function paymentReminderDedupeKey(orderId: number): string {
   return `payment_reminder:${orderId}`;
 }
+
+/**
+ * The outbox dedupe key that makes the expiry push (ORDER_EXPIRED_DM, the
+ * other half of the same owner decision) at most once per order. Its queueing
+ * may run twice for one order — inside the cancel transaction for a tracked
+ * message, or right after a Telegram edit for an anchored bubble — and a
+ * second bot instance may run the sweep too.
+ */
+export function orderExpiredDedupeKey(orderId: number): string {
+  return `order_expired:${orderId}`;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PAYMENT_REMINDER_MIN_REMAINING_MS, paymentReminderDedupeKey, paymentReminderMinutesLeft } from "./paymentReminder";
+import { PAYMENT_REMINDER_MIN_REMAINING_MS, orderExpiredDedupeKey, paymentReminderDedupeKey, paymentReminderMinutesLeft } from "./paymentReminder";
 
 describe("payment reminder timing", () => {
   const now = new Date("2026-10-24T07:00:00.000Z");
@@ -22,5 +22,10 @@ describe("payment reminder timing", () => {
 
   it("keys the outbox row by order so a reminder is queued at most once per order", () => {
     expect(paymentReminderDedupeKey(42)).toBe("payment_reminder:42");
+  });
+
+  it("keys the expiry push by order too, in a namespace of its own", () => {
+    expect(orderExpiredDedupeKey(42)).toBe("order_expired:42");
+    expect(orderExpiredDedupeKey(42)).not.toBe(paymentReminderDedupeKey(42));
   });
 });

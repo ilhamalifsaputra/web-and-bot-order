@@ -162,10 +162,21 @@ alert admin**, dan tombol kredit (`canCreditCancelled`,
 `orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts:454`) hanya
 menghitung `delivery_failed`/`unmatched`.
 
-**Fix (manual, untuk sekarang):** cari baris ledger `matched` yang
-`order_id`-nya menunjuk order `CANCELLED` dengan `paid_at` kosong, cocokkan
-dengan dashboard gateway, lalu selesaikan dana pembeli secara manual (kredit
-saldo lewat penyesuaian admin atau refund). **OPEN OWNER FOLLOW-UP:** alert
+**Fix (manual, untuk sekarang) — HANYA order produk:** cari baris ledger
+`matched` yang `order_id`-nya menunjuk order produk `CANCELLED` dengan
+`paid_at` kosong, cocokkan dengan dashboard gateway, lalu selesaikan dana
+pembeli secara manual (kredit saldo lewat penyesuaian admin atau refund).
+
+**JANGAN lakukan ini untuk top-up dompet (`kind = WALLET_TOPUP`).** Top-up yang
+`CANCELLED` dengan klaim `matched` tetap bisa diklaim ulang dan dikreditkan
+otomatis saat webhook/poller berikutnya (`isLateSettleableWalletTopup`,
+`packages/db/src/crud/wallet_topup.ts`). Kredit manual di atasnya membuat
+saldo terkredit dua kali, karena status order tetap `CANCELLED` dan
+penyelesaian otomatis masih lolos. Biarkan top-up menyelesaikan dirinya; kalau
+tidak ada retry yang akan datang, keluarkan dulu baris ledger dari `matched`
+(atau blokir klaim ulangnya) sebelum mengkredit manual.
+
+**OPEN OWNER FOLLOW-UP:** alert
 admin atau jalur kredit untuk kasus ini belum dibangun — lihat
 `docs/game-topup-refactor-phase1-design.md` §9.1.
 

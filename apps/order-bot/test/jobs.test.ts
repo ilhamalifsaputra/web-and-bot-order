@@ -9,6 +9,8 @@ import {
   finalizeOrderPayment,
   setOrderPaymentMessage,
   clearOrderPaymentMessage,
+  cancelOrder,
+  createWalletTopupOrder,
   createBroadcast,
   createTicket,
   getSetting,
@@ -48,6 +50,9 @@ const dbMockState = vi.hoisted(() => ({
   catalogSyncBusy: false,
   // sendPaymentReminders: the order whose reminder enqueue throws.
   paymentReminderFailOrderId: null as number | null,
+  // autoCancelExpiredOrders: a stale list the sweep acts on, as if the order
+  // changed between the sweep's read and its cancel. null => the real query.
+  expiredSnapshot: null as null | unknown[],
 }));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
@@ -77,11 +82,14 @@ vi.mock("@app/db", async () => {
       if (args[1].orderId === dbMockState.paymentReminderFailOrderId) throw new Error("simulated outbox write failure");
       return actual.enqueuePaymentReminderDm(...args);
     },
+    listExpiredPendingOrders: async (...args: Parameters<typeof actual.listExpiredPendingOrders>) =>
+      (dbMockState.expiredSnapshot as Awaited<ReturnType<typeof actual.listExpiredPendingOrders>> | null)
+        ?? actual.listExpiredPendingOrders(...args),
   };
 });
 
 import { GrammyError, InlineKeyboard, type Api } from "grammy";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, TicketStatus } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockActorType, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
@@ -124,6 +132,7 @@ beforeEach(async () => {
   dbMockState.runDetectionForCatalog = null;
   dbMockState.catalogSyncBusy = false;
   dbMockState.paymentReminderFailOrderId = null;
+  dbMockState.expiredSnapshot = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -261,6 +270,148 @@ describe("autoCancelExpiredOrders", () => {
     // The DM goes to the buyer's telegram id, not to the dead bubble's chat.
     expect((api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(Number(sample.user.telegramId));
     expect((await prisma.order.findUnique({ where: { id: order.id } }))?.status).toBe(OrderStatus.CANCELLED);
+  });
+});
+
+/**
+ * The expiry push (ORDER_EXPIRED_DM, Phase 4 owner decision): the buyer gets
+ * exactly ONE notification when the sweep cancels their order. Telegram makes
+ * no sound for an edited message, so the push is queued only when the
+ * cancellation itself sent nothing new — and every case pins the exact number
+ * of Telegram calls next to the number of queued pushes.
+ */
+describe("autoCancelExpiredOrders — expiry push without double notification", () => {
+  const pushes = (orderId: number) =>
+    prisma.notificationOutbox.findMany({ where: { orderId, event: NotificationEvent.ORDER_EXPIRED_DM } });
+  const telegramCalls = (api: Api) => {
+    const a = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    return {
+      editMessageText: a.editMessageText!.mock.calls.length,
+      editMessageCaption: a.editMessageCaption!.mock.calls.length,
+      deleteMessage: a.deleteMessage!.mock.calls.length,
+      sendMessage: a.sendMessage!.mock.calls.length,
+      sendPhoto: a.sendPhoto!.mock.calls.length,
+    };
+  };
+  const none = { editMessageText: 0, editMessageCaption: 0, deleteMessage: 0, sendMessage: 0, sendPhoto: 0 };
+
+  it("coordinator owns a text message: the worker edits it silently, so one push is queued", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 555n, messageId: 777, messageKind: "text", state: "WAITING" } });
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual(none);
+    const rows = await pushes(order.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({
+      chat_id: Number(sample.user.telegramId), order_code: order.orderCode, buyer_language: (sample.user.language ?? "EN").toLowerCase(), is_wallet_topup: false,
+    });
+  });
+
+  it("coordinator owns a QR photo: retiring it already sends a new message, so no push", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 555n, messageId: 777, messageKind: "photo", state: "WAITING" } });
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual(none);
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("anchored text bubble edited in place: the edit makes no sound, so one push is queued", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+  });
+
+  it("anchored QR photo replaced by a fresh message: that message is the notification, so no push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1, deleteMessage: 1, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("dead anchored bubble answered by the fallback DM: that DM is the notification, so no push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")) });
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("dead anchored bubble whose fallback DM also failed: nothing reached the buyer, so the push is queued to retry", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")),
+      sendMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 5")),
+    });
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+  });
+
+  it("no anchor: the existing DM is the only notification", async () => {
+    const order = await makeExpiredOrder();
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("concurrent and repeated ticks (or two bot instances) still make one edit and one push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    // Both ticks read the order while it is still pending; only the one whose
+    // cancel actually lands tells the buyer.
+    await Promise.all([autoCancelExpiredOrders(api), autoCancelExpiredOrders(api)]);
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+  });
+
+  it("a buyer without a Telegram id (web or guest checkout) gets nothing at all", async () => {
+    const guest = await prisma.user.create({ data: { telegramId: null, referralCode: `guest-${Math.random()}`, isGuest: true } });
+    const order = await prisma.order.create({
+      data: { userId: guest.id, orderCode: "ORD-GUEST-EXPIRED", subtotalAmount: 50_000, totalAmount: 50_000, status: OrderStatus.PENDING_PAYMENT, expiresAt: new Date(Date.now() - 60_000) },
+    });
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+    expect(telegramCalls(api)).toEqual(none);
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("an order the buyer cancelled after the sweep read it is not treated as expired: no notice, no push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    dbMockState.expiredSnapshot = await prisma.order.findMany({ where: { id: order.id }, include: { user: true } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "user_cancelled", { type: StockActorType.CUSTOMER, customerId: sample.user.id }));
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual(none);
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("covers a wallet top-up too, with the top-up wording", async () => {
+    const topup = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "100000", currency: "IDR", method: PaymentMethod.TOKOPAY }));
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: topup.id } });
+    await prisma.order.update({ where: { id: topup.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await setOrderPaymentMessage(prisma, topup.id, 555, 778);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    const rows = await pushes(topup.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ order_code: topup.orderCode, is_wallet_topup: true });
   });
 });
 

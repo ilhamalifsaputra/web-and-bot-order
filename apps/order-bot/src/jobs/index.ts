@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus, ReconciliationFindingType, StockActorType } from "@app/core/enums";
+import { langCode, OrderStatus, ReconciliationFindingType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
@@ -24,7 +24,8 @@ import {
   isPaymentReminderCandidate,
   enqueuePaymentReminderDm,
   sweepAgedUnderpaidAndFailedOrders,
-  cancelOrder,
+  cancelExpiredPendingOrder,
+  enqueueOrderExpiredDm,
   listStaleRepliedTickets,
   closeTicket,
   getUser,
@@ -450,27 +451,63 @@ export async function flushSettledOrderBubble(api: Api, orderId: number): Promis
   }
 }
 
+type AutoCancelledOrder = {
+  id: number;
+  tgId: bigint | null;
+  lang: string;
+  code: string;
+  kind: string;
+  paymentMsgChatId: bigint | null;
+  paymentMsgId: number | null;
+};
+
 /**
- * Turn the anchored payment-instructions bubble (if any) into the
- * auto-cancelled notice, and only send a fresh DM when no anchor exists or the
- * bubble is gone — so the stale Refresh/Cancel buttons never survive next to a
- * brand-new message. `editPaymentBubble` decides how: a text bubble is edited
- * in place, a QR photo bubble is deleted and replaced (the QR is worthless for
- * an order that just expired, and leaving the image sitting above a
- * "cancelled" caption is what that used to look like). Always passes
- * `onPhoto: "replace"` (Task E2: unlike the settlement flips below, this is a
- * CANCELLATION notice — the buyer has received no other message about it, so
- * the replacement is the only way they find out at all, whatever the order's
- * kind).
+ * Queue the expiry push (ORDER_EXPIRED_DM) after this process's own Telegram
+ * call left the buyer without a new message. Never throws: the order is
+ * already cancelled, and a lost push must not turn into a "could not notify"
+ * error for a notice that may have been edited in fine.
  */
-async function notifyAutoCancelled(
-  api: Api,
-  o: { id: number; tgId: bigint | null; lang: string; code: string; paymentMsgChatId: bigint | null; paymentMsgId: number | null },
-): Promise<void> {
-  if (await ownsTransactionMessage(prisma, o.id)) {
+async function queueExpiryPush(o: AutoCancelledOrder): Promise<void> {
+  try {
+    await enqueueOrderExpiredDm(prisma, { orderId: o.id, orderCode: o.code, telegramId: o.tgId, language: o.lang, kind: o.kind });
+  } catch (err) {
+    logger.error(
+      { err, orderId: o.id },
+      `Could not queue the expiry notice for auto-cancelled order ${o.code}, so its buyer gets no push about the cancellation; the payment message itself was already updated where possible.`,
+    );
+  }
+}
+
+/**
+ * Tell the buyer their expired order was cancelled — exactly once (Phase 4
+ * owner decision: edit the payment message AND push one cancel message, but
+ * never two messages for the same cancellation). Telegram notifies for a NEW
+ * message only, never for an edit, so the ORDER_EXPIRED_DM push is queued
+ * exactly when nothing new reached the buyer's chat, decided from what
+ * actually happened rather than assumed:
+ *
+ *  - tracked progress message (`tracked`, the coordinator owns it): its
+ *    FulfillmentMessageWorker renders the cancellation, and the push was
+ *    already decided inside the cancel transaction
+ *    (`cancelExpiredPendingOrder`: a text message is edited silently → push;
+ *    a QR photo is retired by a new message → no push). Only the wake here.
+ *  - anchored bubble: `editPaymentBubble` turns it into the notice. A text
+ *    bubble is edited in place (silent → push); a QR photo bubble is deleted
+ *    and replaced by a fresh message, or a dead bubble answered by the
+ *    fallback DM (both notify → no push); when even the fallback DM failed,
+ *    nothing reached the buyer, so the push is queued for the outbox's retry.
+ *    Always `onPhoto: "replace"` (Task E2: this is a CANCELLATION notice — the
+ *    replacement is how a photo bubble's buyer finds out at all).
+ *  - no anchor: the notice is sent as a DM, which notifies → no push; if that
+ *    send fails, the push is queued instead. A buyer without a Telegram id
+ *    (web or guest checkout) gets nothing.
+ */
+async function notifyAutoCancelled(api: Api, o: AutoCancelledOrder, tracked: boolean): Promise<void> {
+  if (tracked) {
     await wakeFulfillmentMessage(prisma, o.id);
     return;
   }
+  if (o.tgId == null) return;
   const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
   const markup = notificationKb(o.lang);
   if (o.paymentMsgChatId != null && o.paymentMsgId != null) {
@@ -482,6 +519,9 @@ async function notifyAutoCancelled(
       onPhoto: "replace",
       fallbackDm: { telegramId: Number(o.tgId) },
     });
+    // "replaced" and "dm_sent" put a new message in the chat; "edited" did
+    // not, and "not_edited" means nothing reached the buyer at all.
+    if (result.status === "edited" || result.status === "not_edited") await queueExpiryPush(o);
     // "error" only appears once a fallback DM was actually attempted (never
     // for the sweeper's fallbackDm: null mode) — re-throwing it here
     // reproduces the pre-refactor behavior exactly: a failed fallback send
@@ -491,27 +531,40 @@ async function notifyAutoCancelled(
     if (result.status === "not_edited" && "error" in result) throw result.error;
     return;
   }
-  await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
+  try {
+    await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
+  } catch (err) {
+    await queueExpiryPush(o);
+    throw err;
+  }
 }
 
 export async function autoCancelExpiredOrders(api: Api): Promise<void> {
   const now = new Date();
   const expired = await listExpiredPendingOrders(prisma, now);
-  const orderData = expired.map((o) => ({
+  const orderData: AutoCancelledOrder[] = expired.map((o) => ({
     id: o.id,
     code: o.orderCode,
     tgId: o.user.telegramId,
     lang: langCode(o.user.language),
+    kind: o.kind,
     paymentMsgChatId: o.paymentMsgChatId,
     paymentMsgId: o.paymentMsgId,
   }));
 
   for (const o of orderData) {
     try {
-      await prisma.$transaction((tx) => cancelOrder(tx, o.id, "expired", { type: StockActorType.SYSTEM }));
+      const result = await prisma.$transaction((tx) => cancelExpiredPendingOrder(tx, o.id));
+      if (!result.cancelled) {
+        // Someone else (the buyer, an admin, a payment, or another sweep
+        // instance) moved the order on between this sweep's read and its
+        // cancel, so this sweep has nothing to tell the buyer.
+        logger.info(`Order ${o.code} was no longer awaiting payment when the expiry sweep reached it, so the sweep left it alone and sent its buyer no expiry notice`);
+        continue;
+      }
       logger.info(`Order ${o.code} auto-cancelled after its payment window expired`);
       try {
-        await notifyAutoCancelled(api, o);
+        await notifyAutoCancelled(api, o, result.tracked);
       } catch (err) {
         logger.error({ err }, `Failed to notify the customer that order ${o.id} was auto-cancelled — order is cancelled, but they won't see it until they reopen the bot`);
       }

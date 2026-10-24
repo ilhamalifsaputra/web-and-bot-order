@@ -121,6 +121,41 @@ export async function ownsTransactionMessage(db: Db, orderId: number): Promise<b
 }
 
 /**
+ * What the buyer's tracked progress message will do when the order ends as
+ * cancelled — read by the expiry sweep to decide whether the buyer also needs
+ * the ORDER_EXPIRED_DM push (Phase 4 owner decision: one notification per
+ * cancellation, never two). It mirrors the FulfillmentMessageWorker
+ * (packages/outbox-dispatcher/src/fulfillmentMessages.ts):
+ *  - "untracked"   — no progress message row; the caller's own bubble/DM path
+ *                    decides.
+ *  - "new_message" — the worker will SEND a new message: a QR photo is never
+ *                    edited outside the payment-pending phases, it is retired
+ *                    by sending a fresh status text and deleting the photo.
+ *                    A legacy row of unknown kind is counted here too: the
+ *                    worker only learns it is a photo when the text edit fails,
+ *                    and a missed push is the smaller harm than a second
+ *                    message.
+ *  - "silent"      — the worker will only edit a text message (Telegram makes
+ *                    no sound for an edit), will send nothing at all (no
+ *                    message was sent yet: an order cancelled before the buyer
+ *                    heard anything is released without a send), or no longer
+ *                    handles the row (stopped, uncertain, finished or an
+ *                    interrupted send).
+ */
+export type TransactionMessageCancelNotice = "untracked" | "new_message" | "silent";
+
+/** Row states the worker will still render after `wakeFulfillmentMessage`
+ * (WAITING is moved to ACTIVE by it; EDITING finishes and re-renders). */
+const RENDERED_ON_WAKE_STATES = ["READY", "ACTIVE", "REVIEW", "WAITING", "EDITING"];
+
+export async function transactionMessageCancelNotice(db: Db, orderId: number): Promise<TransactionMessageCancelNotice> {
+  const row = await db.fulfillmentMessage.findUnique({ where: { orderId }, select: { state: true, messageId: true, messageKind: true } });
+  if (!row) return "untracked";
+  const retiresPhoto = RENDERED_ON_WAKE_STATES.includes(row.state) && row.messageId !== null && row.messageKind !== "text";
+  return retiresPhoto ? "new_message" : "silent";
+}
+
+/**
  * Bring an order's progress message forward when the order reaches a final
  * state, so the buyer sees the outcome promptly. Call it in the same
  * transaction as the status write.

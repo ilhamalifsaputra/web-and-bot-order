@@ -87,9 +87,10 @@ import {
   enqueueOwnerOrderPaidEmail,
   enqueueOwnerManualQueueEmail,
   enqueueBuyerOrderReadyEmail,
+  enqueueOrderExpiredDm,
 } from "./notifications";
 import { logAdminAction } from "./audit";
-import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage, transactionMessageCancelNotice } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueNotificationSafely } from "./notificationIsolation";
 
@@ -1921,6 +1922,75 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   // buyer, and a decrypt here would roll the whole cancel back over one
   // unreadable row the cancel never needed.
   return getOrderRaw(db, orderId);
+}
+
+/** What the expiry sweep's own cancel did. `tracked` says whether the order
+ * has a progress message row (the FulfillmentMessageWorker shows the outcome,
+ * and the push decision was already made here); when it is false the caller's
+ * own bubble/DM path tells the buyer and decides the push itself. */
+export type ExpiredOrderCancellation = { cancelled: false } | { cancelled: true; tracked: boolean };
+
+/**
+ * The expiry sweep's cancel (`autoCancelExpiredOrders`): void an order whose
+ * payment window lapsed, but only while it is STILL PENDING_PAYMENT under the
+ * row lock. The sweep reads its list before it cancels, and `cancelOrder` on
+ * an order that is already cancelled returns quietly — so without this check
+ * a buyer's or admin's cancel landing in between, or a second sweep instance,
+ * would be treated as this sweep's expiry and the buyer told it expired.
+ * Returns `{ cancelled: false }` then, and the caller tells the buyer nothing.
+ *
+ * When the order has a tracked progress message that will only be edited
+ * silently (`transactionMessageCancelNotice`), the expiry push
+ * (ORDER_EXPIRED_DM) is queued here, in the cancel's own transaction. A failed
+ * queue write is logged and rolled back to a savepoint, never undoing the
+ * cancel (`enqueueNotificationSafely`). A tracked QR photo gets no push: the
+ * worker retires it by sending a new message, which already notifies.
+ */
+export async function cancelExpiredPendingOrder(db: Db, orderId: number): Promise<ExpiredOrderCancellation> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => cancelExpiredPendingOrder(tx, orderId));
+  await db.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR NO KEY UPDATE`;
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { status: true, orderCode: true, kind: true, user: { select: { telegramId: true, language: true } } },
+  });
+  if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return { cancelled: false };
+  await cancelOrder(db, orderId, "expired", { type: StockActorType.SYSTEM });
+  const notice = await transactionMessageCancelNotice(db, orderId);
+  if (notice === "silent") {
+    await enqueueNotificationSafely(db, { orderId, notification: "order expired push" }, () =>
+      enqueueOrderExpiredDm(db, {
+        orderId, orderCode: order.orderCode, telegramId: order.user.telegramId, language: order.user.language, kind: order.kind,
+      }));
+  }
+  return { cancelled: true, tracked: notice !== "untracked" };
+}
+
+/** Why a queued expiry push must not be sent any more. */
+export type OrderExpiredDmSkipReason = "ORDER_NOT_FOUND" | "ORDER_NOT_CANCELLED" | "PAYMENT_ALREADY_RECEIVED";
+
+/** Payment states that mean money for the order was seen (the same set the
+ * transaction-message adoption treats as "no longer awaiting payment"). */
+const PAYMENT_SEEN_STATES = ["PAYMENT_DETECTED", "VERIFYING", "PAID", "UNDERPAID"];
+
+/**
+ * Send-time re-check for ORDER_EXPIRED_DM: the outbox dispatcher calls this
+ * right before delivering the push, because the row may have waited (a
+ * backoff, flood control, a restart) while things changed. Returns null when
+ * the push is still true — the order is CANCELLED and no payment was seen —
+ * and otherwise the reason the dispatcher records on the SKIPPED row. The case
+ * that matters most is a wallet top-up: a late payment can still settle a
+ * cancelled top-up (`isLateSettleableWalletTopup`), which moves it to DELIVERED
+ * and credits the wallet, and a "your order was cancelled" message after the
+ * "top-up successful" one would be wrong.
+ */
+export async function orderExpiredDmSkipReason(db: Db, orderId: number): Promise<OrderExpiredDmSkipReason | null> {
+  const order = await db.order.findUnique({ where: { id: orderId }, select: { status: true, paymentState: true, walletCreditState: true } });
+  if (!order) return "ORDER_NOT_FOUND";
+  if (order.status !== OrderStatus.CANCELLED) return "ORDER_NOT_CANCELLED";
+  if (PAYMENT_SEEN_STATES.includes(order.paymentState ?? "") || ["CREDITED", "NEEDS_REVIEW"].includes(order.walletCreditState ?? "")) {
+    return "PAYMENT_ALREADY_RECEIVED";
+  }
+  return null;
 }
 
 /**

@@ -14,7 +14,7 @@ import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus, ReconciliationFindingType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
-import { config } from "@app/core/config";
+import { config, unusablePaymentReminderLeadWarning } from "@app/core/config";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
   prisma,
@@ -606,8 +606,16 @@ export async function sendPaymentReminders(_api: Api, opts: { now?: Date; leadMi
   const leadMs = leadMinutes * 60_000;
   const expiring = await listExpiringPendingPayments(prisma, now, new Date(now.getTime() + leadMs), PAYMENT_REMINDER_BATCH_LIMIT);
   for (const order of expiring) {
+    // The listing is the expiry job's and still returns orders whose payment
+    // a provider already saw; the candidate check turns those away.
     if (!isPaymentReminderCandidate(order, now, leadMs)) continue;
     try {
+      // `expiresAt` is stamped once, when the order is created (the initial
+      // PAYMENT_WINDOW_MINUTES stamp, then `finalizeOrderPayment`'s or
+      // `finalizeWalletTopupPayment`'s rail window, every caller of which runs
+      // inside the order's creation transaction) and never moved later,
+      // so the deadline queued here is the one the dispatcher's send-time
+      // re-check compares against.
       await enqueuePaymentReminderDm(prisma, {
         orderId: order.id,
         orderCode: order.orderCode,
@@ -1892,6 +1900,10 @@ export function scheduleOutboxDispatcherWatchdog(api: Api): Cron {
 }
 
 export function scheduleJobs(api: Api): Cron[] {
+  // The env schema switches the reminder off for an unusable lead instead of
+  // failing the boot; say so once here, where the reminder job is scheduled.
+  const reminderLeadWarning = unusablePaymentReminderLeadWarning(process.env.PAYMENT_REMINDER_LEAD_MINUTES);
+  if (reminderLeadWarning) logger.warn(reminderLeadWarning);
   const wrap = (name: string, fn: (api: Api) => Promise<void>) => () =>
     fn(api).catch((err) => logger.error({ err }, `Scheduled job "${name}" threw an uncaught error — this run was skipped, will retry on its next tick`));
   return [

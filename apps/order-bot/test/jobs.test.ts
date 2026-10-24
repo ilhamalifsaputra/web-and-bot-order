@@ -1820,9 +1820,6 @@ describe("announceStartedFlashSales", () => {
   });
 });
 
-// Bot-5 (security audit, 2026-06-23): a slow tick (or a restart racing the
-// next scheduled fire) must not overlap with itself and re-process the same
-// expired-orders/stale-tickets set, sending duplicate DMs.
 /**
  * Phase 4 owner decision: one reminder push when about five minutes of the
  * payment window are left. The job only enqueues (the outbox dispatcher sends
@@ -1859,7 +1856,27 @@ describe("sendPaymentReminders", () => {
     const rows = await reminders(order.id);
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: Number(sample.user.telegramId), order_code: order.orderCode, minutes_left: 4 });
+    // The deadline the buyer reads is the order's own `expiresAt` as it was
+    // when queued; it is stamped once, at order creation, and never moved.
+    expect(JSON.parse(rows[0]!.payloadJson).expires_at).toBe(order.expiresAt!.toISOString());
     expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // T5b: a payment the provider already saw keeps the order PENDING_PAYMENT
+  // (recordProviderPaymentObservation); reminding that buyer invites a second
+  // payment, so only "nothing observed yet" orders are queued.
+  it("queues nothing for an order whose payment was already detected, is verifying, carries a paid-at stamp or awaits wallet review", async () => {
+    const now = new Date();
+    const detected = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "PAYMENT_DETECTED" } });
+    const verifying = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "VERIFYING" } });
+    const paidAt = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paidAt: now } });
+    const review = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { walletCreditState: "NEEDS_REVIEW" } });
+    const waiting = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "WAITING_PAYMENT" } });
+    const untouched = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 });
+    const queued = (await reminders()).map((r) => r.orderId).sort((a, b) => a! - b!);
+    expect(queued).toEqual([waiting.id, untouched.id].sort((a, b) => a - b));
+    for (const skipped of [detected, verifying, paidAt, review]) expect(queued).not.toContain(skipped.id);
   });
 
   it("does nothing when the lead is 0 (reminder switched off)", async () => {
@@ -1910,7 +1927,36 @@ describe("sendPaymentReminders", () => {
   });
 });
 
+// Bot-5 (security audit, 2026-06-23): a slow tick (or a restart racing the
+// next scheduled fire) must not overlap with itself and re-process the same
+// expired-orders/stale-tickets set, sending duplicate DMs.
 describe("scheduleJobs cron registration (Bot-5 fix)", () => {
+  // The env schema never fails the boot over PAYMENT_REMINDER_LEAD_MINUTES; a
+  // mistyped value switches the reminder off, and this warning is how an
+  // operator finds out.
+  it.each([
+    ["abc", true],
+    ["-5", true],
+    ["NaN", true],
+    ["0", false],
+    ["5", false],
+  ] as const)("warns once at startup when PAYMENT_REMINDER_LEAD_MINUTES is %s only if it is unusable", (raw, warns) => {
+    const previous = process.env.PAYMENT_REMINDER_LEAD_MINUTES;
+    process.env.PAYMENT_REMINDER_LEAD_MINUTES = raw;
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    const crons = scheduleJobs(fakeApi());
+    try {
+      const reminderWarnings = warn.mock.calls.map((c) => String(c[1] ?? c[0])).filter((m) => m.includes("PAYMENT_REMINDER_LEAD_MINUTES"));
+      expect(reminderWarnings).toHaveLength(warns ? 1 : 0);
+      if (warns) expect(reminderWarnings[0]).toMatch(/switched off/);
+    } finally {
+      for (const c of crons) c.stop();
+      warn.mockRestore();
+      if (previous === undefined) delete process.env.PAYMENT_REMINDER_LEAD_MINUTES;
+      else process.env.PAYMENT_REMINDER_LEAD_MINUTES = previous;
+    }
+  });
+
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,

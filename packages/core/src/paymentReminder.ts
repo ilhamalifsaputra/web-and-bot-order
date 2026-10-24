@@ -23,6 +23,39 @@
 export const PAYMENT_REMINDER_MIN_REMAINING_MS = 60_000;
 
 /**
+ * The one comparator for that floor: true while at least
+ * `PAYMENT_REMINDER_MIN_REMAINING_MS` is left. The job (enqueue) and the
+ * dispatcher (send) both call this, so a row queued with exactly a minute
+ * left is not then refused at send time by a stricter `>`.
+ */
+export function paymentReminderHasTimeLeft(expiresAt: Date, now: Date): boolean {
+  return expiresAt.getTime() - now.getTime() >= PAYMENT_REMINDER_MIN_REMAINING_MS;
+}
+
+/**
+ * True only while NO payment has been observed for the order: its payment
+ * state is unset or WAITING_PAYMENT, it carries no paid-at stamp, and no wallet
+ * credit awaits review. Every other payment state counts as "seen" —
+ * PAYMENT_DETECTED and VERIFYING (`recordProviderPaymentObservation` sets them
+ * while the order status stays PENDING_PAYMENT), PAID, UNDERPAID, FAILED,
+ * EXPIRED, REFUNDED, and any state added later (allow-list, so a new state is
+ * safe by default).
+ *
+ * This is stricter than the expiry job's `customerPaymentOutstanding`
+ * (packages/db orders.ts), on purpose: it decides who may be told "N minutes
+ * left to pay, then the order is cancelled", and a buyer whose transfer is
+ * already on its way who reads that may pay twice. The payment reminder's
+ * enqueue and send halves and the "payment expired" email all use it.
+ */
+export function awaitingPaymentNothingObserved(order: {
+  paymentState: string | null;
+  paidAt: Date | null;
+  walletCreditState: string | null;
+}): boolean {
+  return (!order.paymentState || order.paymentState === "WAITING_PAYMENT") && !order.paidAt && order.walletCreditState !== "NEEDS_REVIEW";
+}
+
+/**
  * Whole minutes left before `expiresAt`, rounded DOWN and never below 1 — the
  * buyer is told slightly less time than they really have, never more. Callers
  * only reach this with at least `PAYMENT_REMINDER_MIN_REMAINING_MS` left, so

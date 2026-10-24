@@ -186,11 +186,14 @@ Keenam rail auto-confirm meng-commit klaim `processed_*_tx` (outcome `matched`) 
 
 ### 9.2 Reminder
 
-- Event notifikasi baru di `NotificationEvent` (mis. `PAYMENT_REMINDER_DM`), bukan status order.
-- Job croner baru (`protect: true`, detik yang tidak bentrok dengan job lain), memanggil `listExpiringPendingPayments(db, now, now + lead)`; tidak ada timer per order.
-- `lead` = setting `payment_reminder_lead_minutes`, default 5, bukan hardcode. Hanya order dengan sisa waktu positif dan `expiresAt − createdAt` lebih besar dari `lead`.
-- Dedupe: `dedupeKey = payment_reminder:<orderId>` pada `NotificationOutbox` (unik) → satu reminder per order walau job ganda atau restart.
-- Kelayakan dicek dua kali: saat enqueue dan saat dispatcher mengirim (render ulang dari DB; jika sudah bukan `PENDING_PAYMENT` atau pembayaran sudah masuk, lewati tanpa kirim).
+Keputusan final (Phase 4 Task 5 + perbaikan review T5b):
+- Event `NotificationEvent.PAYMENT_REMINDER_DM`, bukan status order. Job `sendPaymentReminders` (order-bot, croner `47 * * * * *`, `protect: true`) memanggil `listExpiringPendingPayments(db, now, now + lead)`; tidak ada timer per order. Job hanya enqueue; dispatcher outbox yang mengirim.
+- `lead` = env `PAYMENT_REMINDER_LEAD_MINUTES` (bukan Settings), default 5, `0` mematikan. Nilai yang tidak terpakai (negatif, bukan angka, < 1) juga mematikan tanpa menggagalkan boot, dan order-bot menulis satu `logger.warn` saat start (`unusablePaymentReminderLeadWarning`, `packages/core/src/config.ts`). Hanya order dengan `expiresAt − createdAt` lebih besar dari `lead` dan sisa waktu ≥ 60 detik (`paymentReminderHasTimeLeft`, satu pembanding untuk enqueue dan kirim).
+- Dedupe: `dedupeKey = payment_reminder:<orderId>` pada `NotificationOutbox` (unik) → satu reminder per order walau job ganda atau restart. Baris yang dilewati tetap memegang key.
+- Kelayakan dicek dua kali dengan predikat yang sama, `awaitingPaymentNothingObserved` (`packages/core/src/paymentReminder.ts`): saat enqueue (`isPaymentReminderCandidate`) dan saat kirim (`paymentReminderSkipReason`, baca ulang order). Hanya `paymentState` null atau `WAITING_PAYMENT`, tanpa `paidAt`, dan `walletCreditState` bukan `NEEDS_REVIEW` yang boleh diingatkan. Semua state lain (`PAYMENT_DETECTED`, `VERIFYING`, `PAID`, `UNDERPAID`, `FAILED`, `EXPIRED`, `REFUNDED`, state baru) menekan reminder: pembeli yang transfernya sudah terlihat lalu membaca "sisa N menit, setelah itu dibatalkan" bisa membayar dua kali. Alasan skip: `ORDER_NOT_FOUND`, `ORDER_NOT_AWAITING_PAYMENT`, `PAYMENT_WINDOW_CLOSING`, `PAYMENT_ALREADY_RECEIVED` (PAID/`paidAt`/`NEEDS_REVIEW`), `PAYMENT_IN_PROGRESS` (state lain yang sudah dilaporkan provider).
+- Deadline di pesan berasal dari `expires_at` payload = `expiresAt` order saat enqueue. `expiresAt` hanya distempel saat pembuatan order (stempel awal + jendela rail dari `finalizeOrderPayment`/`finalizeWalletTopupPayment` di transaksi pembuatan yang sama) dan tidak pernah digeser.
+
+**OPEN OWNER ITEM (belum dibangun):** `autoCancelExpiredOrders` (`apps/order-bot/src/jobs/index.ts:542-544`) memakai `listExpiredPendingOrders` dengan predikat longgar `customerPaymentOutstanding` (`packages/db/src/crud/orders.ts:1508-1513`, hanya mengecualikan `PAID` dan `NEEDS_REVIEW`). Order NOWPayments yang `PENDING_PAYMENT` dengan `paymentState` `PAYMENT_DETECTED`/`VERIFYING` (ditulis oleh `recordProviderPaymentObservation`, `packages/db/src/crud/orderStatus.ts:234-249`; dipanggil dari `apps/order-bot/src/payments/nowpaymentsReconcile.ts:241` dan `apps/storefront/src/routes/checkout.ts:1588`) tetap dibatalkan otomatis saat `expiresAt`. Sudah ada sebelum Phase 4; jendela yang lebih pendek membuatnya lebih sering. Reminder sudah menekan kasus ini, tetapi auto-cancel tidak diubah tanpa keputusan pemilik (pilihan: tunda cancel selama pembayaran terdeteksi, atau beri grace/alert admin).
 - Isi pesan: nomor order lengkap, sisa waktu aktual, deadline dengan format `yyyy-LL-dd HH:mm WIB` seperti builder rail, plus kalimat bahwa pesanan dibatalkan otomatis setelah batas waktu (auto-cancel memang ada). Tanpa kredensial. Dua bahasa (`en.json`, `id.json`).
 - Kegagalan Telegram: retry dan backoff outbox yang ada (maks. 10 percobaan, DEAD_LETTER); blokir/403 tidak mengubah status order.
 - Saat expiry: jalur `autoCancelExpiredOrders` → `cancelOrder` → `notifyAutoCancelled` dipertahankan. Phase 4 memverifikasi bahwa pesan order/QR ikut diedit menjadi "dibatalkan" (`editPaymentBubble`, `ownsTransactionMessage`, `wakeFulfillmentMessage`); bila belum, tambahkan di jalur itu.
@@ -198,11 +201,11 @@ Keenam rail auto-confirm meng-commit klaim `processed_*_tx` (outcome `matched`) 
 
 ### 9.3 Feature flag
 
-Kunci baru di `booleanSettings.ts`, `DEFAULT_OFF`:
+Tidak ada feature flag:
 - ~~Flag alur Game Top-up v2~~ — flag ini dihapus pada 2026-10-19 atas keputusan pemilik; alur katalog Game Top-up (label `From`, hint, `/search`) menjadi bawaan dan tidak ada saklarnya lagi.
-- `payment_reminder_enabled` — job reminder.
+- ~~`payment_reminder_enabled`~~ — tidak dibuat; reminder dimatikan lewat env `PAYMENT_REMINDER_LEAD_MINUTES=0` (lihat 9.2).
 
-TTL baru tidak di bawah flag (konfigurasi env); rollback = kembalikan nilai env.
+TTL baru juga tidak di bawah flag (konfigurasi env); rollback = kembalikan nilai env.
 
 ## 10. Fixture dan rencana tes
 

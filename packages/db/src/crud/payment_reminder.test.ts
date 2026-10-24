@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { NotificationEvent, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { awaitingPaymentNothingObserved } from "@app/core";
 import { isPaymentReminderCandidate, listExpiringPendingPayments, paymentReminderSkipReason } from "./orders";
 import { enqueuePaymentReminderDm } from "./notifications";
 import { createWalletTopupOrder } from "./wallet_topup";
@@ -172,5 +173,65 @@ describe("paymentReminderSkipReason (send-time re-check)", () => {
 
   it("skips an order that no longer exists", async () => {
     expect(await paymentReminderSkipReason(db.prisma, 987_654_321, NOW)).toBe("ORDER_NOT_FOUND");
+  });
+
+  it("still sends a reminder queued with exactly the one-minute floor left (one comparator for both halves)", async () => {
+    const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: MIN });
+    expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(true);
+    expect(await paymentReminderSkipReason(db.prisma, order.id, NOW)).toBeNull();
+  });
+});
+
+/**
+ * The double-payment trigger (T5b review finding): a provider that already saw
+ * the buyer's transfer moves `paymentState` on while the order status stays
+ * PENDING_PAYMENT (`recordProviderPaymentObservation`, orderStatus.ts). A
+ * "N minutes left to pay, then it is cancelled" push to that buyer invites a
+ * second payment, so only "nothing observed yet" orders may be reminded — at
+ * enqueue AND at send, by the one shared `awaitingPaymentNothingObserved`.
+ */
+describe("a payment the provider already saw is never reminded", () => {
+  const SEEN_STATES = ["PAYMENT_DETECTED", "VERIFYING", "UNDERPAID", "FAILED", "EXPIRED", "REFUNDED"];
+
+  it.each(SEEN_STATES)("is not queued for a PENDING_PAYMENT order whose payment state is %s", async (paymentState) => {
+    const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState } });
+    // The shared expiry listing is unchanged (auto-cancel still sees it); the
+    // reminder's own eligibility is what turns it away.
+    expect((await listExpiringPendingPayments(db.prisma, NOW, at(LEAD_MS))).map((o) => o.id)).toContain(order.id);
+    expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(false);
+  });
+
+  it.each(SEEN_STATES)("is skipped at send time as PAYMENT_IN_PROGRESS when the payment state became %s after queueing", async (paymentState) => {
+    const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN });
+    expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(true);
+    await db.prisma.order.update({ where: { id: order.id }, data: { paymentState } });
+    expect(await paymentReminderSkipReason(db.prisma, order.id, NOW)).toBe("PAYMENT_IN_PROGRESS");
+  });
+
+  it.each([null, "WAITING_PAYMENT"])("still reminds an order whose payment state is %s (nothing observed yet)", async (paymentState) => {
+    const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState } });
+    expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(true);
+    expect(await paymentReminderSkipReason(db.prisma, order.id, NOW)).toBeNull();
+  });
+
+  it("skips a still-pending order that already carries a paid-at stamp", async () => {
+    const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paidAt: at(-MIN) } });
+    expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(false);
+    expect(await paymentReminderSkipReason(db.prisma, order.id, NOW)).toBe("PAYMENT_ALREADY_RECEIVED");
+  });
+
+  it("skips a still-pending order whose wallet credit awaits review, at enqueue and at send", async () => {
+    const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "WAITING_PAYMENT", walletCreditState: "NEEDS_REVIEW" } });
+    expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(false);
+    expect(await paymentReminderSkipReason(db.prisma, order.id, NOW)).toBe("PAYMENT_ALREADY_RECEIVED");
+  });
+
+  it("decides enqueue and send with the same predicate for every payment state", async () => {
+    for (const paymentState of [null, "WAITING_PAYMENT", "PAID", ...SEEN_STATES]) {
+      const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState } });
+      const expected = awaitingPaymentNothingObserved(order);
+      expect(isPaymentReminderCandidate(order, NOW, LEAD_MS)).toBe(expected);
+      expect((await paymentReminderSkipReason(db.prisma, order.id, NOW)) === null).toBe(expected);
+    }
   });
 });

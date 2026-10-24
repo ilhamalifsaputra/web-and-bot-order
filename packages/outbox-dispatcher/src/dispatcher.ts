@@ -411,9 +411,12 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
     }
 
     // Payment reminder (Phase 4): the row may have waited — a backoff, flood
-    // control, a restart — while the buyer paid or the order was cancelled,
-    // so re-read the order right before sending and drop the push unless it
-    // still awaits payment with more than a minute left. The skip keeps the
+    // control, a restart — while the buyer paid, a provider saw the payment
+    // (PAYMENT_DETECTED / VERIFYING with the status still PENDING_PAYMENT) or
+    // the order was cancelled, so re-read the order right before sending and
+    // drop the push unless no payment has been observed and at least a
+    // minute is left. "N minutes left to pay" to a buyer whose transfer is
+    // already on its way could make them pay twice. The skip keeps the
     // dedupe key on purpose: the reminder is once per order, and the job must
     // not queue a fresh one for an order that has moved on.
     if (row.event === NotificationEvent.PAYMENT_REMINDER_DM) {

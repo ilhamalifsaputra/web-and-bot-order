@@ -53,7 +53,7 @@ top-up saldo wallet (memakai config yang sama).
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `PAYMENT_REMINDER_LEAD_MINUTES` | `5` | Berapa menit sebelum `expiresAt` pembeli Telegram menerima **satu** pengingat bayar (`PAYMENT_REMINDER_DM`). `0` mematikan pengingat; nilai negatif, bukan angka, atau di bawah 1 juga dianggap mati (boot tidak gagal). Baris kosong = default. |
+| `PAYMENT_REMINDER_LEAD_MINUTES` | `5` | Berapa menit sebelum `expiresAt` pembeli Telegram menerima **satu** pengingat bayar (`PAYMENT_REMINDER_DM`). `0` mematikan pengingat; nilai negatif, bukan angka, atau di bawah 1 juga dianggap mati (boot tidak gagal, order-bot menulis satu peringatan di log saat start). Baris kosong = default. |
 
 - Berlaku untuk semua service dan semua rail, termasuk top-up saldo wallet;
   hanya pesanan `PENDING_PAYMENT` yang belum dibayar, pembelinya punya
@@ -67,6 +67,14 @@ top-up saldo wallet (memakai config yang sama).
   (status `SKIPPED`, dedupe key tetap) bila pesanan sudah dibayar, dibatalkan,
   atau sisa waktunya tinggal kurang dari 1 menit. Sisa waktu di pesan dihitung
   saat dikirim, deadline ditampilkan `yyyy-LL-dd HH:mm WIB`.
+- Hanya pesanan yang **belum terlihat pembayarannya** yang diingatkan:
+  `paymentState` kosong atau `WAITING_PAYMENT`, tanpa `paidAt`, dan
+  `walletCreditState` bukan `NEEDS_REVIEW`. State `PAYMENT_DETECTED`,
+  `VERIFYING`, `PAID`, `UNDERPAID`, `FAILED`, `EXPIRED`, `REFUNDED` (dan state
+  baru apa pun) menekan pengingat, baik saat enqueue maupun saat kirim
+  (`SKIPPED` dengan alasan `PAYMENT_IN_PROGRESS` atau
+  `PAYMENT_ALREADY_RECEIVED`) — agar pembeli yang transfernya sudah terdeteksi
+  tidak membayar dua kali.
 
 ## Payment — Binance Pay (manual, legacy fallback)
 

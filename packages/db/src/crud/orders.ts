@@ -41,7 +41,7 @@ import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
-import { PAYMENT_REMINDER_MIN_REMAINING_MS } from "@app/core";
+import { awaitingPaymentNothingObserved, paymentReminderHasTimeLeft } from "@app/core";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
@@ -1677,23 +1677,38 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
 /**
  * Enqueue-time half of the payment reminder rule (PAYMENT_REMINDER_DM, Phase
  * 4 owner decision), applied to a row `listExpiringPendingPayments` already
- * returned — so it is already PENDING_PAYMENT and unpaid by the shared
- * `customerPaymentOutstanding` predicate. On top of that the order needs a
- * Telegram buyer (web and guest checkouts have nowhere to push to), a whole
- * window LONGER than the lead (an order opened inside the reminder window
- * already shows its full deadline on the payment screen, so a push straight
- * after would only repeat it), and at least `PAYMENT_REMINDER_MIN_REMAINING_MS`
- * still left. The dispatcher re-checks the order at send time
- * (`paymentReminderSkipReason`), so this is not the last word.
+ * returned — so it is already PENDING_PAYMENT and not PAID by
+ * `customerPaymentOutstanding`. That listing is shared with the expiry job
+ * and is deliberately looser than what a reminder needs: it still returns an
+ * order whose payment the provider has already seen (PAYMENT_DETECTED /
+ * VERIFYING while the status stays PENDING_PAYMENT), and telling that buyer
+ * "N minutes left to pay" invites a second payment. So the order must also
+ * pass `awaitingPaymentNothingObserved` (@app/core) — the same predicate the
+ * send-time half uses. On top of that it needs a Telegram buyer (web and guest
+ * checkouts have nowhere to push to), a whole window LONGER than the lead (an
+ * order opened inside the reminder window already shows its full deadline on
+ * the payment screen, so a push straight after would only repeat it), and at
+ * least `PAYMENT_REMINDER_MIN_REMAINING_MS` still left
+ * (`paymentReminderHasTimeLeft`, the send half's comparator too). The
+ * dispatcher re-checks the order at send time (`paymentReminderSkipReason`),
+ * so this is not the last word.
  */
 export function isPaymentReminderCandidate(
-  order: { expiresAt: Date | null; createdAt: Date; user: { telegramId: bigint | null } },
+  order: {
+    expiresAt: Date | null;
+    createdAt: Date;
+    paymentState: string | null;
+    paidAt: Date | null;
+    walletCreditState: string | null;
+    user: { telegramId: bigint | null };
+  },
   now: Date,
   leadMs: number,
 ): boolean {
   if (order.expiresAt == null || order.user.telegramId == null) return false;
+  if (!awaitingPaymentNothingObserved(order)) return false;
   if (order.expiresAt.getTime() - order.createdAt.getTime() <= leadMs) return false;
-  return order.expiresAt.getTime() - now.getTime() >= PAYMENT_REMINDER_MIN_REMAINING_MS;
+  return paymentReminderHasTimeLeft(order.expiresAt, now);
 }
 
 /** Why a queued payment reminder must not be sent any more. */
@@ -1701,32 +1716,34 @@ export type PaymentReminderSkipReason =
   | "ORDER_NOT_FOUND"
   | "ORDER_NOT_AWAITING_PAYMENT"
   | "PAYMENT_ALREADY_RECEIVED"
+  | "PAYMENT_IN_PROGRESS"
   | "PAYMENT_WINDOW_CLOSING";
 
 /**
  * Send-time half of the payment reminder rule: the outbox dispatcher calls
  * this right before delivering a PAYMENT_REMINDER_DM, because the row may have
- * waited (a backoff, flood control, a restart) while the buyer paid or the
- * order was cancelled. Returns null when the reminder is still due — the
- * order is PENDING_PAYMENT, unpaid by the same `customerPaymentOutstanding`
- * predicate the expiry job uses, and more than
- * `PAYMENT_REMINDER_MIN_REMAINING_MS` from its deadline — and otherwise the
- * reason, which the dispatcher records on the SKIPPED row. The due check is a
- * single query over that shared predicate, so this can never disagree with the
- * expiry job about what "unpaid" means; the follow-up read only names the
- * reason.
+ * waited (a backoff, flood control, a restart) while the buyer paid, a
+ * provider saw the payment, or the order was cancelled. Returns null when the
+ * reminder is still due — the order is PENDING_PAYMENT, no payment has been
+ * observed (`awaitingPaymentNothingObserved`, the enqueue half's predicate),
+ * and at least `PAYMENT_REMINDER_MIN_REMAINING_MS` is left
+ * (`paymentReminderHasTimeLeft`, the enqueue half's comparator) — and
+ * otherwise the reason, which the dispatcher records on the SKIPPED row:
+ * PAYMENT_ALREADY_RECEIVED for PAID, a paid-at stamp or a wallet credit
+ * awaiting review; PAYMENT_IN_PROGRESS for any other payment state the
+ * provider has reported (detected, verifying, underpaid, failed...).
  */
 export async function paymentReminderSkipReason(db: Db, orderId: number, now: Date): Promise<PaymentReminderSkipReason | null> {
-  const closesAfter = new Date(now.getTime() + PAYMENT_REMINDER_MIN_REMAINING_MS);
-  const due = await db.order.count({
-    where: { id: orderId, status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, gt: closesAfter }, ...customerPaymentOutstanding },
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { status: true, expiresAt: true, paymentState: true, paidAt: true, walletCreditState: true },
   });
-  if (due === 1) return null;
-  const order = await db.order.findUnique({ where: { id: orderId }, select: { status: true, expiresAt: true } });
   if (!order) return "ORDER_NOT_FOUND";
   if (order.status !== OrderStatus.PENDING_PAYMENT) return "ORDER_NOT_AWAITING_PAYMENT";
-  if (order.expiresAt == null || order.expiresAt <= closesAfter) return "PAYMENT_WINDOW_CLOSING";
-  return "PAYMENT_ALREADY_RECEIVED";
+  if (order.expiresAt == null || !paymentReminderHasTimeLeft(order.expiresAt, now)) return "PAYMENT_WINDOW_CLOSING";
+  if (awaitingPaymentNothingObserved(order)) return null;
+  if (order.paymentState === "PAID" || order.paidAt || order.walletCreditState === "NEEDS_REVIEW") return "PAYMENT_ALREADY_RECEIVED";
+  return "PAYMENT_IN_PROGRESS";
 }
 
 /**

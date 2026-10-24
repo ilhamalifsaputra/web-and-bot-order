@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Env } from "./config";
+import { Env, unusablePaymentReminderLeadWarning } from "./config";
 
 // DATABASE_URL_PRISMA has no default (it's required — see config.ts) so every
 // parse() call below needs a value; these tests are exercising unrelated
@@ -71,6 +71,23 @@ describe("config schema", () => {
       expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: raw }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(0);
     },
   );
+
+  // The boot never fails over this value, so an admin who mistyped it would
+  // otherwise only find out when buyers stop getting reminders.
+  it.each(["-5", "abc", "NaN", "Infinity", "0.5"])(
+    "describes an unusable payment reminder lead (%s) in a full sentence for a boot-time warning",
+    (raw) => {
+      const warning = unusablePaymentReminderLeadWarning(raw);
+      expect(warning).toContain("PAYMENT_REMINDER_LEAD_MINUTES");
+      expect(warning).toContain(JSON.stringify(raw));
+      expect(warning).toMatch(/switched off/);
+      expect(warning).toMatch(/\.$/);
+    },
+  );
+
+  it.each([undefined, "", "  ", "0", "5", "4.9"])("has no warning for a usable or deliberately-off payment reminder lead (%s)", (raw) => {
+    expect(unusablePaymentReminderLeadWarning(raw)).toBeNull();
+  });
 
   it("rounds a fractional payment reminder lead down to whole minutes", () => {
     expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "4.9" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(4);

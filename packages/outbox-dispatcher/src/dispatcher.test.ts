@@ -2388,6 +2388,31 @@ describe("drainBatch delivers PAYMENT_REMINDER_DM only while the order still awa
     expect((await reminderRow(order.id)).lastError).toBe("PAYMENT_ALREADY_RECEIVED");
   });
 
+  // T5b: a provider that saw the transfer keeps the order PENDING_PAYMENT and
+  // only moves paymentState on (recordProviderPaymentObservation). Telling
+  // that buyer "N minutes left to pay" invites a second payment.
+  it.each([
+    ["PAYMENT_DETECTED", 760_007],
+    ["VERIFYING", 760_008],
+  ] as const)("skips a still-pending order whose payment became %s, sending nothing and keeping the dedupe key", async (paymentState, chatId) => {
+    const order = await pendingOrderFor(chatId);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === chatId)).toHaveLength(0);
+    const row = await reminderRow(order.id);
+    expect([row.status, row.sentAt, row.lastError, row.dedupeKey]).toEqual(["SKIPPED", null, "PAYMENT_IN_PROGRESS", `payment_reminder:${order.id}`]);
+  });
+
+  it("still sends to an order whose payment state is WAITING_PAYMENT (nothing observed yet)", async () => {
+    const order = await pendingOrderFor(760_009);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "WAITING_PAYMENT" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 760_009)).toHaveLength(1);
+    expect((await reminderRow(order.id)).status).toBe("SENT");
+  });
+
   it("skips an order cancelled between enqueue and send", async () => {
     const order = await pendingOrderFor(760_004);
     await prisma.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });

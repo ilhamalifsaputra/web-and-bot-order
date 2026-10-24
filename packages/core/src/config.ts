@@ -62,6 +62,29 @@ const looseBool = z
   .transform((s) => ["1", "true", "yes", "on"].includes(s.trim().toLowerCase()))
   .or(z.boolean());
 
+/** PAYMENT_REMINDER_LEAD_MINUTES: blank or unset -> 5, a number >= 1 -> its
+ * whole minutes, anything else (0, negative, non-numeric, under a minute) -> 0,
+ * which switches the reminder off. */
+function parsePaymentReminderLead(raw: string | number | undefined): number {
+  if (raw === undefined || (typeof raw === "string" && raw.trim() === "")) return 5;
+  const minutes = Number(raw);
+  return Number.isFinite(minutes) && minutes >= 1 ? Math.floor(minutes) : 0;
+}
+
+/**
+ * The startup warning for a PAYMENT_REMINDER_LEAD_MINUTES that was set but is
+ * unusable, or null. The schema switches the reminder off for such a value
+ * instead of failing the boot, so without this a typo would silently stop
+ * every reminder. An explicit 0 is a deliberate "off" and gets no warning.
+ * Pure (the caller passes the raw env value) so it is testable; config.ts
+ * cannot log itself because the logger imports this module.
+ */
+export function unusablePaymentReminderLeadWarning(raw: string | undefined): string | null {
+  if (raw === undefined || raw.trim() === "" || Number(raw) === 0) return null;
+  if (parsePaymentReminderLead(raw) > 0) return null;
+  return `PAYMENT_REMINDER_LEAD_MINUTES is set to ${JSON.stringify(raw)}, which is not a number of minutes of at least 1, so payment reminders are switched off. Set it to a whole number of minutes (the default is 5), or to 0 to switch reminders off on purpose.`;
+}
+
 export const Env = z.object({
   // ---- Telegram ----
   // Optional since plan.md §16: the primary source is the `bot_token` /
@@ -190,12 +213,9 @@ export const Env = z.object({
   // one. A blank line means the default; anything that is not a usable
   // positive number (negative, non-numeric, under one minute) switches the
   // reminder off rather than failing the boot — a typo here must never make
-  // the job do arithmetic on NaN or a negative lead.
-  PAYMENT_REMINDER_LEAD_MINUTES: z.union([z.string(), z.number()]).optional().transform((raw): number => {
-    if (raw === undefined || (typeof raw === "string" && raw.trim() === "")) return 5;
-    const minutes = Number(raw);
-    return Number.isFinite(minutes) && minutes >= 1 ? Math.floor(minutes) : 0;
-  }),
+  // the job do arithmetic on NaN or a negative lead. The order-bot logs
+  // `unusablePaymentReminderLeadWarning` at startup for such a value.
+  PAYMENT_REMINDER_LEAD_MINUTES: z.union([z.string(), z.number()]).optional().transform(parsePaymentReminderLead),
 
   // ---- Database ----
   DATABASE_URL_PRISMA: z.string(),

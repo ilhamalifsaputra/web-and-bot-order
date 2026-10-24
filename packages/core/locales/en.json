@@ -514,6 +514,7 @@
   "menu.wallet": "💰 Wallet",
   "menu.wallet_inline": "💰 Saldo {balance}",
   "order.auto_cancelled": "Order <code>{code}</code> was auto-cancelled — payment window expired.\nStock has been released.",
+  "order.auto_cancelled_topup": "Top-up <code>{code}</code> was auto-cancelled — payment window expired.\nIf you already paid, your balance is credited automatically.",
   "order.delivered_credentials": "✅ <b>Order Delivered Successfully</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order Code</b>\n<code>{code}</code>\n\n🔑 <b>Your Credentials</b>\n\n{credentials}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n🛡 <b>Warranty</b> · {warranty} days\n💬 Contact support if anything stops working.\n⭐ Don't forget to leave a review!",
   "order.delivered_group_header": "📦 <b>{product}</b> × {count}",
   "order.delivered_caption": "✅ <b>Order <code>{code}</code> delivered!</b>\n🛡 Warranty {warranty} days\n📎 Your account(s) are in the attached file below.",

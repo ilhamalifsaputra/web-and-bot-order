@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus, ReconciliationFindingType } from "@app/core/enums";
+import { langCode, OrderKind, OrderStatus, ReconciliationFindingType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { config, unusablePaymentReminderLeadWarning } from "@app/core/config";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
@@ -508,7 +508,9 @@ async function notifyAutoCancelled(api: Api, o: AutoCancelledOrder, tracked: boo
     return;
   }
   if (o.tgId == null) return;
-  const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
+  // A wallet top-up reserved no stock, so its notice has no "stock released"
+  // line (and says a late payment still lands in the balance).
+  const text = coreT(o.kind === OrderKind.WALLET_TOPUP ? "order.auto_cancelled_topup" : "order.auto_cancelled", o.lang, { code: o.code });
   const markup = notificationKb(o.lang);
   if (o.paymentMsgChatId != null && o.paymentMsgId != null) {
     const result = await editPaymentBubble(api, {
@@ -566,7 +568,10 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
       try {
         await notifyAutoCancelled(api, o, result.tracked);
       } catch (err) {
-        logger.error({ err }, `Failed to notify the customer that order ${o.id} was auto-cancelled — order is cancelled, but they won't see it until they reopen the bot`);
+        logger.error(
+          { err, orderId: o.id },
+          `Could not send the auto-cancel notice for order ${o.code} directly; the order stays cancelled, and any expiry push queued for it will still reach the buyer through the outbox.`,
+        );
       }
     } catch (err) {
       logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);

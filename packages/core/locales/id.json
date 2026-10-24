@@ -514,6 +514,7 @@
   "menu.wallet": "💰 Dompet",
   "menu.wallet_inline": "💰 Saldo {balance}",
   "order.auto_cancelled": "Pesanan <code>{code}</code> dibatalkan otomatis — waktu pembayaran habis.\nStok telah dilepas.",
+  "order.auto_cancelled_topup": "Top up <code>{code}</code> dibatalkan otomatis — waktu pembayaran habis.\nJika sudah bayar, saldo akan masuk otomatis.",
   "order.delivered_credentials": "✅ <b>Pesanan Berhasil Dikirim</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Kode Order</b>\n<code>{code}</code>\n\n🔑 <b>Kredensial Kamu</b>\n\n{credentials}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n🛡 <b>Garansi</b> · {warranty} hari\n💬 Hubungi support jika ada masalah.\n⭐ Jangan lupa berikan review!",
   "order.delivered_group_header": "📦 <b>{product}</b> × {count}",
   "order.delivered_caption": "✅ <b>Pesanan <code>{code}</code> terkirim!</b>\n🛡 Garansi {warranty} hari\n📎 Akun kamu ada di file terlampir di bawah.",

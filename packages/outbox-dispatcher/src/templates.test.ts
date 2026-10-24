@@ -839,6 +839,23 @@ describe("ORDER_EXPIRED_DM", () => {
     expect(out).toContain("payment window expired");
   });
 
+  // A late payment still settles a cancelled top-up (isLateSettleableWalletTopup),
+  // so "contact support" alone would be wrong: support is only for a balance
+  // that did not arrive.
+  it("tells a top-up buyer a late payment is credited automatically, and when to contact support", () => {
+    const out = render("ORDER_EXPIRED_DM", { ...base, is_wallet_topup: true });
+    expect(out).toContain("If you already paid, your balance is credited automatically. If it is not updated, contact support.");
+    expect(out).toContain("Jika sudah bayar, saldo akan masuk otomatis. Jika saldo belum bertambah, hubungi Bantuan.");
+    expect(out).not.toContain("If you already paid, contact support.");
+    expect(out).not.toContain("Jika sudah bayar, hubungi Bantuan.");
+  });
+
+  it("keeps the product wording for a product order", () => {
+    const out = render("ORDER_EXPIRED_DM", base);
+    expect(out).not.toContain("credited automatically");
+    expect(out).not.toContain("saldo");
+  });
+
   it("puts the buyer's own language first", () => {
     const en = render("ORDER_EXPIRED_DM", base);
     const id = render("ORDER_EXPIRED_DM", { ...base, buyer_language: "id" });

@@ -121,8 +121,9 @@ import {
   TOKOPAY_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
-import { NotificationEvent } from "@app/core/enums";
+import { langCode, NotificationEvent } from "@app/core/enums";
 import { invalidateRateCache } from "../src/util/rate";
+import { coreT } from "../src/util/i18n";
 
 let sample: SampleData;
 
@@ -365,6 +366,24 @@ describe("autoCancelExpiredOrders — expiry push without double notification", 
     expect(await pushes(order.id)).toHaveLength(0);
   });
 
+  it("no anchor and the DM failed: nothing reached the buyer, so one push is queued and the failure is logged", async () => {
+    const order = await makeExpiredOrder();
+    const api = fakeApi({ sendMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 5")) });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await autoCancelExpiredOrders(api);
+      expect(telegramCalls(api)).toEqual({ ...none, sendMessage: 1 });
+      expect(await pushes(order.id)).toHaveLength(1);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+      const messages = error.mock.calls.map((c) => String(c[1] ?? c[0]));
+      expect(messages).toEqual([
+        `Could not send the auto-cancel notice for order ${order.orderCode} directly; the order stays cancelled, and any expiry push queued for it will still reach the buyer through the outbox.`,
+      ]);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("concurrent and repeated ticks (or two bot instances) still make one edit and one push", async () => {
     const order = await makeExpiredOrder();
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
@@ -409,9 +428,36 @@ describe("autoCancelExpiredOrders — expiry push without double notification", 
     const api = fakeApi();
     await autoCancelExpiredOrders(api);
     expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    // The edited bubble uses the top-up wording: a top-up reserved no stock.
+    const edited = String((api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]![2]);
+    const lang = langCode(sample.user.language);
+    expect(edited).toBe(coreT("order.auto_cancelled_topup", lang, { code: topup.orderCode }));
+    expect(edited.toLowerCase()).not.toMatch(/stock|stok/);
     const rows = await pushes(topup.id);
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ order_code: topup.orderCode, is_wallet_topup: true });
+  });
+
+  it("keeps the product wording, with its stock line, for a product order", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    const edited = String((api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]![2]);
+    expect(edited).toBe(coreT("order.auto_cancelled", langCode(sample.user.language), { code: order.orderCode }));
+  });
+
+  // The opposite of the reminder: a payment the provider only saw (NOWPayments
+  // still confirming when the window lapsed) does not stop the push — that
+  // buyer is the one who most needs "if you already paid, contact support".
+  it("an order whose payment was only detected when it expired still gets its one push", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "PAYMENT_DETECTED" } });
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
   });
 });
 

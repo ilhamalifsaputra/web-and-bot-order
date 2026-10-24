@@ -302,7 +302,13 @@ function renderPaymentReminder(payload: { order_code?: unknown; buyer_language?:
     (deadlineText ? `Bayar sebelum: <b>${deadlineText}</b>\n` : "") +
     `Setelah batas waktu lewat, pesanan dibatalkan otomatis.\n` +
     `Sudah bayar? Tunggu konfirmasi otomatis.`;
-  const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : DEFAULT_LANG;
+  return bilingual(en, id, payload.buyer_language);
+}
+
+/** Both language versions of a buyer DM, the buyer's own first (English when
+ * the stored language is missing or anything but Indonesian). */
+function bilingual(en: string, id: string, buyerLanguage: unknown): string {
+  const lang = typeof buyerLanguage === "string" ? buyerLanguage.toLowerCase() : DEFAULT_LANG;
   return lang === "id" ? `${id}\n\n${en}` : `${en}\n\n${id}`;
 }
 
@@ -313,21 +319,25 @@ interface OrderExpiredPayload {
 /**
  * ORDER_EXPIRED_DM's body, in both languages with the buyer's own first, in
  * the same shape as the payment reminder before it. Only a product order
- * gets the "stock released" line: a wallet top-up reserved no stock.
+ * gets the "stock released" line: a wallet top-up reserved no stock. A
+ * top-up's closing line differs too: a late payment still settles a
+ * cancelled top-up (`isLateSettleableWalletTopup`), so its buyer is told the
+ * balance arrives on its own and support is only for a balance that did not.
  */
 function renderOrderExpired(payload: { order_code?: unknown; buyer_language?: unknown } & OrderExpiredPayload): string {
   const code = escape(String(payload.order_code ?? ""));
   const product = payload.is_wallet_topup !== true;
   const en =
     `⌛ <b>Order <code>${code}</code> was cancelled — the payment window expired.</b>\n` +
-    (product ? `The reserved stock has been released.\n` : "") +
-    `If you already paid, contact support.`;
+    (product
+      ? `The reserved stock has been released.\nIf you already paid, contact support.`
+      : `If you already paid, your balance is credited automatically. If it is not updated, contact support.`);
   const id =
     `⌛ <b>Pesanan <code>${code}</code> dibatalkan — waktu pembayaran habis.</b>\n` +
-    (product ? `Stok yang dipesan sudah dilepas.\n` : "") +
-    `Jika sudah bayar, hubungi Bantuan.`;
-  const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : DEFAULT_LANG;
-  return lang === "id" ? `${id}\n\n${en}` : `${en}\n\n${id}`;
+    (product
+      ? `Stok yang dipesan sudah dilepas.\nJika sudah bayar, hubungi Bantuan.`
+      : `Jika sudah bayar, saldo akan masuk otomatis. Jika saldo belum bertambah, hubungi Bantuan.`);
+  return bilingual(en, id, payload.buyer_language);
 }
 
 /**

@@ -199,6 +199,21 @@ Keputusan final (Phase 4 Task 5 + perbaikan review T5b):
 - Saat expiry: jalur `autoCancelExpiredOrders` → `cancelOrder` → `notifyAutoCancelled` dipertahankan. Phase 4 memverifikasi bahwa pesan order/QR ikut diedit menjadi "dibatalkan" (`editPaymentBubble`, `ownsTransactionMessage`, `wakeFulfillmentMessage`); bila belum, tambahkan di jalur itu.
 - Kode mati `handlers/checkout/timers.ts` (`timersByOrder` tidak pernah ditulis) sudah dihapus di Phase 4 Task 4 dan tidak dihidupkan kembali.
 
+**Perilaku final dua push (Phase 4 Task 5/6 + perbaikan T5b/T6b).** Keduanya dicek ulang saat kirim oleh dispatcher outbox; baris yang dilewati tetap memegang dedupe key (satu push per order).
+
+| Push | Dikirim bila | Dilewati bila |
+|---|---|---|
+| Reminder (`PAYMENT_REMINDER_DM`, `payment_reminder:<id>`) | order `PENDING_PAYMENT`, sisa ≥ 60 detik, dan belum ada pembayaran yang terlihat (`awaitingPaymentNothingObserved`) | pembayaran apa pun sudah terlihat (`PAYMENT_DETECTED`, `VERIFYING`, `UNDERPAID`, `PAID`, `paidAt`, `NEEDS_REVIEW`, dll.) |
+| Expiry push (`ORDER_EXPIRED_DM`, `order_expired:<id>`) | order masih `CANCELLED` — termasuk bila provider sudah melihat pembayaran (`PAYMENT_DETECTED`/`VERIFYING`/`UNDERPAID`): justru pembeli ini yang perlu "jika sudah bayar, hubungi Bantuan" | order keluar dari `CANCELLED` (top up terlambat yang diselesaikan → `DELIVERED`), `paymentState` `PAID` atau `paidAt` terisi, atau `walletCreditState` `CREDITED`/`NEEDS_REVIEW` (`orderExpiredDmSkipReason`) |
+
+Expiry push hanya diantrikan bila pembatalan tidak mengirim pesan baru ke chat pembeli (edit pesan tidak berbunyi). Teks top up berbeda dari order produk: tanpa baris "stok dilepas" (`order.auto_cancelled_topup`), dan push top up mengatakan pembayaran terlambat masuk ke saldo otomatis; hubungi Bantuan bila saldo belum bertambah.
+
+Celah yang diterima (didokumentasikan, tidak dikompensasi):
+- Worker gagal mengirim pesan pengganti saat memensiunkan foto QR (400 → `STOPPED`, gangguan transport → `UNCERTAIN`): pembeli bisa tidak menerima pemberitahuan, dan tidak ada push.
+- Baris koordinator lama dengan `messageKind` null dianggap mungkin foto → tidak ada push (bila sebenarnya teks, pembeli hanya mendapat edit tanpa bunyi).
+- Crash di antara commit pembatalan dan `queueExpiryPush` pada rute anchor/tanpa-anchor menghilangkan push (jendela yang sama seperti sebelum Phase 4).
+- Push dan edit oleh worker berjalan asinkron, jadi urutannya bisa terbalik.
+
 ### 9.3 Feature flag
 
 Tidak ada feature flag:

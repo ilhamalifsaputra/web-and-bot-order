@@ -13,6 +13,7 @@ import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
+import { paymentReminderDedupeKey, paymentReminderMinutesLeft } from "@app/core";
 import {
   NotificationEvent,
   NotificationStatus,
@@ -48,13 +49,16 @@ type Db = PrismaClient | Tx;
  * payload on collision, so comparing payloads can't tell a genuine insert
  * apart from a same-payload collision.
  *
- * Two events set a key today:
+ * Three events set a key today:
  *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
  *    DM per top-up order; see `enqueueWalletTopupCreditedDm`.
  *  - `ADMIN_UNCONFIRMABLE_PAYMENT`, as
  *    `unconfirmable-payment:<orderId>:<adminId>` — one per admin per order,
  *    NOT one per order, because that event fans out a row per admin; see
  *    `enqueueAdminUnconfirmablePayment`.
+ *  - `PAYMENT_REMINDER_DM`, as `payment_reminder:<orderId>` — one reminder
+ *    per order, however many reminder-job ticks see it; see
+ *    `enqueuePaymentReminderDm`.
  *
  * Every other event leaves it null, and NULLs are distinct in a Postgres UNIQUE
  * index, so those rows may repeat freely. `ORDER_DELIVERED_DM` in particular
@@ -1386,6 +1390,42 @@ export async function enqueueOrderProcessingDm(
     order_url: shopUrl ? `${shopUrl.replace(/\/+$/, "")}/account/orders/${args.orderCode}` : null,
     buyer_language: langCode(args.language),
   });
+}
+
+/**
+ * Enqueue the buyer's one-time "your payment window is about to close" DM
+ * (PAYMENT_REMINDER_DM). Called only by the order-bot's `sendPaymentReminders`
+ * job, after `isPaymentReminderCandidate` (orders.ts) accepted the order. The
+ * dedupe key `payment_reminder:<orderId>` makes it at most one row per order:
+ * the job sees the same order on every tick of its lead window, and a second
+ * bot instance may see it too, and every one of those calls after the first
+ * writes nothing (the first row's payload stands).
+ *
+ * The payload holds what the message states and nothing else — no amounts,
+ * no credentials (the outbox is visible in the admin panel). `minutes_left`
+ * is the value at enqueue time; the dispatcher recomputes the remaining time
+ * from `expires_at` when it actually sends, and re-checks that the order
+ * still awaits payment (`paymentReminderSkipReason`). No-op for buyers
+ * without a Telegram id (web and guest checkouts).
+ */
+export async function enqueuePaymentReminderDm(
+  db: Db,
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null; expiresAt: Date; now?: Date },
+): Promise<void> {
+  if (args.telegramId == null) return;
+  await enqueueNotification(
+    db,
+    NotificationEvent.PAYMENT_REMINDER_DM,
+    args.orderId,
+    {
+      chat_id: Number(args.telegramId),
+      order_code: args.orderCode,
+      expires_at: args.expiresAt.toISOString(),
+      minutes_left: paymentReminderMinutesLeft(args.expiresAt, args.now ?? new Date()),
+      buyer_language: langCode(args.language),
+    },
+    paymentReminderDedupeKey(args.orderId),
+  );
 }
 
 /**

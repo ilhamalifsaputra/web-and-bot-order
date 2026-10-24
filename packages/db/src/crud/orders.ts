@@ -41,6 +41,7 @@ import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
+import { PAYMENT_REMINDER_MIN_REMAINING_MS } from "@app/core";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
@@ -1670,6 +1671,61 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
     take: limit,
     include: { user: true },
   });
+}
+
+/**
+ * Enqueue-time half of the payment reminder rule (PAYMENT_REMINDER_DM, Phase
+ * 4 owner decision), applied to a row `listExpiringPendingPayments` already
+ * returned — so it is already PENDING_PAYMENT and unpaid by the shared
+ * `customerPaymentOutstanding` predicate. On top of that the order needs a
+ * Telegram buyer (web and guest checkouts have nowhere to push to), a whole
+ * window LONGER than the lead (an order opened inside the reminder window
+ * already shows its full deadline on the payment screen, so a push straight
+ * after would only repeat it), and at least `PAYMENT_REMINDER_MIN_REMAINING_MS`
+ * still left. The dispatcher re-checks the order at send time
+ * (`paymentReminderSkipReason`), so this is not the last word.
+ */
+export function isPaymentReminderCandidate(
+  order: { expiresAt: Date | null; createdAt: Date; user: { telegramId: bigint | null } },
+  now: Date,
+  leadMs: number,
+): boolean {
+  if (order.expiresAt == null || order.user.telegramId == null) return false;
+  if (order.expiresAt.getTime() - order.createdAt.getTime() <= leadMs) return false;
+  return order.expiresAt.getTime() - now.getTime() >= PAYMENT_REMINDER_MIN_REMAINING_MS;
+}
+
+/** Why a queued payment reminder must not be sent any more. */
+export type PaymentReminderSkipReason =
+  | "ORDER_NOT_FOUND"
+  | "ORDER_NOT_AWAITING_PAYMENT"
+  | "PAYMENT_ALREADY_RECEIVED"
+  | "PAYMENT_WINDOW_CLOSING";
+
+/**
+ * Send-time half of the payment reminder rule: the outbox dispatcher calls
+ * this right before delivering a PAYMENT_REMINDER_DM, because the row may have
+ * waited (a backoff, flood control, a restart) while the buyer paid or the
+ * order was cancelled. Returns null when the reminder is still due — the
+ * order is PENDING_PAYMENT, unpaid by the same `customerPaymentOutstanding`
+ * predicate the expiry job uses, and more than
+ * `PAYMENT_REMINDER_MIN_REMAINING_MS` from its deadline — and otherwise the
+ * reason, which the dispatcher records on the SKIPPED row. The due check is a
+ * single query over that shared predicate, so this can never disagree with the
+ * expiry job about what "unpaid" means; the follow-up read only names the
+ * reason.
+ */
+export async function paymentReminderSkipReason(db: Db, orderId: number, now: Date): Promise<PaymentReminderSkipReason | null> {
+  const closesAfter = new Date(now.getTime() + PAYMENT_REMINDER_MIN_REMAINING_MS);
+  const due = await db.order.count({
+    where: { id: orderId, status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, gt: closesAfter }, ...customerPaymentOutstanding },
+  });
+  if (due === 1) return null;
+  const order = await db.order.findUnique({ where: { id: orderId }, select: { status: true, expiresAt: true } });
+  if (!order) return "ORDER_NOT_FOUND";
+  if (order.status !== OrderStatus.PENDING_PAYMENT) return "ORDER_NOT_AWAITING_PAYMENT";
+  if (order.expiresAt == null || order.expiresAt <= closesAfter) return "PAYMENT_WINDOW_CLOSING";
+  return "PAYMENT_ALREADY_RECEIVED";
 }
 
 /**

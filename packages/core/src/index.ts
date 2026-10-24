@@ -18,3 +18,4 @@ export * from "./bulk";
 export * from "./reviews";
 export * from "./booleanSettings";
 export * from "./regionLabel";
+export * from "./paymentReminder";

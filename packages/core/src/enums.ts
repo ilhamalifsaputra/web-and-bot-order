@@ -799,6 +799,18 @@ export const NotificationEvent = {
   // `chat_id` plus ticket_id and buyer_language, NOT order-scoped
   // (orderId: null).
   TICKET_CLOSED_DM: "TICKET_CLOSED_DM",
+  // Buyer DM (not a channel post): the one push a Telegram buyer gets when
+  // about `PAYMENT_REMINDER_LEAD_MINUTES` (default 5) of an unpaid order's
+  // payment window are left — product orders of every service and wallet
+  // top-ups alike (Phase 4 owner decision). Enqueued only by the order-bot's
+  // `sendPaymentReminders` job, through `enqueuePaymentReminderDm`, with the
+  // dedupe key `payment_reminder:<orderId>`, so it is queued at most once per
+  // order however many ticks or instances try. The dispatcher re-reads the
+  // order right before sending and SKIPS (keeping the key) unless it still
+  // awaits payment with more than a minute left. payload carries `chat_id`
+  // plus order_code, expires_at (ISO), minutes_left and buyer_language —
+  // never credentials or amounts.
+  PAYMENT_REMINDER_DM: "PAYMENT_REMINDER_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

@@ -183,6 +183,20 @@ export const Env = z.object({
   // back, before even broadcasting the transfer.
   NOWPAYMENTS_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
 
+  // ---- Payment reminder (Phase 4 owner decision) ----
+  // Minutes before an unpaid order's window closes when its Telegram buyer
+  // gets one reminder push (every service, wallet top-ups included). 0 turns
+  // the reminder off. Only orders whose whole window is longer than this get
+  // one. A blank line means the default; anything that is not a usable
+  // positive number (negative, non-numeric, under one minute) switches the
+  // reminder off rather than failing the boot — a typo here must never make
+  // the job do arithmetic on NaN or a negative lead.
+  PAYMENT_REMINDER_LEAD_MINUTES: z.union([z.string(), z.number()]).optional().transform((raw): number => {
+    if (raw === undefined || (typeof raw === "string" && raw.trim() === "")) return 5;
+    const minutes = Number(raw);
+    return Number.isFinite(minutes) && minutes >= 1 ? Math.floor(minutes) : 0;
+  }),
+
   // ---- Database ----
   DATABASE_URL_PRISMA: z.string(),
 

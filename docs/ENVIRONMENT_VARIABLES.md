@@ -49,6 +49,25 @@ top-up saldo wallet (memakai config yang sama).
   satu siklus maksimal 40% jendela (10 menit → 14 pesanan/siklus, 240 s;
   30 menit → 46 pesanan/siklus, 720 s).
 
+### Pengingat pembayaran
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `PAYMENT_REMINDER_LEAD_MINUTES` | `5` | Berapa menit sebelum `expiresAt` pembeli Telegram menerima **satu** pengingat bayar (`PAYMENT_REMINDER_DM`). `0` mematikan pengingat; nilai negatif, bukan angka, atau di bawah 1 juga dianggap mati (boot tidak gagal). Baris kosong = default. |
+
+- Berlaku untuk semua service dan semua rail, termasuk top-up saldo wallet;
+  hanya pesanan `PENDING_PAYMENT` yang belum dibayar, pembelinya punya
+  Telegram ID (pesanan web/guest tanpa Telegram tidak dikirimi), dan jendela
+  bayarnya **lebih panjang** dari nilai ini.
+- Job `sendPaymentReminders` (order-bot, tiap menit di detik 47) hanya
+  meng-enqueue ke `notification_outbox` dengan dedupe key
+  `payment_reminder:<orderId>` — paling banyak satu pengingat per pesanan,
+  walau job berjalan berkali-kali atau di dua instance.
+- Dispatcher membaca ulang pesanan tepat sebelum mengirim dan melewati
+  (status `SKIPPED`, dedupe key tetap) bila pesanan sudah dibayar, dibatalkan,
+  atau sisa waktunya tinggal kurang dari 1 menit. Sisa waktu di pesan dihitung
+  saat dikirim, deadline ditampilkan `yyyy-LL-dd HH:mm WIB`.
+
 ## Payment — Binance Pay (manual, legacy fallback)
 
 | Variabel | Default | Keterangan |

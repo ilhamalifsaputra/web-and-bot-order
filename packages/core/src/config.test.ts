@@ -50,6 +50,32 @@ describe("config schema", () => {
     expect(parsed.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES).toBe(30); // NOWPayments hosted invoice
   });
 
+  // Owner decision (Phase 4): one reminder push ~5 minutes before the window
+  // closes; 0 switches it off. A value that is not a usable positive number
+  // must never turn into something surprising (a negative lead, NaN
+  // arithmetic in the job) — it switches the reminder off instead.
+  it("defaults the payment reminder lead to 5 minutes, also for a blank line", () => {
+    expect(Env.parse(baseEnv).PAYMENT_REMINDER_LEAD_MINUTES).toBe(5);
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(5);
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "  " }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(5);
+  });
+
+  it("reads an explicit payment reminder lead, and 0 disables it", () => {
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "3" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(3);
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "0" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(0);
+  });
+
+  it.each(["-5", "abc", "NaN", "Infinity", "0.5"])(
+    "treats an unusable payment reminder lead (%s) as disabled instead of failing the boot",
+    (raw) => {
+      expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: raw }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(0);
+    },
+  );
+
+  it("rounds a fractional payment reminder lead down to whole minutes", () => {
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "4.9" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(4);
+  });
+
   it("lets an explicit env value override a payment window default", () => {
     const parsed = Env.parse({ ...baseEnv, PAYMENT_WINDOW_MINUTES: "30", BYBIT_BSC_PAYMENT_WINDOW_MINUTES: "15" });
     expect(parsed.PAYMENT_WINDOW_MINUTES).toBe(30);

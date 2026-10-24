@@ -740,3 +740,71 @@ describe("notifier templates.render", () => {
     expect(out).toContain("Your ticket has been closed");
   });
 });
+
+/**
+ * PAYMENT_REMINDER_DM (Phase 4 owner decision): the one push a buyer gets when
+ * about five minutes of their payment window are left. The remaining time is
+ * worked out from the stored deadline at SEND time, so a row the dispatcher
+ * delivers late (backoff, flood control, a restart) still states the truth.
+ */
+describe("PAYMENT_REMINDER_DM", () => {
+  const expiresAt = "2026-10-24T07:05:00.000Z"; // 14:05 in Asia/Jakarta (WIB)
+  const base = { order_code: "ORD-20261024-ABCD", expires_at: expiresAt, minutes_left: 5, buyer_language: "en" };
+  const sentAt = (iso: string) => new Date(iso);
+
+  it("states the full order number, the time left, the WIB deadline and the automatic cancellation, in both languages", () => {
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("<code>ORD-20261024-ABCD</code>");
+    expect(out).toContain("2026-10-24 14:05 WIB");
+    expect(out).toContain("4 minutes");
+    expect(out).toContain("4 menit");
+    expect(out).toContain("cancelled automatically");
+    expect(out).toContain("dibatalkan otomatis");
+    expect(out).toContain("Already paid? Wait for automatic confirmation.");
+    expect(out).toContain("Sudah bayar? Tunggu konfirmasi otomatis.");
+  });
+
+  it("computes the minutes left when it is sent, not when it was queued", () => {
+    // Queued with 5 minutes left, delivered 2.5 minutes later by a retry.
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:02:30.000Z"));
+    expect(out).toContain("2 minutes");
+    expect(out).not.toContain("5 minutes");
+  });
+
+  it("uses the singular for one minute", () => {
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:03:30.000Z"));
+    expect(out).toContain("1 minute left");
+    expect(out).not.toContain("1 minutes");
+  });
+
+  it("puts the buyer's own language first", () => {
+    const now = sentAt("2026-10-24T07:00:30.000Z");
+    const en = render("PAYMENT_REMINDER_DM", base, now);
+    const id = render("PAYMENT_REMINDER_DM", { ...base, buyer_language: "id" }, now);
+    expect(en.indexOf("Payment reminder")).toBeLessThan(en.indexOf("Pengingat pembayaran"));
+    expect(id.indexOf("Pengingat pembayaran")).toBeLessThan(id.indexOf("Payment reminder"));
+    // Same content either way — only the order changes.
+    expect(id.length).toBe(en.length);
+  });
+
+  it("HTML-escapes the order code", () => {
+    const out = render("PAYMENT_REMINDER_DM", { ...base, order_code: `<b>"x"&'y'</b>` }, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("&lt;b&gt;&quot;x&quot;&amp;&#x27;y&#x27;&lt;/b&gt;");
+    expect(out).not.toContain(`<b>"x"`);
+  });
+
+  it("falls back to the queued minutes when the stored deadline is unreadable", () => {
+    const out = render("PAYMENT_REMINDER_DM", { ...base, expires_at: "not a date", minutes_left: 3 }, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("3 minutes");
+    expect(out).not.toContain("WIB");
+  });
+
+  it("refuses to render a reminder with no timing at all, rather than send a vague one", () => {
+    expect(() => render("PAYMENT_REMINDER_DM", { order_code: "ORD-X" }, sentAt("2026-10-24T07:00:30.000Z"))).toThrow();
+  });
+
+  it("says nothing about stock or credentials, so it reads right for a wallet top-up too", () => {
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:00:30.000Z")).toLowerCase();
+    for (const word of ["stock", "stok", "password", "credential", "akun"]) expect(out).not.toContain(word);
+  });
+});

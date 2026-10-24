@@ -123,6 +123,7 @@ import {
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
   enqueueWalletTopupCreditedDm,
+  enqueuePaymentReminderDm,
   enqueueNotification,
   adjustWallet,
   createOrderDirect,
@@ -2309,5 +2310,123 @@ describe("a web-admin manual match delivers the credentials file and completes t
     // One edit to "sending", one to "completed", all on the payment screen.
     expect(calls).toEqual({ editMessageText: 2 });
     expect(new Set(edits.map((e) => e.id))).toEqual(new Set([8100]));
+  });
+});
+
+/**
+ * PAYMENT_REMINDER_DM (Phase 4 owner decision): a buyer DM — it must reach the
+ * buyer's own chat and never the public channel — and the dispatcher re-reads
+ * the order right before sending, so a buyer who paid, an order that was
+ * cancelled, or a retry that arrives in the window's last minute gets no
+ * push. A skip keeps the dedupe key, so the job can never queue it again.
+ */
+describe("drainBatch delivers PAYMENT_REMINDER_DM only while the order still awaits payment", () => {
+  afterEach(() => resetBotIdentity());
+
+  async function pendingOrderFor(telegramId: number, leftMs = 4 * 60_000) {
+    const buyer = await upsertUser(prisma, { telegramId, username: `remind${telegramId}`, fullName: "Reminder Buyer" });
+    const expiresAt = new Date(Date.now() + leftMs);
+    const order = await prisma.order.create({
+      data: {
+        userId: buyer.id,
+        orderCode: `ORD-REMIND-${telegramId}`,
+        subtotalAmount: 50_000,
+        totalAmount: 50_000,
+        status: "PENDING_PAYMENT",
+        createdAt: new Date(expiresAt.getTime() - 10 * 60_000),
+        expiresAt,
+      },
+    });
+    await enqueuePaymentReminderDm(prisma, {
+      orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(telegramId), language: "id", expiresAt,
+    });
+    return order;
+  }
+  const reminderRow = (orderId: number) =>
+    prisma.notificationOutbox.findFirstOrThrow({ where: { orderId, event: NotificationEvent.PAYMENT_REMINDER_DM } });
+
+  it("sends exactly one message to the buyer's chat even when a public channel is configured", async () => {
+    setBotIdentity({ publicChannelId: -1009876500001 });
+    const order = await pendingOrderFor(760_001);
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    const toBuyer = sendMessage.mock.calls.filter((c) => c[0] === 760_001);
+    expect(toBuyer).toHaveLength(1);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === -1009876500001)).toHaveLength(0);
+    const [, text, opts] = toBuyer[0]! as [number, string, { parse_mode: string }];
+    expect(text).toContain(order.orderCode);
+    expect(text).toContain("WIB");
+    expect(opts.parse_mode).toBe("HTML");
+    // Indonesian buyer: the Indonesian block comes first.
+    expect(text.indexOf("Pengingat pembayaran")).toBeLessThan(text.indexOf("Payment reminder"));
+    expect((await reminderRow(order.id)).status).toBe("SENT");
+  });
+
+  it("skips without sending when the buyer paid between enqueue and send, and keeps the dedupe key", async () => {
+    const order = await pendingOrderFor(760_002);
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", paymentState: "PAID", paidAt: new Date() } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 760_002)).toHaveLength(0);
+    const row = await reminderRow(order.id);
+    expect([row.status, row.sentAt, row.lastError]).toEqual(["SKIPPED", null, "ORDER_NOT_AWAITING_PAYMENT"]);
+    expect(row.dedupeKey).toBe(`payment_reminder:${order.id}`);
+    // A later job tick cannot queue a second one.
+    await enqueuePaymentReminderDm(prisma, {
+      orderId: order.id, orderCode: order.orderCode, telegramId: 760_002n, language: "id", expiresAt: order.expiresAt!,
+    });
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.PAYMENT_REMINDER_DM } })).toBe(1);
+  });
+
+  it("skips a still-pending order whose payment was already recorded", async () => {
+    const order = await pendingOrderFor(760_003);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "PAID" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 760_003)).toHaveLength(0);
+    expect((await reminderRow(order.id)).lastError).toBe("PAYMENT_ALREADY_RECEIVED");
+  });
+
+  it("skips an order cancelled between enqueue and send", async () => {
+    const order = await pendingOrderFor(760_004);
+    await prisma.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 760_004)).toHaveLength(0);
+    expect((await reminderRow(order.id)).status).toBe("SKIPPED");
+  });
+
+  it("skips a retry that comes due in the window's last minute instead of landing next to the cancel notice", async () => {
+    const order = await pendingOrderFor(760_005);
+    // The first attempt failed and backed off; by the time it is retried only
+    // 30 seconds of the window are left.
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() + 30_000) } });
+    await prisma.notificationOutbox.updateMany({ where: { orderId: order.id }, data: { attempts: 1, lastError: "network" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 760_005)).toHaveLength(0);
+    expect((await reminderRow(order.id)).lastError).toBe("PAYMENT_WINDOW_CLOSING");
+  });
+
+  it("fails a reminder to a buyer who blocked the bot once, without retrying it", async () => {
+    const order = await pendingOrderFor(760_006);
+    const forbidden = new GrammyError(
+      "Forbidden",
+      { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" },
+      "sendMessage",
+      {},
+    );
+    const sendMessage = vi.fn(async (chatId: number) => {
+      if (chatId === 760_006) throw forbidden;
+      return { message_id: 1 };
+    });
+    const bot = { api: { sendMessage } } as unknown as Bot;
+    await drainBatch(bot);
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 760_006)).toHaveLength(1);
+    const row = await reminderRow(order.id);
+    expect([row.status, row.attempts, row.nextRetryAt]).toEqual(["FAILED", 1, null]);
+    // The order itself is untouched by the failed push.
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PENDING_PAYMENT");
   });
 });

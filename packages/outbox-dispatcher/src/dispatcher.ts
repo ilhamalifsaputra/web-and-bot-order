@@ -10,7 +10,8 @@ import { t as coreT } from "@app/core/i18n";
  *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
  *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET,
  *    WALLET_TOPUP_CREDITED_DM, ADMIN_NEW_TICKET, TICKET_REPLY_DM,
- *    TICKET_CLOSED_DM. These deliver regardless of whether a public channel
+ *    TICKET_CLOSED_DM, PAYMENT_REMINDER_DM (re-checked against the order
+ *    right before sending). These deliver regardless of whether a public channel
  *    is configured — the loop runs whenever a bot token is available.
  *  - Channel posts (ORDER_DELIVERED testimonial): need PUBLIC_CHANNEL_ID. When
  *    no channel is configured they are left PENDING (skipped) so they post once
@@ -80,6 +81,7 @@ import {
   canonicalEmailEventFor,
   isEmailEventEnabled,
   recordPollHealth,
+  paymentReminderSkipReason,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { registerOutboxNudge, flushPaymentBubble } from "@app/core/nudge";
@@ -119,6 +121,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_FX_RATE_STALE, // admin DM (the saved USD/IDR rate stopped being confirmed: past fx_quote_ttl_minutes no USDT rail is offered, past fx_rate_max_age_hours USDT is hidden shop-wide)
   NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)
   NotificationEvent.TICKET_CLOSED_DM, // buyer DM (Task 2: an admin closed the buyer's support ticket)
+  NotificationEvent.PAYMENT_REMINDER_DM, // buyer DM (Phase 4: the payment window is about to close — one per order)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */
@@ -401,6 +404,30 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
           && (await prisma.fulfillmentMessage.count({ where: { orderId: row.orderId } })) > 0);
       if (tracked) {
         await skipRow(row, "ALREADY_COVERED_BY_TRACKED_MESSAGE");
+        continue;
+      }
+    }
+
+    // Payment reminder (Phase 4): the row may have waited — a backoff, flood
+    // control, a restart — while the buyer paid or the order was cancelled,
+    // so re-read the order right before sending and drop the push unless it
+    // still awaits payment with more than a minute left. The skip keeps the
+    // dedupe key on purpose: the reminder is once per order, and the job must
+    // not queue a fresh one for an order that has moved on.
+    if (row.event === NotificationEvent.PAYMENT_REMINDER_DM) {
+      let reason: string | null;
+      try {
+        reason = row.orderId == null ? "ORDER_NOT_FOUND" : await paymentReminderSkipReason(prisma, row.orderId, new Date());
+      } catch (err) {
+        logger.error(
+          { err, notificationId: row.id, orderId: row.orderId },
+          `Could not re-check whether order ${row.orderId} still awaits payment, so payment reminder ${row.id} was not sent — recording a failed attempt; the retry re-checks the order again before sending`,
+        );
+        await failRow(row, "PAYMENT_REMINDER_RECHECK_FAILED", config.NOTIF_MAX_ATTEMPTS);
+        continue;
+      }
+      if (reason) {
+        await skipRow(row, reason);
         continue;
       }
     }

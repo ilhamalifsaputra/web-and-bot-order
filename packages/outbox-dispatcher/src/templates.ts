@@ -10,6 +10,8 @@
 import { NotificationEvent } from "@app/core/enums";
 import { formatUsdt } from "@app/core/formatters";
 import { formatIdrFor } from "@app/core/moneyFormat";
+import { localize } from "@app/core/datetime";
+import { paymentReminderMinutesLeft } from "@app/core";
 import { manualQueueMoneyLines, type ManualQueueMoneyKey, type ManualQueueMoneyPayload } from "./manualQueueMoney";
 
 /** Bilingual labels for ADMIN_MANUAL_ORDER_QUEUED's money lines. */
@@ -263,7 +265,51 @@ interface AdminFxRateStalePayload {
   ttl_minutes?: unknown;
 }
 
-/** Return the message body for an outbox event, or "" to skip. */
+interface PaymentReminderPayload {
+  expires_at?: unknown;
+  minutes_left?: unknown;
+}
+
+/**
+ * PAYMENT_REMINDER_DM's body, in both languages with the buyer's own first.
+ * The minutes left come from `expires_at` against `now` — the moment the
+ * dispatcher actually sends — rather than the enqueue-time `minutes_left`, so
+ * a row delivered late by a retry still tells the truth; `minutes_left` is
+ * only the fallback for an unreadable deadline. Throws when neither is usable
+ * (the dispatcher then fails the row for good): a reminder that cannot say how
+ * long is left is worse than none.
+ */
+function renderPaymentReminder(payload: { order_code?: unknown; buyer_language?: unknown } & PaymentReminderPayload, now: Date): string {
+  const code = escape(String(payload.order_code ?? ""));
+  const deadline = typeof payload.expires_at === "string" ? new Date(payload.expires_at) : null;
+  const hasDeadline = deadline !== null && !Number.isNaN(deadline.getTime());
+  const queuedMinutes = Number(payload.minutes_left);
+  let minutes: number;
+  if (hasDeadline) minutes = paymentReminderMinutesLeft(deadline, now);
+  else if (Number.isFinite(queuedMinutes) && queuedMinutes >= 1) minutes = Math.floor(queuedMinutes);
+  else throw new Error("PAYMENT_REMINDER_DM payload has neither a readable expires_at nor a usable minutes_left");
+  const deadlineText = hasDeadline ? escape(`${localize(deadline, "yyyy-LL-dd HH:mm")} WIB`) : "";
+
+  const en =
+    `⏰ <b>Payment reminder — order <code>${code}</code></b>\n` +
+    `${minutes} ${minutes === 1 ? "minute" : "minutes"} left to pay.\n` +
+    (deadlineText ? `Pay before: <b>${deadlineText}</b>\n` : "") +
+    `After the deadline, the order is cancelled automatically.\n` +
+    `Already paid? Wait for automatic confirmation.`;
+  const id =
+    `⏰ <b>Pengingat pembayaran — pesanan <code>${code}</code></b>\n` +
+    `Sisa waktu bayar ${minutes} menit.\n` +
+    (deadlineText ? `Bayar sebelum: <b>${deadlineText}</b>\n` : "") +
+    `Setelah batas waktu lewat, pesanan dibatalkan otomatis.\n` +
+    `Sudah bayar? Tunggu konfirmasi otomatis.`;
+  const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : DEFAULT_LANG;
+  return lang === "id" ? `${id}\n\n${en}` : `${en}\n\n${id}`;
+}
+
+/**
+ * Return the message body for an outbox event, or "" to skip. `now` is the
+ * send moment; only PAYMENT_REMINDER_DM reads it (its remaining time).
+ */
 export function render(
   event: string,
   payload: DeliveredPayload &
@@ -283,8 +329,15 @@ export function render(
     AdminFxRateRejectedPayload &
     AdminFxRateStalePayload &
     TicketClosedPayload &
-    RestockSubscriberPayload,
+    RestockSubscriberPayload &
+    PaymentReminderPayload,
+  now: Date = new Date(),
 ): string {
+  if (event === NotificationEvent.PAYMENT_REMINDER_DM) {
+    // Buyer DM, a legitimate push under the message budget (AGENTS.md): the
+    // one reminder per order, sent by the generic path below.
+    return renderPaymentReminder(payload, now);
+  }
   if (event === NotificationEvent.TICKET_CLOSED_DM) {
     // Buyer DM (Task 2, Phase C): rendered in the buyer's OWN stored
     // language — a single-locale pick, not the bilingual EN+ID pattern most

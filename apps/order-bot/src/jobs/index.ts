@@ -14,11 +14,15 @@ import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus, ReconciliationFindingType, StockActorType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { config } from "@app/core/config";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
   prisma,
   getSettledBubbleOrder,
   listExpiredPendingOrders,
+  listExpiringPendingPayments,
+  isPaymentReminderCandidate,
+  enqueuePaymentReminderDm,
   sweepAgedUnderpaidAndFailedOrders,
   cancelOrder,
   listStaleRepliedTickets,
@@ -513,6 +517,57 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
       }
     } catch (err) {
       logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);
+    }
+  }
+}
+
+/**
+ * How many expiring orders one reminder tick looks at. Far above what one
+ * minute of a real shop's lead window holds; an order beyond it is not lost,
+ * since it is seen again on every tick until its window closes.
+ */
+const PAYMENT_REMINDER_BATCH_LIMIT = 500;
+
+/**
+ * Queue the one-time "your payment window is about to close" push
+ * (PAYMENT_REMINDER_DM, Phase 4 owner decision) for every unpaid order of a
+ * Telegram buyer whose deadline falls within the next
+ * `PAYMENT_REMINDER_LEAD_MINUTES` — product orders of every service and wallet
+ * top-ups alike. `config.PAYMENT_REMINDER_LEAD_MINUTES` of 0 switches it off.
+ *
+ * Enqueue only — it never sends to Telegram itself. The outbox dispatcher
+ * delivers the row, and re-reads the order right before sending, so a buyer
+ * who pays between this tick and the send gets nothing. Ticks overlap the same
+ * order for the whole lead window (and a second bot instance may run this
+ * too); the per-order dedupe key in `enqueuePaymentReminderDm` turns every
+ * repeat into a no-op, so no "already reminded" bookkeeping is needed here.
+ *
+ * `opts` exists for tests (a fixed clock, a chosen lead); the scheduler passes
+ * nothing. One order's failed enqueue is logged and the loop moves on, so a
+ * single bad row can never stop the others' reminders.
+ */
+export async function sendPaymentReminders(_api: Api, opts: { now?: Date; leadMinutes?: number } = {}): Promise<void> {
+  const leadMinutes = opts.leadMinutes ?? config.PAYMENT_REMINDER_LEAD_MINUTES;
+  if (!(leadMinutes > 0)) return;
+  const now = opts.now ?? new Date();
+  const leadMs = leadMinutes * 60_000;
+  const expiring = await listExpiringPendingPayments(prisma, now, new Date(now.getTime() + leadMs), PAYMENT_REMINDER_BATCH_LIMIT);
+  for (const order of expiring) {
+    if (!isPaymentReminderCandidate(order, now, leadMs)) continue;
+    try {
+      await enqueuePaymentReminderDm(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        telegramId: order.user.telegramId,
+        language: order.user.language,
+        expiresAt: order.expiresAt!,
+        now,
+      });
+    } catch (err) {
+      logger.error(
+        { err, orderId: order.id },
+        `Could not queue the payment reminder for order ${order.orderCode}, so its buyer has not been reminded yet — it will be retried on the next run while the order still has more than a minute left to pay.`,
+      );
     }
   }
 }
@@ -1868,5 +1923,13 @@ export function scheduleJobs(api: Api): Cron[] {
     // already used above, and not a multiple of 5, so it also never meets the
     // five-second outbox job registered outside this list.
     new Cron("52 */10 * * * *", { protect: true }, wrap("resolveAgedUnderpaidAndFailedOrders", resolveAgedUnderpaidAndFailedOrders)),
+    // Payment reminder (Phase 4): every minute on second 47 — clear of every
+    // second above (0, 5/20/35/50, 10, 15/17/19, 21, 25, 30, 40, 45, 52) and,
+    // not being a multiple of 5, of the five-second Digiflazz dispatch
+    // registered outside this list. It writes at most one outbox row per due
+    // order. Protected so a slow tick never overlaps the next one (the dedupe
+    // key would absorb the overlap anyway, but there is no reason to pay for
+    // it).
+    new Cron("47 * * * * *", { protect: true }, wrap("sendPaymentReminders", sendPaymentReminders)),
   ];
 }

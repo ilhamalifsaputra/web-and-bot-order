@@ -46,6 +46,8 @@ const dbMockState = vi.hoisted(() => ({
   runDetectionForCatalog: null as null | (() => Promise<unknown>),
   // When true, runDigiflazzCatalogSync answers as if another sync held the lease.
   catalogSyncBusy: false,
+  // sendPaymentReminders: the order whose reminder enqueue throws.
+  paymentReminderFailOrderId: null as number | null,
 }));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
@@ -71,6 +73,10 @@ vi.mock("@app/db", async () => {
       dbMockState.runDetectionForCatalog
         ? dbMockState.runDetectionForCatalog()
         : actual.runDetectionForCatalog(...args),
+    enqueuePaymentReminderDm: async (...args: Parameters<typeof actual.enqueuePaymentReminderDm>) => {
+      if (args[1].orderId === dbMockState.paymentReminderFailOrderId) throw new Error("simulated outbox write failure");
+      return actual.enqueuePaymentReminderDm(...args);
+    },
   };
 });
 
@@ -87,6 +93,7 @@ import {
 import {
   autoCancelExpiredOrders,
   autoCloseStaleTickets,
+  sendPaymentReminders,
   editPaymentBubble,
   sweepPaidOrderBubbles,
   flushSettledOrderBubble,
@@ -116,6 +123,7 @@ beforeEach(async () => {
   dbMockState.resyncDigiflazzCatalog = null;
   dbMockState.runDetectionForCatalog = null;
   dbMockState.catalogSyncBusy = false;
+  dbMockState.paymentReminderFailOrderId = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -1664,6 +1672,93 @@ describe("announceStartedFlashSales", () => {
 // Bot-5 (security audit, 2026-06-23): a slow tick (or a restart racing the
 // next scheduled fire) must not overlap with itself and re-process the same
 // expired-orders/stale-tickets set, sending duplicate DMs.
+/**
+ * Phase 4 owner decision: one reminder push when about five minutes of the
+ * payment window are left. The job only enqueues (the outbox dispatcher sends
+ * and re-checks at send time); these pin which orders it queues for.
+ */
+describe("sendPaymentReminders", () => {
+  const MIN = 60_000;
+  const reminders = (orderId?: number) =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.PAYMENT_REMINDER_DM, ...(orderId ? { orderId } : {}) } });
+
+  async function pendingOrder(now: Date, opts: { windowMs: number; leftMs: number; userId?: number; data?: Record<string, unknown> }) {
+    const expiresAt = new Date(now.getTime() + opts.leftMs);
+    return prisma.order.create({
+      data: {
+        orderCode: `ORD-JOB-REMIND-${Math.random().toString(36).slice(2, 10)}`,
+        userId: opts.userId ?? sample.user.id,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: OrderStatus.PENDING_PAYMENT,
+        createdAt: new Date(expiresAt.getTime() - opts.windowMs),
+        expiresAt,
+        ...opts.data,
+      },
+    });
+  }
+
+  it("queues one reminder for a due order and none on later ticks, without sending anything itself", async () => {
+    const now = new Date();
+    const order = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN + 30_000 });
+    const api = fakeApi();
+    await sendPaymentReminders(api, { now, leadMinutes: 5 });
+    await sendPaymentReminders(api, { now: new Date(now.getTime() + MIN), leadMinutes: 5 });
+    await Promise.all([sendPaymentReminders(api, { now, leadMinutes: 5 }), sendPaymentReminders(api, { now, leadMinutes: 5 })]);
+    const rows = await reminders(order.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: Number(sample.user.telegramId), order_code: order.orderCode, minutes_left: 4 });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the lead is 0 (reminder switched off)", async () => {
+    const now = new Date();
+    await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 0 });
+    expect(await reminders()).toHaveLength(0);
+  });
+
+  it("skips orders that are not due: not yet in the lead window, opened inside it, paid, without a Telegram buyer, or about to close", async () => {
+    const now = new Date();
+    const guest = await prisma.user.create({ data: { telegramId: null, referralCode: `guest-${Math.random()}`, isGuest: true } });
+    const notYet = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 8 * MIN });
+    const shortWindow = await pendingOrder(now, { windowMs: 4 * MIN, leftMs: 3 * MIN });
+    const paid = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "PAID" } });
+    const web = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, userId: guest.id });
+    const closing = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 40_000 });
+    const due = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 });
+    const queued = (await reminders()).map((r) => r.orderId);
+    expect(queued).toEqual([due.id]);
+    for (const skipped of [notYet, shortWindow, paid, web, closing]) expect(queued).not.toContain(skipped.id);
+  });
+
+  it("includes a wallet top-up awaiting payment", async () => {
+    const now = new Date();
+    const topup = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { kind: OrderKind.WALLET_TOPUP, orderCode: `TOPUP-${Date.now()}` } });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 });
+    const rows = await reminders(topup.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson).order_code).toBe(topup.orderCode);
+  });
+
+  it("keeps going past one order whose enqueue fails, and logs it as a full sentence", async () => {
+    const now = new Date();
+    const broken = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 3 * MIN });
+    const healthy = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    dbMockState.paymentReminderFailOrderId = broken.id;
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    try {
+      await expect(sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 })).resolves.toBeUndefined();
+      expect((await reminders()).map((r) => r.orderId)).toEqual([healthy.id]);
+      const messages = errorSpy.mock.calls.map((c) => String(c[1] ?? c[0]));
+      expect(messages.some((m) => m.includes(broken.orderCode) && /will be retried on the next run/.test(m))).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 describe("scheduleJobs cron registration (Bot-5 fix)", () => {
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
@@ -1749,6 +1844,12 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // minutes on second 52, protected so two runs never race one order.
       expect(crons[16]!.getPattern()).toBe("52 */10 * * * *");
       expect(crons[16]!.options.protect).toBe(true);
+      // sendPaymentReminders (Phase 4) — every minute on second 47, clear of
+      // every other second here and of the five-second outbox/Digiflazz jobs
+      // registered outside this list; protected so two ticks never overlap.
+      expect(crons[17]!.getPattern()).toBe("47 * * * * *");
+      expect(crons[17]!.options.protect).toBe(true);
+      expect(crons).toHaveLength(18);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second

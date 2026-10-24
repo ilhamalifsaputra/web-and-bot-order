@@ -306,6 +306,30 @@ function renderPaymentReminder(payload: { order_code?: unknown; buyer_language?:
   return lang === "id" ? `${id}\n\n${en}` : `${en}\n\n${id}`;
 }
 
+interface OrderExpiredPayload {
+  is_wallet_topup?: unknown;
+}
+
+/**
+ * ORDER_EXPIRED_DM's body, in both languages with the buyer's own first, in
+ * the same shape as the payment reminder before it. Only a product order
+ * gets the "stock released" line: a wallet top-up reserved no stock.
+ */
+function renderOrderExpired(payload: { order_code?: unknown; buyer_language?: unknown } & OrderExpiredPayload): string {
+  const code = escape(String(payload.order_code ?? ""));
+  const product = payload.is_wallet_topup !== true;
+  const en =
+    `⌛ <b>Order <code>${code}</code> was cancelled — the payment window expired.</b>\n` +
+    (product ? `The reserved stock has been released.\n` : "") +
+    `If you already paid, contact support.`;
+  const id =
+    `⌛ <b>Pesanan <code>${code}</code> dibatalkan — waktu pembayaran habis.</b>\n` +
+    (product ? `Stok yang dipesan sudah dilepas.\n` : "") +
+    `Jika sudah bayar, hubungi Bantuan.`;
+  const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : DEFAULT_LANG;
+  return lang === "id" ? `${id}\n\n${en}` : `${en}\n\n${id}`;
+}
+
 /**
  * Return the message body for an outbox event, or "" to skip. `now` is the
  * send moment; only PAYMENT_REMINDER_DM reads it (its remaining time).
@@ -330,13 +354,20 @@ export function render(
     AdminFxRateStalePayload &
     TicketClosedPayload &
     RestockSubscriberPayload &
-    PaymentReminderPayload,
+    PaymentReminderPayload &
+    OrderExpiredPayload,
   now: Date = new Date(),
 ): string {
   if (event === NotificationEvent.PAYMENT_REMINDER_DM) {
     // Buyer DM, a legitimate push under the message budget (AGENTS.md): the
     // one reminder per order, sent by the generic path below.
     return renderPaymentReminder(payload, now);
+  }
+  if (event === NotificationEvent.ORDER_EXPIRED_DM) {
+    // Buyer DM, a legitimate push under the message budget (AGENTS.md): the
+    // one cancellation notice per order, queued only when the cancel itself
+    // sent the buyer nothing new.
+    return renderOrderExpired(payload);
   }
   if (event === NotificationEvent.TICKET_CLOSED_DM) {
     // Buyer DM (Task 2, Phase C): rendered in the buyer's OWN stored

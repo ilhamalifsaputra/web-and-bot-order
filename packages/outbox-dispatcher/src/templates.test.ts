@@ -808,3 +808,53 @@ describe("PAYMENT_REMINDER_DM", () => {
     for (const word of ["stock", "stok", "password", "credential", "akun"]) expect(out).not.toContain(word);
   });
 });
+
+/**
+ * ORDER_EXPIRED_DM (Phase 4 owner decision): the one push a buyer gets when
+ * the expiry sweep cancels their unpaid order, sent only when the cancellation
+ * itself put no new message in their chat.
+ */
+describe("ORDER_EXPIRED_DM", () => {
+  const base = { order_code: "ORD-20261024-ABCD", buyer_language: "en", is_wallet_topup: false };
+
+  it("states the full order number, the expired window and what to do if already paid, in both languages", () => {
+    const out = render("ORDER_EXPIRED_DM", base);
+    expect(out).toContain("<code>ORD-20261024-ABCD</code>");
+    expect(out).toContain("was cancelled — the payment window expired.");
+    expect(out).toContain("If you already paid, contact support.");
+    expect(out).toContain("dibatalkan — waktu pembayaran habis.");
+    expect(out).toContain("Jika sudah bayar, hubungi Bantuan.");
+  });
+
+  it("tells a product buyer the reserved stock was released", () => {
+    const out = render("ORDER_EXPIRED_DM", base);
+    expect(out).toContain("The reserved stock has been released.");
+    expect(out).toContain("Stok yang dipesan sudah dilepas.");
+  });
+
+  it("says nothing about stock for a wallet top-up, which reserved none", () => {
+    const out = render("ORDER_EXPIRED_DM", { ...base, is_wallet_topup: true }).toLowerCase();
+    expect(out).not.toContain("stock");
+    expect(out).not.toContain("stok");
+    expect(out).toContain("payment window expired");
+  });
+
+  it("puts the buyer's own language first", () => {
+    const en = render("ORDER_EXPIRED_DM", base);
+    const id = render("ORDER_EXPIRED_DM", { ...base, buyer_language: "id" });
+    expect(en.indexOf("was cancelled")).toBeLessThan(en.indexOf("dibatalkan"));
+    expect(id.indexOf("dibatalkan")).toBeLessThan(id.indexOf("was cancelled"));
+    expect(id.length).toBe(en.length);
+  });
+
+  it("HTML-escapes the order code", () => {
+    const out = render("ORDER_EXPIRED_DM", { ...base, order_code: `<b>"x"&'y'</b>` });
+    expect(out).toContain("&lt;b&gt;&quot;x&quot;&amp;&#x27;y&#x27;&lt;/b&gt;");
+    expect(out).not.toContain(`<b>"x"`);
+  });
+
+  it("carries no credentials or amounts", () => {
+    const out = render("ORDER_EXPIRED_DM", base).toLowerCase();
+    for (const word of ["password", "credential", "akun", "rp"]) expect(out).not.toContain(word);
+  });
+});

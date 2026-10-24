@@ -124,6 +124,7 @@ import {
   enqueueRestockBroadcast,
   enqueueWalletTopupCreditedDm,
   enqueuePaymentReminderDm,
+  enqueueOrderExpiredDm,
   enqueueNotification,
   adjustWallet,
   createOrderDirect,
@@ -2428,5 +2429,85 @@ describe("drainBatch delivers PAYMENT_REMINDER_DM only while the order still awa
     expect([row.status, row.attempts, row.nextRetryAt]).toEqual(["FAILED", 1, null]);
     // The order itself is untouched by the failed push.
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PENDING_PAYMENT");
+  });
+});
+
+/**
+ * ORDER_EXPIRED_DM (Phase 4 owner decision): a buyer DM — never the public
+ * channel — and the dispatcher re-reads the order right before sending, so a
+ * cancelled wallet top-up that a late payment re-opened and credited, or an
+ * order on which money was seen after all, gets no misleading "cancelled"
+ * push. A skip keeps the dedupe key.
+ */
+describe("drainBatch delivers ORDER_EXPIRED_DM only while the order is still cancelled and unpaid", () => {
+  afterEach(() => resetBotIdentity());
+
+  async function cancelledOrderFor(telegramId: number, kind: "PRODUCT" | "WALLET_TOPUP" = "PRODUCT") {
+    const buyer = await upsertUser(prisma, { telegramId, username: `expired${telegramId}`, fullName: "Expired Buyer" });
+    const order = await prisma.order.create({
+      data: {
+        userId: buyer.id,
+        orderCode: `ORD-EXPIRED-${telegramId}`,
+        kind,
+        subtotalAmount: 50_000,
+        totalAmount: 50_000,
+        status: "CANCELLED",
+        expiresAt: new Date(Date.now() - 60_000),
+      },
+    });
+    await enqueueOrderExpiredDm(prisma, { orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(telegramId), language: "id", kind });
+    return order;
+  }
+  const pushRow = (orderId: number) =>
+    prisma.notificationOutbox.findFirstOrThrow({ where: { orderId, event: NotificationEvent.ORDER_EXPIRED_DM } });
+
+  it("sends exactly one message to the buyer's chat even when a public channel is configured", async () => {
+    setBotIdentity({ publicChannelId: -1009876500002 });
+    const order = await cancelledOrderFor(770_001);
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    const toBuyer = sendMessage.mock.calls.filter((c) => c[0] === 770_001);
+    expect(toBuyer).toHaveLength(1);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === -1009876500002)).toHaveLength(0);
+    const [, text, opts] = toBuyer[0]! as [number, string, { parse_mode: string }];
+    expect(text).toContain(order.orderCode);
+    expect(text).toContain("Stok yang dipesan sudah dilepas.");
+    expect(opts.parse_mode).toBe("HTML");
+    expect(text.indexOf("dibatalkan")).toBeLessThan(text.indexOf("was cancelled"));
+    expect((await pushRow(order.id)).status).toBe("SENT");
+    // A second drain sends nothing more.
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 770_001)).toHaveLength(1);
+  });
+
+  it("sends a wallet top-up's push without the stock line", async () => {
+    await cancelledOrderFor(770_002, "WALLET_TOPUP");
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    const toBuyer = sendMessage.mock.calls.filter((c) => c[0] === 770_002);
+    expect(toBuyer).toHaveLength(1);
+    expect(String(toBuyer[0]![1]).toLowerCase()).not.toContain("stok");
+  });
+
+  it("skips a cancelled top-up that a late payment re-opened and credited, and keeps the dedupe key", async () => {
+    const order = await cancelledOrderFor(770_003, "WALLET_TOPUP");
+    await prisma.order.update({ where: { id: order.id }, data: { status: "DELIVERED", paymentState: "PAID", walletCreditState: "CREDITED" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 770_003)).toHaveLength(0);
+    const row = await pushRow(order.id);
+    expect([row.status, row.sentAt, row.lastError]).toEqual(["SKIPPED", null, "ORDER_NOT_CANCELLED"]);
+    expect(row.dedupeKey).toBe(`order_expired:${order.id}`);
+    await enqueueOrderExpiredDm(prisma, { orderId: order.id, orderCode: order.orderCode, telegramId: 770_003n, language: "id", kind: "WALLET_TOPUP" });
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ORDER_EXPIRED_DM } })).toBe(1);
+  });
+
+  it("skips a still-cancelled order on which a payment was recorded", async () => {
+    const order = await cancelledOrderFor(770_004);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "PAID" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 770_004)).toHaveLength(0);
+    expect((await pushRow(order.id)).lastError).toBe("PAYMENT_ALREADY_RECEIVED");
   });
 });

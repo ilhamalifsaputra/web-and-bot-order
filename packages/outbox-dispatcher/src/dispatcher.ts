@@ -10,8 +10,8 @@ import { t as coreT } from "@app/core/i18n";
  *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
  *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET,
  *    WALLET_TOPUP_CREDITED_DM, ADMIN_NEW_TICKET, TICKET_REPLY_DM,
- *    TICKET_CLOSED_DM, PAYMENT_REMINDER_DM (re-checked against the order
- *    right before sending). These deliver regardless of whether a public channel
+ *    TICKET_CLOSED_DM, PAYMENT_REMINDER_DM and ORDER_EXPIRED_DM (both
+ *    re-checked against the order right before sending). These deliver regardless of whether a public channel
  *    is configured — the loop runs whenever a bot token is available.
  *  - Channel posts (ORDER_DELIVERED testimonial): need PUBLIC_CHANNEL_ID. When
  *    no channel is configured they are left PENDING (skipped) so they post once
@@ -82,6 +82,7 @@ import {
   isEmailEventEnabled,
   recordPollHealth,
   paymentReminderSkipReason,
+  orderExpiredDmSkipReason,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { registerOutboxNudge, flushPaymentBubble } from "@app/core/nudge";
@@ -122,6 +123,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)
   NotificationEvent.TICKET_CLOSED_DM, // buyer DM (Task 2: an admin closed the buyer's support ticket)
   NotificationEvent.PAYMENT_REMINDER_DM, // buyer DM (Phase 4: the payment window is about to close — one per order)
+  NotificationEvent.ORDER_EXPIRED_DM, // buyer DM (Phase 4: the expiry sweep cancelled the unpaid order — one per order)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */
@@ -432,6 +434,28 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
       }
     }
 
+    // Expiry push (Phase 4): re-read the order right before sending, so a
+    // cancelled wallet top-up that a late payment re-opened and credited — or
+    // any order on which money was seen after all — gets no misleading
+    // "cancelled" message. The skip keeps the dedupe key: the push is once
+    // per order.
+    if (row.event === NotificationEvent.ORDER_EXPIRED_DM) {
+      let reason: string | null;
+      try {
+        reason = row.orderId == null ? "ORDER_NOT_FOUND" : await orderExpiredDmSkipReason(prisma, row.orderId);
+      } catch (err) {
+        logger.error(
+          { err, notificationId: row.id, orderId: row.orderId },
+          `Could not re-check whether order ${row.orderId} is still cancelled and unpaid, so expiry notice ${row.id} was not sent — recording a failed attempt; the retry re-checks the order again before sending`,
+        );
+        await failRow(row, "ORDER_EXPIRED_RECHECK_FAILED", config.NOTIF_MAX_ATTEMPTS);
+        continue;
+      }
+      if (reason) {
+        await skipRow(row, reason);
+        continue;
+      }
+    }
 
     // Buyer account-delivery DM: send the account(s) as a .txt document, with
     // credentials read live from the DB (never from the outbox payload).

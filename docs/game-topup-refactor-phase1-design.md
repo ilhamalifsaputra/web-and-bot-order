@@ -171,6 +171,19 @@ Peringatan deploy: bila `.env` produksi sudah menetapkan variabel ini, default b
 
 Risiko yang diaudit di Phase 4 sebelum default diubah: pembayaran yang terdeteksi setelah expiry (jalur `status === "stale"` dan `enqueueAdminStalePayment`), balapan webhook vs `autoCancelExpiredOrders` (job per menit, granularitas hingga sekitar 1 menit), dan rail QRIS/PayDisini yang kode QR-nya mungkin masih hidup di sisi gateway setelah order dibatalkan.
 
+#### Pemulihan klaim "matched" yang macet (Phase 4 Task 4b)
+
+Keenam rail auto-confirm meng-commit klaim `processed_*_tx` (outcome `matched`) **sebelum** transaksi delivery; `paymentState: "PAID"` dan transisi status baru ditulis di dalam transaksi itu. Bila proses mati di antara keduanya, order tetap `PENDING_PAYMENT` dan `autoCancelExpiredOrders` membatalkannya saat `expiresAt`. Satu-satunya pemulihan adalah `reclaimStaleMatchedClaim` (`packages/db/src/crud/_staleClaim.ts`), yang hanya berlaku untuk klaim yang lebih tua dari `STALE_MATCHED_CLAIM_MS` dan order yang masih `PENDING_PAYMENT` (atau top-up wallet yang dibatalkan).
+
+- `STALE_MATCHED_CLAIM_MS` diturunkan dari 10 menit ke **2 menit**. Batas bawah: delivery paling lama memegang klaimnya sekitar 20 detik (`maxWait` 5 s di `packages/db/src/client.ts` + `{ timeout: 15000 }` transaksi delivery; query engine me-rollback transaksi yang melewati timeout), jadi 2 menit = enam kali lipat. Batas atas (invarian, diuji di `stale_matched_claim.test.ts` terhadap default `Env`): harus jauh di bawah setengah jendela terpendek (10 menit).
+- Pemanggil terjadwal yang memicu pemulihan: poller rekonsiliasi TokoPay/PayDisini/NOWPayments (tiap `POLL_INTERVAL_SECONDS` = 10 s, ≤14 order per siklus dengan cursor berputar) dan poller deposit Binance (10 s), Bybit UID dan Bybit BSC (5 s), yang mengambil ulang riwayat transfer setiap siklus; plus retry webhook gateway (jadwalnya milik gateway). Klaim yang macet pulih sekitar 2 menit + satu siklus poll (+ backoff 429 sampai 30 s, + putaran cursor bila backlog > 14). Pada jendela 10 menit, crash di ~7,5 menit pertama jendela masih pulih; crash di menit-menit terakhir tetap tidak pulih sebelum auto-cancel.
+
+**OPEN OWNER FOLLOW-UP (belum dibangun):** klaim `matched` yang order produknya sudah `CANCELLED` tidak punya alert admin maupun jalur kredit.
+- `_staleClaim.ts:88` menolak reclaim untuk order produk yang bukan `PENDING_PAYMENT`, jadi retry webhook/poller berikutnya hanya mengembalikan `already_processed` (log info, mis. `tokopay.ts:193-208`), tidak pernah `stale`, sehingga `enqueueAdminStalePayment` tidak terpanggil.
+- `customerPaymentOutstanding` (`packages/db/src/crud/orders.ts:1506-1511`) tidak melindungi order ini karena `paymentState` masih `WAITING`/null; `autoCancelExpiredOrders` (`apps/order-bot/src/jobs/index.ts:493`) membatalkannya.
+- `canCreditCancelled` (`orders.ts:3242-3253`, `3332-3336`) bergantung pada `orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts:454`), yang hanya menghitung outcome `delivery_failed`/`unmatched` (`ACTIONABLE_LEDGER_OUTCOMES`), bukan `matched`.
+- Pilihan untuk pemilik: alert admin (job/sweeper) untuk baris `matched` yang order-nya `CANCELLED`, dan/atau memasukkan kasus itu ke jalur kredit dengan bukti tambahan bahwa delivery tidak pernah commit.
+
 ### 9.2 Reminder
 
 - Event notifikasi baru di `NotificationEvent` (mis. `PAYMENT_REMINDER_DM`), bukan status order.

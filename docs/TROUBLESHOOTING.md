@@ -146,6 +146,29 @@ ditemukan saat menyusun dokumentasi ini — schema-drift DB, lihat bagian
 (jika stok ada), atau `creditOrderToBalance` (kredit ke saldo pembeli jika
 tidak bisa di-deliver). Jangan abaikan alert ini — dana pembeli sudah masuk.
 
+### Pembayaran tercatat `matched` di ledger, tapi order `CANCELLED` dan tidak terkirim
+
+**Diagnosis:** proses mati (restart, OOM, koneksi DB putus) tepat di antara
+klaim ledger (`processed_*_tx`, outcome `matched`, di-commit sendiri) dan
+transaksi delivery. Order tetap `PENDING_PAYMENT`, lalu poller/webhook
+memulihkannya otomatis setelah klaim berumur 2 menit
+(`STALE_MATCHED_CLAIM_MS`, `packages/db/src/crud/_staleClaim.ts`). Kalau
+`expiresAt` keburu lewat (crash di menit-menit terakhir jendela 10 menit),
+`autoCancelExpiredOrders` membatalkan order dan pemulihan tidak mungkin lagi:
+`_staleClaim.ts:88` menolak order produk yang bukan `PENDING_PAYMENT`, retry
+berikutnya hanya log `already_processed` (bukan `stale`), jadi **tidak ada
+alert admin**, dan tombol kredit (`canCreditCancelled`,
+`packages/db/src/crud/orders.ts:3242-3253`) tidak muncul karena
+`orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts:454`) hanya
+menghitung `delivery_failed`/`unmatched`.
+
+**Fix (manual, untuk sekarang):** cari baris ledger `matched` yang
+`order_id`-nya menunjuk order `CANCELLED` dengan `paid_at` kosong, cocokkan
+dengan dashboard gateway, lalu selesaikan dana pembeli secara manual (kredit
+saldo lewat penyesuaian admin atau refund). **OPEN OWNER FOLLOW-UP:** alert
+admin atau jalur kredit untuk kasus ini belum dibangun — lihat
+`docs/game-topup-refactor-phase1-design.md` §9.1.
+
 ### Webhook gateway tidak pernah sampai (order menumpuk PENDING lalu auto-cancel)
 
 **Diagnosis:** Callback URL belum didaftarkan di dashboard merchant

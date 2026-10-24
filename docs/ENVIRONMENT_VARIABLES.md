@@ -35,7 +35,11 @@ top-up saldo wallet (memakai config yang sama).
 - Pesanan yang sudah dibuat tetap memakai `expiresAt` tersimpannya; nilai baru
   hanya berlaku untuk pesanan baru.
 - Rail deposit (Binance, Bybit UID, Bybit BSC) tetap ketat: deposit yang masuk
-  setelah `expiresAt` tidak dicocokkan.
+  setelah `expiresAt` tidak dicocokkan. Ini juga berlaku untuk deposit yang
+  dikirim **sebelum** `expiresAt` tetapi baru terlihat oleh poller sesudahnya
+  (backoff poll sampai 30 s, jeda laporan exchange): poller hanya mencocokkan
+  pesanan yang `expiresAt`-nya masih di depan, jadi deposit itu tercatat
+  `unmatched` dan masuk antrean manual-match di Payments ledger.
 - Rail webhook (TokoPay, PayDisini, NOWPayments): pembayaran yang datang
   setelah pesanan dibatalkan otomatis tetap masuk alur "pembayaran basi →
   alert admin" yang sudah ada (tanpa grace tambahan, tanpa kredit wallet

@@ -439,9 +439,11 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
 
     // Expiry push (Phase 4): re-read the order right before sending, so a
     // cancelled wallet top-up that a late payment re-opened and credited — or
-    // any order on which money was seen after all — gets no misleading
-    // "cancelled" message. The skip keeps the dedupe key: the push is once
-    // per order.
+    // any order that was paid, credited or put into credit review after all —
+    // gets no misleading "cancelled" message. A payment a provider merely
+    // observed does NOT stop it (the opposite of the reminder): that buyer
+    // most needs "if you already paid, contact support". The skip keeps the
+    // dedupe key: the push is once per order.
     if (row.event === NotificationEvent.ORDER_EXPIRED_DM) {
       let reason: string | null;
       try {
@@ -449,7 +451,7 @@ export async function drainBatch(bot: Bot | null, signal?: AbortSignal): Promise
       } catch (err) {
         logger.error(
           { err, notificationId: row.id, orderId: row.orderId },
-          `Could not re-check whether order ${row.orderId} is still cancelled and unpaid, so expiry notice ${row.id} was not sent — recording a failed attempt; the retry re-checks the order again before sending`,
+          `Could not re-check whether order ${row.orderId} is still cancelled and not yet paid or credited, so expiry notice ${row.id} was not sent — recording a failed attempt; the retry re-checks the order again before sending`,
         );
         await failRow(row, "ORDER_EXPIRED_RECHECK_FAILED", config.NOTIF_MAX_ATTEMPTS);
         continue;

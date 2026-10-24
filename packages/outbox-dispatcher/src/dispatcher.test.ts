@@ -2461,10 +2461,11 @@ describe("drainBatch delivers PAYMENT_REMINDER_DM only while the order still awa
  * ORDER_EXPIRED_DM (Phase 4 owner decision): a buyer DM — never the public
  * channel — and the dispatcher re-reads the order right before sending, so a
  * cancelled wallet top-up that a late payment re-opened and credited, or an
- * order on which money was seen after all, gets no misleading "cancelled"
- * push. A skip keeps the dedupe key.
+ * order that was paid or credited after all, gets no misleading "cancelled"
+ * push — while a payment a provider only observed still gets it. A skip keeps
+ * the dedupe key.
  */
-describe("drainBatch delivers ORDER_EXPIRED_DM only while the order is still cancelled and unpaid", () => {
+describe("drainBatch delivers ORDER_EXPIRED_DM only while the order is still cancelled and neither paid nor credited", () => {
   afterEach(() => resetBotIdentity());
 
   async function cancelledOrderFor(telegramId: number, kind: "PRODUCT" | "WALLET_TOPUP" = "PRODUCT") {
@@ -2534,5 +2535,34 @@ describe("drainBatch delivers ORDER_EXPIRED_DM only while the order is still can
     await drainBatch(bot);
     expect(sendMessage.mock.calls.filter((c) => c[0] === 770_004)).toHaveLength(0);
     expect((await pushRow(order.id)).lastError).toBe("PAYMENT_ALREADY_RECEIVED");
+  });
+
+  it("skips a cancelled top-up credited between the enqueue and the send, and keeps the dedupe key", async () => {
+    const order = await cancelledOrderFor(770_005, "WALLET_TOPUP");
+    await prisma.order.update({ where: { id: order.id }, data: { walletCreditState: "CREDITED" } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === 770_005)).toHaveLength(0);
+    const row = await pushRow(order.id);
+    expect([row.status, row.lastError, row.dedupeKey]).toEqual(["SKIPPED", "PAYMENT_ALREADY_RECEIVED", `order_expired:${order.id}`]);
+  });
+
+  // The opposite of the reminder: a buyer whose payment a provider only saw
+  // (detected, still confirming, or short) when the window lapsed is exactly
+  // the one who needs "cancelled — if you already paid, contact support".
+  it.each([
+    ["PAYMENT_DETECTED", 770_006],
+    ["VERIFYING", 770_007],
+    ["UNDERPAID", 770_008],
+  ])("sends exactly one push to the buyer's chat when the payment was only %s at cancel time", async (paymentState, telegramId) => {
+    setBotIdentity({ publicChannelId: -1009876500002 });
+    const order = await cancelledOrderFor(telegramId);
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState } });
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+    await drainBatch(bot);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === telegramId)).toHaveLength(1);
+    expect(sendMessage.mock.calls.filter((c) => c[0] === -1009876500002)).toHaveLength(0);
+    expect((await pushRow(order.id)).status).toBe("SENT");
   });
 });

@@ -1985,26 +1985,35 @@ export async function cancelExpiredPendingOrder(db: Db, orderId: number): Promis
 /** Why a queued expiry push must not be sent any more. */
 export type OrderExpiredDmSkipReason = "ORDER_NOT_FOUND" | "ORDER_NOT_CANCELLED" | "PAYMENT_ALREADY_RECEIVED";
 
-/** Payment states that mean money for the order was seen (the same set the
- * transaction-message adoption treats as "no longer awaiting payment"). */
-const PAYMENT_SEEN_STATES = ["PAYMENT_DETECTED", "VERIFYING", "PAID", "UNDERPAID"];
-
 /**
  * Send-time re-check for ORDER_EXPIRED_DM: the outbox dispatcher calls this
  * right before delivering the push, because the row may have waited (a
  * backoff, flood control, a restart) while things changed. Returns null when
- * the push is still true — the order is CANCELLED and no payment was seen —
- * and otherwise the reason the dispatcher records on the SKIPPED row. The case
- * that matters most is a wallet top-up: a late payment can still settle a
- * cancelled top-up (`isLateSettleableWalletTopup`), which moves it to DELIVERED
- * and credits the wallet, and a "your order was cancelled" message after the
- * "top-up successful" one would be wrong.
+ * the push is still true, and otherwise the reason the dispatcher records on
+ * the SKIPPED row.
+ *
+ * Deliberately the opposite polarity of the payment reminder's
+ * `awaitingPaymentNothingObserved`: a payment a provider merely observed
+ * (PAYMENT_DETECTED, VERIFYING, UNDERPAID — e.g. NOWPayments still confirming
+ * when the window lapsed) does NOT stop the push, because that buyer is the
+ * one who most needs "cancelled — if you already paid, contact support". The
+ * push is skipped only once the buyer demonstrably got their money's worth or
+ * a person is looking at it:
+ *  - the order left CANCELLED — a late payment settled a cancelled top-up
+ *    (`isLateSettleableWalletTopup` → `settleWalletTopup`, CANCELLED →
+ *    DELIVERED), or it was otherwise re-opened;
+ *  - it was paid after all (`paymentState` PAID or `paidAt` set);
+ *  - its wallet credit landed (CREDITED) or is in manual review
+ *    (NEEDS_REVIEW, `preservePaidWalletCreditFailure`).
  */
 export async function orderExpiredDmSkipReason(db: Db, orderId: number): Promise<OrderExpiredDmSkipReason | null> {
-  const order = await db.order.findUnique({ where: { id: orderId }, select: { status: true, paymentState: true, walletCreditState: true } });
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { status: true, paymentState: true, paidAt: true, walletCreditState: true },
+  });
   if (!order) return "ORDER_NOT_FOUND";
   if (order.status !== OrderStatus.CANCELLED) return "ORDER_NOT_CANCELLED";
-  if (PAYMENT_SEEN_STATES.includes(order.paymentState ?? "") || ["CREDITED", "NEEDS_REVIEW"].includes(order.walletCreditState ?? "")) {
+  if (order.paymentState === "PAID" || order.paidAt != null || order.walletCreditState === "CREDITED" || order.walletCreditState === "NEEDS_REVIEW") {
     return "PAYMENT_ALREADY_RECEIVED";
   }
   return null;

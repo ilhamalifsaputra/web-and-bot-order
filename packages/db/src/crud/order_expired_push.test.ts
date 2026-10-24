@@ -129,6 +129,16 @@ describe("cancelExpiredPendingOrder", () => {
     expect(await pushRows(order.id)).toHaveLength(1);
   });
 
+  it("queues one push that stays sendable for an order whose payment a provider only saw when the window lapsed", async () => {
+    for (const [i, paymentState] of ["PAYMENT_DETECTED", "VERIFYING", "UNDERPAID"].entries()) {
+      const order = await expiredOrder({ data: { paymentState } });
+      await track(order.id, { messageId: 710 + i, messageKind: "text" });
+      expect(await cancelExpiredPendingOrder(db.prisma, order.id)).toEqual({ cancelled: true, tracked: true });
+      expect(await pushRows(order.id)).toHaveLength(1);
+      expect(await orderExpiredDmSkipReason(db.prisma, order.id)).toBeNull();
+    }
+  });
+
   it("queues nothing for a tracked QR photo, whose retirement already sends the buyer a new message", async () => {
     const order = await expiredOrder();
     await track(order.id, { messageId: 700, messageKind: "photo" });
@@ -185,10 +195,20 @@ describe("orderExpiredDmSkipReason (send-time re-check)", () => {
     expect(await orderExpiredDmSkipReason(db.prisma, order.id)).toBe("ORDER_NOT_CANCELLED");
   });
 
-  it("skips a cancelled order on which money was seen after all", async () => {
-    for (const data of [{ paymentState: "PAID" }, { paymentState: "UNDERPAID" }, { paymentState: "PAYMENT_DETECTED" }, { paymentState: "VERIFYING" }, { walletCreditState: "CREDITED" }, { walletCreditState: "NEEDS_REVIEW" }]) {
+  it("skips a cancelled order that was paid, credited, or put into credit review after all", async () => {
+    for (const data of [{ paymentState: "PAID" }, { paidAt: new Date() }, { walletCreditState: "CREDITED" }, { walletCreditState: "NEEDS_REVIEW" }]) {
       const order = await expiredOrder({ data: { status: OrderStatus.CANCELLED, ...data } });
       expect(await orderExpiredDmSkipReason(db.prisma, order.id)).toBe("PAYMENT_ALREADY_RECEIVED");
+    }
+  });
+
+  // The opposite of the reminder: a payment a provider merely saw (e.g.
+  // NOWPayments still confirming when the window lapsed) is exactly the buyer
+  // who most needs "cancelled — if you already paid, contact support".
+  it("still sends to a cancelled order whose payment was only observed, never settled", async () => {
+    for (const paymentState of ["PAYMENT_DETECTED", "VERIFYING", "UNDERPAID", "WAITING_PAYMENT"]) {
+      const order = await expiredOrder({ data: { status: OrderStatus.CANCELLED, paymentState, walletCreditState: "NOT_STARTED" } });
+      expect(await orderExpiredDmSkipReason(db.prisma, order.id)).toBeNull();
     }
   });
 

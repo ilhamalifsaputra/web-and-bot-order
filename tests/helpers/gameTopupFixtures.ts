@@ -83,7 +83,7 @@ export async function buildGameTopupFixtures(
       name: n(name),
       price: new Decimal(price),
       type: "SHARED",
-      durationLabel: "N/A",
+      durationLabel: n(name),
       ...extra,
     });
   };

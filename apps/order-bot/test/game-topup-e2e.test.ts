@@ -263,6 +263,8 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     expect(done).toContain(order.orderCode);
     expect(done).toContain("SN-FIXTURE-1");
     expectOnlyBuyerChat(tg);
+    // The review screen is the only account check this flow shows: no nickname lookup ran.
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
   });
 
   it("2. price lock: a price change after Continue re-renders the payment screen; the old button never pays, the new one pays once at the new price", async () => {

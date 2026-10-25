@@ -83,7 +83,7 @@ export class FakeTelegram {
     bot.api.config.use(async (_prev, method, payload): Promise<any> => this.handle(method, (payload ?? {}) as Record<string, unknown>));
   }
 
-  private handle(method: string, payload: Record<string, unknown>): { ok: true; result: unknown } {
+  private handle(method: string, payload: Record<string, unknown>): { ok: true; result: unknown } | { ok: false; error_code: number; description: string } {
     this.calls.push({ method, payload: structuredClone(payload) });
     const chatId = typeof payload.chat_id === "number" ? payload.chat_id : Number(payload.chat_id ?? this.chatId);
     const markup = payload.reply_markup as Markup;
@@ -108,7 +108,12 @@ export class FakeTelegram {
       case "editMessageCaption":
       case "editMessageReplyMarkup": {
         const id = Number(payload.message_id);
-        const msg = this.messages.get(id) ?? { chatId, messageId: id, kind: "text" as const, text: "", inline: [] };
+        const msg = this.messages.get(id);
+        // Reject like Telegram: grammY turns { ok: false } into a GrammyError.
+        if (!msg) return { ok: false, error_code: 400, description: "Bad Request: message to edit not found" };
+        if (method === "editMessageText" && msg.kind === "photo") {
+          return { ok: false, error_code: 400, description: "Bad Request: there is no text in the message to edit" };
+        }
         if (method === "editMessageText") msg.text = String(payload.text ?? "");
         if (method === "editMessageCaption") msg.text = String(payload.caption ?? "");
         msg.inline = markup?.inline_keyboard ?? [];

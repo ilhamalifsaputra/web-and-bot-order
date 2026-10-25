@@ -296,11 +296,11 @@ function expectOneEditOnly(sink: SentCall[]) {
   }
 }
 
-/** What the current code answers a repeated pay tap with: the gateway rails'
- *  duplicate pre-check alert; the wallet rail (which settles in one step, so
- *  there is no pending order to find) the stale-screen toast and a re-render. */
-const OBSERVED_SECOND_TAP_TOAST = (rail: Rail, ctx: MyContext) =>
-  rail.method === PaymentMethod.WALLET ? t(ctx, "error.stale_screen") : t(ctx, "checkout.duplicate_pending");
+/** What a repeated pay tap is answered with: the duplicate alert on every rail.
+ *  The gateway rails find the pending order (the duplicate pre-check); the
+ *  wallet rail settles in one step, so it remembers the nonce it paid
+ *  (`walletPaidNonce`) and answers a second tap of that nonce the same way. */
+const OBSERVED_SECOND_TAP_TOAST = (_rail: Rail, ctx: MyContext) => t(ctx, "checkout.duplicate_pending");
 
 describe.each(RAILS)("price lock: $name", (rail) => {
   beforeEach(async () => {
@@ -688,6 +688,119 @@ describe("price lock: what the quote is bound to", () => {
     expect(session.scratch.quotedTotalIdr).toBe("72000");
   });
 
+});
+
+// Follow-up 7a: the wallet rail creates and settles the order in one tap, so a
+// second tap of the same Complete Order button (queued behind the first, as
+// updates for one chat run one at a time) finds no pending order. It used to be
+// treated as a stale screen: a re-render that offered a new purchase, or a new
+// account-input conversation. The paid nonce is remembered instead, and the
+// second tap only gets the duplicate alert.
+describe("wallet rail: a double tap of the button that just paid", () => {
+  const SCREEN = ["sendMessage", "reply", "editMessageText", "editMessageCaption", "deleteMessage", "replyWithPhoto", "sendPhoto", "sendDocument"];
+
+  function expectDuplicateAlertOnly(sink: SentCall[], ctx: MyContext) {
+    for (const m of SCREEN) expect(calls(sink, m), m).toHaveLength(0);
+    expect(calls(sink, "conversation.enter")).toHaveLength(0);
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers).toHaveLength(1);
+    expect(answers[0]!.args[0]).toEqual({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+  }
+
+  const WALLET_RAILS = RAILS.filter((r) => r.method === PaymentMethod.WALLET);
+
+  it.each(WALLET_RAILS)("$name: one order, one debit; the second tap gets the duplicate alert and nothing on screen", async (rail) => {
+    await rail.setup();
+    const session = await buyerSession(rail);
+    const nonce = await render(rail, session);
+    const before = (await getUser(prisma, sample.user.id))!;
+
+    await payWith(rail, session, nonce);
+    expect(await ordersOf()).toHaveLength(1);
+    expect(session.scratch.walletPaidNonce).toBe(nonce);
+    // A plain string: the session stays JSON.
+    expect(JSON.parse(JSON.stringify(session.scratch)).walletPaidNonce).toBe(nonce);
+    const createCalls = vi.mocked(createOrderDirect).mock.calls.length;
+
+    const sink: SentCall[] = [];
+    const ctx = await payWith(rail, session, nonce, sink);
+
+    expectDuplicateAlertOnly(sink, ctx);
+    expect(vi.mocked(createOrderDirect).mock.calls.length).toBe(createCalls);
+    expect(await ordersOf()).toHaveLength(1);
+    expect(await voucherUses()).toBe(1);
+    const after = (await getUser(prisma, sample.user.id))!;
+    if (rail.scratch.useWalletIdr) expect(new Decimal(before.walletBalance).minus(after.walletBalance).equals(72000)).toBe(true);
+    if (rail.scratch.useWalletUsdt) {
+      expect(new Decimal(before.walletBalanceUsdt).minus(after.walletBalanceUsdt).equals(usdtFromIdr(new Decimal(72000), new Decimal(16000)))).toBe(true);
+    }
+  });
+
+  it("discount-covered Complete Order: the second tap gets the duplicate alert and nothing on screen", async () => {
+    await createVoucher(prisma, { code: "FREE", type: VoucherType.PERCENT, value: "100", usageLimit: 10, minPurchase: "0" });
+    const session = await buyerSession(RAILS[0]!);
+    session.scratch.appliedVoucherCode = "FREE";
+    const nonce = await render({ ...RAILS[0]!, callback: "v1:walletpay" }, session);
+    expect(session.scratch.quotedTotalIdr).toBe("0");
+
+    await checkout.completeOrderWithWallet(tap(session, "v1:walletpay", [], nonce).ctx, sample.product.id, 1, nonce);
+    expect(await ordersOf()).toHaveLength(1);
+    expect(session.scratch.walletPaidNonce).toBe(nonce);
+
+    const sink: SentCall[] = [];
+    const { ctx } = tap(session, "v1:walletpay", sink, nonce);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, nonce);
+
+    expectDuplicateAlertOnly(sink, ctx);
+    expect(await ordersOf()).toHaveLength(1);
+  });
+
+  it("a new render after the purchase pays normally, and its nonce replaces the remembered one", async () => {
+    const rail = WALLET_RAILS[0]!;
+    await rail.setup();
+    const session = await buyerSession(rail);
+    const first = await render(rail, session);
+    await payWith(rail, session, first);
+    expect(await ordersOf()).toHaveLength(1);
+
+    // The buyer opens the product again in a new bubble (the paid one is now
+    // that order's status message) and turns the credit back on.
+    const NEXT_BUBBLE = BUBBLE + 1;
+    session.menuMsgId = NEXT_BUBBLE;
+    const onNext = (data: string, sink: SentCall[]) =>
+      makeCtx({ sink, sharedSession: session, from: { id: 42, username: "tester" }, callbackData: data, cbMessage: { message_id: NEXT_BUBBLE, chat: { id: 42, type: "private" }, date: 0 } }).ctx;
+    Object.assign(session.scratch, rail.scratch);
+    const renderSink: SentCall[] = [];
+    await checkout.showOrderConfirmation(onNext(`v1:buy:${sample.product.id}:1`, renderSink), sample.product.id, 1);
+    const second = nonceOn(renderSink, rail.callback)!;
+    expect(second).toBe(session.scratch.quoteNonce);
+    expect(second).not.toBe(first);
+    const sink: SentCall[] = [];
+    await rail.pay(onNext(`${rail.callback}:${sample.product.id}:1:${second}`, sink), sample.product.id, 1, second);
+
+    expect(await ordersOf()).toHaveLength(2);
+    expect(session.scratch.walletPaidNonce).toBe(second);
+    expect(toasts(sink).includes(t(tap(session, rail.callback).ctx, "checkout.duplicate_pending"))).toBe(false);
+  });
+
+  it("a malformed or missing nonce never matches the remembered one", async () => {
+    const rail = WALLET_RAILS[0]!;
+    await rail.setup();
+    const session = await buyerSession(rail);
+    const paid = await render(rail, session);
+    await payWith(rail, session, paid);
+    expect(session.scratch.walletPaidNonce).toBe(paid);
+    for (const other of [undefined, paid.toUpperCase() === paid ? "ZZZZZZ" : paid.toUpperCase()]) {
+      const sink: SentCall[] = [];
+      await payWith(rail, session, other, sink);
+      // Not the paid nonce: the ordinary stale path (toast + one re-render).
+      expect(toasts(sink)).toEqual([t(tap(session, rail.callback).ctx, "error.stale_screen")]);
+    }
+    expect(await ordersOf()).toHaveLength(1);
+  });
+});
+
+describe("price lock: what the quote is bound to", () => {
   it("the price-changed line reads the same total placeholder in both languages", () => {
     expect(coreT("checkout.price_changed", "en", { total: "Rp81.000" })).toBe("⚠️ The price has changed to Rp81.000. Please check it, then confirm again.");
     expect(coreT("checkout.price_changed", "id", { total: "Rp81.000" })).toBe("⚠️ Harga berubah menjadi Rp81.000. Silakan cek lagi, lalu konfirmasi ulang.");

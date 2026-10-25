@@ -2370,9 +2370,30 @@ async function tickStatusMessageAfterWalletCheckout(ctx: MyContext, orderId: num
   }
 }
 
+/**
+ * Session key holding the quote nonce of the Complete Order tap that last
+ * created and settled a wallet order. That rail leaves no PENDING_PAYMENT order
+ * behind, so `refuseDuplicateCheckout` cannot catch a second tap of the same
+ * button, and the order cleared the quote: without this marker the second tap
+ * (queued behind the first, `sequentialize` in main.ts) was treated as a stale
+ * screen and re-rendered a fresh checkout, or re-entered the account input
+ * conversation. One plain string (the session stays JSON), replaced by the next
+ * wallet order's nonce; deliberately not one of `QUOTE_SCRATCH_KEYS` or
+ * `clearAccountInput`'s keys, which the order itself clears. `/cancel` wipes it
+ * with the rest of the scratch.
+ */
+const WALLET_PAID_NONCE_KEY = "walletPaidNonce";
+
 export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
+
+  // A second tap of the button that just paid: the duplicate alert only, with
+  // nothing edited, sent or entered.
+  if (typeof nonce === "string" && NONCE_SHAPE.test(nonce) && nonce === ctx.session.scratch[WALLET_PAID_NONCE_KEY]) {
+    await answerCallbackOnce(ctx, { text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+    return;
+  }
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -2497,6 +2518,12 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // and gets the friendly toast instead.
     throw e;
   }
+
+  // Remember which button paid, before anything below clears the checkout
+  // state, so a second tap of it gets the duplicate alert (see
+  // WALLET_PAID_NONCE_KEY). Both the wallet-credit and the discount-covered
+  // settlement reach here. quoteForTap only accepted a well-formed nonce.
+  if (typeof nonce === "string") ctx.session.scratch[WALLET_PAID_NONCE_KEY] = nonce;
 
   // The order is created and paid (the transaction above has committed). Start
   // a Digiflazz-routed order's supplier request now, before any Telegram edit

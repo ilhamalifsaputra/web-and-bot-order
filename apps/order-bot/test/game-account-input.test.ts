@@ -1176,6 +1176,26 @@ describe("a pay tap after an admin changed the account input settings", () => {
       expect(calls(sink, "conversation.enter")).toHaveLength(0);
     });
 
+    it("a second tap of the button that paid gets only the duplicate alert: no input conversation, nothing on screen", async () => {
+      const denom = await makeDenom([USER_ID, ZONE_ID]);
+      const { session, nonce } = await paymentScreen(denom.id);
+      Object.assign(session.scratch, rail.scratch);
+      await rail.pay(tapCtx({ sink: [], session }, `${rail.callback}:${denom.id}:1:${nonce}`), denom.id, nonce);
+      expect(await prisma.order.count()).toBe(1);
+      const balance = (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance;
+
+      const sink: SentCall[] = [];
+      const ctx = tapCtx({ sink, session }, `${rail.callback}:${denom.id}:1:${nonce}`);
+      await rail.pay(ctx, denom.id, nonce);
+
+      expect(await prisma.order.count()).toBe(1);
+      expect(new Decimal((await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance).equals(balance)).toBe(true);
+      expect(screenCalls(sink)).toEqual([]);
+      expect(calls(sink, "conversation.enter")).toHaveLength(0);
+      const answers = calls(sink, "answerCallbackQuery");
+      expect(answers.map((c) => c.args[0])).toEqual([{ text: t(ctx, "checkout.duplicate_pending"), show_alert: true }]);
+    });
+
     it.each([
       ["PREMIUM_APPS", "PREMIUM_APPS"],
       ["null group", null],

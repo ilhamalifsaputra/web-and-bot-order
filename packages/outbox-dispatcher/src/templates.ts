@@ -268,6 +268,7 @@ interface AdminFxRateStalePayload {
 interface PaymentReminderPayload {
   expires_at?: unknown;
   minutes_left?: unknown;
+  is_wallet_topup?: unknown;
 }
 
 /**
@@ -290,18 +291,21 @@ function renderPaymentReminder(payload: { order_code?: unknown; buyer_language?:
   else throw new Error("PAYMENT_REMINDER_DM payload has neither a readable expires_at nor a usable minutes_left");
   const deadlineText = hasDeadline ? escape(`${localize(deadline, "yyyy-LL-dd HH:mm")} WIB`) : "";
 
+  const topup = payload.is_wallet_topup === true;
   const en =
     `⏰ <b>Payment reminder — order <code>${code}</code></b>\n` +
     `${minutes} ${minutes === 1 ? "minute" : "minutes"} left to pay.\n` +
     (deadlineText ? `Pay before: <b>${deadlineText}</b>\n` : "") +
-    `After the deadline, the order is cancelled automatically.\n` +
-    `Already paid? Wait for automatic confirmation.`;
+    (topup
+      ? `The top-up payment window ends at that time.\nAlready paid? Your balance is credited automatically.`
+      : `After the deadline, the order is cancelled automatically.\nAlready paid? Wait for automatic confirmation.`);
   const id =
     `⏰ <b>Pengingat pembayaran — pesanan <code>${code}</code></b>\n` +
     `Sisa waktu bayar ${minutes} menit.\n` +
     (deadlineText ? `Bayar sebelum: <b>${deadlineText}</b>\n` : "") +
-    `Setelah batas waktu lewat, pesanan dibatalkan otomatis.\n` +
-    `Sudah bayar? Tunggu konfirmasi otomatis.`;
+    (topup
+      ? `Jendela pembayaran top-up berakhir pada waktu tersebut.\nSudah bayar? Saldo akan masuk otomatis.`
+      : `Setelah batas waktu lewat, pesanan dibatalkan otomatis.\nSudah bayar? Tunggu konfirmasi otomatis.`);
   return bilingual(en, id, payload.buyer_language);
 }
 

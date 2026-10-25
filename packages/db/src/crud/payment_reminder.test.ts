@@ -90,7 +90,7 @@ describe("enqueuePaymentReminderDm", () => {
   it("queues one buyer DM carrying only the order code, deadline, minutes left, chat and language", async () => {
     const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN + 30_000 });
     await enqueuePaymentReminderDm(db.prisma, {
-      orderId: order.id, orderCode: order.orderCode, telegramId: order.user.telegramId, language: "id", expiresAt: order.expiresAt!, now: NOW,
+      orderId: order.id, orderCode: order.orderCode, telegramId: order.user.telegramId, language: "id", expiresAt: order.expiresAt!, kind: order.kind, now: NOW,
     });
     const rows = await reminderRows(order.id);
     expect(rows).toHaveLength(1);
@@ -102,12 +102,13 @@ describe("enqueuePaymentReminderDm", () => {
       expires_at: order.expiresAt!.toISOString(),
       minutes_left: 4,
       buyer_language: "id",
+      is_wallet_topup: false,
     });
   });
 
   it("writes a single row however many job ticks (or bot instances) try to queue it", async () => {
     const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN + 30_000 });
-    const args = { orderId: order.id, orderCode: order.orderCode, telegramId: order.user.telegramId, language: "en", expiresAt: order.expiresAt! };
+    const args = { orderId: order.id, orderCode: order.orderCode, telegramId: order.user.telegramId, language: "en", expiresAt: order.expiresAt!, kind: order.kind };
     await enqueuePaymentReminderDm(db.prisma, { ...args, now: NOW });
     await enqueuePaymentReminderDm(db.prisma, { ...args, now: at(MIN) });
     await Promise.all([enqueuePaymentReminderDm(db.prisma, { ...args, now: at(2 * MIN) }), enqueuePaymentReminderDm(db.prisma, { ...args, now: at(2 * MIN) })]);
@@ -120,7 +121,7 @@ describe("enqueuePaymentReminderDm", () => {
   it("does nothing for a buyer without a Telegram id", async () => {
     const order = await pendingOrder({ windowMs: 10 * MIN, leftMs: 4 * MIN });
     await enqueuePaymentReminderDm(db.prisma, {
-      orderId: order.id, orderCode: order.orderCode, telegramId: null, language: "en", expiresAt: order.expiresAt!, now: NOW,
+      orderId: order.id, orderCode: order.orderCode, telegramId: null, language: "en", expiresAt: order.expiresAt!, kind: order.kind, now: NOW,
     });
     expect(await reminderRows(order.id)).toHaveLength(0);
   });
@@ -134,11 +135,11 @@ describe("enqueuePaymentReminderDm", () => {
     expect(listed).toBeDefined();
     expect(isPaymentReminderCandidate(listed!, now, LEAD_MS)).toBe(true);
     await enqueuePaymentReminderDm(db.prisma, {
-      orderId: topup.id, orderCode: topup.orderCode, telegramId: listed!.user.telegramId, language: listed!.user.language, expiresAt: topup.expiresAt!, now,
+      orderId: topup.id, orderCode: topup.orderCode, telegramId: listed!.user.telegramId, language: listed!.user.language, expiresAt: topup.expiresAt!, kind: listed!.kind, now,
     });
     const rows = await reminderRows(topup.id);
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: 42, order_code: topup.orderCode, minutes_left: 4 });
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: 42, order_code: topup.orderCode, minutes_left: 4, is_wallet_topup: true });
   });
 });
 

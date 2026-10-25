@@ -1901,7 +1901,7 @@ describe("sendPaymentReminders", () => {
     await Promise.all([sendPaymentReminders(api, { now, leadMinutes: 5 }), sendPaymentReminders(api, { now, leadMinutes: 5 })]);
     const rows = await reminders(order.id);
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: Number(sample.user.telegramId), order_code: order.orderCode, minutes_left: 4 });
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: Number(sample.user.telegramId), order_code: order.orderCode, minutes_left: 4, is_wallet_topup: false });
     // The deadline the buyer reads is the order's own `expiresAt` as it was
     // when queued; it is stamped once, at order creation, and never moved.
     expect(JSON.parse(rows[0]!.payloadJson).expires_at).toBe(order.expiresAt!.toISOString());

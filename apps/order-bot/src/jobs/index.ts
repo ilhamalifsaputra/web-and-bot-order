@@ -627,6 +627,7 @@ export async function sendPaymentReminders(_api: Api, opts: { now?: Date; leadMi
         telegramId: order.user.telegramId,
         language: order.user.language,
         expiresAt: order.expiresAt!,
+        kind: order.kind,
         now,
       });
     } catch (err) {

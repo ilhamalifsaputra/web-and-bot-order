@@ -1406,7 +1406,9 @@ export async function enqueueOrderProcessingDm(
  * writes nothing (the first row's payload stands).
  *
  * The payload holds what the message states and nothing else — no amounts,
- * no credentials (the outbox is visible in the admin panel). `minutes_left`
+ * no credentials (the outbox is visible in the admin panel). `is_wallet_topup`
+ * decides the wording: a top-up is not "cancelled automatically" (a late
+ * payment still credits the balance). `minutes_left`
  * is the value at enqueue time; the dispatcher recomputes the remaining time
  * from `expires_at` when it actually sends, and re-checks that the order
  * still awaits payment (`paymentReminderSkipReason`). No-op for buyers
@@ -1414,7 +1416,7 @@ export async function enqueueOrderProcessingDm(
  */
 export async function enqueuePaymentReminderDm(
   db: Db,
-  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null; expiresAt: Date; now?: Date },
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null; expiresAt: Date; kind: string; now?: Date },
 ): Promise<void> {
   if (args.telegramId == null) return;
   await enqueueNotification(
@@ -1427,6 +1429,7 @@ export async function enqueuePaymentReminderDm(
       expires_at: args.expiresAt.toISOString(),
       minutes_left: paymentReminderMinutesLeft(args.expiresAt, args.now ?? new Date()),
       buyer_language: langCode(args.language),
+      is_wallet_topup: args.kind === OrderKind.WALLET_TOPUP,
     },
     paymentReminderDedupeKey(args.orderId),
   );

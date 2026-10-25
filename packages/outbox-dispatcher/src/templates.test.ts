@@ -803,6 +803,45 @@ describe("PAYMENT_REMINDER_DM", () => {
     expect(() => render("PAYMENT_REMINDER_DM", { order_code: "ORD-X" }, sentAt("2026-10-24T07:00:30.000Z"))).toThrow();
   });
 
+  it("keeps the product wording byte-identical when the order is not a top-up", () => {
+    const now = sentAt("2026-10-24T07:00:30.000Z");
+    const product = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: false }, now);
+    expect(product).toBe(render("PAYMENT_REMINDER_DM", base, now));
+    expect(product).toBe(
+      "⏰ <b>Payment reminder — order <code>ORD-20261024-ABCD</code></b>\n" +
+        "4 minutes left to pay.\nPay before: <b>2026-10-24 14:05 WIB</b>\n" +
+        "After the deadline, the order is cancelled automatically.\nAlready paid? Wait for automatic confirmation." +
+        "\n\n" +
+        "⏰ <b>Pengingat pembayaran — pesanan <code>ORD-20261024-ABCD</code></b>\n" +
+        "Sisa waktu bayar 4 menit.\nBayar sebelum: <b>2026-10-24 14:05 WIB</b>\n" +
+        "Setelah batas waktu lewat, pesanan dibatalkan otomatis.\nSudah bayar? Tunggu konfirmasi otomatis.",
+    );
+  });
+
+  it("words a wallet top-up reminder as a payment window, not an order cancellation, in both languages", () => {
+    const now = sentAt("2026-10-24T07:00:30.000Z");
+    const out = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: true }, now);
+    expect(out).toContain("<code>ORD-20261024-ABCD</code>");
+    expect(out).toContain("2026-10-24 14:05 WIB");
+    expect(out).toContain("4 minutes left to pay.");
+    expect(out).toContain("Sisa waktu bayar 4 menit.");
+    expect(out).toContain("The top-up payment window ends at that time.");
+    expect(out).toContain("Already paid? Your balance is credited automatically.");
+    expect(out).toContain("Jendela pembayaran top-up berakhir pada waktu tersebut.");
+    expect(out).toContain("Sudah bayar? Saldo akan masuk otomatis.");
+    expect(out).not.toContain("cancelled automatically");
+    expect(out).not.toContain("dibatalkan otomatis");
+    const id = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: true, buyer_language: "id" }, now);
+    expect(id.indexOf("Pengingat pembayaran")).toBeLessThan(id.indexOf("Payment reminder"));
+    expect(id.length).toBe(out.length);
+  });
+
+  it("HTML-escapes the order code in the top-up wording too", () => {
+    const out = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: true, order_code: `<b>"x"&'y'</b>` }, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("&lt;b&gt;&quot;x&quot;&amp;&#x27;y&#x27;&lt;/b&gt;");
+    expect(out).not.toContain(`<b>"x"`);
+  });
+
   it("says nothing about stock or credentials, so it reads right for a wallet top-up too", () => {
     const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:00:30.000Z")).toLowerCase();
     for (const word of ["stock", "stok", "password", "credential", "akun"]) expect(out).not.toContain(word);

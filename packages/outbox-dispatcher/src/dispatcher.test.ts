@@ -2339,7 +2339,7 @@ describe("drainBatch delivers PAYMENT_REMINDER_DM only while the order still awa
       },
     });
     await enqueuePaymentReminderDm(prisma, {
-      orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(telegramId), language: "id", expiresAt,
+      orderId: order.id, orderCode: order.orderCode, telegramId: BigInt(telegramId), language: "id", expiresAt, kind: order.kind,
     });
     return order;
   }
@@ -2374,7 +2374,7 @@ describe("drainBatch delivers PAYMENT_REMINDER_DM only while the order still awa
     expect(row.dedupeKey).toBe(`payment_reminder:${order.id}`);
     // A later job tick cannot queue a second one.
     await enqueuePaymentReminderDm(prisma, {
-      orderId: order.id, orderCode: order.orderCode, telegramId: 760_002n, language: "id", expiresAt: order.expiresAt!,
+      orderId: order.id, orderCode: order.orderCode, telegramId: 760_002n, language: "id", expiresAt: order.expiresAt!, kind: order.kind,
     });
     expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.PAYMENT_REMINDER_DM } })).toBe(1);
   });

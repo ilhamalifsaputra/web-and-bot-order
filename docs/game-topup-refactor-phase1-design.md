@@ -293,3 +293,40 @@ Belum dikerjakan dan tidak boleh dianggap selesai:
 - Phase 3 (parser input akun satu pesan, layar review, `expectedTotal`) belum dibuat.
 - Phase 4 (TTL per rail, reminder, verifikasi edit pesan batal) belum dibuat.
 - Format kawat Digiflazz dan KokinPay yang live tetap belum terverifikasi (butuh akun live); bentuk akhiran region di data nyata juga belum dilihat, jadi tabel label dan heuristik `possible_doubled_suffix` perlu ditinjau pemilik.
+
+## 15. Hasil Phase 5
+
+Phase 5 menambah fixture bersama, skrip seed manual, tes E2E, dan runbook. Tidak ada perubahan perilaku produk.
+
+**Artefak:**
+- Pembangun fixture bersama: `tests/helpers/gameTopupFixtures.ts` (`buildGameTopupFixtures`), dengan tes `tests/helpers/gameTopupFixtures.test.ts`.
+- Skrip seed manual: `scripts/seed-game-topup-fixtures.ts` (guard di `scripts/lib/seedGameTopup.ts`); menolak kecuali host lokal, DB `bot_order_gtr`, dan `--confirm-worktree-db`; `--apply`, `--apply --remove`.
+- Tes E2E: `apps/order-bot/test/game-topup-e2e.test.ts` (transport Telegram palsu, gateway di-stub).
+- Runbook: `docs/MIGRATIONS.md`, `docs/ROLLBACK.md`, `docs/CHANGELOG.md`, dan daftar cek smoke di `DOCS.md`. `docs/RELEASE_NOTES.md` tidak disentuh (butuh keputusan nomor versi dari pemilik).
+
+**Gate verifikasi:**
+
+| Pemeriksaan | Hasil |
+|---|---|
+| `pnpm -r build` | TBD (diisi controller) |
+| `pnpm typecheck` | TBD (diisi controller) |
+| `pnpm run pretest` | TBD (diisi controller) |
+| Tes E2E dan fixture (dijalankan sendirian) | TBD (diisi controller) |
+| Vitest penuh (8 shard, 1 worker) | TBD (diisi controller) |
+| `pnpm doctor:full` | TBD (diisi controller) |
+| `pnpm lint` | TBD (diisi controller) |
+| Merge commit ke `master` | TBD (diisi controller) |
+
+**Item pemilik yang masih terbuka** (dari catatan Phase 3 dan 4; tidak diubah tanpa keputusan pemilik, dan E2E tidak mengunci perilakunya):
+- Auto-cancel masih membatalkan order NOWPayments `PENDING_PAYMENT` dengan `paymentState` `PAYMENT_DETECTED`/`VERIFYING` saat `expiresAt` (sudah ada sebelum Phase 4; lihat §9.2).
+- Baris ledger `matched` pada order produk yang `CANCELLED` (crash di ~2 menit terakhir jendela 10 menit) tidak punya alert/kredit.
+- Ketukan ganda pada rail wallet berakhir di layar bayar baru (masuk ulang ke input akun).
+- Ketukan nonce lama yang antre setelah mismatch menghilangkan kalimat "harga berubah".
+- Layar review terlalu besar pada ~40+ unit.
+- Batas 128 karakter tidak diterapkan pada loop per-field (select/opsional).
+- Admin mengubah field tambahan di antara Continue dan ketukan bayar.
+- Pembeli storefront yang punya id Telegram ikut menerima push pengingat/kedaluwarsa.
+- Tidak dapat diverifikasi: apakah invoice TokoPay/PayDisini/NOWPayments kedaluwarsa bersama jendela kita (panggilan create tidak mengirim waktu kedaluwarsa, sehingga alert "dibayar setelah dibatalkan" bisa lebih sering), perilaku Telegram sungguhan, latensi gateway terhadap 14 order per siklus, sinkronisasi jam host.
+- Format kawat live Digiflazz/KokinPay/TokoPay tetap belum terverifikasi.
+
+**Checklist deploy** (dari catatan akhir Phase 3+4): sunting KELIMA kunci jendela bayar di setiap environment; order yang sudah ada mempertahankan `expiresAt` lama; bubble pembayaran sebelum deploy butuh satu ketukan tambahan; pengingat dan push kedaluwarsa langsung aktif untuk pembeli Telegram; tidak ada perubahan skema; exports map `packages/core` hanya bertambah `./accountInput`.

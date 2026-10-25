@@ -99,6 +99,35 @@ bertabrakan. Jangan me-rename folder migrasi yang sudah pernah diterapkan:
 itu merusak pelacakan `_prisma_migrations` di DB mana pun yang sudah
 menjalankannya dengan nama lama.
 
+## Catatan per perubahan: refactor Game Top-up (tanpa migrasi)
+
+Refactor Game Top-up (branch `worktree-game-topup-refactor`) **tidak membawa
+migrasi dan tidak mengubah kolom apa pun**. Satu-satunya perubahan di
+`prisma/schema.prisma` adalah komentar dokumentasi pada `Product.gameRegion`
+(`git diff master HEAD -- prisma/migrations` kosong). Tidak ada yang perlu
+dijalankan untuk `db push`; jika `db push` menampilkan peringatan destruktif
+pada deploy ini, itu berasal dari hal lain, bukan dari refactor ini: **jangan
+pernah memakai `--accept-data-loss`**, selidiki dulu penyebabnya.
+
+Skrip data sekali-jalan `scripts/fill-game-regions.ts` (mengisi
+`Product.gameRegion` produk lama dari akhiran `digiflazzBrand`) **opsional**:
+tanpa menjalankannya, bot tetap menampilkan semua produk lewat guard scope
+campuran. Aturan pakainya:
+
+- Default dry run (tidak menulis apa pun); `--apply` baru menulis. Baca laporan
+  dry run lebih dulu.
+- **Ambil backup segar sebelum `--apply`.** Skrip tidak punya mode undo;
+  rollback satu-satunya adalah `restore.sh` (lihat [ROLLBACK.md](ROLLBACK.md)).
+- Semua-atau-tidak-sama-sekali per scope (kategori GAME_TOPUP + `gameVariant`):
+  scope yang tidak memenuhi syarat dilewati utuh dan dilaporkan alasannya.
+- Menolak jalan bila `DATABASE_URL_PRISMA` menunjuk host selain
+  `localhost`/`127.0.0.1`/`::1`, kecuali diberi `--i-know-this-is-not-local`.
+- Jangan dijalankan selagi Digiflazz sync/import berjalan (transaksi READ
+  COMMITTED tidak melihat saudara yang di-commit sesi lain di tengah run).
+
+Detail alasan dilewati dan kode keluar ada di [DOCS.md](../DOCS.md), bagian
+"Alur katalog Game Top-up".
+
 ## Catatan per migrasi: `20261008090000_transaction_payment_credit_state`
 
 Migrasi ini menambah enam kolom nullable pada `orders` untuk status pembayaran,

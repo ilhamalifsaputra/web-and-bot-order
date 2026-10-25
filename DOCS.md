@@ -386,6 +386,60 @@ identik), jadi tidak ada migrasi untuk cabang ini dan tidak ada langkah restart
 khusus selain deploy kode biasa. Tabel label region masih draft: koreksi dulu
 sebelum menjalankan backfill dengan `--apply`.
 
+**Daftar cek smoke manual (`@testtoko_bot`, hanya di database worktree).**
+Tes otomatis memakai transport Telegram palsu dan stub gateway; yang di bawah
+ini adalah uji tangan opsional di Telegram sungguhan.
+
+Prasyarat (di worktree `game-topup-refactor`, bukan di checkout utama):
+
+1. Postgres milik worktree: `docker compose -f docker-compose.postgres.yml -p gtr up -d`
+   (hanya satu worktree boleh menjalankannya; port dan nama DB dari `POSTGRES_PORT`
+   dan `POSTGRES_DB=bot_order_gtr` di `.env` worktree). `DATABASE_URL_PRISMA`
+   harus menunjuk `bot_order_gtr` di localhost.
+2. `pnpm prisma:generate`, `pnpm -r build`, lalu `pnpm exec prisma db push --skip-generate`
+   (tanpa `--accept-data-loss`) pada database worktree itu.
+3. `WEB_PORT` dan `STOREFRONT_PORT` di `.env` worktree dibuat berbeda dari
+   worktree lain.
+4. Seed fixture (bertanda `[SEED-GTR]`, tanpa kredensial provider):
+   `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db`
+   (dry run, hanya hitungan), lalu
+   `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply`.
+   Skrip menolak jalan kecuali host lokal, DB `bot_order_gtr`, dan flag
+   konfirmasi. Ia juga menyalakan layanan Game Top-up (bot dan web) dan menyetel
+   minimum order 0 (setting bersama; `--remove` tidak mengembalikannya).
+5. Token bot dibaca dari setting DB `bot_token` (bukan `.env`); salin dari DB dev
+   sesuai [CATALOG_BUTTONS.md](docs/CATALOG_BUTTONS.md) bagian 9. **Hanya satu
+   worktree yang boleh menjalankan order-bot** pada token yang sama (dua poller
+   memicu error 409). Jalankan `pnpm dev:bot`.
+
+Daftar cek:
+
+- [ ] Penelusuran tiga tingkat: kategori, game, region (bila ada), paket. Game
+  tanpa region langsung ke paket; kategori campuran menampilkan semua produk.
+- [ ] Satu baris hint di tiap layar (daftar game, edisi, region, paket, search),
+  dan label `mulai <harga>` pada daftar produk Game Top-up.
+- [ ] `/search` menemukan produk Game Top-up saja (tidak ada Premium Apps).
+- [ ] Beli produk bergaya ML: ketik ID dan Zone dalam satu pesan, mis. `123456789 1234`;
+  layar review menampilkan field terpisah dengan label.
+- [ ] Ubah harga denominasi di admin setelah layar review tampil, lalu ketuk
+  bayar: tidak ada order baru, layar dirender ulang dengan "Harga berubah
+  menjadi ...", dan ketukan tombol lama tidak membayar.
+- [ ] Faktur QRIS: **hanya di sandbox yang aman. Jangan membayar uang sungguhan.**
+  Di tes otomatis TokoPay di-stub. Lewati item ini bila tidak ada sandbox.
+- [ ] Pengingat sekitar 5 menit sebelum jendela habis: tepat satu DM.
+- [ ] Saat kedaluwarsa: pesan pembayaran diedit menjadi dibatalkan, dan hanya
+  satu push pemberitahuan.
+- [ ] Kontrol: Premium Apps tidak menampilkan `mulai`, hint, atau layar review.
+- [ ] Bersihkan: `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove`,
+  lalu hentikan bot dan `docker compose -f docker-compose.postgres.yml -p gtr down`.
+
+**Tidak dibuktikan oleh tes otomatis:** format kawat live TokoPay, Digiflazz,
+dan KokinPay (stub saja); perilaku Telegram sungguhan (edit pesan, suara
+notifikasi, rate limit); apakah invoice TokoPay/PayDisini/NOWPayments ikut
+kedaluwarsa bersama jendela bayar kita (panggilan create tidak mengirim waktu
+kedaluwarsa); latensi gateway terhadap siklus rekonsiliasi; sinkronisasi jam
+host.
+
 Key rahasia (`tokopay_secret`, `bot_token`, `notif_bot_token`, `bybit_api_key`,
 `bybit_api_secret`, `web_cookie_secret`) ditangani **write-only**: tak di-echo,
 `(hidden)` di tabel, audit `key=(updated)` tanpa nilai.

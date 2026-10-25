@@ -5,9 +5,10 @@
 ```bash
 git log --oneline -10                 # cari commit terakhir yang baik
 git checkout <commit-lama>            # atau: git revert <commit-buruk> untuk rollback non-destructive
-docker compose build                  # jika Docker
-docker compose restart server
-# non-Docker: pnpm install && pm2 restart bot-order
+# Docker: bangun ulang image dari kode yang sudah di-revert dan buat ulang container
+# (restart saja tidak menjalankan image baru)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
+# non-Docker: pnpm install && pnpm -r build && pm2 restart bot-order
 ```
 
 Pilih `git revert` (membuat commit baru yang membalikkan perubahan) bukan
@@ -65,9 +66,10 @@ rollback-nya hanya kode dan `.env`; DB tidak perlu di-restore.
 
 1. **Kode:** di checkout utama (`master`), `git revert -m 1 <merge-commit>`
    (SHA merge belum diketahui: `<merge-commit>` diisi saat merge), lalu build
-   dan restart order-bot dan web (Docker: `docker compose build` +
-   `docker compose restart server`; non-Docker: `pnpm install && pm2 restart
-   bot-order`).
+   dan restart order-bot dan web (Docker: `docker compose -f docker-compose.yml
+   -f docker-compose.postgres.prod.yml up -d --build`, bentuk yang sama dengan
+   [deploy/README.md](../deploy/README.md); non-Docker: `pnpm install && pnpm
+   -r build && pm2 restart bot-order`).
 2. **`.env`:** bila operator mengubah jendela bayar, kembalikan kelima kunci
    ke default KODE LAMA (`git show master:packages/core/src/config.ts`
    sebelum merge refactor). Nilai eksplisit di `.env` selalu menang atas default,

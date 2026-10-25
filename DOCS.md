@@ -424,6 +424,10 @@ Daftar cek:
 - [ ] Ubah harga denominasi di admin setelah layar review tampil, lalu ketuk
   bayar: tidak ada order baru, layar dirender ulang dengan "Harga berubah
   menjadi ...", dan ketukan tombol lama tidak membayar.
+- [ ] Setting yang disalin dari DB dev bisa berisi kredensial TokoPay sungguhan:
+  mengetuk tombol bayar QRIS membuat invoice merchant sungguhan (uang tidak
+  bergerak kecuali dibayar). Untuk smoke test pakai setting TokoPay kosong/stub,
+  kecuali pemilik sengaja meminta invoice sandbox.
 - [ ] Faktur QRIS: **hanya di sandbox yang aman. Jangan membayar uang sungguhan.**
   Di tes otomatis TokoPay di-stub. Lewati item ini bila tidak ada sandbox.
 - [ ] Pengingat sekitar 5 menit sebelum jendela habis: tepat satu DM.
@@ -432,6 +436,11 @@ Daftar cek:
 - [ ] Kontrol: Premium Apps tidak menampilkan `mulai`, hint, atau layar review.
 - [ ] Bersihkan: `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove`,
   lalu hentikan bot dan `docker compose -f docker-compose.postgres.yml -p gtr down`.
+  `--remove` tanpa `--apply` hanya mencetak apa yang akan dihapus. Baris seed
+  yang masih dirujuk order milik penguji (atau riwayat dompet) **dilewati dan
+  dilaporkan**, bukan dihapus: biarkan saja, atau hapus order tes itu secara
+  manual hanya di DB worktree. Penghapusan denominasi seed ikut menghapus
+  (cascade) item keranjang dan ulasan penguji pada denominasi itu.
 
 **Tidak dibuktikan oleh tes otomatis:** format kawat live TokoPay, Digiflazz,
 dan KokinPay (stub saja); perilaku Telegram sungguhan (edit pesan, suara

@@ -119,7 +119,7 @@ top-up saldo wallet (memakai config yang sama).
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar — lebih lebar karena pembeli membuka wallet app di luar Telegram/browser. Kredensial (`nowpayments_api_key`, `nowpayments_ipn_secret`, `nowpayments_pay_currency`) **hanya** di Settings, tidak ada di `.env`. |
+| `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar — lebih lebar karena pembeli membuka wallet app di luar Telegram/browser. Order produk yang pembayarannya sudah terlihat (`PAYMENT_DETECTED`/`VERIFYING`) baru dibatalkan 30 menit setelah jendela ini habis (konstanta `OBSERVED_PAYMENT_GRACE_MS`, bukan env), lalu admin diberi alert. Kredensial (`nowpayments_api_key`, `nowpayments_ipn_secret`, `nowpayments_pay_currency`) **hanya** di Settings, tidak ada di `.env`. |
 
 ## Finance — CoinGecko (market rate source)
 

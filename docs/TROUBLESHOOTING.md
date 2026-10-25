@@ -156,16 +156,26 @@ memulihkannya otomatis setelah klaim berumur 2 menit
 `expiresAt` keburu lewat (crash di menit-menit terakhir jendela 10 menit),
 `autoCancelExpiredOrders` membatalkan order dan pemulihan tidak mungkin lagi:
 `reclaimStaleMatchedClaim` (`_staleClaim.ts`) menolak order produk yang bukan `PENDING_PAYMENT`, retry
-berikutnya hanya log `already_processed` (bukan `stale`), jadi **tidak ada
-alert admin**, dan tombol kredit (`canCreditCancelled`,
-`packages/db/src/crud/orders.ts`) tidak muncul karena
+berikutnya hanya log `already_processed` (bukan `stale`), dan tombol kredit
+(`canCreditCancelled`, `packages/db/src/crud/orders.ts`) tidak muncul karena
 `orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts`) hanya
 menghitung `delivery_failed`/`unmatched`.
 
-**Fix (manual, untuk sekarang) — HANYA order produk:** cari baris ledger
-`matched` yang `order_id`-nya menunjuk order produk `CANCELLED` dengan
-`paid_at` kosong, cocokkan dengan dashboard gateway, lalu selesaikan dana
-pembeli secara manual (kredit saldo lewat penyesuaian admin atau refund).
+**Alert:** sejak follow-up item 2, `cancelOrder` mengirim DM ke setiap admin
+(`ADMIN_STALE_PAYMENT`, teks "payment ... was claimed, but the order was
+cancelled before it was delivered" / "pembayaran ... sudah tercatat, tapi
+pesanan dibatalkan sebelum dikirim"), satu kali per admin per order, saat
+order produk `PENDING_PAYMENT` tanpa `paid_at` dibatalkan (auto-cancel,
+pembeli, atau admin) padahal ada baris `matched` untuknya
+(`orderMatchedLedgerClaim`, `reports.ts`). Alert itu tidak mengkredit apa pun
+dan tidak mengubah baris ledger.
+
+**Fix (manual; jalur kredit otomatis masih keputusan pemilik) — HANYA order
+produk:** dari alert (atau dengan mencari baris ledger `matched` yang
+`order_id`-nya menunjuk order produk `CANCELLED` dengan `paid_at` kosong),
+cocokkan dengan dashboard gateway, lalu selesaikan dana pembeli secara manual
+(kredit saldo lewat penyesuaian admin atau refund). Top-up dompet tidak
+menerima alert ini, karena alasan di bawah.
 
 **JANGAN lakukan ini untuk top-up dompet (`kind = WALLET_TOPUP`).** Top-up yang
 `CANCELLED` dengan klaim `matched` tetap bisa diklaim ulang dan dikreditkan
@@ -176,9 +186,28 @@ penyelesaian otomatis masih lolos. Biarkan top-up menyelesaikan dirinya; kalau
 tidak ada retry yang akan datang, keluarkan dulu baris ledger dari `matched`
 (atau blokir klaim ulangnya) sebelum mengkredit manual.
 
-**OPEN OWNER FOLLOW-UP:** alert
-admin atau jalur kredit untuk kasus ini belum dibangun — lihat
-`docs/game-topup-refactor-phase1-design.md` §9.1.
+**Masih keputusan pemilik:** jalur kredit untuk kasus ini belum dibangun
+(alert-nya sudah) — lihat `docs/game-topup-refactor-phase1-design.md` §9.1.
+
+### Order NOWPayments lewat `expiresAt` tapi belum dibatalkan, atau alert "still confirming"
+
+**Diagnosis:** NOWPayments sudah melaporkan pembayaran (`payment_state`
+`PAYMENT_DETECTED`/`VERIFYING`) tapi belum selesai dikonfirmasi saat jendela
+bayar habis. Order produk seperti ini sengaja **tidak** dibatalkan selama
+30 menit setelah `expiresAt` (`OBSERVED_PAYMENT_GRACE_MS`,
+`packages/core/src/paymentReminder.ts`): auto-cancel melewatinya (log info
+"... keeping it open for up to 30 more minutes ...") dan poller NOWPayments
+tetap memeriksanya, jadi pembayaran yang selesai dalam masa itu tetap
+terkirim normal. Lewat masa itu order dibatalkan seperti biasa dan setiap
+admin menerima satu DM `ADMIN_UNCONFIRMABLE_PAYMENT` ("... was still
+confirming, so the order has been cancelled" / "... masih dikonfirmasi, jadi
+pesanan sudah dibatalkan"). Top-up dompet tidak ditahan (pembayaran yang
+terlambat tetap menyelesaikannya otomatis).
+
+**Fix:** dalam masa tenggang, tidak perlu tindakan. Setelah alert, periksa
+pembayaran di dashboard NOWPayments; bila dananya masuk, selesaikan manual
+(refund atau kredit saldo) — tidak ada pengiriman otomatis untuk order yang
+sudah dibatalkan.
 
 ### Webhook gateway tidak pernah sampai (order menumpuk PENDING lalu auto-cancel)
 

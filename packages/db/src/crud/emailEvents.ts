@@ -60,7 +60,10 @@ export async function enqueueOrderEmailFact(db: Db, orderId: number, keys: Email
   for (const key of keys) await enqueueEmailEvent(db, {
     key, orderId, userId: order.userId, aggregateId: orderId, occurrence,
     ...(key.endsWith("customer") ? { to: emailRecipientFor(order.user) } : {}),
-    payload: { order_code: order.orderCode, status: order.status, payment_method: order.paymentMethod,
+    // order.received is enqueued before finalizeOrderPayment stamps the real
+    // method, so the column still holds the schema default (BINANCE_PAY) then.
+    payload: { order_code: order.orderCode, status: order.status,
+      ...(key.startsWith("order.received") ? {} : { payment_method: order.paymentMethod }),
       order_url: key.endsWith("admin")
         ? (config.ADMIN_PUBLIC_URL ? `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}/orders/${orderId}` : null)
         : (config.SHOP_PUBLIC_URL ? `${config.SHOP_PUBLIC_URL.replace(/\/+$/, "")}/account/orders` : null),

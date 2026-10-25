@@ -463,6 +463,49 @@ export async function orderHasIncomingLedgerPayment(db: Db, orderId: number): Pr
   return binance != null || bybit != null || tokopay != null || paydisini != null || nowpayments != null;
 }
 
+/** Admin-facing gateway name per `Order.paymentMethod`. The Bybit ledger
+ *  serves two methods (Bybit UID and Bybit BSC), so the label comes from the
+ *  order, not from the table the row sits in. */
+const LEDGER_GATEWAY_LABEL: Readonly<Record<string, string>> = {
+  BINANCE_INTERNAL: "Binance",
+  BINANCE_PAY: "Binance",
+  BYBIT: "Bybit",
+  BYBIT_BSC: "Bybit BSC",
+  TOKOPAY: "TokoPay",
+  PAYDISINI: "PayDisini",
+  NOWPAYMENTS: "NOWPayments",
+};
+
+/** A `matched` ledger claim linked to the order, or null when there is none.
+ *
+ *  Every gateway rail commits its `matched` claim on its own, before the
+ *  delivery transaction. A crash between the two leaves the order
+ *  PENDING_PAYMENT with the buyer's money claimed; if the order is then
+ *  cancelled (the expiry sweep, the buyer, an admin), nothing retries it,
+ *  because `reclaimStaleMatchedClaim` (./_staleClaim) only reclaims for an order
+ *  still PENDING_PAYMENT. `cancelOrder` uses this to alert the admins. It is
+ *  evidence for a human only: `matched` is NOT one of the
+ *  `ACTIONABLE_LEDGER_OUTCOMES`, so it never unlocks the CANCELLED-order credit,
+ *  and nothing here changes the row. `gateway` is the order's payment method's
+ *  label (falling back to the raw method). */
+export async function orderMatchedLedgerClaim(
+  db: Db,
+  order: { id: number; paymentMethod: string },
+): Promise<{ gateway: string; txId: string } | null> {
+  const where = { orderId: order.id, outcome: "matched" };
+  const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
+    db.processedBinanceTx.findFirst({ where, select: { binanceTxId: true }, orderBy: { id: "asc" } }),
+    db.processedBybitTx.findFirst({ where, select: { bybitTxId: true }, orderBy: { id: "asc" } }),
+    db.processedTokopayTx.findFirst({ where, select: { trxId: true }, orderBy: { id: "asc" } }),
+    db.processedPaydisiniTx.findFirst({ where, select: { trxId: true }, orderBy: { id: "asc" } }),
+    db.processedNowpaymentsTx.findFirst({ where, select: { trxId: true }, orderBy: { id: "asc" } }),
+  ]);
+  const txId =
+    binance?.binanceTxId ?? bybit?.bybitTxId ?? tokopay?.trxId ?? paydisini?.trxId ?? nowpayments?.trxId ?? null;
+  if (txId == null) return null;
+  return { gateway: LEDGER_GATEWAY_LABEL[order.paymentMethod] ?? order.paymentMethod, txId };
+}
+
 /** The enforcing form of `orderHasIncomingLedgerPayment`: re-tags every row in
  *  the five processed*Tx ledger tables linked to this order whose outcome is
  *  one of `ACTIONABLE_LEDGER_OUTCOMES` as `credited_to_balance`, and returns

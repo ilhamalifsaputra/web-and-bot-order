@@ -577,6 +577,24 @@ export function render(
     const code = escape(String(payload.order_code ?? ""));
     const gateway = escape(String(payload.gateway ?? ""));
     const trxId = escape(String(payload.trx_id ?? ""));
+    if (payload.reason === "claim_cancelled") {
+      // Follow-up item 2 (`enqueueAdminClaimCancelledPayment`): the gateway's
+      // payment WAS matched to this order and claimed, but the order was
+      // cancelled before its delivery ran (a crash between the claim and the
+      // delivery). Nothing retries a cancelled order, and the order is not
+      // deliverable any more, so the admin must settle the buyer's money by
+      // hand — never "deliver manually".
+      return (
+        `⚠️ <b>${gateway} payment for order <code>${code}</code> was claimed, but the order was cancelled before it was delivered</b>\n` +
+        `Transaction: <code>${trxId}</code>\n` +
+        `The buyer's payment arrived and nothing was delivered, and the system will not retry a cancelled order. ` +
+        `Check the payment in the ${gateway} dashboard and settle it by hand with a refund or a balance credit.\n\n` +
+        `⚠️ <b>Pembayaran ${gateway} untuk pesanan <code>${code}</code> sudah tercatat, tapi pesanan dibatalkan sebelum dikirim</b>\n` +
+        `Transaksi: <code>${trxId}</code>\n` +
+        `Pembayaran pelanggan sudah masuk dan belum ada yang dikirim, dan sistem tidak akan mencoba lagi pesanan yang sudah dibatalkan. ` +
+        `Periksa pembayaran ini di dashboard ${gateway} lalu selesaikan secara manual dengan refund atau kredit saldo.`
+      );
+    }
     return (
       `⚠️ <b>${gateway} confirmed payment for order <code>${code}</code>, but it was no longer pending</b>\n` +
       `Transaction: <code>${trxId}</code>\n` +

@@ -257,6 +257,26 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/tidak lagi menunggu pembayaran/i); // Indonesian line
   });
 
+  it("renders ADMIN_STALE_PAYMENT's claim_cancelled variant as a claimed-but-cancelled alert with a manual settlement hint, escaped", () => {
+    const out = render("ADMIN_STALE_PAYMENT", {
+      order_code: "ORD-CLAIMC-1",
+      gateway: "TokoPay",
+      trx_id: "TRX-CLAIMC-1",
+      reason: "claim_cancelled",
+    });
+    expect(out).toContain("<code>ORD-CLAIMC-1</code>");
+    expect(out).toContain("<code>TRX-CLAIMC-1</code>");
+    expect(out).toMatch(/cancelled before it was delivered/i);
+    expect(out).toMatch(/dibatalkan sebelum dikirim/i);
+    expect(out).toMatch(/refund or a balance credit/i);
+    expect(out).not.toMatch(/no longer pending/i);
+    expect(out).not.toMatch(/deliver manually/i);
+    const escaped = render("ADMIN_STALE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", trx_id: "<i>t</i>", reason: "claim_cancelled" });
+    expect(escaped).not.toContain("<script>");
+    expect(escaped).not.toContain("<b>X</b>");
+    expect(escaped).not.toContain("<i>t</i>");
+  });
+
   it("renders ADMIN_UNCONFIRMABLE_PAYMENT's unverified_amount variant as a paid-without-amount alert, escaped", () => {
     const out = render("ADMIN_UNCONFIRMABLE_PAYMENT", {
       order_code: "ORD-UNV-1",

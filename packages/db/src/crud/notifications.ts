@@ -50,13 +50,19 @@ type Db = PrismaClient | Tx;
  * payload on collision, so comparing payloads can't tell a genuine insert
  * apart from a same-payload collision.
  *
- * Four events set a key today:
+ * These events set a key today:
  *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
  *    DM per top-up order; see `enqueueWalletTopupCreditedDm`.
  *  - `ADMIN_UNCONFIRMABLE_PAYMENT`, as
- *    `unconfirmable-payment:<orderId>:<adminId>` — one per admin per order,
- *    NOT one per order, because that event fans out a row per admin; see
- *    `enqueueAdminUnconfirmablePayment`.
+ *    `unconfirmable-payment[:<reason>]:<orderId>:<adminId>` — one per admin
+ *    per order and reason, NOT one per order, because that event fans out a
+ *    row per admin; see `enqueueAdminUnconfirmablePayment`.
+ *  - `ADMIN_STALE_PAYMENT`, only in its `claim_cancelled` form, as
+ *    `claim-cancelled:<orderId>:<adminId>` — one per admin per order; see
+ *    `enqueueAdminClaimCancelledPayment`. The webhook-race form
+ *    (`enqueueAdminStalePayment`) stays unkeyed.
+ *  - `ORDER_PIPELINE_FAILED`, through `enqueueTransactionReviewAlert`, as
+ *    `order:<orderId>:<incident>:<adminId>`.
  *  - `PAYMENT_REMINDER_DM`, as `payment_reminder:<orderId>` — one reminder
  *    per order, however many reminder-job ticks see it; see
  *    `enqueuePaymentReminderDm`.
@@ -332,6 +338,40 @@ export async function enqueueAdminStalePayment(
         }),
       },
     });
+  }
+}
+
+/**
+ * Tell every admin that a product order with a `matched` ledger claim was
+ * cancelled before it was delivered (`cancelOrder`, follow-up item 2): the
+ * gateway's payment was claimed, the delivery transaction never ran (a crash
+ * between the two), and once the order is CANCELLED nothing retries it. Reuses
+ * ADMIN_STALE_PAYMENT with `reason: "claim_cancelled"`, which the template
+ * words as "claimed but cancelled; settle by hand" instead of the webhook-race
+ * wording. Alert only — no credit path, the ledger row stays `matched`.
+ *
+ * Deduped per (order, admin) like `enqueueAdminUnconfirmablePayment`: the
+ * event fans out one row per admin, and a later cancel attempt (a second sweep,
+ * an admin re-cancel) must not tell anyone twice.
+ */
+export async function enqueueAdminClaimCancelledPayment(
+  db: Db,
+  args: { orderId: number; orderCode: string; gateway: string; trxId: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await enqueueNotification(
+      db,
+      NotificationEvent.ADMIN_STALE_PAYMENT,
+      args.orderId,
+      {
+        chat_id: adminId,
+        order_code: args.orderCode,
+        gateway: args.gateway,
+        trx_id: args.trxId.slice(0, 300),
+        reason: "claim_cancelled",
+      },
+      `claim-cancelled:${args.orderId}:${adminId}`,
+    );
   }
 }
 

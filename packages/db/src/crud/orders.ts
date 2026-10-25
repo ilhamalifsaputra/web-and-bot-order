@@ -70,7 +70,12 @@ import {
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
-import { ACTIONABLE_LEDGER_OUTCOMES, cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
+import {
+  ACTIONABLE_LEDGER_OUTCOMES,
+  cancelledOrderIdsWithMoneyReturned,
+  consumeIncomingLedgerPayment,
+  orderMatchedLedgerClaim,
+} from "./reports";
 import { clearCart, getCart, lockCartForCheckout, cartCompositionLineOfCartItem } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
@@ -88,6 +93,7 @@ import {
   enqueueOwnerManualQueueEmail,
   enqueueBuyerOrderReadyEmail,
   enqueueOrderExpiredDm,
+  enqueueAdminClaimCancelledPayment,
 } from "./notifications";
 import { logAdminAction } from "./audit";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage, transactionMessageCancelNotice } from "./fulfillmentMessages";
@@ -1935,10 +1941,47 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   });
   await transitionOrderStatus(db, { orderId, from: order.status, to: OrderStatus.CANCELLED, meta: reason });
   logger.info(`Cancelled order ${order.orderCode} — reason: ${reason}`);
+  await alertIfMatchedClaimCancelled(db, order);
   // Raw on purpose, like the read above: callers only need the code and the
   // buyer, and a decrypt here would roll the whole cancel back over one
   // unreadable row the cancel never needed.
   return getOrderRaw(db, orderId);
+}
+
+/**
+ * After `cancelOrder` voided an unpaid product order, tell every admin when a
+ * gateway had already claimed a payment for it (a `matched` ledger row): the
+ * claim commits before the delivery transaction, so a crash in between leaves
+ * the order PENDING_PAYMENT, and once it is CANCELLED nothing retries — the
+ * stale-claim reclaim needs PENDING_PAYMENT, a retry only logs
+ * `already_processed`, and the CANCELLED-order credit does not count `matched`.
+ * The buyer paid and got nothing, so a human must settle it (refund or balance
+ * credit). Alert only: no credit, and the row stays `matched`.
+ *
+ * Guards: the order was PENDING_PAYMENT (an order in any other state reached
+ * its own review path), it is a PRODUCT order (a WALLET_TOPUP with a matched
+ * claim is late-settleable — `isLateSettleableWalletTopup` — so a manual credit
+ * prompted by an alert would credit it twice), and it is not marked paid
+ * (`paidAt` / paymentState PAID have their own credit path). Runs inside the
+ * cancel's transaction, behind a savepoint so a failed enqueue never undoes the
+ * cancel; the per-admin dedupe key makes a repeat cancel a no-op.
+ */
+async function alertIfMatchedClaimCancelled(
+  db: Db,
+  order: { id: number; orderCode: string; status: string; kind: string; paymentMethod: string; paidAt: Date | null; paymentState?: string | null },
+): Promise<void> {
+  if (order.status !== OrderStatus.PENDING_PAYMENT) return;
+  if (order.kind !== OrderKind.PRODUCT) return;
+  if (order.paidAt != null || order.paymentState === "PAID") return;
+  await enqueueNotificationSafely(db, { orderId: order.id, notification: "matched claim on a cancelled order alert" }, async () => {
+    const claim = await orderMatchedLedgerClaim(db, order);
+    if (claim == null) return;
+    logger.warn(
+      { orderId: order.id, gateway: claim.gateway },
+      `Order ${order.orderCode} was cancelled while ${claim.gateway} had already claimed its payment, so the buyer paid and nothing was delivered; the admins were alerted to settle it by hand.`,
+    );
+    await enqueueAdminClaimCancelledPayment(db, { orderId: order.id, orderCode: order.orderCode, gateway: claim.gateway, trxId: claim.txId });
+  });
 }
 
 /** What the expiry sweep's own cancel did. `tracked` says whether the order

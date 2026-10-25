@@ -308,14 +308,16 @@ Phase 5 menambah fixture bersama, skrip seed manual, tes E2E, dan runbook. Tidak
 
 | Pemeriksaan | Hasil |
 |---|---|
-| `pnpm -r build` | TBD (diisi controller) |
-| `pnpm typecheck` | TBD (diisi controller) |
-| `pnpm run pretest` | TBD (diisi controller) |
-| Tes E2E dan fixture (dijalankan sendirian) | TBD (diisi controller) |
-| Vitest penuh (8 shard, 1 worker) | TBD (diisi controller) |
-| `pnpm doctor:full` | TBD (diisi controller) |
-| `pnpm lint` | TBD (diisi controller) |
-| Merge commit ke `master` | TBD (diisi controller) |
+| `pnpm -r build` | Lulus (exit 0) pada `c673ee48`. |
+| `pnpm typecheck` | Lulus (exit 0, 0 error TS). Proses pertama mati karena kehabisan memori (exit 3221225794), lalu diulang sendirian dan lulus. |
+| `pnpm run pretest` | Lulus (exit 0). |
+| Tes E2E dan fixture (dijalankan sendirian) | Lulus: 9 dari 9 skenario E2E (dua kali berturut-turut, juga dengan transport palsu yang ketat) dan 13 dari 13 tes fixture, seed, dan guard. |
+| Vitest penuh (8 shard, 1 worker) | Lulus: 669 file dan 12.705 tes, 8 shard exit 0, tanpa timeout beban dan tanpa crash worker. |
+| `pnpm doctor:full` | Lulus: 643 file, 0 error, 0 warning. |
+| `pnpm lint` | Lulus: 643 file, tanpa temuan kategori Bugs. |
+| Merge commit ke `master` | Belum (menunggu persetujuan pemilik). |
+
+Batas bukti: E2E memakai stub untuk TokoPay, Digiflazz, dan KokinPay serta transport Telegram palsu, sehingga format kawat gateway dan perilaku Telegram sungguhan belum terbukti. Semua dicatat sebagai butir terbuka di bagian sebelumnya.
 
 **Item pemilik yang masih terbuka** (dari catatan Phase 3 dan 4; tidak diubah tanpa keputusan pemilik, dan E2E tidak mengunci perilakunya):
 - Auto-cancel masih membatalkan order NOWPayments `PENDING_PAYMENT` dengan `paymentState` `PAYMENT_DETECTED`/`VERIFYING` saat `expiresAt` (sudah ada sebelum Phase 4; lihat §9.2).

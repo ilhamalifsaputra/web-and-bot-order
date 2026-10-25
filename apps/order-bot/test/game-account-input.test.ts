@@ -31,6 +31,7 @@ import {
   createCatalogProduct,
   createDenomination,
   setSetting,
+  adjustWallet,
   KOKINPAY_API_KEY_KEY,
   BINANCE_UID_KEY,
   BINANCE_API_KEY_KEY,
@@ -1065,5 +1066,130 @@ describe("per-field 128-character cap", () => {
     const run = wizardRun(denom.id, ["x".repeat(129)]);
     await customerInfoConversation(run.conv.asMyConversation(), run.entry);
     expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ note: "x".repeat(129) }]);
+  });
+});
+
+// ===========================================================================
+// Follow-up 8: the input configuration changed between Continue and the pay tap
+// ===========================================================================
+
+describe("a pay tap after an admin changed the account input settings", () => {
+  const DATA = [{ user_id: "123456789", zone_id: "1234" }];
+
+  /** Game Top-up (or Premium) account data whose review was passed, and the
+   *  payment screen rendered from it: the nonce its pay buttons carry. */
+  async function paymentScreen(denomId: number, group: "GAME_TOPUP" | "PREMIUM_APPS" = "GAME_TOPUP") {
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: BUBBLE } as SessionData;
+    const owner = await ownerOf(denomId, 1);
+    session.scratch.customerData = JSON.stringify(DATA);
+    session.scratch.customerInputOwner = owner;
+    if (group === "GAME_TOPUP") session.scratch.reviewShownFor = owner;
+    await checkout.showOrderConfirmation(tapCtx({ sink, session }, `v1:buy:${denomId}:1`), denomId, 1);
+    expect(lastEditText(sink)).toContain("Confirm Order");
+    const nonce = session.scratch.quoteNonce as string;
+    expect(nonce).toMatch(/^[0-9a-z]{6}$/);
+    return { session, nonce };
+  }
+
+  const RAILS = [
+    {
+      name: "TokoPay",
+      callback: "v1:payq",
+      scratch: {} as Record<string, unknown>,
+      setup: async () => {
+        await setSetting(prisma, "tokopay_merchant_id", "M1");
+        await setSetting(prisma, "tokopay_secret", "S1");
+      },
+      pay: (c: MyContext, p: number, n: string) => checkout.buyNowTokopay(c, p, 1, n),
+    },
+    {
+      name: "wallet (IDR credit)",
+      callback: "v1:walletpay",
+      scratch: { useWalletIdr: true } as Record<string, unknown>,
+      setup: async () => {
+        await adjustWallet(prisma, sample.user.id, "500000", { currency: "IDR", reason: "admin_adjust" });
+      },
+      pay: (c: MyContext, p: number, n: string) => checkout.completeOrderWithWallet(c, p, 1, n),
+    },
+  ];
+
+  const CHANGES = [
+    {
+      name: "a field relabelled (same keys)",
+      apply: (id: number) =>
+        prisma.denomination.update({
+          where: { id },
+          data: { additionalFields: JSON.stringify([{ ...USER_ID, label: { id: "ID Zona", en: "Zone ID" } }, { ...ZONE_ID, label: { id: "ID Pengguna", en: "User ID" } }]) },
+        }),
+    },
+    {
+      name: "the provider input mapping changed",
+      apply: (id: number) =>
+        prisma.denomination.update({ where: { id }, data: { providerInputMapping: JSON.stringify({ digiflazz: { keys: ["zone_id", "user_id"] } }) } }),
+    },
+  ];
+
+  describe.each(RAILS)("$name", (rail) => {
+    beforeEach(async () => {
+      await rail.setup();
+    });
+
+    it.each(CHANGES)("$name: no order, the data is cleared and asked for again, with only the stale toast on screen", async (change) => {
+      const denom = await makeDenom([USER_ID, ZONE_ID]);
+      const { session, nonce } = await paymentScreen(denom.id);
+      Object.assign(session.scratch, rail.scratch);
+      const balanceBefore = (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance;
+      await change.apply(denom.id);
+
+      const sink: SentCall[] = [];
+      const ctx = tapCtx({ sink, session }, `${rail.callback}:${denom.id}:1:${nonce}`);
+      await rail.pay(ctx, denom.id, nonce);
+
+      expect(await prisma.order.count()).toBe(0);
+      const balanceAfter = (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance;
+      expect(new Decimal(balanceAfter).equals(balanceBefore)).toBe(true);
+      for (const key of ["customerData", "customerInputOwner", "reviewShownFor", "quotedTotalIdr", "quoteNonce", "quoteFor", "checkoutIntentId"]) {
+        expect(session.scratch[key], key).toBeUndefined();
+      }
+      // The input is asked for again: the info conversation is entered, and it
+      // edits this bubble into the prompt itself.
+      expect(calls(sink, "conversation.enter").map((c) => c.args[0])).toEqual(["customerInfo"]);
+      expect(session.scratch.pendingInfoProductId).toBe(denom.id);
+      expect(screenCalls(sink)).toEqual([]);
+      const answers = calls(sink, "answerCallbackQuery");
+      expect(answers).toHaveLength(1);
+      expect((answers[0]!.args[0] as { text?: string }).text).toBe(t(ctx, "error.stale_screen"));
+    });
+
+    it("unchanged settings: the tap pays as before", async () => {
+      const denom = await makeDenom([USER_ID, ZONE_ID]);
+      const { session, nonce } = await paymentScreen(denom.id);
+      Object.assign(session.scratch, rail.scratch);
+
+      const sink: SentCall[] = [];
+      await rail.pay(tapCtx({ sink, session }, `${rail.callback}:${denom.id}:1:${nonce}`), denom.id, nonce);
+
+      const orders = await prisma.order.findMany();
+      expect(orders).toHaveLength(1);
+      expect(orders[0]!.customerData).toBe(JSON.stringify(DATA));
+      expect(calls(sink, "conversation.enter")).toHaveLength(0);
+    });
+
+    it.each([
+      ["PREMIUM_APPS", "PREMIUM_APPS"],
+      ["null group", null],
+    ] as const)("%s with unchanged settings: the tap pays as before", async (_name, group) => {
+      const denom = await makeDenom([USER_ID, ZONE_ID], { group });
+      const { session, nonce } = await paymentScreen(denom.id, "PREMIUM_APPS");
+      Object.assign(session.scratch, rail.scratch);
+
+      const sink: SentCall[] = [];
+      await rail.pay(tapCtx({ sink, session }, `${rail.callback}:${denom.id}:1:${nonce}`), denom.id, nonce);
+
+      const orders = await prisma.order.findMany();
+      expect(orders).toHaveLength(1);
+      expect(orders[0]!.customerData).toBe(JSON.stringify(DATA));
+    });
   });
 });

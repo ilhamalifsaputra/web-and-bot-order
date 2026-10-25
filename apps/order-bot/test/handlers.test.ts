@@ -6960,6 +6960,13 @@ describe("checkout handlers on an order with an unreadable reserved credential",
 });
 
 describe("instant Digiflazz dispatch from the bot's own settlement paths", () => {
+  /** The owner the info conversation records next to customerData: the
+   *  denomination's current input settings, so a pay tap accepts the data. */
+  async function currentInputOwner(denomId: number, quantity: number): Promise<string> {
+    const d = await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } });
+    return JSON.stringify([denomId, quantity, d.additionalFields, d.providerInputMapping, d.nicknameCheckGameCode]);
+  }
+
   beforeEach(() => {
     vi.mocked(triggerDigiflazzDispatch).mockReset();
   });
@@ -7005,6 +7012,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     vi.mocked(triggerDigiflazzDispatch).mockImplementationOnce(() => {
       telegramCallsAtTrigger = sink.length;
     });
+    ctx.session.scratch.customerInputOwner = await currentInputOwner(sample.product.id, 1);
 
     await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
@@ -7027,6 +7035,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
       cbMessage: { message_id: 888, chat: { id: 42 }, date: 0 },
       session: { ...userSession(), menuMsgId: 888, scratch: { useWalletIdr: true, customerData: provider === "DIGIFLAZZ" ? DIGIFLAZZ_CUSTOMER_DATA : undefined } },
     });
+    if (provider === "DIGIFLAZZ") ctx.session.scratch.customerInputOwner = await currentInputOwner(sample.product.id, 1);
 
     await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));

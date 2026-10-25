@@ -716,10 +716,33 @@ async function quoteForTap(
     NONCE_SHAPE.test(nonce) &&
     nonce === stored &&
     scratch[QUOTE_FOR_KEY] === quoteKeyFor(productId, quantity);
-  if (bound) return { currency: OrderCurrency.IDR, amount: raw };
+  if (bound && !(await accountInputStillCurrent(ctx, productId, quantity))) {
+    logger.info(
+      { userId: ctx.session.dbUser?.id, productId, quantity },
+      "Refused a bot pay tap because the denomination's account input settings changed after the buyer entered their details; the details are cleared and asked for again.",
+    );
+  } else if (bound) {
+    return { currency: OrderCurrency.IDR, amount: raw };
+  }
   await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
   await renderPayScreen(ctx, productId, quantity, screen);
   return null;
+}
+
+/**
+ * The typed account data in the session was entered for the denomination's
+ * CURRENT input settings (fields, provider mapping, nickname game code), or
+ * there is none. `createOrderDirect` re-validates the data against the current
+ * fields, which catches an added, removed or tightened field, but not a remap
+ * or a relabel under the same keys: that would store the old answers under the
+ * new meaning. A mismatch is a stale screen, and the re-render
+ * (`showOrderConfirmation`'s owner check) clears the data and asks again.
+ */
+async function accountInputStillCurrent(ctx: MyContext, productId: number, quantity: number): Promise<boolean> {
+  const scratch = ctx.session.scratch;
+  if (typeof scratch.customerData !== "string") return true;
+  const product = await getDenominationWithProduct(prisma, productId);
+  return product !== null && scratch.customerInputOwner === inputOwnerOf(productId, quantity, product);
 }
 
 /**

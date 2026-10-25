@@ -114,6 +114,8 @@ import {
   prisma,
   enqueueAdminPasswordReset,
   enqueueAdminStalePayment,
+  enqueueAdminClaimCancelledPayment,
+  enqueueAdminUnconfirmablePayment,
   enqueueAdminDigiflazzResyncAborted,
   enqueueAdminDigiflazzBelowCost,
   enqueueAdminDigiflazzSkusChanged,
@@ -416,6 +418,39 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
       where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
     });
     expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * Game Top-up follow-ups 1 and 2: the two new admin wordings — a matched claim
+ * on a cancelled order (ADMIN_STALE_PAYMENT, claim_cancelled) and a payment
+ * still confirming when its grace window ran out (ADMIN_UNCONFIRMABLE_PAYMENT,
+ * still_confirming) — are delivered to the admin's chat in both languages.
+ */
+describe("drainBatch delivers the claim_cancelled and still_confirming admin alerts", () => {
+  afterEach(() => resetBotIdentity());
+
+  it("sends each to the admin's own chat with its English and Indonesian text", async () => {
+    await addAdminIdToDb(prisma, 900_100_031);
+    setBotIdentity({ publicChannelId: -1009876543211 });
+    const buyer = await upsertUser(prisma, { telegramId: 500_131, username: "buyer500131", fullName: "Grace Buyer" });
+    const denom = await makeManualDenom();
+    const claimed = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
+    const confirming = await createOrderDirect(prisma, { user: buyer, channel: "bot", productId: denom.id, quantity: 1 });
+    await enqueueAdminClaimCancelledPayment(prisma, { orderId: claimed!.id, orderCode: claimed!.orderCode, gateway: "TokoPay", trxId: "TRX-CLAIM-D" });
+    await enqueueAdminUnconfirmablePayment(prisma, { orderId: confirming!.id, orderCode: confirming!.orderCode, gateway: "NOWPayments", reason: "still_confirming" });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const texts = sendMessage.mock.calls.filter((c) => c[0] === 900_100_031).map((c) => String(c[1]));
+    const claimText = texts.find((t) => t.includes(claimed!.orderCode));
+    const confirmText = texts.find((t) => t.includes(confirming!.orderCode));
+    expect(claimText).toMatch(/cancelled before it was delivered/i);
+    expect(claimText).toMatch(/dibatalkan sebelum dikirim/i);
+    expect(confirmText).toMatch(/still confirming/i);
+    expect(confirmText).toMatch(/masih dikonfirmasi/i);
+    expect(sendMessage.mock.calls.some((c) => c[0] === -1009876543211)).toBe(false);
   });
 });
 

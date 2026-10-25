@@ -603,9 +603,13 @@ export async function enqueueAdminUnconfirmablePayment(
      *  transaction id). `"unverified_amount"` (Task B fix round): the gateway
      *  says PAID but its status carries no usable amount (TokoPay/PayDisini)
      *  or no usd price to value it by (NOWPayments), so it is never delivered
-     *  on — the template words it accordingly. Each reason
-     *  has its own dedupe key, so one never swallows the other's alert. */
-    reason?: "unverified_amount";
+     *  on — the template words it accordingly. `"still_confirming"`
+     *  (follow-up item 1, `cancelExpiredPendingOrder`): the provider reported
+     *  the payment (PAYMENT_DETECTED / VERIFYING) but it was still confirming
+     *  when the grace window after expiry ran out, so the order was
+     *  cancelled. Each reason has its own dedupe key, so one never swallows
+     *  another's alert. */
+    reason?: "unverified_amount" | "still_confirming";
   },
 ): Promise<void> {
   const keyPrefix = args.reason ? `unconfirmable-payment:${args.reason}` : "unconfirmable-payment";

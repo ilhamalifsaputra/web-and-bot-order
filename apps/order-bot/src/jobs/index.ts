@@ -70,6 +70,7 @@ import {
   pruneProcessedTelegramUpdates,
   pruneExpiredBotSessions,
 } from "@app/db";
+import { OBSERVED_PAYMENT_GRACE_MS } from "@app/core";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
@@ -556,7 +557,17 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
 
   for (const o of orderData) {
     try {
-      const result = await prisma.$transaction((tx) => cancelExpiredPendingOrder(tx, o.id));
+      const result = await prisma.$transaction((tx) => cancelExpiredPendingOrder(tx, o.id, now));
+      if (!result.cancelled && "reason" in result) {
+        // The provider already reported this payment and it is still
+        // confirming: the order stays open for the grace window
+        // (OBSERVED_PAYMENT_GRACE_MS) and the buyer is told nothing yet.
+        logger.info(
+          { orderId: o.id },
+          `Order ${o.code} passed its payment window, but the payment provider already reported a payment that is still confirming, so the expiry sweep is keeping it open for up to ${OBSERVED_PAYMENT_GRACE_MS / 60_000} more minutes instead of cancelling it.`,
+        );
+        continue;
+      }
       if (!result.cancelled) {
         // Someone else (the buyer, an admin, a payment, or another sweep
         // instance) moved the order on between this sweep's read and its

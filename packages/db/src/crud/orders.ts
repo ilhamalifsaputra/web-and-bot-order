@@ -41,7 +41,13 @@ import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
-import { awaitingPaymentNothingObserved, paymentReminderHasTimeLeft } from "@app/core";
+import {
+  awaitingPaymentNothingObserved,
+  observedPaymentGraceCutoff,
+  paymentObservedInFlight,
+  paymentReminderHasTimeLeft,
+  OBSERVED_PAYMENT_GRACE_MS,
+} from "@app/core";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
@@ -75,6 +81,7 @@ import {
   cancelledOrderIdsWithMoneyReturned,
   consumeIncomingLedgerPayment,
   orderMatchedLedgerClaim,
+  paymentGatewayLabel,
 } from "./reports";
 import { clearCart, getCart, lockCartForCheckout, cartCompositionLineOfCartItem } from "./cart";
 import { getSetting } from "./settings";
@@ -94,6 +101,7 @@ import {
   enqueueBuyerOrderReadyEmail,
   enqueueOrderExpiredDm,
   enqueueAdminClaimCancelledPayment,
+  enqueueAdminUnconfirmablePayment,
 } from "./notifications";
 import { logAdminAction } from "./audit";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage, transactionMessageCancelNotice } from "./fulfillmentMessages";
@@ -1518,13 +1526,55 @@ const customerPaymentOutstanding: Prisma.OrderWhereInput = {
   ],
 };
 
+const OBSERVED_IN_FLIGHT_PAYMENT_STATES = ["PAYMENT_DETECTED", "VERIFYING"];
+
+/**
+ * A PRODUCT order whose payment a provider already reported as in flight
+ * (`paymentObservedInFlight`) and whose `expiresAt` is still inside the
+ * observed-payment grace window at `now` (`OBSERVED_PAYMENT_GRACE_MS`, see
+ * @app/core paymentReminder.ts). The expiry sweep leaves these alone and the
+ * NOWPayments poller keeps checking them. Wallet top-ups are excluded: a late
+ * payment still settles a cancelled top-up (`isLateSettleableWalletTopup`), so
+ * they keep today's cancel-at-expiry behaviour.
+ */
+export function observedPaymentInGraceWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    kind: OrderKind.PRODUCT,
+    paymentState: { in: OBSERVED_IN_FLIGHT_PAYMENT_STATES },
+    expiresAt: { gt: observedPaymentGraceCutoff(now) },
+  };
+}
+
+/** The negation of `observedPaymentInGraceWhere`, spelled out as an OR so a
+ *  NULL `paymentState` (legacy orders) still matches: a plain `NOT` over
+ *  `payment_state IN (...)` is NULL for those rows, and Postgres would drop
+ *  them from the expiry sweep. */
+function notObservedPaymentInGraceWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    OR: [
+      { kind: { not: OrderKind.PRODUCT } },
+      { paymentState: null },
+      { paymentState: { notIn: OBSERVED_IN_FLIGHT_PAYMENT_STATES } },
+      { expiresAt: { lte: observedPaymentGraceCutoff(now) } },
+    ],
+  };
+}
+
+/** The expiry sweep's set: PENDING_PAYMENT, window lapsed, payment still
+ *  outstanding, and not an observed payment still inside its grace window.
+ *  `customerPaymentOutstanding` itself is left alone — the payment reminder's
+ *  `listExpiringPendingPayments` uses it too. */
+function expiredPendingWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    status: OrderStatus.PENDING_PAYMENT,
+    expiresAt: { not: null, lt: now },
+    AND: [customerPaymentOutstanding, notObservedPaymentInGraceWhere(now)],
+  };
+}
+
 export function listExpiredPendingOrders(db: Db, now: Date) {
   return db.order.findMany({
-    where: {
-      status: OrderStatus.PENDING_PAYMENT,
-      expiresAt: { not: null, lt: now },
-      ...customerPaymentOutstanding,
-    },
+    where: expiredPendingWhere(now),
     include: { user: true },
   });
 }
@@ -1651,7 +1701,7 @@ export function countCancelled(db: Db): Promise<number> {
 
 /** PENDING_PAYMENT orders whose window has already lapsed — the count form of `listExpiredPendingOrders`. */
 export function countExpiredPending(db: Db, now: Date): Promise<number> {
-  return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now }, ...customerPaymentOutstanding } });
+  return db.order.count({ where: expiredPendingWhere(now) });
 }
 
 // ---- SLA widgets (web-admin dashboard) ------------------------------------
@@ -1988,7 +2038,12 @@ async function alertIfMatchedClaimCancelled(
  * has a progress message row (the FulfillmentMessageWorker shows the outcome,
  * and the push decision was already made here); when it is false the caller's
  * own bubble/DM path tells the buyer and decides the push itself. */
-export type ExpiredOrderCancellation = { cancelled: false } | { cancelled: true; tracked: boolean };
+export type ExpiredOrderCancellation =
+  | { cancelled: false }
+  /** Held, not cancelled: a provider already reported the payment and it is
+   *  still confirming inside the grace window after expiresAt. */
+  | { cancelled: false; reason: "payment_in_flight" }
+  | { cancelled: true; tracked: boolean };
 
 /**
  * The expiry sweep's cancel (`autoCancelExpiredOrders`): void an order whose
@@ -2005,16 +2060,44 @@ export type ExpiredOrderCancellation = { cancelled: false } | { cancelled: true;
  * queue write is logged and rolled back to a savepoint, never undoing the
  * cancel (`enqueueNotificationSafely`). A tracked QR photo gets no push: the
  * worker retires it by sending a new message, which already notifies.
+ *
+ * A PRODUCT order whose payment a provider already reported as in flight
+ * (`paymentObservedInFlight`: NOWPayments still confirming) is held for
+ * `OBSERVED_PAYMENT_GRACE_MS` after its `expiresAt`, measured at `now`:
+ * inside that window this returns `{ cancelled: false, reason:
+ * "payment_in_flight" }` and changes nothing, which also covers an order the
+ * sweep listed just before the observation landed. Past the window it is
+ * cancelled as usual and every admin is told once, in this same transaction,
+ * that the payment never finished confirming (ADMIN_UNCONFIRMABLE_PAYMENT,
+ * `still_confirming`). Wallet top-ups are not held: a late payment still
+ * settles a cancelled top-up.
  */
-export async function cancelExpiredPendingOrder(db: Db, orderId: number): Promise<ExpiredOrderCancellation> {
-  if ("$transaction" in db) return emailTransaction(db, (tx) => cancelExpiredPendingOrder(tx, orderId));
+export async function cancelExpiredPendingOrder(db: Db, orderId: number, now: Date = new Date()): Promise<ExpiredOrderCancellation> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => cancelExpiredPendingOrder(tx, orderId, now));
   await db.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR NO KEY UPDATE`;
   const order = await db.order.findUnique({
     where: { id: orderId },
-    select: { status: true, orderCode: true, kind: true, user: { select: { telegramId: true, language: true } } },
+    select: {
+      status: true, orderCode: true, kind: true, paymentState: true, paymentMethod: true, expiresAt: true,
+      user: { select: { telegramId: true, language: true } },
+    },
   });
   if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return { cancelled: false };
+  const paymentInFlight = order.kind === OrderKind.PRODUCT && paymentObservedInFlight(order.paymentState);
+  if (paymentInFlight && order.expiresAt != null && order.expiresAt.getTime() + OBSERVED_PAYMENT_GRACE_MS > now.getTime()) {
+    return { cancelled: false, reason: "payment_in_flight" };
+  }
   await cancelOrder(db, orderId, "expired", { type: StockActorType.SYSTEM });
+  if (paymentInFlight) {
+    logger.warn(
+      { orderId },
+      `Order ${order.orderCode} was cancelled because its payment was still confirming at the provider when the grace window after its payment window ended; the admins were asked to check the payment by hand.`,
+    );
+    await enqueueNotificationSafely(db, { orderId, notification: "still-confirming payment admin alert" }, () =>
+      enqueueAdminUnconfirmablePayment(db, {
+        orderId, orderCode: order.orderCode, gateway: paymentGatewayLabel(order.paymentMethod), reason: "still_confirming",
+      }));
+  }
   const notice = await transactionMessageCancelNotice(db, orderId);
   if (notice === "silent") {
     await enqueueNotificationSafely(db, { orderId, notification: "order expired push" }, () =>

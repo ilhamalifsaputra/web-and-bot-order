@@ -24,7 +24,7 @@ import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, settlePaidOrder } from "./orders";
+import { getOrder, settlePaidOrder, observedPaymentInGraceWhere } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
@@ -63,14 +63,21 @@ export async function getNowpaymentsCreds(db: Db): Promise<(NowpaymentsCreds & {
  * caps how many rows come back — the reconcile poller passes
  * MAX_ORDERS_PER_CYCLE so one cycle's gateway round-trips stay bounded
  * regardless of backlog size (Task 11); omitted, every other caller keeps
- * today's unbounded behavior. */
+ * today's unbounded behavior.
+ *
+ * Past `expiresAt` the poller still checks a product order whose payment it
+ * (or the IPN) already saw in flight, for as long as the expiry sweep holds it
+ * (`observedPaymentInGraceWhere`, OBSERVED_PAYMENT_GRACE_MS) — otherwise
+ * nothing would settle it while it waits. */
 export function listPendingNowpaymentsOrders(db: Db, now: Date, limit?: number) {
   return db.order.findMany({
     where: {
-      OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }],
       status: OrderStatus.PENDING_PAYMENT,
       paymentMethod: PaymentMethod.NOWPAYMENTS,
-      expiresAt: { gt: now },
+      AND: [
+        { OR: [{ walletCreditState: null }, { walletCreditState: { not: "NEEDS_REVIEW" } }] },
+        { OR: [{ expiresAt: { gt: now } }, observedPaymentInGraceWhere(now)] },
+      ],
     },
     include: { user: true },
     orderBy: { createdAt: "asc" },

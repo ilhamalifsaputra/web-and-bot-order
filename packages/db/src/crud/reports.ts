@@ -503,7 +503,13 @@ export async function orderMatchedLedgerClaim(
   const txId =
     binance?.binanceTxId ?? bybit?.bybitTxId ?? tokopay?.trxId ?? paydisini?.trxId ?? nowpayments?.trxId ?? null;
   if (txId == null) return null;
-  return { gateway: LEDGER_GATEWAY_LABEL[order.paymentMethod] ?? order.paymentMethod, txId };
+  return { gateway: paymentGatewayLabel(order.paymentMethod), txId };
+}
+
+/** The admin-facing gateway name for an `Order.paymentMethod`, falling back
+ *  to the raw method for one this table does not know. */
+export function paymentGatewayLabel(paymentMethod: string): string {
+  return LEDGER_GATEWAY_LABEL[paymentMethod] ?? paymentMethod;
 }
 
 /** The enforcing form of `orderHasIncomingLedgerPayment`: re-tags every row in

@@ -129,9 +129,11 @@ describe("cancelExpiredPendingOrder", () => {
     expect(await pushRows(order.id)).toHaveLength(1);
   });
 
+  // PAYMENT_DETECTED / VERIFYING are only cancelled once the observed-payment
+  // grace window after expiresAt is over (observed_payment_grace.test.ts).
   it("queues one push that stays sendable for an order whose payment a provider only saw when the window lapsed", async () => {
     for (const [i, paymentState] of ["PAYMENT_DETECTED", "VERIFYING", "UNDERPAID"].entries()) {
-      const order = await expiredOrder({ data: { paymentState } });
+      const order = await expiredOrder({ data: { paymentState, expiresAt: new Date(Date.now() - 31 * 60_000) } });
       await track(order.id, { messageId: 710 + i, messageKind: "text" });
       expect(await cancelExpiredPendingOrder(db.prisma, order.id)).toEqual({ cancelled: true, tracked: true });
       expect(await pushRows(order.id)).toHaveLength(1);

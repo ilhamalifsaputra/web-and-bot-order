@@ -56,6 +56,38 @@ export function awaitingPaymentNothingObserved(order: {
 }
 
 /**
+ * True while a payment provider has reported a payment for the order that is
+ * still confirming: PAYMENT_DETECTED or VERIFYING, the two states
+ * `recordProviderPaymentObservation` (packages/db orderStatus.ts) writes while
+ * the order status stays PENDING_PAYMENT (NOWPayments' IPN and reconcile
+ * poller). The positive counterpart of `awaitingPaymentNothingObserved` for
+ * exactly that in-flight case: PAID, UNDERPAID and the terminal states are NOT
+ * in flight, they have their own paths.
+ */
+export function paymentObservedInFlight(paymentState: string | null | undefined): boolean {
+  return paymentState === "PAYMENT_DETECTED" || paymentState === "VERIFYING";
+}
+
+/**
+ * How long after `expiresAt` the expiry sweep keeps a PRODUCT order whose
+ * payment is in flight (`paymentObservedInFlight`) open instead of cancelling
+ * it, and the NOWPayments poller keeps checking it, so a payment that was
+ * already on its way can still settle. After this the order is cancelled as
+ * before and every admin is told once (ADMIN_UNCONFIRMABLE_PAYMENT,
+ * `still_confirming`). A constant, not an env key: it is a safety margin, not
+ * a shop setting.
+ */
+export const OBSERVED_PAYMENT_GRACE_MS = 30 * 60_000;
+
+/** The start of the window an order's `expiresAt` must be inside for its
+ *  in-flight payment to still be in its grace period at `now`: the order is
+ *  held while `expiresAt > observedPaymentGraceCutoff(now)`, i.e. while
+ *  `now < expiresAt + OBSERVED_PAYMENT_GRACE_MS`. */
+export function observedPaymentGraceCutoff(now: Date): Date {
+  return new Date(now.getTime() - OBSERVED_PAYMENT_GRACE_MS);
+}
+
+/**
  * Whole minutes left before `expiresAt`, rounded DOWN and never below 1 — the
  * buyer is told slightly less time than they really have, never more. Callers
  * only reach this with at least `PAYMENT_REMINDER_MIN_REMAINING_MS` left, so

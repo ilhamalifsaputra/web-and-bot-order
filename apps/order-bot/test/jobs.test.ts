@@ -447,17 +447,56 @@ describe("autoCancelExpiredOrders — expiry push without double notification", 
     expect(edited).toBe(coreT("order.auto_cancelled", langCode(sample.user.language), { code: order.orderCode }));
   });
 
-  // The opposite of the reminder: a payment the provider only saw (NOWPayments
-  // still confirming when the window lapsed) does not stop the push — that
-  // buyer is the one who most needs "if you already paid, contact support".
-  it("an order whose payment was only detected when it expired still gets its one push", async () => {
+  // Follow-up item 1: a payment the provider has already seen (NOWPayments
+  // still confirming) is not cancelled while it is inside the grace window
+  // after expiresAt — the poller keeps checking it, so the payment can still
+  // settle. Nothing is sent, edited or queued for the buyer.
+  it("an order whose payment is still confirming inside the grace window is left alone: no cancel, no notice, no push", async () => {
     const order = await makeExpiredOrder();
-    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "PAYMENT_DETECTED" } });
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "PAYMENT_DETECTED", paymentMethod: PaymentMethod.NOWPAYMENTS } });
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    // Listed before the observation landed (the read-to-lock race): the lock
+    // re-check holds it too.
+    dbMockState.expiredSnapshot = await prisma.order.findMany({ where: { id: order.id }, include: { user: true } });
+    // Rows the order's creation already queued (buyer/owner facts) are not the sweep's.
+    const outboxBefore = await prisma.notificationOutbox.count({ where: { orderId: order.id } });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const api = fakeApi();
+      await autoCancelExpiredOrders(api);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+      expect(telegramCalls(api)).toEqual(none);
+      expect(await pushes(order.id)).toHaveLength(0);
+      expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(outboxBefore);
+      const messages = info.mock.calls.map((c) => String(c[c.length - 1]));
+      expect(messages).toContain(
+        `Order ${order.orderCode} passed its payment window, but the payment provider already reported a payment that is still confirming, so the expiry sweep is keeping it open for up to 30 more minutes instead of cancelling it.`,
+      );
+      expect(messages.some((m) => m.includes("no longer awaiting payment"))).toBe(false);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  // Past the grace window it is cancelled as before. The buyer still gets the
+  // one push (the one who most needs "if you already paid, contact support"),
+  // and every admin is told once that the payment never finished confirming.
+  it("an order whose payment is still confirming past the grace window is cancelled, gets its one push, and alerts each admin once", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentState: "VERIFYING", paymentMethod: PaymentMethod.NOWPAYMENTS, expiresAt: new Date(Date.now() - 31 * 60_000) },
+    });
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const api = fakeApi();
     await autoCancelExpiredOrders(api);
+    await autoCancelExpiredOrders(api);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
     expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
     expect(await pushes(order.id)).toHaveLength(1);
+    const alerts = await prisma.notificationOutbox.findMany({ where: { orderId: order.id, event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT } });
+    expect(alerts.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b)).toEqual([999, 1000]);
+    expect(JSON.parse(alerts[0]!.payloadJson)).toMatchObject({ order_code: order.orderCode, gateway: "NOWPayments", reason: "still_confirming" });
   });
 });
 

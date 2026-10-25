@@ -295,6 +295,23 @@ describe("notifier templates.render", () => {
     expect(escaped).not.toContain("<b>X</b>");
   });
 
+  it("renders ADMIN_UNCONFIRMABLE_PAYMENT's still_confirming variant as a cancelled-while-confirming alert, escaped", () => {
+    const out = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "ORD-SC-1", gateway: "NOWPayments", reason: "still_confirming" });
+    expect(out).toContain("<code>ORD-SC-1</code>");
+    expect(out).toContain("NOWPayments");
+    expect(out).toMatch(/still confirming/i);
+    expect(out).toMatch(/30 minutes/i);
+    expect(out).toMatch(/has been cancelled/i);
+    expect(out).toMatch(/masih dikonfirmasi/i);
+    expect(out).toMatch(/30 menit/i);
+    expect(out).toMatch(/sudah dibatalkan/i);
+    expect(out).not.toMatch(/no transaction id/i);
+    expect(out).not.toMatch(/amount could not be verified/i);
+    const escaped = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", reason: "still_confirming" });
+    expect(escaped).not.toContain("<script>");
+    expect(escaped).not.toContain("<b>X</b>");
+  });
+
   it("HTML-escapes ADMIN_STALE_PAYMENT interpolated values", () => {
     const out = render("ADMIN_STALE_PAYMENT", {
       order_code: "<b>ORD</b>",

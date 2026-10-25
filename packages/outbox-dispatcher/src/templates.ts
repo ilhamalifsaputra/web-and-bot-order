@@ -11,7 +11,7 @@ import { NotificationEvent } from "@app/core/enums";
 import { formatUsdt } from "@app/core/formatters";
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { localize } from "@app/core/datetime";
-import { paymentReminderMinutesLeft } from "@app/core";
+import { paymentReminderMinutesLeft, OBSERVED_PAYMENT_GRACE_MS } from "@app/core";
 import { manualQueueMoneyLines, type ManualQueueMoneyKey, type ManualQueueMoneyPayload } from "./manualQueueMoney";
 
 /** Bilingual labels for ADMIN_MANUAL_ORDER_QUEUED's money lines. */
@@ -787,6 +787,22 @@ export function render(
     // per order and there is no second reminder.
     const code = escape(String(payload.order_code ?? ""));
     const gateway = escape(String(payload.gateway ?? ""));
+    if (payload.reason === "still_confirming") {
+      // Follow-up item 1 (`cancelExpiredPendingOrder`): the provider reported
+      // the payment, the expiry sweep held the order for the grace window
+      // (OBSERVED_PAYMENT_GRACE_MS, 30 minutes) after its payment window, and
+      // the payment still had not finished confirming — so the order HAS been
+      // cancelled now. The admin must find out whether the money arrived.
+      const graceMinutes = OBSERVED_PAYMENT_GRACE_MS / 60_000;
+      return (
+        `⚠️ <b>${gateway} payment for order <code>${code}</code> was still confirming, so the order has been cancelled</b>\n` +
+        `${gateway} reported a payment for this order, but it did not finish confirming within ${graceMinutes} minutes after the payment window ended. ` +
+        `Check the payment in the ${gateway} dashboard. If the money arrived, settle it by hand with a refund or a balance credit, because nothing will be delivered automatically.\n\n` +
+        `⚠️ <b>Pembayaran ${gateway} untuk pesanan <code>${code}</code> masih dikonfirmasi, jadi pesanan sudah dibatalkan</b>\n` +
+        `${gateway} melaporkan ada pembayaran untuk pesanan ini, tapi pembayarannya belum selesai dikonfirmasi sampai ${graceMinutes} menit setelah jendela pembayaran berakhir. ` +
+        `Periksa pembayaran ini di dashboard ${gateway}. Kalau dananya masuk, selesaikan secara manual dengan refund atau kredit saldo, karena tidak ada yang akan dikirim otomatis.`
+      );
+    }
     if (payload.reason === "unverified_amount") {
       // Task B fix round: the gateway says PAID but its status carries no
       // usable amount (TokoPay/PayDisini) or no usd price to value it by

@@ -248,6 +248,7 @@
   "checkout.wallet_menu_usdt_active_btn": "✅ USDT Credit",
   "checkout.wallet_insufficient_full": "Insufficient balance to cover the full order.",
   "checkout.duplicate_pending": "You already have a pending payment for this product. Check My Orders, or wait for it to finish before starting a new one.",
+  "checkout.wallet_already_paid": "This order is already paid. Check your order status in My Orders.",
   "checkout.enter_voucher": "Send your voucher code:",
   "checkout.info_field_prompt": "Unit {unit} of {total}\n\n<b>{label}</b>\nSend your answer:",
   "checkout.info_placeholder": "e.g. {placeholder}",

@@ -2391,7 +2391,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   // A second tap of the button that just paid: the duplicate alert only, with
   // nothing edited, sent or entered.
   if (typeof nonce === "string" && NONCE_SHAPE.test(nonce) && nonce === ctx.session.scratch[WALLET_PAID_NONCE_KEY]) {
-    await answerCallbackOnce(ctx, { text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+    await answerCallbackOnce(ctx, { text: t(ctx, "checkout.wallet_already_paid"), show_alert: true });
     return;
   }
 

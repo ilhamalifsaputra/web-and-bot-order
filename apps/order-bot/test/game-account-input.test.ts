@@ -1096,6 +1096,7 @@ describe("a pay tap after an admin changed the account input settings", () => {
     {
       name: "TokoPay",
       callback: "v1:payq",
+      duplicateKey: "checkout.duplicate_pending",
       scratch: {} as Record<string, unknown>,
       setup: async () => {
         await setSetting(prisma, "tokopay_merchant_id", "M1");
@@ -1106,6 +1107,7 @@ describe("a pay tap after an admin changed the account input settings", () => {
     {
       name: "wallet (IDR credit)",
       callback: "v1:walletpay",
+      duplicateKey: "checkout.wallet_already_paid",
       scratch: { useWalletIdr: true } as Record<string, unknown>,
       setup: async () => {
         await adjustWallet(prisma, sample.user.id, "500000", { currency: "IDR", reason: "admin_adjust" });
@@ -1193,7 +1195,7 @@ describe("a pay tap after an admin changed the account input settings", () => {
       expect(screenCalls(sink)).toEqual([]);
       expect(calls(sink, "conversation.enter")).toHaveLength(0);
       const answers = calls(sink, "answerCallbackQuery");
-      expect(answers.map((c) => c.args[0])).toEqual([{ text: t(ctx, "checkout.duplicate_pending"), show_alert: true }]);
+      expect(answers.map((c) => c.args[0])).toEqual([{ text: t(ctx, rail.duplicateKey), show_alert: true }]);
     });
 
     it.each([

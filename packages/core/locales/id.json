@@ -248,6 +248,7 @@
   "checkout.wallet_menu_usdt_active_btn": "✅ Kredit USDT",
   "checkout.wallet_insufficient_full": "Saldo tidak cukup untuk menutup seluruh pesanan.",
   "checkout.duplicate_pending": "Kamu sudah punya pembayaran tertunda untuk produk ini. Cek Pesanan Saya, atau tunggu sampai selesai sebelum membuat yang baru.",
+  "checkout.wallet_already_paid": "Pesanan ini sudah dibayar. Cek status pesananmu di Pesanan Saya.",
   "checkout.enter_voucher": "Kirim kode voucher:",
   "checkout.info_field_prompt": "Unit {unit} dari {total}\n\n<b>{label}</b>\nKirim jawabanmu:",
   "checkout.info_placeholder": "cth: {placeholder}",

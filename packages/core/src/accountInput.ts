@@ -12,6 +12,10 @@
 import { ValidationError } from "./errors";
 import { AdditionalFieldType, validateFieldAnswer, type AdditionalField } from "./deliveryFields";
 
+/** The most units a Game Top-up order may hold when each unit needs its own
+ *  account data; the buyer types one message per unit and reviews them all. */
+export const MAX_GAME_ACCOUNT_UNITS = 20;
+
 export type ParseAccountFailure =
   | "empty"
   | "missing_field"

@@ -272,6 +272,7 @@
   "checkout.review_not_found": "⚠️ Akun tidak ditemukan. Cek lagi ID-nya sebelum bayar.",
   "checkout.review_first_unit_only": "Hanya unit pertama yang dicek.",
   "checkout.review_total": "Total: <b>{total}</b>",
+  "checkout.account_units_cap": "Kalau butuh data akun, maksimal {max} unit per pesanan. Kurangi jumlahnya lalu coba lagi.",
   "checkout.review_too_large": "Pesanan ini terlalu besar untuk ditampilkan di sini. Ubah data atau kurangi jumlahnya.",
   "checkout.review_continue_btn": "➡️ Lanjut ke pembayaran",
   "checkout.review_change_btn": "✏️ Ubah data",

@@ -177,6 +177,11 @@ export function backToMain(lang: string): InlineKeyboard {
   return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
 }
 
+/** A single Back button to the pack (denomination) screen. */
+export function backToPackKb(productId: number, lang: string): InlineKeyboard {
+  return ik([[{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }]]);
+}
+
 /** Confirmation footer after a restock subscription: back to the denomination + menu. */
 export function restockSubscribedKb(denominationId: number, lang: string): InlineKeyboard {
   return ik([

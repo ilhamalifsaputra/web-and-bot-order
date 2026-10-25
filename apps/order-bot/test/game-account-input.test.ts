@@ -37,7 +37,7 @@ import {
   BINANCE_API_SECRET_KEY,
 } from "@app/db";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
-import { parseAccountMessage } from "@app/core/accountInput";
+import { parseAccountMessage, MAX_GAME_ACCOUNT_UNITS } from "@app/core/accountInput";
 import { MAX_LABEL_WIDTH, MAX_LABEL_BYTES, visualWidth } from "@app/core/buttonLimits";
 import { DisplayCurrency } from "@app/core/enums";
 import { primeQuote } from "./helpers/quote";
@@ -846,20 +846,20 @@ describe("T3b I2: length budget", () => {
 
   it("a review over the budget fails closed: a short message with only Change details and Back, no Continue, no account data", async () => {
     const denom = await makeDenom([PLAYER_TEXT]);
-    const units = Array.from({ length: 40 }, (_, i) => ({ player: `${i}`.padEnd(128, "&") }));
-    const state = await unreviewed(denom.id, units, 40);
-    await checkout.showOrderConfirmation(tapCtx(state, `v1:buy:${denom.id}:40`), denom.id, 40);
+    const units = Array.from({ length: MAX_GAME_ACCOUNT_UNITS }, (_, i) => ({ player: `${i}`.padEnd(128, "&") }));
+    const state = await unreviewed(denom.id, units, MAX_GAME_ACCOUNT_UNITS);
+    await checkout.showOrderConfirmation(tapCtx(state, `v1:buy:${denom.id}:${MAX_GAME_ACCOUNT_UNITS}`), denom.id, MAX_GAME_ACCOUNT_UNITS);
 
     expect(screenCalls(state.sink)).toEqual(["editMessageText"]);
     const text = lastEditText(state.sink);
     expect(text).toContain(coreT("checkout.review_too_large", "en"));
     expect(text).not.toContain("&amp;&amp;");
-    expect(buttonData(state.sink)).toEqual([`v1:rev:chg:${denom.id}:40`, `v1:browse:denom:${denom.id}`]);
+    expect(buttonData(state.sink)).toEqual([`v1:rev:chg:${denom.id}:${MAX_GAME_ACCOUNT_UNITS}`, `v1:browse:denom:${denom.id}`]);
     expect(state.session.scratch.quoteNonce).toBeUndefined();
 
     // Change details is live on that screen.
     const mark = state.sink.length;
-    await routeCallback(tapCtx(state, `v1:rev:chg:${denom.id}:40`));
+    await routeCallback(tapCtx(state, `v1:rev:chg:${denom.id}:${MAX_GAME_ACCOUNT_UNITS}`));
     expect(calls(state.sink.slice(mark), "conversation.enter").map((c) => c.args[0])).toEqual(["customerInfo"]);
     expect(state.session.scratch.customerData).toBeUndefined();
   });
@@ -1001,5 +1001,69 @@ describe("T3b I3 / M1-M6", () => {
     expect(coreT("checkout.account_err_ambiguous", "id")).toBe("⚠️ Datanya menempel jadi satu. Pisahkan dengan spasi.");
     expect(coreT("checkout.account_err_unbalanced", "id")).toBe("⚠️ Jangan pakai tanda kurung. Pisahkan data dengan spasi.");
     expect(coreT("checkout.review_not_found", "id")).toBe("⚠️ Akun tidak ditemukan. Cek lagi ID-nya sebelum bayar.");
+  });
+});
+
+// ===========================================================================
+// Follow-up: unit cap for account data, and the 128-character cap per field
+// ===========================================================================
+
+describe("MAX_GAME_ACCOUNT_UNITS gate", () => {
+  async function gate(denomId: number, quantity: number) {
+    const { ctx, sink } = makeCtx({ from: { id: 42 }, session: { ...userSession(), menuMsgId: BUBBLE }, callbackData: `v1:buy:${denomId}:${quantity}`, cbMessage: { message_id: BUBBLE, chat: { id: 42, type: "private" }, date: 0 } });
+    await checkout.showOrderConfirmation(ctx, denomId, quantity);
+    return { ctx, sink };
+  }
+  const capText = () => coreT("checkout.account_units_cap", "en", { max: MAX_GAME_ACCOUNT_UNITS });
+
+  it("20 units enter the account wizard", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const { ctx, sink } = await gate(denom.id, MAX_GAME_ACCOUNT_UNITS);
+    expect(sentIncludes(sink, capText())).toBe(false);
+    expect(ctx.session.scratch.pendingInfoQuantity).toBe(MAX_GAME_ACCOUNT_UNITS);
+  });
+
+  it("21 units are refused by editing the bubble once, with a Back-only keyboard to the pack", async () => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const { ctx, sink } = await gate(denom.id, MAX_GAME_ACCOUNT_UNITS + 1);
+    expect(screenCalls(sink)).toEqual(["editMessageText"]);
+    expect(lastEditText(sink)).toBe(capText());
+    expect(buttonData(sink)).toEqual([`v1:browse:denom:${denom.id}`]);
+    expect(ctx.session.scratch.pendingInfoProductId).toBeUndefined();
+    expect(coreT("checkout.account_units_cap", "id", { max: 20 })).toContain("20");
+  });
+
+  it.each([["PREMIUM_APPS", "PREMIUM_APPS"], ["null group", null]] as const)("%s keeps its quantity", async (_n, group) => {
+    const denom = await makeDenom([USER_ID], { group });
+    const { ctx, sink } = await gate(denom.id, MAX_GAME_ACCOUNT_UNITS + 1);
+    expect(sentIncludes(sink, capText())).toBe(false);
+    expect(ctx.session.scratch.pendingInfoQuantity).toBe(MAX_GAME_ACCOUNT_UNITS + 1);
+  });
+
+  it("a Game Top-up SKU without fields is unaffected", async () => {
+    const denom = await makeDenom([]);
+    await prisma.denomination.update({ where: { id: denom.id }, data: { additionalFields: null, deliveryType: "auto" } });
+    const { sink } = await gate(denom.id, MAX_GAME_ACCOUNT_UNITS + 1);
+    expect(sentIncludes(sink, capText())).toBe(false);
+  });
+});
+
+describe("per-field 128-character cap", () => {
+  const OPTIONAL_TEXT: AdditionalField = { ...PLAYER_TEXT, key: "note", label: { id: "Catatan", en: "Note" }, required: false };
+
+  it("Game Top-up: 128 accepted, 129 refused in place with exact counts", async () => {
+    const denom = await makeDenom([OPTIONAL_TEXT]);
+    const run = wizardRun(denom.id, ["x".repeat(129), "x".repeat(128)]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(screenCalls(stepSink(run, 0))).toEqual(["deleteMessage", "editMessageText"]);
+    expect(lastEditText(stepSink(run, 0))).toContain(coreT("error.account_value_too_long", "en", { max: 128 }));
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ note: "x".repeat(128) }]);
+  });
+
+  it("Premium Apps accepts 129 characters", async () => {
+    const denom = await makeDenom([OPTIONAL_TEXT], { group: "PREMIUM_APPS" });
+    const run = wizardRun(denom.id, ["x".repeat(129)]);
+    await customerInfoConversation(run.conv.asMyConversation(), run.entry);
+    expect(JSON.parse(run.session.scratch.customerData as string)).toEqual([{ note: "x".repeat(129) }]);
   });
 });

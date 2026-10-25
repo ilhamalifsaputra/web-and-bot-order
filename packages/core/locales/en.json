@@ -272,6 +272,7 @@
   "checkout.review_not_found": "⚠️ We could not find this account. Check the ID before paying.",
   "checkout.review_first_unit_only": "Only the first unit was checked.",
   "checkout.review_total": "Total: <b>{total}</b>",
+  "checkout.account_units_cap": "When account details are needed, you can order up to {max} units at a time. Lower the quantity and try again.",
   "checkout.review_too_large": "This order is too large to review here. Change details or reduce the quantity.",
   "checkout.review_continue_btn": "➡️ Continue to payment",
   "checkout.review_change_btn": "✏️ Change details",

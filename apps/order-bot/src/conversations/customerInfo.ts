@@ -319,6 +319,11 @@ export async function customerInfoConversation(conversation: MyConversation, ctx
     let value: string;
     try {
       value = validateFieldAnswer(field, text);
+      // Game Top-up values are shown whole on the review screen, so typed text
+      // (not a chosen option) obeys the same length cap as the one-message path.
+      if (!option && isGameTopupGroup(product.group) && value.length > MAX_ACCOUNT_VALUE_LENGTH) {
+        throw new ValidationError("error.account_value_too_long", { max: MAX_ACCOUNT_VALUE_LENGTH });
+      }
     } catch (e) {
       if (e instanceof ValidationError) {
         if (!u.callbackQuery) await consumeInput(u);

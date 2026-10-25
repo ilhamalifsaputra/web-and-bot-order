@@ -33,6 +33,7 @@ import {
   parseDisplayCurrency,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { MAX_GAME_ACCOUNT_UNITS } from "@app/core/accountInput";
 import { logger } from "@app/core/logger";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { serviceForCategoryGroup } from "@app/core/services";
@@ -992,6 +993,17 @@ export async function showOrderConfirmation(
       );
       return;
     }
+  }
+
+  // Game Top-up orders that need account data per unit are capped, before any
+  // wizard (nickname check or info collection) is entered.
+  if (
+    isGameTopupGroup(product.product.category.group) &&
+    quantity > MAX_GAME_ACCOUNT_UNITS &&
+    parseAdditionalFields(product.additionalFields).length > 0
+  ) {
+    await smartEdit(ctx, t(ctx, "checkout.account_units_cap", { max: MAX_GAME_ACCOUNT_UNITS }), ckb.backToPackKb(productId, lang));
+    return;
   }
 
   // Game Top-Up nickname-check gate — resolved once, ahead of the

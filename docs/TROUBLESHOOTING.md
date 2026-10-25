@@ -155,11 +155,11 @@ memulihkannya otomatis setelah klaim berumur 2 menit
 (`STALE_MATCHED_CLAIM_MS`, `packages/db/src/crud/_staleClaim.ts`). Kalau
 `expiresAt` keburu lewat (crash di menit-menit terakhir jendela 10 menit),
 `autoCancelExpiredOrders` membatalkan order dan pemulihan tidak mungkin lagi:
-`_staleClaim.ts:88` menolak order produk yang bukan `PENDING_PAYMENT`, retry
+`reclaimStaleMatchedClaim` (`_staleClaim.ts`) menolak order produk yang bukan `PENDING_PAYMENT`, retry
 berikutnya hanya log `already_processed` (bukan `stale`), jadi **tidak ada
 alert admin**, dan tombol kredit (`canCreditCancelled`,
-`packages/db/src/crud/orders.ts:3242-3253`) tidak muncul karena
-`orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts:454`) hanya
+`packages/db/src/crud/orders.ts`) tidak muncul karena
+`orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts`) hanya
 menghitung `delivery_failed`/`unmatched`.
 
 **Fix (manual, untuk sekarang) — HANYA order produk:** cari baris ledger

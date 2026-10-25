@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { provisionPgTestSchema, type PgTestSchemaEnv } from "../../tests/helpers/pgTestSchema";
-import { buildGameTopupFixtures } from "../../tests/helpers/gameTopupFixtures";
+import { buildGameTopupFixtures, FIXTURE_BUYER_TELEGRAM_ID } from "../../tests/helpers/gameTopupFixtures";
 import { assertSeedTarget, removeTaggedFixtures, SEED_DB_NAME, SEED_TAG } from "./seedGameTopup";
 
 const OK = `postgresql://u:p@localhost:5433/${SEED_DB_NAME}`;
@@ -29,6 +29,31 @@ describe("assertSeedTarget", () => {
       expect((e as Error).message).not.toContain("s3cret");
       expect((e as Error).message).not.toContain("postgresql://");
     }
+  });
+});
+
+describe("assertSeedTarget query-string host overrides", () => {
+  it.each([
+    "?host=db.prod.example.com",
+    "?hostaddr=203.0.113.9",
+    "?host=/var/run/postgresql",
+    "?schema=public&host=db.prod.example.com",
+    "?HOST=db.prod.example.com",
+  ])("refuses %s without echoing the URL", (query) => {
+    const url = `postgresql://u:s3cret@localhost:5433/${SEED_DB_NAME}${query}`;
+    try {
+      assertSeedTarget(url, flags);
+      throw new Error("should have refused");
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toMatch(/host/);
+      expect(msg).not.toContain("s3cret");
+      expect(msg).not.toContain("example.com");
+      expect(msg).not.toContain("postgresql://");
+    }
+  });
+  it("still accepts a plain schema parameter", () => {
+    expect(() => assertSeedTarget(`${OK}?schema=public`, flags)).not.toThrow();
   });
 });
 
@@ -74,5 +99,49 @@ describe("apply, apply again, remove round trip", () => {
 
     // Removing again is a no-op.
     expect(await removeTaggedFixtures(prisma, SEED_TAG)).toMatchObject({ categories: 0, products: 0, denominations: 0, users: 0 });
+  }, 60_000);
+  it("skips tagged rows that real orders or wallet history still reference, and reports each skip", async () => {
+    const ids = await buildGameTopupFixtures(prisma, { tag: SEED_TAG });
+    const denomId = ids.denominations["ff-70"]!;
+    const order = await prisma.order.create({
+      data: {
+        orderCode: "GTR-REMOVE-1",
+        userId: ids.userId,
+        subtotalAmount: "10000",
+        totalAmount: "10000",
+        items: { create: { productId: denomId, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 0 } },
+      },
+    });
+    await prisma.walletTransaction.create({ data: { userId: ids.userId, delta: "5000", balanceAfter: "5000", reason: "admin_adjust" } });
+    const manual = await prisma.category.create({ data: { name: "Untagged keeper", slug: "untagged-keeper", group: "GAME_TOPUP" } });
+
+    const result = await removeTaggedFixtures(prisma, SEED_TAG);
+
+    const skippedText = result.skipped.join(" | ");
+    expect(result.skipped.length).toBeGreaterThanOrEqual(2);
+    expect(skippedText).toMatch(/product "Free Fire/);
+    expect(skippedText).toMatch(/buyer/);
+    expect(await prisma.order.findUnique({ where: { id: order.id } })).not.toBeNull();
+    expect(await prisma.denomination.findUnique({ where: { id: denomId } })).not.toBeNull();
+    expect(await prisma.user.findUnique({ where: { id: ids.userId } })).not.toBeNull();
+    // The unreferenced fixtures went, and an untagged category is untouched.
+    expect(result.products).toBeGreaterThan(0);
+    expect(await prisma.category.findUnique({ where: { id: manual.id } })).not.toBeNull();
+    // The Game Top Up category still holds the skipped product, so it stays too.
+    expect(await prisma.category.findUnique({ where: { id: ids.categories.gameTopup } })).not.toBeNull();
+  }, 60_000);
+
+  it("matches the seeded buyer by Telegram id as well as the tag", async () => {
+    const decoy = await prisma.user.create({
+      data: { referralCode: "DECOYUSR", telegramId: BigInt(555000111), fullName: `Someone Else${SEED_TAG}` },
+    });
+    const seeded = await buildGameTopupFixtures(prisma, { tag: SEED_TAG });
+    // Only reached when the order test above left the buyer behind; free it first.
+    await prisma.walletTransaction.deleteMany({ where: { userId: seeded.userId } });
+    await prisma.orderItem.deleteMany({ where: { order: { userId: seeded.userId } } });
+    await prisma.order.deleteMany({ where: { userId: seeded.userId } });
+    await removeTaggedFixtures(prisma, SEED_TAG);
+    expect(await prisma.user.findUnique({ where: { id: decoy.id } })).not.toBeNull();
+    expect(await prisma.user.count({ where: { telegramId: BigInt(FIXTURE_BUYER_TELEGRAM_ID) } })).toBe(0);
   }, 60_000);
 });

@@ -26,7 +26,7 @@ Usage:
 Options:
   --confirm-worktree-db  Required. Confirms DATABASE_URL_PRISMA is this worktree's bot_order_gtr.
   --apply                Write (default: dry run, prints counts only).
-  --remove               With --apply: delete only the rows tagged "${SEED_TAG.trim()}".
+  --remove               Delete only the rows tagged "${SEED_TAG.trim()}" (without --apply: prints what would go).
   --help, -h             Show this help.
 `;
 
@@ -59,16 +59,16 @@ async function main(): Promise<void> {
     console.error((e as Error).message);
     process.exit(2);
   }
-  if (remove && !apply) {
-    console.error("--remove only takes effect together with --apply.");
-    process.exit(2);
-  }
 
   const before = await tagged();
   console.log(`Seed Game Top-up fixtures (${apply ? (remove ? "APPLY, remove" : "APPLY, create") : "dry run, nothing written"})`);
   console.log(`Tagged rows now: ${JSON.stringify(before)}`);
   if (!apply) {
-    console.log(`Would ${remove ? "remove" : "create or keep"} the rows tagged "${SEED_TAG.trim()}". Run again with --apply to write.`);
+    console.log(
+      remove
+        ? `Would remove the ${before.denominations} denominations, ${before.products} products, ${before.categories} categories and ${before.users} buyer tagged "${SEED_TAG.trim()}" (rows that real orders still reference are skipped). Run again with --apply --remove to delete.`
+        : `Would create or keep the rows tagged "${SEED_TAG.trim()}". Run again with --apply to write.`,
+    );
     return;
   }
   if (remove) {

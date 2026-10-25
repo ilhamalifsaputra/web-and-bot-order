@@ -4,6 +4,7 @@
  * without spawning the script.
  */
 import type { PrismaClient } from "@prisma/client";
+import { FIXTURE_BUYER_TELEGRAM_ID } from "../../tests/helpers/gameTopupFixtures";
 
 /** The only database this seed may ever touch: the Game Top-up refactor worktree's dev database. */
 export const SEED_DB_NAME = "bot_order_gtr";
@@ -32,6 +33,14 @@ export function assertSeedTarget(databaseUrl: string | undefined, flags: SeedFla
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (!LOCAL_HOSTS.includes(host)) {
     throw new Error(`Refusing to run: the database host "${host}" is not localhost, 127.0.0.1 or ::1.`);
+  }
+  // Prisma/libpq let a query parameter override the URL host (or point at a
+  // socket directory), which would bypass the localhost check above.
+  for (const key of url.searchParams.keys()) {
+    const k = key.toLowerCase();
+    if (k === "host" || k === "hostaddr") {
+      throw new Error("Refusing to run: the connection URL carries a host or hostaddr query parameter that could redirect it away from localhost.");
+    }
   }
   const dbName = decodeURIComponent(url.pathname.replace(/^\//, ""));
   if (dbName !== SEED_DB_NAME) {
@@ -81,11 +90,15 @@ export async function removeTaggedFixtures(prisma: PrismaClient, tag: string): P
       counts.skipped.push(`category "${category.name}" still holds products`);
       continue;
     }
-    await prisma.category.delete({ where: { id: category.id } });
-    counts.categories += 1;
+    try {
+      await prisma.category.delete({ where: { id: category.id } });
+      counts.categories += 1;
+    } catch {
+      counts.skipped.push(`category "${category.name}" is still referenced by other rows`);
+    }
   }
 
-  const users = await prisma.user.findMany({ where: { fullName: { endsWith: tag } }, select: { id: true } });
+  const users = await prisma.user.findMany({ where: { fullName: { endsWith: tag }, telegramId: BigInt(FIXTURE_BUYER_TELEGRAM_ID) }, select: { id: true } });
   for (const user of users) {
     try {
       await prisma.user.delete({ where: { id: user.id } });

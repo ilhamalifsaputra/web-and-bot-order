@@ -6,9 +6,10 @@
  * read by its shape"): a PERCENTAGE tier through `readPercentField` (`12,5` is
  * 12.5), a nominal tier (amount off per unit, or a fixed unit price) through
  * `readMoneyField` in rupiah (`10.000` is ten thousand). A tier lists its own
- * untouched pre-filled value in its `exact_fields`, so a re-save keeps a stored
- * `100.123` instead of reading it as 100123. A shape that cannot be read
- * without guessing is refused, never guessed.
+ * untouched pre-filled value in its `exact_fields`, so a re-save reads a stored
+ * value exactly rather than by shape. A shape that cannot be read without
+ * guessing is refused, never guessed; so is a value more precise than it is
+ * stored with (a fractional rupiah, a percent with more than 2 decimals).
  *
  * Validation itself is the engine's (`validateTiers`); this file only maps its
  * findings to the row and field the admin has to fix, in Indonesian.
@@ -22,7 +23,7 @@ import {
   type TierValidationErrorCode,
 } from "@app/core/bulk";
 import { Decimal } from "@app/core/money";
-import type { TierInput } from "@app/db";
+import { tierValuePrecisionProblem, type TierInput } from "@app/db";
 import { exactFields, readMoneyField, readPercentField } from "./moneyField";
 
 export type TierField = "min_quantity" | "discount_type" | "discount_value";
@@ -59,7 +60,9 @@ function messageFor(code: TierValidationErrorCode, minQuantity: number): string 
 }
 
 const PERCENT_SHAPE_ERROR = "Diskon persen harus ditulis seperti 10, 10,5 atau 10.5.";
-const MONEY_SHAPE_ERROR = "Nominal harus dalam rupiah, ditulis seperti 10000, 10.000 atau 10000,50.";
+const MONEY_SHAPE_ERROR = "Nominal harus dalam rupiah, ditulis seperti 10000 atau 10.000.";
+const MONEY_PRECISION_ERROR = "Nominal tier harus rupiah bulat, tanpa sen.";
+const PERCENT_PRECISION_ERROR = "Diskon persen paling banyak 2 angka di belakang koma.";
 
 /** The summary sentence a refused save answers with; the rows are in `tier_errors`. */
 export const TIER_ERRORS_SUMMARY = "Beberapa tier belum valid. Perbaiki baris yang ditandai lalu simpan lagi.";
@@ -95,6 +98,9 @@ export function readTierInputs(raw: readonly unknown[]): { ok: true; tiers: Tier
           : readMoneyField(row.discount_value, "IDR", { exact });
       if (value === null) {
         errors.push({ index, field: "discount_value", message: type === "PERCENTAGE" ? PERCENT_SHAPE_ERROR : MONEY_SHAPE_ERROR });
+      } else if (tierValuePrecisionProblem(type, value) !== null) {
+        // Refused rather than rounded, so the saved tier is exactly what was typed.
+        errors.push({ index, field: "discount_value", message: type === "PERCENTAGE" ? PERCENT_PRECISION_ERROR : MONEY_PRECISION_ERROR });
       }
     }
     const isEnabled = row.is_enabled === undefined ? true : row.is_enabled === true;

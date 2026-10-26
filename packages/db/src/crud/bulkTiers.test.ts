@@ -111,6 +111,10 @@ describe("replaceTiers", () => {
     ["an unparseable value", [{ minQuantity: 2, discountType: "PERCENTAGE", discountValue: "abc" }], "INVALID_VALUE"],
     ["a percent that rounds to 0", [{ minQuantity: 2, discountType: "PERCENTAGE", discountValue: "0.001" }], "INVALID_VALUE"],
     ["an unknown type", [{ minQuantity: 2, discountType: "BOGO", discountValue: "1" }], "UNKNOWN_TYPE"],
+    // Refused, not rounded: the stored tier must be the one the admin typed.
+    ["a fractional rupiah unit price", [{ minQuantity: 2, discountType: "FIXED_UNIT_PRICE", discountValue: "8000.5" }], "INVALID_VALUE"],
+    ["a fractional rupiah amount off", [{ minQuantity: 2, discountType: "FIXED_AMOUNT_OFF_PER_UNIT", discountValue: "999.5" }], "INVALID_VALUE"],
+    ["a percent with 3 decimals", [{ minQuantity: 2, discountType: "PERCENTAGE", discountValue: "12.345" }], "INVALID_VALUE"],
   ])("refuses %s and writes nothing", async (_label, tiers, code) => {
     const id = sample.product.id;
     const err = await replaceTiers(prisma, id, tiers, actor).catch((e: unknown) => e);
@@ -118,6 +122,20 @@ describe("replaceTiers", () => {
     expect((err as TieredPricingError).errors.map((e) => e.code)).toContain(code);
     expect(await prisma.bulkPricingTier.count()).toBe(0);
     expect(await prisma.auditLog.count({ where: { action: "pricing_tiers_replace" } })).toBe(0);
+  });
+
+  it("accepts the precision it stores: whole rupiah amounts and a 2-decimal percent", async () => {
+    const saved = await replaceTiers(
+      prisma,
+      sample.product.id,
+      [
+        { minQuantity: 2, discountType: "PERCENTAGE", discountValue: "12.25" },
+        { minQuantity: 3, discountType: "FIXED_AMOUNT_OFF_PER_UNIT", discountValue: "1000.00" },
+        { minQuantity: 5, discountType: "FIXED_UNIT_PRICE", discountValue: 6000 },
+      ],
+      actor,
+    );
+    expect(saved.map((t) => new Decimal(t.discountValue).toString())).toEqual(["12.25", "1000", "6000"]);
   });
 
   it("refuses an unknown denomination", async () => {

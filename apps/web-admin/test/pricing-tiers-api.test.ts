@@ -154,23 +154,42 @@ describe("PUT pricing-tiers", () => {
     expect(await listTiers(prisma, denomId)).toEqual([]);
   });
 
-  it("re-saving an untouched pre-filled value named in exact_fields keeps it exactly (100.123 stays 100.123)", async () => {
+  it("a fractional rupiah amount is refused, not rounded — exact or typed; a typed 100.123 is read by shape as 100123", async () => {
     const { denomId } = await seedDenomination();
-    const first = await put(denomId, { enabled: true, tiers: [{ min_quantity: 2, discount_type: "FIXED_AMOUNT_OFF_PER_UNIT", discount_value: 100.123, is_enabled: true }] });
-    expect(first.statusCode, first.body).toBe(200);
-    const prefilled = first.json().tiers[0].discount_value;
-    expect(prefilled).toBe("100.123");
+    for (const tier of [
+      { discount_value: 100.123 },
+      { discount_value: "100.123", exact_fields: ["discount_value"] },
+      { discount_value: "1000,50" },
+    ]) {
+      const res = await put(denomId, { enabled: true, tiers: [{ min_quantity: 2, discount_type: "FIXED_AMOUNT_OFF_PER_UNIT", is_enabled: true, ...tier }] });
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json().tier_errors).toEqual([{ index: 0, field: "discount_value", message: expect.stringMatching(/rupiah bulat/) }]);
+    }
+    expect(await listTiers(prisma, denomId)).toEqual([]);
 
+    // The same text retyped (not in exact_fields) is read by shape: 100.123 is one hundred thousand one hundred twenty-three.
+    const retyped = await put(denomId, { enabled: true, tiers: [{ min_quantity: 2, discount_type: "FIXED_AMOUNT_OFF_PER_UNIT", discount_value: "100.123", is_enabled: true }] });
+    expect(retyped.statusCode, retyped.body).toBe(200);
+    const prefilled = retyped.json().tiers[0].discount_value;
+    expect(prefilled).toBe("100123");
+    // Re-saving the untouched pre-fill named in exact_fields keeps it exactly.
     const resave = await put(denomId, {
       enabled: true,
       tiers: [{ min_quantity: 2, discount_type: "FIXED_AMOUNT_OFF_PER_UNIT", discount_value: prefilled, is_enabled: true, exact_fields: ["discount_value"] }],
     });
     expect(resave.statusCode, resave.body).toBe(200);
-    expect(resave.json().tiers[0].discount_value).toBe("100.123");
+    expect(resave.json().tiers[0].discount_value).toBe("100123");
+  });
 
-    // The same text retyped (not in exact_fields) is read by shape: 100.123 is one hundred thousand one hundred twenty-three.
-    const retyped = await put(denomId, { enabled: true, tiers: [{ min_quantity: 2, discount_type: "FIXED_AMOUNT_OFF_PER_UNIT", discount_value: "100.123", is_enabled: true }] });
-    expect(retyped.json().tiers[0].discount_value).toBe("100123");
+  it("a percent with more than 2 decimals is refused, not rounded", async () => {
+    const { denomId } = await seedDenomination();
+    // A typed "12,345" is refused by shape already; a number or an exact pre-fill reaches the precision rule.
+    for (const tier of [{ discount_value: 12.345 }, { discount_value: "12.345", exact_fields: ["discount_value"] }]) {
+      const res = await put(denomId, { enabled: true, tiers: [{ min_quantity: 2, discount_type: "PERCENTAGE", is_enabled: true, ...tier }] });
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json().tier_errors).toEqual([{ index: 0, field: "discount_value", message: expect.stringMatching(/2 angka di belakang koma/) }]);
+    }
+    expect(await listTiers(prisma, denomId)).toEqual([]);
   });
 
   it("refuses duplicate thresholds, a percent over 100, a zero value and a bad quantity, naming each row", async () => {

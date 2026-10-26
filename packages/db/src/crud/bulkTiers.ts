@@ -25,6 +25,7 @@ import {
   validateTiers,
   type PricingTier,
   type TierDiscountType,
+  type TierValidationError,
   type TieredPrice,
 } from "@app/core/bulk";
 import { effectiveUnitPrice, type PricedDenomination } from "@app/core/flash";
@@ -189,12 +190,39 @@ async function writeTierSet(db: Db, denominationId: number, tiers: readonly Pric
   return listTiers(db, denominationId);
 }
 
+/**
+ * Why a tier value carries more precision than it is stored with, or null.
+ * A rupiah amount (fixed unit price, amount off per unit) must be whole
+ * rupiah; a percent may have at most 2 decimals. Such a value is refused
+ * rather than rounded, so the tier the admin reads back is the one they typed.
+ */
+export function tierValuePrecisionProblem(type: string, value: Decimal.Value): string | null {
+  let d: Decimal;
+  try {
+    d = new Decimal(value);
+  } catch {
+    return null; // unparseable: validateTiers reports it
+  }
+  if (!d.isFinite()) return null;
+  if (type === "PERCENTAGE") {
+    return d.decimalPlaces() > 2 ? "A percentage tier may have at most 2 decimal places." : null;
+  }
+  if (type === "FIXED_UNIT_PRICE" || type === "FIXED_AMOUNT_OFF_PER_UNIT") {
+    return d.isInteger() ? null : "A rupiah tier amount must be a whole number of rupiah.";
+  }
+  return null;
+}
+
 /** Validate and normalize admin input into tiers, or throw TieredPricingError. */
 function parseTierInputs(inputs: readonly TierInput[]): PricingTier[] {
+  const precisionErrors: TierValidationError[] = [];
   const tiers: PricingTier[] = inputs.map((input, index) => {
+    const id = input.id ?? `new-${index}`;
+    const problem = tierValuePrecisionProblem(String(input.discountType), input.discountValue);
+    if (problem) precisionErrors.push({ code: "INVALID_VALUE", tierId: id, message: problem });
     const value = normalizeValue(String(input.discountType), input.discountValue);
     return {
-      id: input.id ?? `new-${index}`,
+      id,
       minQuantity: input.minQuantity,
       discountType: input.discountType as TierDiscountType,
       // An unparseable value is kept as NaN so validateTiers reports it.
@@ -203,7 +231,8 @@ function parseTierInputs(inputs: readonly TierInput[]): PricingTier[] {
     };
   });
   const result = validateTiers(tiers);
-  if (!result.ok) throw new TieredPricingError("INVALID_TIERS", result.errors);
+  const errors = [...precisionErrors, ...(result.ok ? [] : result.errors)];
+  if (errors.length > 0) throw new TieredPricingError("INVALID_TIERS", errors);
   return tiers;
 }
 

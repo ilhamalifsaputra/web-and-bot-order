@@ -6,7 +6,8 @@
  *
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db                   # dry run: counts only
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply           # create (idempotent)
- *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove  # delete tagged rows only
+ *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove  # delete tagged rows only (bulk rows too)
+ *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --bulk    # also the large catalog (30+ games, 600+ denominations)
  *
  * Refuses unless DATABASE_URL_PRISMA is on localhost/127.0.0.1/::1, the database
  * is exactly "bot_order_gtr", and --confirm-worktree-db is given. It never drops
@@ -15,18 +16,21 @@
  * (shared settings; --remove leaves them as they are).
  */
 import { prisma, redactConnectionUrls } from "@app/db";
-import { assertSeedTarget, removeTaggedFixtures, SEED_TAG } from "./lib/seedGameTopup";
+import { assertSeedTarget, parseSeedArgs, removeTaggedFixtures, SEED_TAG } from "./lib/seedGameTopup";
 import { buildGameTopupFixtures } from "../tests/helpers/gameTopupFixtures";
+import { buildBulkGameTopupCatalog } from "../tests/helpers/gameTopupBulkCatalog";
 
 const USAGE = `Seed the Game Top-up manual-test catalog into the worktree database.
 
 Usage:
-  pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db [--apply] [--remove]
+  pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db [--apply] [--remove] [--bulk]
 
 Options:
   --confirm-worktree-db  Required. Confirms DATABASE_URL_PRISMA is this worktree's bot_order_gtr.
   --apply                Write (default: dry run, prints counts only).
   --remove               Delete only the rows tagged "${SEED_TAG.trim()}" (without --apply: prints what would go).
+  --bulk                 Also create/keep the large catalog (30+ games, regions, editions, 600+ denominations, 8 Premium apps).
+                         --remove always deletes every tagged row, bulk included.
   --help, -h             Show this help.
 `;
 
@@ -40,21 +44,18 @@ async function tagged() {
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  if (argv.includes("--help") || argv.includes("-h")) {
+  const args = parseSeedArgs(process.argv.slice(2));
+  if (args.help) {
     console.log(USAGE);
     return;
   }
-  const known = new Set(["--confirm-worktree-db", "--apply", "--remove"]);
-  const unknown = argv.find((a) => !known.has(a));
-  if (unknown) {
-    console.error(`Unknown option: ${unknown}\n\n${USAGE}`);
+  if (args.unknown) {
+    console.error(`Unknown option: ${args.unknown}\n\n${USAGE}`);
     process.exit(2);
   }
-  const apply = argv.includes("--apply");
-  const remove = argv.includes("--remove");
+  const { apply, remove, bulk } = args;
   try {
-    assertSeedTarget(process.env.DATABASE_URL_PRISMA, { confirmWorktreeDb: argv.includes("--confirm-worktree-db") });
+    assertSeedTarget(process.env.DATABASE_URL_PRISMA, { confirmWorktreeDb: args.confirmWorktreeDb });
   } catch (e) {
     console.error((e as Error).message);
     process.exit(2);
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
     console.log(
       remove
         ? `Would remove the ${before.denominations} denominations, ${before.products} products, ${before.categories} categories and ${before.users} buyer tagged "${SEED_TAG.trim()}" (rows that real orders still reference are skipped). Run again with --apply --remove to delete.`
-        : `Would create or keep the rows tagged "${SEED_TAG.trim()}". Run again with --apply to write.`,
+        : `Would create or keep the ${bulk ? "small and bulk " : ""}rows tagged "${SEED_TAG.trim()}". Run again with --apply${bulk ? " --bulk" : ""} to write.`,
     );
     return;
   }
@@ -78,6 +79,10 @@ async function main(): Promise<void> {
   } else {
     const ids = await buildGameTopupFixtures(prisma, { tag: SEED_TAG });
     console.log(`Ready: categories ${JSON.stringify(ids.categories)}, products ${JSON.stringify(ids.products)}, buyer user #${ids.userId}`);
+    if (bulk) {
+      const { productIds: _productIds, ...summary } = await buildBulkGameTopupCatalog(prisma, { tag: SEED_TAG });
+      console.log(`Bulk catalog ready: ${JSON.stringify(summary)}`);
+    }
   }
   console.log(`Tagged rows after: ${JSON.stringify(await tagged())}`);
 }

@@ -51,6 +51,30 @@ export function assertSeedTarget(databaseUrl: string | undefined, flags: SeedFla
   }
 }
 
+export interface SeedArgs {
+  help: boolean;
+  confirmWorktreeDb: boolean;
+  apply: boolean;
+  remove: boolean;
+  bulk: boolean;
+  /** The first argument that is not a known flag, if any. */
+  unknown: string | undefined;
+}
+
+const KNOWN_FLAGS = ["--confirm-worktree-db", "--apply", "--remove", "--bulk", "--help", "-h"];
+
+/** Pure parsing of the seed script's command line (everything after the script name). */
+export function parseSeedArgs(argv: readonly string[]): SeedArgs {
+  return {
+    help: argv.includes("--help") || argv.includes("-h"),
+    confirmWorktreeDb: argv.includes("--confirm-worktree-db"),
+    apply: argv.includes("--apply"),
+    remove: argv.includes("--remove"),
+    bulk: argv.includes("--bulk"),
+    unknown: argv.find((a) => !KNOWN_FLAGS.includes(a)),
+  };
+}
+
 export interface RemovalCounts {
   denominations: number;
   products: number;

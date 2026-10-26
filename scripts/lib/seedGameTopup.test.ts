@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { provisionPgTestSchema, type PgTestSchemaEnv } from "../../tests/helpers/pgTestSchema";
 import { buildGameTopupFixtures, FIXTURE_BUYER_TELEGRAM_ID } from "../../tests/helpers/gameTopupFixtures";
-import { assertSeedTarget, removeTaggedFixtures, SEED_DB_NAME, SEED_TAG } from "./seedGameTopup";
+import { buildBulkGameTopupCatalog } from "../../tests/helpers/gameTopupBulkCatalog";
+import { assertSeedTarget, parseSeedArgs, removeTaggedFixtures, SEED_DB_NAME, SEED_TAG } from "./seedGameTopup";
 
 const OK = `postgresql://u:p@localhost:5433/${SEED_DB_NAME}`;
 const flags = { confirmWorktreeDb: true };
@@ -29,6 +30,20 @@ describe("assertSeedTarget", () => {
       expect((e as Error).message).not.toContain("s3cret");
       expect((e as Error).message).not.toContain("postgresql://");
     }
+  });
+});
+
+describe("parseSeedArgs", () => {
+  it("reads --bulk alone, with --apply and with --remove", () => {
+    expect(parseSeedArgs(["--confirm-worktree-db", "--bulk"])).toMatchObject({ bulk: true, apply: false, remove: false, unknown: undefined });
+    expect(parseSeedArgs(["--confirm-worktree-db", "--apply", "--bulk"])).toMatchObject({ bulk: true, apply: true, remove: false });
+    expect(parseSeedArgs(["--confirm-worktree-db", "--apply", "--remove", "--bulk"])).toMatchObject({ bulk: true, apply: true, remove: true });
+    expect(parseSeedArgs(["--confirm-worktree-db", "--apply"]).bulk).toBe(false);
+  });
+  it("still flags unknown options and recognises help", () => {
+    expect(parseSeedArgs(["--bulks"]).unknown).toBe("--bulks");
+    expect(parseSeedArgs(["--help"])).toMatchObject({ help: true, unknown: undefined });
+    expect(parseSeedArgs(["-h"]).help).toBe(true);
   });
 });
 
@@ -144,4 +159,27 @@ describe("apply, apply again, remove round trip", () => {
     expect(await prisma.user.findUnique({ where: { id: decoy.id } })).not.toBeNull();
     expect(await prisma.user.count({ where: { telegramId: BigInt(FIXTURE_BUYER_TELEGRAM_ID) } })).toBe(0);
   }, 60_000);
+
+  it("removes the whole bulk catalog too and leaves untagged rows alone", async () => {
+    await removeTaggedFixtures(prisma, SEED_TAG);
+    const keeper = await prisma.category.create({ data: { name: "Bulk keeper", slug: "bulk-keeper", group: "PREMIUM_APPS" } });
+    const keeperProduct = await prisma.product.create({ data: { categoryId: keeper.id, name: "Bulk keeper product", slug: "bulk-keeper-product" } });
+    await buildGameTopupFixtures(prisma, { tag: SEED_TAG });
+    const bulk = await buildBulkGameTopupCatalog(prisma, { tag: SEED_TAG });
+    const taggedProducts = await prisma.product.count({ where: { name: { endsWith: SEED_TAG } } });
+    const taggedDenominations = await prisma.denomination.count({ where: { name: { endsWith: SEED_TAG } } });
+    expect(taggedProducts).toBeGreaterThan(bulk.products);
+    expect(taggedDenominations).toBeGreaterThan(bulk.denominations);
+
+    const removed = await removeTaggedFixtures(prisma, SEED_TAG);
+    expect(removed.skipped).toEqual([]);
+    expect(removed.products).toBe(taggedProducts);
+    expect(removed.denominations).toBe(taggedDenominations);
+    expect(removed.categories).toBe(5);
+    expect(removed.users).toBe(1);
+    expect(await prisma.product.count({ where: { name: { endsWith: SEED_TAG } } })).toBe(0);
+    expect(await prisma.denomination.count({ where: { name: { endsWith: SEED_TAG } } })).toBe(0);
+    expect(await prisma.category.findUnique({ where: { id: keeper.id } })).not.toBeNull();
+    expect(await prisma.product.findUnique({ where: { id: keeperProduct.id } })).not.toBeNull();
+  }, 180_000);
 });

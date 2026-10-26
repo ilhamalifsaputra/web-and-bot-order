@@ -60,7 +60,7 @@ import Alert from "../components/ui/Alert";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
-import { humanError } from "../lib/errors";
+import { humanError, isQuoteChanged } from "../lib/errors";
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { formatPriceFor } from "../lib/format";
 import { currentLang, t } from "../lib/i18n";
@@ -147,7 +147,10 @@ export default function InstantBuyPage() {
 
   const { denominations, selected, needsInfo, fieldConfigKey, configValid } = instantBuySelection({ data, selectedId });
 
-  const { voucherInput, setVoucherInput, method, setMethod, page, appliedVoucher, previewContext, totals, voucherPending, previewQuery, previewErrorKey, previewMutation, applyVoucher, onVoucherKeyDown } = useTopupPricing({ slug, selected, ctx, configValid, submitLock });
+  const { voucherInput, setVoucherInput, method, setMethod, page, appliedVoucher, previewContext, totals, voucherPending, previewQuery, previewErrorKey, previewMutation, applyVoucher, onVoucherKeyDown, reprice } = useTopupPricing({ slug, selected, ctx, configValid, submitLock });
+  // A refused order whose total changed (409 error.quote_changed): the summary
+  // is re-priced and says so until the buyer taps again.
+  const [quoteChanged, setQuoteChanged] = useState(false);
 
   // Live totals for the SELECTED denomination — an ad-hoc line priced by the
   // server, with no cart anywhere in the loop. Keyed on the denomination id, so
@@ -196,7 +199,7 @@ export default function InstantBuyPage() {
   // so a retry after a request that never came back must replay the first
   // attempt rather than buy twice. The preview and nickname-check calls above
   // create nothing and stay on the plain client.
-  const { placeOrderMutation } = useTopupOrder({ selected, method, appliedVoucher, needsInfo, activeInputsJson, page, guestEmail, navigate, setPlaceOrderError, queryClient, submitLock });
+  const { placeOrderMutation } = useTopupOrder({ selected, method, appliedVoucher, needsInfo, activeInputsJson, page, totals, guestEmail, navigate, setPlaceOrderError, setQuoteChanged, reprice, queryClient, submitLock });
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -270,7 +273,7 @@ export default function InstantBuyPage() {
 
         {/* 6. Discount, summary and primary submit remain in document flow.
             Mobile also offers the same submit while the primary is offscreen. */}
-        <InstantBuySummaryAndSubmit checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} page={page} totals={totals} method={method} fx={fx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} voucherPending={voucherPending} placeOrderMutation={placeOrderMutation} setPrimaryElement={setPrimaryElement} purchasePrice={purchasePrice} selected={selected} answers={answers} submitDisabled={submitDisabled} submitBlocked={submitBlocked} submitOrder={submitOrder} previewErrorKey={previewErrorKey} configValid={configValid} />
+        <InstantBuySummaryAndSubmit checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} page={page} totals={totals} method={method} fx={fx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} voucherPending={voucherPending} placeOrderMutation={placeOrderMutation} setPrimaryElement={setPrimaryElement} purchasePrice={purchasePrice} selected={selected} answers={answers} submitDisabled={submitDisabled} submitBlocked={submitBlocked} submitOrder={submitOrder} previewErrorKey={previewErrorKey} configValid={configValid} quoteChanged={quoteChanged} />
         {previewMutation.error && !voucherPending && previewMutation.variables?.context === previewContext && <Alert variant="banner" tone="error">{humanError(previewMutation.error)}</Alert>}
       </form>
 
@@ -487,7 +490,8 @@ function InstantBuyAccountAndPlan({ product, configValid, needsInfo, selected, s
   </div>);
 }
 
-function InstantBuySummaryAndSubmit({ checkoutHint, placeOrderError, errorBannerRef, page, totals, method, fx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, voucherPending, placeOrderMutation, setPrimaryElement, purchasePrice, selected, answers, submitDisabled, submitBlocked, submitOrder, previewErrorKey, configValid }: {
+function InstantBuySummaryAndSubmit({ checkoutHint, placeOrderError, errorBannerRef, page, totals, method, fx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, voucherPending, placeOrderMutation, setPrimaryElement, purchasePrice, selected, answers, submitDisabled, submitBlocked, submitOrder, previewErrorKey, configValid, quoteChanged }: {
+  quoteChanged: boolean;
   checkoutHint: string | null;
   placeOrderError: unknown;
   errorBannerRef: import("react").Ref<HTMLDivElement>;
@@ -538,6 +542,7 @@ function InstantBuySummaryAndSubmit({ checkoutHint, placeOrderError, errorBanner
         submitBlocked={submitBlocked}
         onSubmit={submitOrder}
         submitPending={placeOrderMutation.isPending}
+        quoteChanged={quoteChanged}
       />
     ) : (
       <>
@@ -656,16 +661,20 @@ function useTopupAccountCheck({ selected, answers, needsInfo, configValid }: {
   return { nicknameCheck, activeInputsJson };
 }
 
-function useTopupOrder({ selected, method, appliedVoucher, needsInfo, activeInputsJson, page, guestEmail, navigate, setPlaceOrderError, queryClient, submitLock }: {
+function useTopupOrder({ selected, method, appliedVoucher, needsInfo, activeInputsJson, page, totals, guestEmail, navigate, setPlaceOrderError, setQuoteChanged, reprice, queryClient, submitLock }: {
   selected: import("../api/types").ProductDenomination | undefined;
   method: string | null;
   appliedVoucher: string;
   needsInfo: boolean;
   activeInputsJson: string;
   page: CheckoutData | null;
+  /** The totals on screen — their `total` is the quote the order is bound to. */
+  totals: CheckoutData | null;
   guestEmail: string;
   navigate: import("react-router-dom").NavigateFunction;
   setPlaceOrderError: import("react").Dispatch<unknown>;
+  setQuoteChanged: import("react").Dispatch<import("react").SetStateAction<boolean>>;
+  reprice: () => void;
   queryClient: import("@tanstack/react-query").QueryClient;
   submitLock: import("react").MutableRefObject<boolean>;
 }) {
@@ -680,14 +689,26 @@ function useTopupOrder({ selected, method, appliedVoucher, needsInfo, activeInpu
         voucher_code: appliedVoucher,
         customer_data: needsInfo ? [JSON.parse(activeInputsJson) as Record<string, string>] : undefined,
         guest_email: page?.is_guest ? guestEmail.trim() : undefined,
+        // Quote binding: the total the summary shows (USDT credit in USDT, every
+        // other method the IDR total). A changed live total is a 409 and no
+        // order; being in the body, a new figure always gets a fresh key.
+        expected_total: totals ? (method === "wallet_usdt" ? totals.total_usdt ?? undefined : totals.total) : undefined,
       }),
+    onMutate: () => setQuoteChanged(false),
     onSuccess: (resp) => {
       if (resp.email_sent === true) rememberCodeEmailed(resp.order_code, guestEmail.trim());
       if (resp.csrf_token || page?.is_guest) window.location.assign(resp.pay_url);
       else navigate(resp.pay_url);
     },
     onError: (err) => {
-      setPlaceOrderError(err);
+      if (isQuoteChanged(err)) {
+        // Nothing was created: re-price and wait for another tap.
+        setPlaceOrderError(null);
+        setQuoteChanged(true);
+        reprice();
+      } else {
+        setPlaceOrderError(err);
+      }
       if (page?.is_guest) void queryClient.invalidateQueries({ queryKey: ["context"] });
     },
     onSettled: () => { submitLock.current = false; },
@@ -813,7 +834,15 @@ function useTopupPricing({ slug, selected, ctx, configValid, submitLock }: {
     event.preventDefault();
     applyVoucher();
   }
-  return { ...pricing, previewContext, setVoucherInput, setMethod, voucherPending, previewQuery, previewErrorKey: previewQuery.error?.message ?? null, previewMutation, applyVoucher, onVoucherKeyDown };
+  /** Re-price the selection with the voucher already applied — after the
+   * server refused an order because its total changed. Runs while the refused
+   * submit is still settling, so it skips applyVoucher's submit-lock guard; the
+   * pending preview itself blocks the next submit until the new totals land. */
+  function reprice() {
+    if (!selected || !configValid) return;
+    previewMutation.mutate({ code: pricing.appliedVoucher, denominationId: selected.id, context: previewContext, sequence: ++sequence.current, epoch: pricing.epoch });
+  }
+  return { ...pricing, previewContext, setVoucherInput, setMethod, voucherPending, previewQuery, previewErrorKey: previewQuery.error?.message ?? null, previewMutation, applyVoucher, onVoucherKeyDown, reprice };
 }
 
 function synchronizeTopupPricing(previous: TopupPricingSession, context: string, data: CheckoutData | undefined): TopupPricingSession {

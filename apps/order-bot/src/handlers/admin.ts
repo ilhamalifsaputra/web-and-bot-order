@@ -39,6 +39,8 @@ import {
   markStockDead,
   getBulkPricingForDenomination,
   deleteBulkPricing,
+  LegacyBulkRuleConflictError,
+  listTiers,
   listOpenTickets,
   countOpenTickets,
   closeTicket,
@@ -50,6 +52,7 @@ import { BANNER_FILEID_KEY } from "../util/banner";
 import { t } from "../util/i18n";
 import { esc, formatIdr, formatUsdt, mixedAmount } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
+import { adminTierLines, botCanEditTiers } from "../util/adminTiers";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
 
@@ -586,6 +589,18 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;
   }
+  const tiers = await listTiers(prisma, productId);
+  if (!botCanEditTiers(tiers)) {
+    // Several tiers or a fixed-amount tier: the web admin's tier editor owns
+    // this set. Show it read-only, with no Update/Delete that would replace it.
+    const text = t(ctx, "admin.bulk_tiers_readonly", {
+      name: esc(p.name),
+      status: t(ctx, p.tieredPricingEnabled ? "admin.bulk_status_on" : "admin.bulk_status_off"),
+      tiers: adminTierLines(tiers, (key, args) => t(ctx, key, args)),
+    });
+    await adminEdit(ctx, text, akb.bulkPricingKb(productId, false, lang, { readOnly: true }));
+    return;
+  }
   const rule = await getBulkPricingForDenomination(prisma, productId);
   let text: string;
   if (rule) {
@@ -603,22 +618,37 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
 }
 
 async function deleteBulkPricingHandler(ctx: MyContext, productId: number): Promise<void> {
+  // A stale Delete tap from before the web admin added tiers the bot cannot
+  // express must not wipe them.
+  const refuse = async () => {
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.bulk_tiers_web_only"), show_alert: true });
+    await showBulkPricing(ctx, productId);
+  };
+  if (!botCanEditTiers(await listTiers(prisma, productId))) return refuse();
   const adminTg = ctx.from!.id;
-  const deleted = await prisma.$transaction(async (tx) => {
-    const ok = await deleteBulkPricing(tx, productId);
-    if (ok) {
-      const denomination = await tx.denomination.findUnique({ where: { id: productId } });
-      const admin = await getUserByTelegramId(tx, adminTg);
-      await logAdminAction(tx, {
-        adminId: requireAdminId(admin),
-        action: "bulk_pricing_delete",
-        targetType: "product",
-        targetId: productId,
-        details: `Removed bulk pricing for "${denomination?.name ?? productId}".`,
-      });
-    }
-    return ok;
-  });
+  let deleted: boolean;
+  try {
+    deleted = await prisma.$transaction(async (tx) => {
+      const ok = await deleteBulkPricing(tx, productId);
+      if (ok) {
+        const denomination = await tx.denomination.findUnique({ where: { id: productId } });
+        const admin = await getUserByTelegramId(tx, adminTg);
+        await logAdminAction(tx, {
+          adminId: requireAdminId(admin),
+          action: "bulk_pricing_delete",
+          targetType: "product",
+          targetId: productId,
+          details: `Removed bulk pricing for "${denomination?.name ?? productId}".`,
+        });
+      }
+      return ok;
+    });
+  } catch (err) {
+    // The web editor saved a multi-tier set after the check above; the
+    // adapter re-checked under its row lock and wrote nothing.
+    if (err instanceof LegacyBulkRuleConflictError) return refuse();
+    throw err;
+  }
   await ctx.answerCallbackQuery({
     text: t(ctx, deleted ? "admin.toast.bulk_deleted" : "admin.toast.bulk_none"),
     show_alert: true,

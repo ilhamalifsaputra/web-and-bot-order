@@ -91,6 +91,8 @@ const ACTION_LABELS: Record<string, string> = {
   product_delete: "Product deleted",
   bulk_pricing_set: "Bulk pricing set",
   bulk_pricing_delete: "Bulk pricing removed",
+  pricing_tiers_replace: "Volume pricing tiers saved",
+  tiered_pricing_toggle: "Volume pricing turned on/off",
   underpaid_deliver: "Underpaid order delivered",
   underpaid_refund: "Underpaid order refunded",
   underpaid_cancel: "Underpaid order cancelled",

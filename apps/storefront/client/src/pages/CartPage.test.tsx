@@ -410,3 +410,104 @@ describe("CartPage", () => {
     expect(screen.getByText(/1 left$/)).toBeInTheDocument();
   });
 });
+
+describe("CartPage — volume tiers", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  const pricing = (qty: number, unit: string, total: string, savings: string, tier: number | null) => ({
+    quantity: qty,
+    base_unit_price: "10000",
+    final_unit_price: unit,
+    original_subtotal: String(10000 * qty),
+    final_subtotal: total,
+    savings,
+    applied_tier: tier ? { min_quantity: tier, discount_type: "FIXED_UNIT_PRICE" as const, discount_value: unit } : null,
+  });
+  const line = (key: number, qty: number, p: ReturnType<typeof pricing>) => ({
+    key,
+    denomination_id: key,
+    product_slug: `plan-${key}`,
+    name: `Plan ${key}`,
+    image: "",
+    unit_price: "10000",
+    qty,
+    line_total: String(10000 * qty),
+    available: 0,
+    delivery_type: "manual",
+    uses_local_inventory: false,
+    pricing: p,
+  });
+  const tieredCart: CartPageData = {
+    items: [line(1, 5, pricing(5, "6000", "30000", "20000", 5))],
+    subtotal: "50000",
+    bulk_discount: "20000",
+    total: "30000",
+  };
+
+  it("shows the server's discounted unit, the net line total and the saving, and a summary equal to checkout's", async () => {
+    renderCart(() => tieredCart);
+    await screen.findByText("Plan 1");
+    expect(screen.getAllByText("Rp6,000 each").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Was Rp10,000")[0]).toHaveClass("sr-only");
+    const note = screen.getByTestId("tier-line-note");
+    expect(note).toHaveTextContent("5 × Rp6,000");
+    expect(note).toHaveTextContent("Rp30,000");
+    expect(note).toHaveTextContent("Quantity deal: you save Rp20,000");
+    // Summary: subtotal, the quantity deal, and the total checkout will show.
+    expect(screen.getByText("Quantity deal")).toBeInTheDocument();
+    expect(screen.getByText("−Rp20,000")).toBeInTheDocument();
+    expect(screen.getAllByText("Rp30,000").length).toBeGreaterThan(1);
+  });
+
+  it("shows no tier note on a line without a tier", async () => {
+    renderCart(() => ({ items: [line(2, 2, pricing(2, "10000", "20000", "0", null))], subtotal: "20000", bulk_discount: "0", total: "20000" }));
+    await screen.findByText("Plan 2");
+    expect(screen.queryByTestId("tier-line-note")).not.toBeInTheDocument();
+    expect(screen.queryByText("Quantity deal")).not.toBeInTheDocument();
+  });
+
+  it("applies only the newest cart answer: a slow earlier update can't overwrite a later one's prices", async () => {
+    const twoLines: CartPageData = {
+      items: [line(1, 1, pricing(1, "10000", "10000", "0", null)), line(2, 1, pricing(1, "10000", "10000", "0", null))],
+      subtotal: "20000",
+      bulk_discount: "0",
+      total: "20000",
+    };
+    const releases: Array<(value: CartPageData) => void> = [];
+    (apiPost as Mock).mockImplementation(() => new Promise((resolve) => releases.push(resolve)));
+    renderCart(() => twoLines);
+    await screen.findByText("Plan 1");
+    const [qtyA, qtyB] = screen.getAllByLabelText("Quantity");
+    const [updateA, updateB] = screen.getAllByRole("button", { name: "Update" });
+
+    fireEvent.change(qtyA!, { target: { value: "3" } });
+    fireEvent.click(updateA!);
+    fireEvent.change(qtyB!, { target: { value: "5" } });
+    fireEvent.click(updateB!);
+    await waitFor(() => expect(releases).toHaveLength(2));
+
+    // The later request (both lines changed) answers first…
+    const afterBoth: CartPageData = {
+      items: [line(1, 3, pricing(3, "8000", "24000", "6000", 3)), line(2, 5, pricing(5, "6000", "30000", "20000", 5))],
+      subtotal: "80000",
+      bulk_discount: "26000",
+      total: "54000",
+    };
+    await act(async () => releases[1]!(afterBoth));
+    await waitFor(() => expect(screen.getByText("−Rp26,000")).toBeInTheDocument());
+    // …then the earlier one lands late, describing only line A's change.
+    const afterA: CartPageData = {
+      items: [line(1, 3, pricing(3, "8000", "24000", "6000", 3)), line(2, 1, pricing(1, "10000", "10000", "0", null))],
+      subtotal: "40000",
+      bulk_discount: "6000",
+      total: "34000",
+    };
+    await act(async () => releases[0]!(afterA));
+    expect(screen.getByText("−Rp26,000")).toBeInTheDocument();
+    expect(screen.queryByText("−Rp6,000")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Rp54,000").length).toBeGreaterThan(0);
+  });
+});

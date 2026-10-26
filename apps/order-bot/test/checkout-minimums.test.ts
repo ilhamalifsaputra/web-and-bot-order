@@ -96,7 +96,8 @@ describe("completeOrderWithWallet — an order a discount alone reduced to Rp0",
   it("settles and delivers it without a gateway, though no wallet credit was toggled", async () => {
     const { ctx, sink } = makeCtx({
       from: { id: 42, username: "tester" },
-      session: userSession({ appliedVoucherCode: "FREE100" }),
+      // The Rp0 total the confirmation showed (a wallet-rail tap is bound to it).
+      session: userSession({ appliedVoucherCode: "FREE100", shownQuotes: { [`${sample.product.id}:1`]: "0" } }),
       callbackData: `v1:walletpay:${sample.product.id}:1`,
       cbMessage: { message_id: 777, chat: { id: 42, type: "private" }, date: 0 },
     });

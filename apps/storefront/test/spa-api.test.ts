@@ -1381,7 +1381,14 @@ describe("/api/v1/checkout + orders", () => {
       // Per-item data (Task 6): the SPA's checkout info-collection step needs
       // delivery_type + the parsed field spec per cart line.
       expect(body.items).toEqual([
-        { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null, canonical: expect.any(Object) },
+        {
+          denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null, canonical: expect.any(Object),
+          // The line through the volume-tier engine (no tiers here → nothing off).
+          pricing: {
+            quantity: 1, base_unit_price: "40000", final_unit_price: "40000", original_subtotal: "40000",
+            final_subtotal: "40000", savings: "0", applied_tier: null,
+          },
+        },
       ]);
       expect(CanonicalProductSchema.parse(body.items[0].canonical)).toMatchObject({
         id: denomId,
@@ -1984,6 +1991,10 @@ describe("POST /api/v1/checkout — manual_with_info customer_data revalidation"
         qty: 2,
         flash: null,
         canonical: expect.any(Object),
+        pricing: {
+          quantity: 2, base_unit_price: "25000", final_unit_price: "25000", original_subtotal: "50000",
+          final_subtotal: "50000", savings: "0", applied_tier: null,
+        },
       },
     ]);
     expect(CanonicalProductSchema.parse(res.json().items[0].canonical)).toMatchObject({

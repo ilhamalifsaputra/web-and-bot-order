@@ -1061,3 +1061,136 @@ describe("ProductPage sharing and image formats", () => {
     expect(denomList.querySelectorAll("label.denom-card svg")).toHaveLength(0);
   });
 });
+
+describe("ProductPage — volume tiers on a Premium Apps plan", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    observers.length = 0;
+    vi.clearAllMocks();
+  });
+
+  // The plan's worked example: 10000; 8000 each from 3; 6000 each from 5.
+  const TABLE: Record<number, { unit: string; total: string; savings: string; tier: number | null }> = {
+    1: { unit: "10000", total: "10000", savings: "0", tier: null },
+    2: { unit: "10000", total: "20000", savings: "0", tier: null },
+    3: { unit: "8000", total: "24000", savings: "6000", tier: 3 },
+    4: { unit: "8000", total: "32000", savings: "8000", tier: 3 },
+    5: { unit: "6000", total: "30000", savings: "20000", tier: 5 },
+    6: { unit: "6000", total: "36000", savings: "24000", tier: 5 },
+  };
+  function quoteFor(qty: number) {
+    const row = TABLE[qty]!;
+    return {
+      denomination_id: 9,
+      quantity: qty,
+      base_unit_price: "10000",
+      final_unit_price: row.unit,
+      original_subtotal: String(10000 * qty),
+      final_subtotal: row.total,
+      savings: row.savings,
+      applied_tier: row.tier ? { min_quantity: row.tier, discount_type: "FIXED_UNIT_PRICE", discount_value: row.unit } : null,
+    };
+  }
+  const tierProduct: ProductPageData = {
+    ...productData,
+    denominations: [
+      {
+        id: 9,
+        name: "1 Month Shared",
+        duration_label: "1 Month",
+        price: "10000",
+        warranty_days: 7,
+        available: 0,
+        in_stock: false,
+        uses_local_inventory: false,
+        purchasable: true,
+        bulk: null,
+        tiers: [
+          { min_quantity: 3, discount_type: "FIXED_UNIT_PRICE", discount_value: "8000" },
+          { min_quantity: 5, discount_type: "FIXED_UNIT_PRICE", discount_value: "6000" },
+        ],
+        tier_ladder: [
+          { min_quantity: 3, discount_type: "FIXED_UNIT_PRICE", discount_value: "8000", unit_price: "8000" },
+          { min_quantity: 5, discount_type: "FIXED_UNIT_PRICE", discount_value: "6000", unit_price: "6000" },
+        ],
+        delivery_type: "manual",
+        additional_fields: [],
+      },
+    ],
+  };
+  const qtyOf = (path: string) => Number(new URL(path, "http://shop.test").searchParams.get("qty"));
+  const quoteCalls = () => (apiGet as Mock).mock.calls.filter((c) => String(c[0]).startsWith("/api/v1/pricing/quote"));
+
+  it("shows the server-priced ladder in neutral wording, beside the plan picker", async () => {
+    renderProduct("netflix-premium", (path) => (path.startsWith("/api/v1/pricing/quote") ? quoteFor(qtyOf(path)) : tierProduct));
+    const ladder = await screen.findByTestId("tier-ladder");
+    expect(ladder).toHaveTextContent("Buy more, pay less per item");
+    expect(within(ladder).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "3+ itemsRp8,000 each",
+      "5+ itemsRp6,000 each",
+    ]);
+    // Premium Apps vocabulary only: no game/top-up wording leaks into the plan picker.
+    expect(document.getElementById("product-detail")!.textContent).not.toMatch(/top[ -]?up|diamond|game/i);
+    // The Premium plan picker itself is unchanged.
+    expect(screen.getByRole("heading", { name: "Choose a plan" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /1 Month/ })).toBeChecked();
+  });
+
+  it("prices qty 1..6 by the server: 10000, 20000, 24000, 32000, 30000, 36000", async () => {
+    renderProduct("netflix-premium", (path) => (path.startsWith("/api/v1/pricing/quote") ? quoteFor(qtyOf(path)) : tierProduct));
+    const quote = await screen.findByTestId("quantity-quote");
+    const expected = ["Rp10,000", "Rp20,000", "Rp24,000", "Rp32,000", "Rp30,000", "Rp36,000"];
+    for (let qty = 1; qty <= 6; qty++) {
+      fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: String(qty) } });
+      await waitFor(() => expect(quote).toHaveTextContent(`Total for ${qty}${expected[qty - 1]}`));
+    }
+    // At 5+ the unit is the discounted one, the base struck through, and the saving named.
+    expect(quote).toHaveTextContent("Rp6,000 each");
+    expect(within(quote).getByText("Was Rp10,000")).toHaveClass("sr-only");
+    expect(quote).toHaveTextContent("Quantity deal: you save Rp24,000");
+    // The rung in effect is marked.
+    const rows = within(screen.getByTestId("tier-ladder")).getAllByRole("listitem");
+    expect(rows[1]).toHaveAttribute("aria-current", "true");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    // Every figure came from the server; each request could be cancelled.
+    expect(quoteCalls().every((c) => (c[1] as { signal?: AbortSignal } | undefined)?.signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it("debounces rapid typing and never shows an earlier quantity's price for a later one", async () => {
+    const pending = new Map<number, (value: unknown) => void>();
+    renderProduct("netflix-premium", (path) => {
+      if (!path.startsWith("/api/v1/pricing/quote")) return tierProduct;
+      const qty = qtyOf(path);
+      if (qty === 1) return quoteFor(1);
+      return new Promise((resolve) => pending.set(qty, resolve));
+    });
+    const quote = await screen.findByTestId("quantity-quote");
+    await waitFor(() => expect(quote).toHaveTextContent("Total for 1Rp10,000"));
+
+    // Typing 2 then 3 in quick succession asks only for 3.
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "3" } });
+    expect(quote).toHaveTextContent("Updating the price…");
+    await waitFor(() => expect(pending.has(3)).toBe(true));
+    expect(pending.has(2)).toBe(false);
+
+    // Move on to 5 while 3 is still in flight; 5 answers first, 3 answers late.
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "5" } });
+    expect(quote).toHaveTextContent("Updating the price…");
+    expect(quote).not.toHaveTextContent("Rp10,000");
+    await waitFor(() => expect(pending.has(5)).toBe(true));
+    await act(async () => pending.get(5)!(quoteFor(5)));
+    await waitFor(() => expect(quote).toHaveTextContent("Total for 5Rp30,000"));
+    await act(async () => pending.get(3)!(quoteFor(3)));
+    expect(quote).toHaveTextContent("Total for 5Rp30,000");
+    expect(quote).not.toHaveTextContent("Rp24,000");
+  });
+
+  it("shows nothing tier-related for a plan without tiers, and asks the server nothing", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByTestId("tier-ladder")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("quantity-quote")).not.toBeInTheDocument();
+    expect(quoteCalls()).toHaveLength(0);
+  });
+});

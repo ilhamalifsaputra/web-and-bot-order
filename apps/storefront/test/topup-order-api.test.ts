@@ -319,7 +319,14 @@ describe("POST /api/v1/topup/preview", () => {
     expect(body.wallet_usdt_enabled).toBe(false);
     expect(body.subtotal).toBe(DENOM_PRICE);
     expect(body.items).toEqual([
-      { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null, canonical: expect.any(Object) },
+      {
+        denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null, canonical: expect.any(Object),
+        // The line through the volume-tier engine (no tiers here → nothing off).
+        pricing: {
+          quantity: 1, base_unit_price: DENOM_PRICE, final_unit_price: DENOM_PRICE, original_subtotal: DENOM_PRICE,
+          final_subtotal: DENOM_PRICE, savings: "0", applied_tier: null,
+        },
+      },
     ]);
     expect(CanonicalProductSchema.parse(body.items[0].canonical)).toMatchObject({
       id: denomId,

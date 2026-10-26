@@ -1103,6 +1103,35 @@ describe("refundInsteadOfReplace", () => {
     expect(new Decimal(buyer.walletBalance).equals(expected)).toBe(true);
   });
 
+  it("takes a tiered order's volume discount from its own snapshot line, not a share of the order-wide figure", async () => {
+    const { order, items, replacement } = await awaitingStockRequest(2);
+    // Shape a mixed cart: this SKU's line (2 × 5.00) got the whole 2.00 tier
+    // discount; another untiered 10.00 line got none. Prorating 2.00 by
+    // subtotal share would value this unit at 4.50; its line really paid 4.00.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        subtotalAmount: "20",
+        bulkDiscountAmount: "2",
+        totalAmount: "18",
+        bulkTierSnapshot: {
+          version: 1,
+          lines: [
+            { denominationId: items[0]!.productId, quantity: 2, totalDiscount: "2" },
+            { denominationId: items[0]!.productId + 100_000, quantity: 1, totalDiscount: "0" },
+          ],
+        },
+      },
+    });
+
+    const result = await refundInsteadOfReplace(prisma, {
+      stockReplacementId: replacement.id,
+      executedBy: adminId,
+    });
+
+    expect(new Decimal(result.execution.amount).equals(new Decimal("4"))).toBe(true);
+  });
+
   it("opens its OWN Refund row per refunded unit rather than reusing another one", async () => {
     const { order, items } = await makeDeliveredOrder(2);
     const first = await replaceStockItem(prisma, {

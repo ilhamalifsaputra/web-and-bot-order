@@ -39,7 +39,7 @@ import {
 } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
-import { bulkDiscountFor } from "@app/core/bulk";
+import { resolveTieredPrice, tiersFromLegacyRule } from "@app/core/bulk";
 import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -57,7 +57,7 @@ import type { Db } from "./_types";
 import { assertServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
 import { isUniqueViolation, isUniqueViolationOn } from "./_types";
-import { getBulkPricingForDenomination } from "./catalog";
+import { quoteBulkForLines, type BulkTierSnapshot } from "./bulkTiers";
 import {
   getVoucherByCode,
   applyVoucherToSubtotal,
@@ -513,6 +513,13 @@ type CartLine = {
 
 type BulkRule = { minQuantity: number; discountPercent: Decimal.Value };
 
+/** The JSON written to `Order.bulkTierSnapshot`: the snapshot, or left unset
+ * (the column's NULL) when no tier applied. Written once, at creation — nothing
+ * re-derives it from the live tiers later. */
+function bulkTierSnapshotValue(snapshot: BulkTierSnapshot | null): Prisma.InputJsonValue | undefined {
+  return snapshot ? (snapshot as unknown as Prisma.InputJsonValue) : undefined;
+}
+
 /**
  * The IDR credit a buyer asked to spend on a new order, as whole rupiah
  * (floored, so never more than asked; negative/absent is zero). The order's
@@ -540,9 +547,11 @@ function unitPrice(
   return effectiveUnitPrice(product, isReseller, now);
 }
 
-/** Pure: total bulk discount across all cart lines. The per-line rule (does it
- * apply, and how much does it take off) lives in @app/core/bulk so the bot's
- * confirmation screen and this function can't spell it differently. */
+/** Pure: total bulk discount across all cart lines under LEGACY single rules
+ * (kept for callers that still hold `bulk_pricing`-shaped rules). Each rule runs
+ * through the tiered engine as one PERCENTAGE tier (`tiersFromLegacyRule`), the
+ * same arithmetic `bulkDiscountFor` always used. Order creation and every
+ * preview price through `quoteBulkForLines` (crud/bulkTiers.ts) instead. */
 export function computeBulkDiscountForCart(
   cart: CartLine[],
   bulkRules: Record<number, BulkRule>,
@@ -551,8 +560,12 @@ export function computeBulkDiscountForCart(
 ): Decimal {
   let total = ZERO;
   for (const ci of cart) {
-    const itemSubtotal = unitPrice(ci.product, isReseller, now).times(ci.quantity);
-    total = total.plus(bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity));
+    const priced = resolveTieredPrice({
+      effectiveUnit: unitPrice(ci.product, isReseller, now),
+      quantity: ci.quantity,
+      tiers: tiersFromLegacyRule(bulkRules[ci.productId]),
+    });
+    total = total.plus(priced.totalDiscount);
   }
   return q4(total);
 }
@@ -826,13 +839,16 @@ export async function createOrderFromCart(
     subtotal = subtotal.plus(unitPrice(ci.product, isReseller, pricedAt).times(ci.quantity));
   }
 
-  // 2. Bulk discount
-  const bulkRules: Record<number, BulkRule> = {};
-  for (const ci of cart) {
-    const rule = await getBulkPricingForDenomination(db, ci.productId);
-    if (rule) bulkRules[ci.productId] = rule;
-  }
-  const bulkDiscount = computeBulkDiscountForCart(cart, bulkRules, isReseller, pricedAt);
+  // 2. Bulk discount — the SKUs' volume tiers, read through `db` (the order's
+  // transaction when the caller opened one) and priced by the one engine every
+  // preview uses (quoteBulkForLines), on top of the reseller/flash unit price.
+  const bulkQuote = await quoteBulkForLines(
+    db,
+    cart.map((ci) => ({ denominationId: ci.productId, quantity: ci.quantity, denomination: ci.product })),
+    isReseller,
+    pricedAt,
+  );
+  const bulkDiscount = bulkQuote.bulkDiscount;
 
   // 3. Voucher
   let discount = ZERO;
@@ -848,12 +864,12 @@ export async function createOrderFromCart(
     // ALL-scope (the default, and every pre-migration voucher) skips this
     // entirely and reuses the full cart's subtotal/bulkDiscount verbatim, so
     // this is byte-identical to the pre-scope behavior for that case.
-    const eligibilityLines: EligibilityLine[] = cart.map((ci) => {
-      const itemSubtotal = unitPrice(ci.product, isReseller, pricedAt).times(ci.quantity);
+    const eligibilityLines: EligibilityLine[] = cart.map((ci, index) => {
+      const priced = bulkQuote.lines[index]!.priced;
       return {
         catalogProductId: ci.product.productId,
-        lineSubtotal: itemSubtotal,
-        lineBulkDiscount: bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity),
+        lineSubtotal: priced.originalSubtotal,
+        lineBulkDiscount: priced.totalDiscount,
       };
     });
     const { eligibleSubtotal, eligibleBulkDiscount } = await computeEligibleAmounts(
@@ -933,6 +949,7 @@ export async function createOrderFromCart(
         userId: args.user.id,
         subtotalAmount: q4(subtotal),
         bulkDiscountAmount: q4(bulkDiscount),
+        bulkTierSnapshot: bulkTierSnapshotValue(bulkQuote.snapshot),
         discountAmount: q4(discount),
         walletUsed,
         uniqueCents: ZERO,
@@ -1148,11 +1165,17 @@ export async function createOrderDirect(
   const unit = unitPrice(product, isReseller, pricedAt);
   const subtotal = q4(unit.times(args.quantity));
 
-  // Bulk discount — same helper computeBulkDiscountForCart and the bot's
+  // Bulk discount — the same quoteBulkForLines the cart path and the bot's
   // confirmation screen use, so a single-SKU order can never be discounted by a
-  // different rule than the cart path would have applied.
-  const rule = await getBulkPricingForDenomination(db, args.productId);
-  const bulkDiscount = bulkDiscountFor(subtotal, rule, args.quantity);
+  // different tier than the cart path would have applied. Tiers are read
+  // through `db`, inside the order's transaction when the caller opened one.
+  const bulkQuote = await quoteBulkForLines(
+    db,
+    [{ denominationId: args.productId, quantity: args.quantity, denomination: product }],
+    isReseller,
+    pricedAt,
+  );
+  const bulkDiscount = bulkQuote.bulkDiscount;
 
   // Voucher
   let voucher = null as Awaited<ReturnType<typeof getVoucherByCode>> | null;
@@ -1243,6 +1266,7 @@ export async function createOrderDirect(
         userId: args.user.id,
         subtotalAmount: subtotal,
         bulkDiscountAmount: bulkDiscount,
+        bulkTierSnapshot: bulkTierSnapshotValue(bulkQuote.snapshot),
         discountAmount: voucherDiscount,
         voucherId: voucher ? voucher.id : null,
         walletUsed: ZERO,

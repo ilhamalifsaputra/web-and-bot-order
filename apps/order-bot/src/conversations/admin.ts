@@ -42,6 +42,8 @@ import {
   getDenomination,
   isDigiflazzPriceOverridden,
   upsertBulkPricing,
+  LegacyBulkRuleConflictError,
+  listTiers,
   getTicket,
   replyToTicket,
   addTicketMessage,
@@ -54,6 +56,7 @@ import { t } from "../util/i18n";
 import { esc, formatIdr } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
 import { requireAdminId } from "../util/adminAudit";
+import { botCanEditTiers } from "../util/adminTiers";
 import * as akb from "../keyboards/admin";
 import { adminCommand, renderUserCard } from "../handlers/admin";
 import { startCommand } from "../handlers/customer";
@@ -1044,10 +1047,20 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
   const lang = ctx.session.lang;
   const productId = parseInt((ctx.callbackQuery?.data ?? "").split(":").at(-1)!, 10);
 
+  // The bot writes ONE percentage tier (upsertBulkPricing replaces the whole
+  // set). A set it cannot express — several tiers or a fixed amount, built in
+  // the web admin — is never overwritten from here, even by a stale tap.
+  const blocked = await conversation.external(async () => !botCanEditTiers(await listTiers(prisma, productId)));
+  if (blocked) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.bulk_tiers_web_only"), show_alert: true });
+    return;
+  }
+
   await ctx.answerCallbackQuery();
   await adminEdit(ctx, t(ctx, "admin.bulk_step1"), akb.cancelInputKb());
 
-  // Step 1: min qty
+  // Step 1: min qty — a whole number of at least 1, the engine's own rule
+  // (validateTiers / upsertBulkPricing). A tier at 1 discounts every order.
   let minQty: number;
   for (;;) {
     const u = await conversation.wait();
@@ -1058,8 +1071,8 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
     }
     const raw = u.message.text.trim();
     await consumeInput(u);
-    const n = parseInt(raw, 10);
-    if (Number.isNaN(n) || n < 5) {
+    const n = /^\d+$/.test(raw) ? parseInt(raw, 10) : Number.NaN;
+    if (!Number.isSafeInteger(n) || n < 1) {
       await adminAnchor(u, t(u, "admin.bulk_err_min"), akb.cancelInputKb());
       continue;
     }
@@ -1088,17 +1101,28 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
   }
 
   const adminTg = ctx.from!.id;
-  await prisma.$transaction(async (tx) => {
-    await upsertBulkPricing(tx, { productId, minQuantity: minQty, discountPercent: pct });
-    const admin = await getUserByTelegramId(tx, adminTg);
-    await logAdminAction(tx, {
-      adminId: requireAdminId(admin),
-      action: "bulk_pricing_set",
-      targetType: "product",
-      targetId: productId,
-      details: `Set bulk pricing: minimum quantity ${minQty}, discount ${pct}%.`,
+  try {
+    await prisma.$transaction(async (tx) => {
+      await upsertBulkPricing(tx, { productId, minQuantity: minQty, discountPercent: pct });
+      const admin = await getUserByTelegramId(tx, adminTg);
+      await logAdminAction(tx, {
+        adminId: requireAdminId(admin),
+        action: "bulk_pricing_set",
+        targetType: "product",
+        targetId: productId,
+        details: `Set bulk pricing: minimum quantity ${minQty}, discount ${pct}%.`,
+      });
     });
-  });
+  } catch (err) {
+    // The web editor saved a set the bot cannot express while this
+    // conversation was waiting for input: the adapter re-checked under its
+    // row lock and wrote nothing, so say so instead of "saved".
+    if (err instanceof LegacyBulkRuleConflictError) {
+      await adminEdit(ctx, t(ctx, "admin.bulk_tiers_web_only"), akb.backToAdminKb(lang));
+      return;
+    }
+    throw err;
+  }
 
   await adminEdit(ctx, t(ctx, "admin.bulk_saved", { minQty, pct }), akb.backToAdminKb(lang));
 }

@@ -28,7 +28,6 @@ import { Decimal } from "@app/core/money";
 import { canonicalProduct } from "@app/core/canonicalProduct";
 import { customerProgressPhase, paymentStatusFor, DIGIFLAZZ_STATUS_UNRESOLVED, type FulfillmentOrder } from "@app/core/orderFulfillment";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
-import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
 import { cartCompositionError } from "@app/core/cartComposition";
@@ -38,13 +37,12 @@ import {
   getCart,
   cartCompositionLineOfCartItem,
   getDenomination,
-  getBulkPricingForDenomination,
+  quoteBulkForLines,
   getVoucherByCode,
   assertVoucherNotRedeemedByUser,
   applyVoucherToSubtotal,
   computeEligibleAmounts,
   type EligibilityLine,
-  computeBulkDiscountForCart,
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
   completeOrderWithWalletCredit,
@@ -91,6 +89,7 @@ import {
   buildDigiflazzCustomerNo,
   triggerDigiflazzDispatch,
   type QuoteMismatchError,
+  type ExpectedTotal,
 } from "@app/db";
 import { readCanonicalMoney } from "@app/core/moneyFormat";
 import { type Customer } from "../plugins/auth";
@@ -126,6 +125,7 @@ import { normalizeProviderStatus, StatusProvider } from "@app/core/payments/paym
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
+import { linePricingView } from "../tierView";
 import { resolveBotUsername, resolveSupportTelegramUrl, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
 
 /** Per-buyer cap on simultaneously unpaid orders. Exported so every
@@ -228,17 +228,15 @@ async function computeTotals(
     const unit = effectiveUnitPrice(ci.product, isReseller, pricedAt);
     subtotal = subtotal.plus(unit.times(ci.quantity));
   }
-  const bulkRules: Record<number, { minQuantity: number; discountPercent: Decimal.Value }> = {};
-  for (const ci of lines) {
-    const rule = await getBulkPricingForDenomination(prisma, ci.productId);
-    if (rule) bulkRules[ci.productId] = rule;
-  }
-  const bulkDiscount = computeBulkDiscountForCart(
-    lines as Parameters<typeof computeBulkDiscountForCart>[0],
-    bulkRules,
+  // Volume tiers through the same quoteBulkForLines createOrderFromCart prices
+  // with, so the preview's bulk discount is the order's to the rupiah.
+  const bulkQuote = await quoteBulkForLines(
+    prisma,
+    lines.map((ci) => ({ denominationId: ci.productId, quantity: ci.quantity, denomination: ci.product })),
     isReseller,
     pricedAt,
   );
+  const bulkDiscount = bulkQuote.bulkDiscount;
 
   let voucherDiscount = new Decimal(0);
   let voucherError: string | null = null;
@@ -256,12 +254,12 @@ async function computeTotals(
         // let a voucher look valid here only to be rejected at order
         // creation). ALL-scope (the default) skips straight to
         // eligibleSubtotal = subtotal, byte-identical to the pre-scope preview.
-        const eligibilityLines: EligibilityLine[] = lines.map((ci) => {
-          const itemSubtotal = effectiveUnitPrice(ci.product, isReseller, pricedAt).times(ci.quantity);
+        const eligibilityLines: EligibilityLine[] = lines.map((ci, index) => {
+          const priced = bulkQuote.lines[index]!.priced;
           return {
             catalogProductId: ci.product.productId,
-            lineSubtotal: itemSubtotal,
-            lineBulkDiscount: bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity),
+            lineSubtotal: priced.originalSubtotal,
+            lineBulkDiscount: priced.totalDiscount,
           };
         });
         const { eligibleSubtotal, eligibleBulkDiscount } = await computeEligibleAmounts(
@@ -315,6 +313,9 @@ async function computeTotals(
     qrisAdminFee,
     qrisGrandTotal,
     lines,
+    // Index-aligned with `lines`: each line's engine result, so the summary can
+    // show the per-line tier figures behind `bulkDiscount` without re-pricing.
+    bulkLines: bulkQuote.lines,
     isReseller,
     pricedAt,
   };
@@ -463,7 +464,11 @@ export async function checkoutView(
       flash: flashViewFor(
         ci.product,
         effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt),
+        totals.pricedAt,
       ),
+      // The line at its quantity through the volume-tier engine — the very
+      // result `bulk_discount` below sums. Additive.
+      pricing: linePricingView(totals.bulkLines[index]!.priced),
     })),
     subtotal: totals.subtotal.toString(),
     bulk_discount: totals.bulkDiscount.toString(),
@@ -700,6 +705,18 @@ async function resolveGatewayPaymentChoice(method: string): Promise<GatewayPayme
 }
 
 /**
+ * A gateway rail's quote binding: the preview's IDR `total` (after volume
+ * tiers and voucher, before the QRIS fee and unique cents), compared by
+ * `assertQuotedTotal` with what the order would now charge. Every gateway
+ * rail — IDR or USDT — is bound to that same IDR figure: it is the one total
+ * the summary always shows, and the USDT conversion happens later at pay time
+ * against the rate the pay page itself displays.
+ */
+function gatewayExpectedTotal(amount: Decimal | null | undefined): ExpectedTotal | null {
+  return amount ? { currency: OrderCurrency.IDR, amount } : null;
+}
+
+/**
  * Validate the chosen payment method, then run the order-creation transaction
  * (countUserPendingOrders → createOrderFromCart → finalizeOrderPayment) — the
  * one implementation of checkout's business rules the JSON API's POST
@@ -719,6 +736,8 @@ export async function performCheckout(
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
+  /** The IDR total the summary showed (A6 for gateway rails). Null: no binding. */
+  expectedTotal?: Decimal | null,
 ): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
@@ -792,6 +811,9 @@ export async function performCheckout(
       },
       voucherCode,
       customerData: customerDataJson,
+      // Throws QuoteMismatchError before anything is written when the live
+      // total (after volume tiers and voucher) differs from the one shown.
+      expectedTotal: gatewayExpectedTotal(expectedTotal),
     });
     if (!created) throw new ValidationError("error.generic");
     // A voucher or bulk rule can cover the whole cart, leaving nothing for the
@@ -903,6 +925,8 @@ export async function performDirectCheckout(
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
+  /** The IDR total the preview showed (A6 for gateway rails). Null: no binding. */
+  expectedTotal?: Decimal | null,
 ): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
@@ -923,6 +947,7 @@ export async function performDirectCheckout(
       quantity: line.quantity,
       voucherCode,
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
+      expectedTotal: gatewayExpectedTotal(expectedTotal),
     });
     if (!created) throw new ValidationError("error.generic");
     // Same zero-total routing as performCheckout above — see its comment,

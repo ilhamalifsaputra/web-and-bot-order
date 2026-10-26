@@ -11,6 +11,7 @@ import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays, DateTime } from "@app/core/datetime";
 import { idChunks } from "./_idChunks";
+import { snapshotBulkDiscountFor } from "./bulkTiers";
 import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
@@ -57,6 +58,16 @@ const ORDER_KIND_SALES_FILTER = { kind: OrderKind.PRODUCT } as const;
  * deliberately excluded: it's a payment method (money the shop already
  * holds), not a discount, so it doesn't reduce banked revenue.
  *
+ * **Tiered orders take the volume discount from the snapshot.** When the order
+ * carries `bulkTierSnapshot`, this line's bulk discount is its own figure from
+ * that snapshot (`snapshotBulkDiscountFor`, the same helper refunds and stock
+ * replacement budget with), so in a mixed cart an untiered line no longer
+ * absorbs part of a tiered line's discount and per-product profit is right.
+ * Only the voucher is still split by subtotal share. An order without a
+ * snapshot (untiered, or priced before tiers existed) keeps the order-wide
+ * proration of both discounts unchanged — nothing is reinterpreted
+ * retroactively.
+ *
  * `order` is optional so a caller that only needs gross line revenue can omit
  * it; every current caller (`topProducts`, `topProductsByMargin`,
  * `profitSummarySince`) passes it, so they all report the same net figure.
@@ -74,18 +85,26 @@ const ORDER_KIND_SALES_FILTER = { kind: OrderKind.PRODUCT } as const;
  * financial audit).
  */
 function orderItemRevenueIdr(item: {
+  productId: number;
   unitPrice: Decimal.Value;
   quantity: number;
   order?: {
     subtotalAmount: Decimal.Value;
     bulkDiscountAmount: Decimal.Value;
+    bulkTierSnapshot: unknown;
     discountAmount: Decimal.Value;
   };
 }): Decimal {
   const lineGross = new Decimal(item.unitPrice).times(item.quantity);
   if (!item.order) return lineGross;
-  const totalDiscount = new Decimal(item.order.bulkDiscountAmount).plus(item.order.discountAmount);
   const orderSubtotal = new Decimal(item.order.subtotalAmount);
+  const lineBulk = snapshotBulkDiscountFor(item.order.bulkTierSnapshot, item.productId, item.quantity);
+  if (lineBulk !== null) {
+    const voucher = new Decimal(item.order.discountAmount);
+    const lineVoucher = voucher.isZero() || orderSubtotal.isZero() ? new Decimal(0) : voucher.times(lineGross).div(orderSubtotal);
+    return lineGross.minus(lineBulk).minus(lineVoucher);
+  }
+  const totalDiscount = new Decimal(item.order.bulkDiscountAmount).plus(item.order.discountAmount);
   if (totalDiscount.isZero() || orderSubtotal.isZero()) return lineGross;
   // Multiply before dividing so the only division happens once, at the end,
   // against the full-precision numerator — avoids compounding rounding from
@@ -615,7 +634,7 @@ export async function topProducts(db: Db, since: Date, limit = 10): Promise<TopP
         productId: true,
         quantity: true,
         unitPrice: true,
-        order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
+        order: { select: { subtotalAmount: true, bulkDiscountAmount: true, bulkTierSnapshot: true, discountAmount: true } },
       },
     }),
     // OrderItem is keyed by denomination (column is `product_id`).
@@ -665,7 +684,7 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
       unitPrice: true,
       costSnapshot: true,
       product: { select: { name: true, costPrice: true, product: { select: { name: true } } } },
-      order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
+      order: { select: { subtotalAmount: true, bulkDiscountAmount: true, bulkTierSnapshot: true, discountAmount: true } },
     },
   });
 
@@ -733,11 +752,12 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
   const items = await db.orderItem.findMany({
     where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
     select: {
+      productId: true,
       quantity: true,
       unitPrice: true,
       costSnapshot: true,
       product: { select: { costPrice: true } },
-      order: { select: { currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
+      order: { select: { currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, bulkTierSnapshot: true, discountAmount: true } },
     },
   });
 
@@ -1200,6 +1220,7 @@ export async function ordersByPeriod(
  * OrderItem-rooted functions in this module.
  */
 const PROFIT_ITEM_SELECT = {
+  productId: true,
   quantity: true,
   unitPrice: true,
   costSnapshot: true,
@@ -1211,6 +1232,7 @@ const PROFIT_ITEM_SELECT = {
       fxRate: true,
       subtotalAmount: true,
       bulkDiscountAmount: true,
+      bulkTierSnapshot: true,
       discountAmount: true,
     },
   },
@@ -1255,6 +1277,7 @@ const emptyProfitBucket = (): ProfitBucket => ({
 function accumulateLineProfit(
   bucket: ProfitBucket,
   item: {
+    productId: number;
     quantity: number;
     unitPrice: Decimal.Value;
     costSnapshot: Decimal.Value | null;
@@ -1264,6 +1287,7 @@ function accumulateLineProfit(
       fxRate: Decimal.Value | null;
       subtotalAmount: Decimal.Value;
       bulkDiscountAmount: Decimal.Value;
+      bulkTierSnapshot: unknown;
       discountAmount: Decimal.Value;
     };
   },

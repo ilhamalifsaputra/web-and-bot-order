@@ -52,4 +52,10 @@ describe("normalizeMoneyInput", () => {
     const copy = readFileSync(new URL("../../../apps/storefront/client/src/lib/moneyInput.ts", import.meta.url), "utf8");
     expect(copy, "apps/storefront/client/src/lib/moneyInput.ts must be an exact copy of packages/core/src/moneyInput.ts").toBe(here);
   });
+
+  it("keeps the admin client's copy byte-identical (its tier editor previews typed amounts)", () => {
+    const here = readFileSync(new URL("./moneyInput.ts", import.meta.url), "utf8");
+    const copy = readFileSync(new URL("../../../apps/web-admin/client/src/lib/moneyInput.ts", import.meta.url), "utf8");
+    expect(copy, "apps/web-admin/client/src/lib/moneyInput.ts must be an exact copy of packages/core/src/moneyInput.ts").toBe(here);
+  });
 });

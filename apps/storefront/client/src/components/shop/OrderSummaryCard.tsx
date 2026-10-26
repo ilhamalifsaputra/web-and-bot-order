@@ -31,10 +31,12 @@ import { idrRailPriceAndPay } from "./OrderSummaryCard.helpers";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { KeyboardEvent, ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
+import { canonicalPurchaseName } from "../../api/canonical";
 import type { CheckoutData } from "../../api/types";
 import { formatIdr, formatPriceFor } from "../../lib/format";
 import { t } from "../../lib/i18n";
 import { useShopContext } from "../../lib/useShopContext";
+import Alert from "../ui/Alert";
 import Button from "../ui/Button";
 import Card from "../ui/Card";
 import Input from "../ui/Input";
@@ -44,6 +46,8 @@ import FlashBadge from "./FlashBadge";
 import { flashPercentLabel } from "./FlashBadge.helpers";
 import Price from "./Price";
 import Spinner from "./Spinner";
+import { TierLineNote } from "./TierPricing";
+import { tierApplies } from "./TierPricing.helpers";
 
 /**
  * The biggest live flash discount in the cart, plus the last moment any of
@@ -96,6 +100,10 @@ export interface OrderSummaryCardProps {
   submitId?: string;
   submitPrice?: string;
   accountSummary?: { plan: string; fields: Array<{ key: string; label: string; value: string }> };
+  /** The last order attempt was refused because the total changed (409
+   * `error.quote_changed`). The totals shown are already the new ones; this
+   * says so and asks the buyer to confirm with another tap. */
+  quoteChanged?: boolean;
 }
 
 export default function OrderSummaryCard({
@@ -119,6 +127,7 @@ export default function OrderSummaryCard({
   submitId,
   submitPrice,
   accountSummary,
+  quoteChanged = false,
 }: OrderSummaryCardProps) {
   const flashSummary = cartFlashSummary(totals);
   const { data: ctx } = useShopContext();
@@ -137,6 +146,11 @@ export default function OrderSummaryCard({
       <div id="checkout-summary">
         <Card>
           <h2 className="section-title mb-3">{t("web.summary")}</h2>
+          {quoteChanged && (
+            <Alert variant="banner" tone="warning" className="mb-4" title={t("shop.quote_changed_title")} data-testid="quote-changed">
+              {t("shop.quote_changed_body")}
+            </Alert>
+          )}
           {accountSummary && (
             <Card variant="inset" className="mb-4 text-sm">
               <p className="font-semibold text-ink break-words">{accountSummary.plan}</p>
@@ -249,9 +263,19 @@ function OrderPriceBreakdown({ totals, currency, fx, flashSummary, method, price
       </div>
     )}
     {totals.bulk_discount !== "0" && (
-      <div className="flex justify-between py-2 text-grass-dark">
-        <span>{t("web.bulk_discount")}</span>
-        <span>−{formatPriceFor(totals.bulk_discount, currency, fx)}</span>
+      <div className="py-2">
+        <div className="flex justify-between text-grass-dark">
+          <span>{t("web.bulk_discount")}</span>
+          <span>−{formatPriceFor(totals.bulk_discount, currency, fx)}</span>
+        </div>
+        {/* Which lines the quantity deal came from, at the server's per-line
+            figures — the same engine result this row sums. */}
+        {totals.items.filter((item) => tierApplies(item.pricing)).map((item) => (
+          <div key={item.denomination_id} className="mt-1">
+            {item.canonical && <p className="text-xs text-ink-soft break-words">{canonicalPurchaseName(item.canonical)}</p>}
+            <TierLineNote pricing={item.pricing} />
+          </div>
+        ))}
       </div>
     )}
     {totals.voucher_discount !== "0" && (

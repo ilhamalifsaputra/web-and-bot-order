@@ -126,8 +126,10 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
   return data;
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: "include" });
+/** `signal` cancels an in-flight read — React Query passes one so a request
+ * for an abandoned key (e.g. a quantity the buyer already changed) is dropped. */
+export async function apiGet<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
+  const res = await fetch(path, options?.signal ? { credentials: "include", signal: options.signal } : { credentials: "include" });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     throw apiError(data.error ?? `${path} responded ${res.status}`, res.status, data);

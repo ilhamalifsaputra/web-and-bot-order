@@ -129,7 +129,12 @@ export interface ProductDenomination {
   /** Server verdict: can this plan be bought now. The client gates buying on
    * this and never re-derives it from delivery_type/in_stock. */
   purchasable: boolean;
+  /** Legacy single-rule view (the lowest percent tier), kept for older code. */
   bulk: { min_quantity: number; discount_percent: string } | null;
+  /** Every effective volume tier of this plan, lowest threshold first. */
+  tiers?: TierRule[];
+  /** The ladder to show: each tier with the server-priced unit price at its threshold. */
+  tier_ladder?: TierLadderStep[];
   /** "auto" | "manual" | "manual_with_info" (DeliveryType). Not an
    * availability signal — see `purchasable` / `uses_local_inventory`. */
   delivery_type: string;
@@ -235,13 +240,53 @@ export interface CartLineView {
    * from local stock has a meaningful `available`; never render a stock
    * warning on a provider or manual line. */
   uses_local_inventory: boolean;
+  /** The line priced at its quantity by the server's volume-tier engine.
+   * `unit_price`/`line_total` above stay the pre-tier figures; render the
+   * discounted unit and the net line total from here. Optional so a payload
+   * predating tiers still type-checks. */
+  pricing?: LinePricing;
 }
 
 /** GET /api/v1/cart, and the fresh payload every cart mutation (add/update/remove)
  * responds with — the SPA re-renders from this instead of a full page reload. */
 export interface CartPageData {
   items: CartLineView[];
+  /** Σ line_total — before volume tiers. */
   subtotal: string;
+  /** Σ per-line tier savings (the checkout summary's "Quantity deal"). */
+  bulk_discount?: string;
+  /** subtotal − bulk_discount, before any voucher. */
+  total?: string;
+}
+
+/** One volume tier as configured — JSON twin of TierRuleView (apps/storefront/src/tierView.ts). */
+export interface TierRule {
+  min_quantity: number;
+  discount_type: "PERCENTAGE" | "FIXED_AMOUNT_OFF_PER_UNIT" | "FIXED_UNIT_PRICE";
+  discount_value: string;
+}
+
+/** One rung of a plan's tier ladder: the server-priced unit price from `min_quantity` up. */
+export interface TierLadderStep extends TierRule {
+  unit_price: string;
+}
+
+/** One line priced by the server's volume-tier engine — JSON twin of
+ * LinePricingView (apps/storefront/src/tierView.ts). Every figure is the
+ * server's; the client never derives a price from a tier. */
+export interface LinePricing {
+  quantity: number;
+  base_unit_price: string;
+  final_unit_price: string;
+  original_subtotal: string;
+  final_subtotal: string;
+  savings: string;
+  applied_tier: TierRule | null;
+}
+
+/** GET /api/v1/pricing/quote — one plan priced at a quantity. */
+export interface LineQuote extends LinePricing {
+  denomination_id: number;
 }
 
 /** GET /api/v1/checkout, and the twin shape POST /checkout/voucher/preview
@@ -262,6 +307,8 @@ export interface CheckoutItem {
   /** Live flash sale on this line, or null. The totals beside it are priced
    * against the same instant, so this only marks them as sale prices. */
   flash?: FlashInfo | null;
+  /** The line through the volume-tier engine — the result `bulk_discount` sums. */
+  pricing?: LinePricing;
 }
 
 export interface CheckoutData {

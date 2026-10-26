@@ -5,8 +5,17 @@
  * what happens when a bad rule is already in the table anyway (written before
  * that guard existed, or by hand against the shared database).
  */
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { activeBulkPercent, isBulkActive, bulkDiscountFor } from "./bulk";
+
+describe("the admin client's copy of the tier arithmetic", () => {
+  it("is byte-identical to packages/core/src/tierPricing.ts (the admin client cannot import @app/core)", () => {
+    const here = readFileSync(new URL("./tierPricing.ts", import.meta.url), "utf8");
+    const copy = readFileSync(new URL("../../../apps/web-admin/client/src/lib/tierPricing.ts", import.meta.url), "utf8");
+    expect(copy, "apps/web-admin/client/src/lib/tierPricing.ts must be an exact copy of packages/core/src/tierPricing.ts").toBe(here);
+  });
+});
 
 const rule = (over: Partial<{ minQuantity: number; discountPercent: string }> = {}) => ({
   minQuantity: 5,

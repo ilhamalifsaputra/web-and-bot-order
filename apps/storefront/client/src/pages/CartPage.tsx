@@ -25,7 +25,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Package, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { canonicalPurchaseName } from "../api/canonical";
 import { apiGet, apiPost } from "../api/client";
@@ -38,6 +38,8 @@ import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
 import Stepper from "../components/shop/Stepper";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
+import { TierLineNote, TierUnitPrice } from "../components/shop/TierPricing";
+import { tierApplies } from "../components/shop/TierPricing.helpers";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import IconButton from "../components/ui/IconButton";
@@ -57,10 +59,14 @@ function clampCartQty(raw: number): number {
 interface CartLineProps {
   item: CartLineView;
   fx: string | null | undefined;
-  onMutated: (next: CartPageData) => void;
+  /** A ticket for one cart request; only the latest ticket's answer is applied. */
+  issueTicket: () => number;
+  onMutated: (next: CartPageData, ticket: number) => void;
+  /** A cart request failed: the page re-reads the cart rather than guess. */
+  onFailed: () => void;
 }
 
-function CartLine({ item, fx, onMutated }: CartLineProps) {
+function CartLine({ item, fx, issueTicket, onMutated, onFailed }: CartLineProps) {
   // Untouched rows follow the server. A typed quantity is a deliberate draft
   // until a successful update returns the server's accepted value.
   const [qtyDraft, setQty] = useState<number | null>(null);
@@ -72,18 +78,31 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
   // out of the page and name no item at all.
   const [confirmingRemove, setConfirmingRemove] = useState(false);
 
+  // Every cart response carries the WHOLE cart, priced by the server at the
+  // quantities it then held. Each request takes a ticket first, and the page
+  // applies an answer only if no newer request was sent since — so a slow
+  // answer for an earlier quantity can never overwrite the prices of a later one.
   const updateMutation = useMutation({
-    mutationFn: (nextQty: number) => apiPost<CartPageData>("/api/v1/cart/update", { key: item.key, qty: nextQty }),
-    onSuccess: (next, submittedQty) => {
+    mutationFn: async (nextQty: number) => {
+      const ticket = issueTicket();
+      return { next: await apiPost<CartPageData>("/api/v1/cart/update", { key: item.key, qty: nextQty }), ticket };
+    },
+    onSuccess: ({ next, ticket }, submittedQty) => {
       // A response owns only the submitted draft, not a newer edit.
       setQty((current) => current === submittedQty ? null : current);
-      onMutated(next);
+      onMutated(next, ticket);
     },
+    onError: onFailed,
   });
   const removeMutation = useMutation({
-    mutationFn: () => apiPost<CartPageData>("/api/v1/cart/remove", { key: item.key }),
-    onSuccess: onMutated,
+    mutationFn: async () => {
+      const ticket = issueTicket();
+      return { next: await apiPost<CartPageData>("/api/v1/cart/remove", { key: item.key }), ticket };
+    },
+    onSuccess: ({ next, ticket }) => onMutated(next, ticket),
+    onError: onFailed,
   });
+  const tiered = tierApplies(item.pricing);
 
   return (
     /* One cramped row squeezed the title to a few characters at 320px, because
@@ -112,14 +131,23 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
           {/* `unit_price` already carries the flash discount — the badge and
               the struck figure only explain where the price came from. */}
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            {item.canonical ? <span className="text-pine text-sm font-semibold">{item.canonical.formattedPrice}</span> : <Price value={item.unit_price} fx={fx} size="text-sm" />}
-            {item.flash && <FlashWasPrice value={item.flash.base_price} endsAt={item.flash.ends_at} />}
+            {/* A volume tier on this line: the server's discounted unit, with
+                the pre-tier unit struck through. */}
+            {tiered ? (
+              <TierUnitPrice pricing={item.pricing!} />
+            ) : item.canonical ? (
+              <span className="text-pine text-sm font-semibold">{item.canonical.formattedPrice}</span>
+            ) : (
+              <Price value={item.unit_price} fx={fx} size="text-sm" />
+            )}
+            {item.flash && !tiered && <FlashWasPrice value={item.flash.base_price} endsAt={item.flash.ends_at} />}
           </div>
           {item.flash && (
             <div className="mt-1">
               <FlashBadge percent={item.flash.discount_percent} endsAt={item.flash.ends_at} />
             </div>
           )}
+          <TierLineNote pricing={item.pricing} className="mt-1" />
           {/* Provider and manual lines never have stock rows by design
               (available is always 0), so this comparison is only meaningful
               for a line the server marks `uses_local_inventory` — otherwise a
@@ -214,9 +242,22 @@ export default function CartPage() {
   // empty-cart card itself, which paints from `cart` alone.
   const { data: suggested } = useSuggestedProducts(!!cart && cart.items.length === 0);
 
-  function handleMutated(next: CartPageData): void {
+  // Last request wins: a ticket per cart request, and only the newest one's
+  // answer reaches the screen (see CartLine's mutations).
+  const latestTicket = useRef(0);
+  function issueTicket(): number {
+    latestTicket.current += 1;
+    return latestTicket.current;
+  }
+  function handleMutated(next: CartPageData, ticket: number): void {
+    if (ticket !== latestTicket.current) return;
     setCart(next);
     queryClient.invalidateQueries({ queryKey: ["context"] });
+  }
+  function handleFailed(): void {
+    // The server's cart may hold an earlier request's change whose answer was
+    // dropped as superseded — re-read it instead of keeping a guess on screen.
+    void queryClient.invalidateQueries({ queryKey: ["cart"] });
   }
 
   if (!cart) {
@@ -242,6 +283,9 @@ export default function CartPage() {
   }
 
   const { items, subtotal } = cart;
+  // Older payloads carry no tier totals; the subtotal is then the total.
+  const bulkDiscount = cart.bulk_discount ?? "0";
+  const total = cart.total ?? subtotal;
   const fx = ctx?.fx;
   const currency = ctx?.currency ?? null;
   const cartCount = ctx?.cart_count ?? 0;
@@ -257,17 +301,23 @@ export default function CartPage() {
         {cartCount > 0 ? ` (${cartCount})` : ""}
       </h1>
 
-      <CartItemsSection items={items} isDesktop={isDesktop} fx={fx} handleMutated={handleMutated} subtotal={subtotal} ctx={ctx} currency={currency} navigate={navigate} suggested={suggested} />
+      <CartItemsSection items={items} isDesktop={isDesktop} fx={fx} issueTicket={issueTicket} handleMutated={handleMutated} handleFailed={handleFailed} subtotal={subtotal} bulkDiscount={bulkDiscount} total={total} ctx={ctx} currency={currency} navigate={navigate} suggested={suggested} />
     </>
   );
 }
 
-function CartItemsSection({ items, isDesktop, fx, handleMutated, subtotal, ctx, currency, navigate, suggested }: {
+function CartItemsSection({ items, isDesktop, fx, issueTicket, handleMutated, handleFailed, subtotal, bulkDiscount, total, ctx, currency, navigate, suggested }: {
   items: CartLineView[];
   isDesktop: boolean;
   fx: string | null | undefined;
-  handleMutated: (next: CartPageData) => void;
+  issueTicket: () => number;
+  handleMutated: (next: CartPageData, ticket: number) => void;
+  handleFailed: () => void;
   subtotal: string;
+  /** Σ volume-tier savings, from the server (same figure checkout shows). */
+  bulkDiscount: string;
+  /** subtotal − bulkDiscount, from the server. */
+  total: string;
   ctx: NoInfer<import("../api/types").ShopContext> | undefined;
   currency: "USD" | "IDR" | null;
   navigate: import("react-router-dom").NavigateFunction;
@@ -282,7 +332,7 @@ function CartItemsSection({ items, isDesktop, fx, handleMutated, subtotal, ctx, 
         {/* Lines */}
         <Card padded={false} className="lg:col-span-2 divide-y divide-line">
           {items.map((item) => (
-            <CartLine key={item.key} item={item} fx={fx} onMutated={handleMutated} />
+            <CartLine key={item.key} item={item} fx={fx} issueTicket={issueTicket} onMutated={handleMutated} onFailed={handleFailed} />
           ))}
         </Card>
 
@@ -294,6 +344,20 @@ function CartItemsSection({ items, isDesktop, fx, handleMutated, subtotal, ctx, 
               <span className="text-ink-soft">{t("web.subtotal")}</span>
               <Price value={subtotal} fx={fx} size="text-sm" />
             </div>
+            {/* Volume tiers are priced here already (the same server figures
+                the checkout summary shows); vouchers still come at checkout. */}
+            {bulkDiscount !== "0" && (
+              <>
+                <div className="flex items-center justify-between text-sm py-1.5 text-grass-dark">
+                  <span>{t("web.bulk_discount")}</span>
+                  <span>−{formatPriceFor(bulkDiscount, currency, fx)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm py-1.5 border-t border-line">
+                  <span className="font-semibold text-ink">{t("web.order_total")}</span>
+                  <Price value={total} fx={fx} size="text-sm" />
+                </div>
+              </>
+            )}
             <p className="text-xs text-ink-faint mt-1">{t("web.discounts_at_checkout")}</p>
             {/* On a phone the checkout call to action lives in the sticky bar
                     below, so the card must not repeat it — two identical links to
@@ -326,14 +390,14 @@ function CartItemsSection({ items, isDesktop, fx, handleMutated, subtotal, ctx, 
       {!isDesktop && (
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
-          priceLabel={t("web.subtotal")}
-          price={formatPriceFor(subtotal, currency, fx)}
+          priceLabel={bulkDiscount !== "0" ? t("web.order_total") : t("web.subtotal")}
+          price={formatPriceFor(total, currency, fx)}
           // Same rule as Price.tsx: the "≈ $" hint only applies to the
           // undecided (null) default — once a currency preference is
           // set, that IS the one figure shown, above.
           secondaryChip={
-            currency === null && formatUsdt(subtotal, fx) ? (
-              <span className="text-xs text-ink-faint">{formatUsdt(subtotal, fx)}</span>
+            currency === null && formatUsdt(total, fx) ? (
+              <span className="text-xs text-ink-faint">{formatUsdt(total, fx)}</span>
             ) : undefined
           }
           primaryAction={{

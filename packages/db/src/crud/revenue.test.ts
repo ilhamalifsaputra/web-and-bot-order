@@ -434,6 +434,71 @@ describe("topProductsByMargin", () => {
   });
 });
 
+describe("tiered mixed cart: the volume discount stays on the line that earned it", () => {
+  // A = 5 × Rp10.000 under a 40% tier (Rp20.000 off), B = 1 × Rp50.000 untiered.
+  // Subtotal Rp100.000, bulk discount Rp20.000. Order-wide proration would
+  // split that 50/50 and charge B Rp10.000 of A's discount.
+  async function seedMixedCart(withSnapshot: boolean) {
+    const now = new Date();
+    const a = await createDenomination(prisma, { productId: parentProductId, name: "Tiered A", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
+    const b = await createDenomination(prisma, { productId: parentProductId, name: "Untiered B", type: "SHARED", durationLabel: "1 Month", price: "50000", costPrice: "40000" });
+    const snapshot = {
+      version: 1,
+      lines: [
+        { denominationId: a.id, quantity: 5, tierId: "t1", minQuantity: 5, discountType: "PERCENTAGE", discountValue: "40", baseUnitPrice: "10000", finalUnitPrice: "6000", totalDiscount: "20000" },
+        { denominationId: b.id, quantity: 1, tierId: null, minQuantity: null, discountType: null, discountValue: null, baseUnitPrice: "50000", finalUnitPrice: "50000", totalDiscount: "0" },
+      ],
+    };
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-tier-${Math.random()}`, userId,
+        subtotalAmount: "100000", bulkDiscountAmount: "20000", discountAmount: "0",
+        totalAmount: "80000", currency: "IDR", status: "DELIVERED", deliveredAt: now,
+        ...(withSnapshot ? { bulkTierSnapshot: snapshot } : {}),
+      },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: a.id, quantity: 5, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: b.id, quantity: 1, unitPrice: "50000", warrantyDaysSnapshot: 30 } });
+    return { a, b, since: new Date(now.getTime() - 60_000) };
+  }
+
+  it("with a snapshot, takes each line's discount from it: B's profit is untouched by A's tier", async () => {
+    const { a, b, since } = await seedMixedCart(true);
+    const margin = await topProductsByMargin(prisma, since, 5);
+    // A: 50000 - 20000 = 30000 revenue, cost 25000 -> profit 5000.
+    // B: 50000 revenue (no discount of its own), cost 40000 -> profit 10000.
+    expect(margin.find((m) => m.productId === a.id)).toMatchObject({ revenueIdrEquiv: "30000", profitIdrEquiv: "5000" });
+    expect(margin.find((m) => m.productId === b.id)).toMatchObject({ revenueIdrEquiv: "50000", profitIdrEquiv: "10000" });
+
+    const top = await topProducts(prisma, since, 10);
+    expect(top.find((t) => t.productId === a.id)?.revenue).toBe("30000");
+    expect(top.find((t) => t.productId === b.id)?.revenue).toBe("50000");
+
+    // Order totals are unchanged: 80000 revenue - 65000 cost.
+    const profit = await profitSummarySince(prisma, since);
+    expect(profit.idr).toMatchObject({ netProfit: "15000", marginPct: "18.75" });
+    const byDay = await profitByDay(prisma, 1);
+    expect(byDay.at(-1)?.profit_idr).toBe("15000");
+  });
+
+  it("with a snapshot, still prorates the voucher by subtotal share on top of each line's own volume discount", async () => {
+    const { a, b, since } = await seedMixedCart(true);
+    await prisma.order.updateMany({ data: { discountAmount: "8000", totalAmount: "72000" } });
+    const margin = await topProductsByMargin(prisma, since, 5);
+    // Voucher 8000 split 50/50 by subtotal: A 30000-4000 = 26000, B 50000-4000 = 46000.
+    expect(margin.find((m) => m.productId === a.id)).toMatchObject({ revenueIdrEquiv: "26000", profitIdrEquiv: "1000" });
+    expect(margin.find((m) => m.productId === b.id)).toMatchObject({ revenueIdrEquiv: "46000", profitIdrEquiv: "6000" });
+  });
+
+  it("without a snapshot (historical order), keeps the order-wide proration exactly as before", async () => {
+    const { a, b, since } = await seedMixedCart(false);
+    const margin = await topProductsByMargin(prisma, since, 5);
+    // 20000 split 50/50 by subtotal share: A 40000, B 40000.
+    expect(margin.find((m) => m.productId === a.id)).toMatchObject({ revenueIdrEquiv: "40000", profitIdrEquiv: "15000" });
+    expect(margin.find((m) => m.productId === b.id)).toMatchObject({ revenueIdrEquiv: "40000", profitIdrEquiv: "0" });
+  });
+});
+
 describe("ordersByDay", () => {
   it("counts delivered orders per day, split by currency", async () => {
     const now = new Date();

@@ -199,10 +199,18 @@ bayar habis. Order produk seperti ini sengaja **tidak** dibatalkan selama
 "... keeping it open for up to 30 more minutes ...") dan poller NOWPayments
 tetap memeriksanya, jadi pembayaran yang selesai dalam masa itu tetap
 terkirim normal. Lewat masa itu order dibatalkan seperti biasa dan setiap
-admin menerima satu DM `ADMIN_UNCONFIRMABLE_PAYMENT` ("... was still
-confirming, so the order has been cancelled" / "... masih dikonfirmasi, jadi
-pesanan sudah dibatalkan"). Top-up dompet tidak ditahan (pembayaran yang
-terlambat tetap menyelesaikannya otomatis).
+admin menerima satu DM `ADMIN_UNCONFIRMABLE_PAYMENT` ("... never completed,
+so the order has been cancelled" / "... tidak pernah selesai, jadi pesanan
+sudah dibatalkan"). Alert yang sama juga muncul bila NOWPayments kemudian
+menandai pembayarannya `failed`/`expired` (status itu tidak mengembalikan
+`payment_state`), jadi periksa dashboard sebelum refund. Top-up dompet tidak
+ditahan (pembayaran yang terlambat tetap menyelesaikannya otomatis).
+
+Dua bentuk alert admin `ADMIN_STALE_PAYMENT` — `claim_cancelled`
+(`enqueueAdminClaimCancelledPayment`: pembayaran sudah tercatat tapi pesanan
+dibatalkan) dan alert webhook terlambat untuk order yang sudah basi
+(`enqueueAdminStalePayment`) — bisa merujuk ke **pembayaran yang sama**, jadi
+jangan selesaikan (refund atau kredit saldo) pembayaran itu dua kali.
 
 **Fix:** dalam masa tenggang, tidak perlu tindakan. Setelah alert, periksa
 pembayaran di dashboard NOWPayments; bila dananya masuk, selesaikan manual

@@ -295,14 +295,22 @@ describe("notifier templates.render", () => {
     expect(escaped).not.toContain("<b>X</b>");
   });
 
-  it("renders ADMIN_UNCONFIRMABLE_PAYMENT's still_confirming variant as a cancelled-while-confirming alert, escaped", () => {
+  it("renders ADMIN_UNCONFIRMABLE_PAYMENT's still_confirming variant as a detected-but-never-completed alert, escaped", () => {
     const out = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "ORD-SC-1", gateway: "NOWPayments", reason: "still_confirming" });
     expect(out).toContain("<code>ORD-SC-1</code>");
     expect(out).toContain("NOWPayments");
-    expect(out).toMatch(/still confirming/i);
+    // A terminal failed/expired payment ends here too, so the alert must not
+    // claim the payment is still confirming.
+    expect(out).toMatch(/detected or confirming/i);
+    expect(out).toMatch(/never completed/i);
+    expect(out).toMatch(/check the payment in the NOWPayments dashboard before refunding/i);
+    expect(out).not.toMatch(/was still confirming/i);
     expect(out).toMatch(/30 minutes/i);
     expect(out).toMatch(/has been cancelled/i);
-    expect(out).toMatch(/masih dikonfirmasi/i);
+    expect(out).toMatch(/terdeteksi atau sedang dikonfirmasi/i);
+    expect(out).toMatch(/tidak pernah selesai/i);
+    expect(out).toMatch(/sebelum melakukan refund/i);
+    expect(out).not.toMatch(/masih dikonfirmasi, jadi/i);
     expect(out).toMatch(/30 menit/i);
     expect(out).toMatch(/sudah dibatalkan/i);
     expect(out).not.toMatch(/no transaction id/i);

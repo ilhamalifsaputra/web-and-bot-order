@@ -448,8 +448,8 @@ describe("drainBatch delivers the claim_cancelled and still_confirming admin ale
     const confirmText = texts.find((t) => t.includes(confirming!.orderCode));
     expect(claimText).toMatch(/cancelled before it was delivered/i);
     expect(claimText).toMatch(/dibatalkan sebelum dikirim/i);
-    expect(confirmText).toMatch(/still confirming/i);
-    expect(confirmText).toMatch(/masih dikonfirmasi/i);
+    expect(confirmText).toMatch(/detected or confirming, but it never completed/i);
+    expect(confirmText).toMatch(/tidak pernah selesai/i);
     expect(sendMessage.mock.calls.some((c) => c[0] === -1009876543211)).toBe(false);
   });
 });

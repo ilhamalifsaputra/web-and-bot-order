@@ -791,16 +791,19 @@ export function render(
       // Follow-up item 1 (`cancelExpiredPendingOrder`): the provider reported
       // the payment, the expiry sweep held the order for the grace window
       // (OBSERVED_PAYMENT_GRACE_MS, 30 minutes) after its payment window, and
-      // the payment still had not finished confirming — so the order HAS been
-      // cancelled now. The admin must find out whether the money arrived.
+      // the payment still had not completed — so the order HAS been cancelled
+      // now. A payment the provider later marked failed or expired ends here
+      // too (that terminal status never resets the observed state), so the
+      // text says it never completed, not that it is still confirming. The
+      // admin must find out whether the money arrived.
       const graceMinutes = OBSERVED_PAYMENT_GRACE_MS / 60_000;
       return (
-        `⚠️ <b>${gateway} payment for order <code>${code}</code> was still confirming, so the order has been cancelled</b>\n` +
-        `${gateway} reported a payment for this order, but it did not finish confirming within ${graceMinutes} minutes after the payment window ended. ` +
-        `Check the payment in the ${gateway} dashboard. If the money arrived, settle it by hand with a refund or a balance credit, because nothing will be delivered automatically.\n\n` +
-        `⚠️ <b>Pembayaran ${gateway} untuk pesanan <code>${code}</code> masih dikonfirmasi, jadi pesanan sudah dibatalkan</b>\n` +
-        `${gateway} melaporkan ada pembayaran untuk pesanan ini, tapi pembayarannya belum selesai dikonfirmasi sampai ${graceMinutes} menit setelah jendela pembayaran berakhir. ` +
-        `Periksa pembayaran ini di dashboard ${gateway}. Kalau dananya masuk, selesaikan secara manual dengan refund atau kredit saldo, karena tidak ada yang akan dikirim otomatis.`
+        `⚠️ <b>${gateway} payment for order <code>${code}</code> never completed, so the order has been cancelled</b>\n` +
+        `${gateway} showed a payment for this order as detected or confirming, but it never completed within ${graceMinutes} minutes after the payment window ended (it may have failed or expired). ` +
+        `Check the payment in the ${gateway} dashboard before refunding. If the money did arrive, settle it by hand with a refund or a balance credit, because nothing will be delivered automatically.\n\n` +
+        `⚠️ <b>Pembayaran ${gateway} untuk pesanan <code>${code}</code> tidak pernah selesai, jadi pesanan sudah dibatalkan</b>\n` +
+        `${gateway} sempat menampilkan pembayaran untuk pesanan ini sebagai terdeteksi atau sedang dikonfirmasi, tapi pembayarannya tidak pernah selesai sampai ${graceMinutes} menit setelah jendela pembayaran berakhir (mungkin gagal atau kedaluwarsa). ` +
+        `Periksa pembayaran ini di dashboard ${gateway} sebelum melakukan refund. Kalau dananya memang masuk, selesaikan secara manual dengan refund atau kredit saldo, karena tidak ada yang akan dikirim otomatis.`
       );
     }
     if (payload.reason === "unverified_amount") {

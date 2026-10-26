@@ -334,10 +334,27 @@ export async function saveTieredPricing(
  * it — the same rule `activeBulkPercent` applies to a legacy rule. Duplicate
  * thresholds cannot reach here (unique index).
  */
+/**
+ * Denominations whose invalid stored tiers were already reported by this
+ * process. Every catalog read and checkout passes through usableTiers, so
+ * without this one bad row would log on every request. Bounded: once full it
+ * is cleared, so a long-running process re-reports at most every few thousand
+ * distinct denominations rather than growing without limit.
+ */
+const reportedInvalidTiers = new Set<number>();
+const REPORTED_INVALID_TIERS_LIMIT = 5000;
+
+/** Test hook: forget which denominations were already reported. */
+export function resetInvalidTierWarningsForTests(): void {
+  reportedInvalidTiers.clear();
+}
+
 function usableTiers(denominationId: number, tiers: PricingTier[]): PricingTier[] {
   const usable = tiers.filter((t) => t.isEnabled && validateTiers([t]).ok);
   const dropped = tiers.filter((t) => t.isEnabled).length - usable.length;
-  if (dropped > 0) {
+  if (dropped > 0 && !reportedInvalidTiers.has(denominationId)) {
+    if (reportedInvalidTiers.size >= REPORTED_INVALID_TIERS_LIMIT) reportedInvalidTiers.clear();
+    reportedInvalidTiers.add(denominationId);
     logger.warn(
       { denominationId, dropped },
       `Ignored ${dropped} stored volume pricing tiers on denomination ${denominationId} because their threshold, type or value is invalid. Those tiers will not discount any order until an admin fixes them in the tier editor.`,

@@ -82,4 +82,43 @@ describe("tiered pricing backfill migration", () => {
     await runBackfill();
     expect(await prisma.bulkPricingTier.count()).toBe(1);
   });
+
+  it("skips active rows activeBulkPercent would refuse (percent <= 0 or > 100, threshold < 1) and leaves their toggle off", async () => {
+    const category = await createCategory(prisma, "Games", "🎮");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Game", description: "x" });
+    const make = (name: string) =>
+      createDenomination(prisma, {
+        productId: parent.id,
+        name,
+        type: ProductType.SHARED,
+        durationLabel: "1 Month",
+        price: "5.00",
+        warrantyDays: 30,
+        description: "x",
+      });
+    const invalid = [
+      { minQuantity: 2, discountPercent: "0" },
+      { minQuantity: 2, discountPercent: "-5" },
+      { minQuantity: 2, discountPercent: "150" },
+      { minQuantity: 0, discountPercent: "10" },
+      { minQuantity: -1, discountPercent: "10" },
+    ];
+    const ids: number[] = [];
+    for (const [index, rule] of invalid.entries()) {
+      const d = await make(`Invalid ${index}`);
+      ids.push(d.id);
+      await prisma.bulkPricing.create({ data: { productId: d.id, ...rule, isActive: true } });
+    }
+    const edge = await make("Edge 100%");
+    await prisma.bulkPricing.create({ data: { productId: edge.id, minQuantity: 1, discountPercent: "100", isActive: true } });
+
+    await runBackfill();
+
+    expect(await prisma.bulkPricingTier.count({ where: { denominationId: { in: ids } } })).toBe(0);
+    const toggles = await prisma.denomination.findMany({ where: { id: { in: ids } }, select: { tieredPricingEnabled: true } });
+    expect(toggles.every((d) => !d.tieredPricingEnabled)).toBe(true);
+    // The boundary activeBulkPercent accepts (threshold 1, exactly 100%) is carried over.
+    expect(await prisma.bulkPricingTier.count({ where: { denominationId: edge.id } })).toBe(1);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: edge.id } })).tieredPricingEnabled).toBe(true);
+  });
 });

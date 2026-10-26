@@ -4,9 +4,10 @@
  * adapters (upsertBulkPricing / deleteBulkPricing / getBulkPricingForDenomination)
  * that now write the tiers AND keep the old bulk_pricing row as a mirror.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
+import { logger } from "@app/core/logger";
 import { TieredPricingError } from "@app/core/bulk";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -23,6 +24,7 @@ import {
   getBulkPricingForDenomination,
   activeBulkPricingByDenomination,
   LegacyBulkRuleConflictError,
+  resetInvalidTierWarningsForTests,
 } from "@app/db";
 
 let db: TestDb;
@@ -255,6 +257,21 @@ describe("tiered pricing toggle", () => {
       ],
     });
     expect((await getEffectiveTiers(prisma, id)).map((t) => t.minQuantity)).toEqual([3]);
+  });
+
+  it("an invalid stored tier is reported once per denomination, not on every read", async () => {
+    resetInvalidTierWarningsForTests();
+    const id = sample.product.id;
+    await prisma.denomination.update({ where: { id }, data: { tieredPricingEnabled: true } });
+    await prisma.bulkPricingTier.create({ data: { denominationId: id, minQuantity: 2, discountType: "PERCENTAGE", discountValue: "150" } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      for (let i = 0; i < 3; i++) expect(await getEffectiveTiers(prisma, id)).toEqual([]);
+      const reports = warn.mock.calls.filter((args) => String(args[1] ?? args[0]).includes("stored volume pricing tiers"));
+      expect(reports).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

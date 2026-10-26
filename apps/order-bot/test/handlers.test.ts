@@ -503,7 +503,7 @@ describe("customer handlers", () => {
       | undefined;
     expect(markup?.inline_keyboard).toBeUndefined();
     const flat = (markup?.keyboard ?? []).flat().map((b) => b.text);
-    expect(flat).toEqual(["1", persistentLabel("main", "en")]);
+    expect(flat).toEqual(["1", persistentLabel("back", "en"), persistentLabel("main", "en")]);
   });
 
   it("browseProductsFlat caps the persistent keyboard at PAGE_SIZE when the catalog spans multiple pages", async () => {
@@ -3253,7 +3253,7 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     expect(kbCall).toBeDefined();
     const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
     const flat = kb.keyboard.flat().map((b) => b.text);
-    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+    expect(flat).toEqual(["1", "2", persistentLabel("back", "en"), persistentLabel("main", "en")]);
 
     // The picker's own inline keyboard render must still be the LAST
     // screen-producing call — the persistent-keyboard resend must not
@@ -3288,7 +3288,7 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     expect(kbCall).toBeDefined();
     const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
     const flat = kb.keyboard.flat().map((b) => b.text);
-    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+    expect(flat).toEqual(["1", "2", persistentLabel("back", "en"), persistentLabel("main", "en")]);
 
     // Same ordering guarantee as the variant-picker test above — the
     // region picker's own inline keyboard render must be the LAST
@@ -3345,7 +3345,7 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     // avoided by using a differently-countable assertion below — the real
     // proof is that a FRESH persistent keyboard was sent at all for a
     // callback-tap transition, which pre-fix never happened).
-    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+    expect(flat).toEqual(["1", "2", persistentLabel("back", "en"), persistentLabel("main", "en")]);
   });
 
   it("a variant-picker tap that lands on a product list bigger than the picker's own option count exposes every digit on the resent keyboard", async () => {
@@ -3380,7 +3380,7 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     const flat = kb.keyboard.flat().map((b) => b.text);
     // 3 products -> digits 1-3 must all be present, not capped at the
     // picker's own 2-option size.
-    expect(flat).toEqual(["1", "2", "3", persistentLabel("main", "en")]);
+    expect(flat).toEqual(["1", "2", "3", persistentLabel("back", "en"), persistentLabel("main", "en")]);
   });
 
   it("Finding (final-review round 2): a variant-picker tap landing on a >10-product list still shows a Prev/Next-capable inline keyboard, not just the digit-only persistent keyboard", async () => {
@@ -3419,7 +3419,7 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     expect(kbCall).toBeDefined();
     const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
     expect(kb.keyboard.flat().map((b) => b.text)).toEqual([
-      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", persistentLabel("main", "en"),
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", persistentLabel("back", "en"), persistentLabel("main", "en"),
     ]);
 
     // The LIST message itself (the last screen-producing send) must carry
@@ -3486,7 +3486,7 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     });
     expect(kbCall).toBeDefined();
     const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    expect(kb.keyboard.flat().map((b) => b.text)).toEqual(["1", persistentLabel("main", "en")]);
+    expect(kb.keyboard.flat().map((b) => b.text)).toEqual(["1", persistentLabel("back", "en"), persistentLabel("main", "en")]);
   });
 });
 

@@ -171,6 +171,20 @@ interface BrowseScratch {
    * variant filter but leaves the gameRegion key out, so unlabelled products
    * stay visible. Deleted on every non-mixed path. */
   gameRegionDimensionSkipped?: boolean;
+  /** Which Game Top-up pickers were really shown for the current category
+   * scope (`categoryId`). Back from the product list reads it (listBackTarget):
+   * region picker shown → back to it; else edition picker shown → back to it;
+   * else the category level. Reset by browseCategoryEntry for every category
+   * entry, rewritten by enterGameVariant, and deleted by browseGroups /
+   * browseCategoriesInGroup, so a flag from another scope is never read (it
+   * is also ignored unless its categoryId matches the current scope). */
+  shownPickers?: { categoryId: number; variant: boolean; region: boolean };
+  /** Digit count of the numbered reply keyboard last sent to this chat
+   * (productsPersistentKb / gamePickerPersistentKb); deleted when Home's menu
+   * keyboard replaces it. A Back re-render of a picker resends the keyboard
+   * only when the current one cannot offer every option (fewer digits), so
+   * Back edits in place instead of adding a companion message. */
+  replyKbDigits?: number;
   /** True only between the "Search again" prompt and the next typed text: that
    * text is the Game Top Up search query. Cleared by every screen render
    * (smartEdit/menuAnchor/renderMenu) and every other callback tap, so it can
@@ -248,8 +262,14 @@ async function backToHome(ctx: MyContext): Promise<void> {
   delete sc(ctx).productId;
   delete sc(ctx).variantId;
   ctx.session.awaitingQtyDenomId = undefined;
+  await renderHome(ctx);
+}
+
+/** Home dashboard with its menu reply keyboard (which replaces any numbered one). */
+async function renderHome(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  delete sc(ctx).replyKbDigits;
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -275,6 +295,17 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   // back to the product list, not the main menu (don't strand the user).
   if (sc(ctx).variantId != null) {
     await browseProductsFlat(ctx, sc(ctx).page ?? 0);
+    return;
+  }
+  // Viewing a Game Top-up picker → where that picker's own inline Back goes.
+  const categoryId = sc(ctx).categoryId;
+  const screen = sc(ctx).activeNumberedScreen;
+  if (categoryId != null && screen === "gameRegion") {
+    await navigateBack(ctx, await regionPickerBackTarget(ctx, categoryId));
+    return;
+  }
+  if (categoryId != null && screen === "gameVariant") {
+    await navigateBack(ctx, await categoryLevelBackTarget(sc(ctx).group));
     return;
   }
   // Viewing a product list (category-scoped, or Premium Apps' flat group
@@ -315,25 +346,96 @@ async function categoryLevelBackTarget(group: string | undefined): Promise<strin
   return upToServicesTarget();
 }
 
+/** The pickers recorded for `categoryId`'s Game Top-up scope, or undefined
+ * when the record belongs to another scope (or the scope is not a game). */
+function shownPickersFor(ctx: MyContext, categoryId: number): BrowseScratch["shownPickers"] {
+  const shown = sc(ctx).shownPickers;
+  return sc(ctx).group === CategoryGroup.GAME_TOPUP && shown?.categoryId === categoryId ? shown : undefined;
+}
+
 /**
  * Back target of the product list (Game Top-up and Premium Apps) — the single
  * source of truth for the list's Back key (reply keyboard and the multi-page
- * inline row) and for handleBackButton. A category-scoped list goes up to its
- * category level; Premium Apps' flat group list (no category) goes up to the
- * service level; an unscoped list goes to the main menu.
+ * inline row) and for handleBackButton. Follows the screens really shown for
+ * this scope, stepping over every auto-skipped one:
+ *   region picker shown → re-render it (`browse:gregs:<cat>`);
+ *   else edition picker shown → re-render it (`browse:gvars:<cat>`);
+ *   else the category level (category picker, service picker or main menu).
+ * Premium Apps' flat group list (no category) goes up to the service level; an
+ * unscoped list goes to the main menu.
  */
 async function listBackTarget(ctx: MyContext): Promise<string> {
-  if (sc(ctx).categoryId != null) return categoryLevelBackTarget(sc(ctx).group);
+  const categoryId = sc(ctx).categoryId;
+  if (categoryId != null) {
+    const shown = shownPickersFor(ctx, categoryId);
+    if (shown?.region) return ckb.cb("browse", "gregs", categoryId);
+    if (shown?.variant) return ckb.cb("browse", "gvars", categoryId);
+    return categoryLevelBackTarget(sc(ctx).group);
+  }
   if (sc(ctx).group) return upToServicesTarget();
   return ckb.cb("menu", "main");
 }
 
-/** Render a Back target (callback data as carried by an inline Back button) for a typed Back. */
+/** Back target of the region picker: the edition picker when one was really
+ * shown for this scope, else the category level. Matches the regionBackTarget
+ * the forward paths give gameRegionPickerKb. */
+async function regionPickerBackTarget(ctx: MyContext, categoryId: number): Promise<string> {
+  return shownPickersFor(ctx, categoryId)?.variant
+    ? ckb.cb("browse", "gvars", categoryId)
+    : categoryLevelBackTarget(sc(ctx).group);
+}
+
+/** Render a Back target (callback data as carried by an inline Back button);
+ * used by a typed Back and by a Back whose own screen no longer applies. */
 async function navigateBack(ctx: MyContext, target: string): Promise<void> {
   const [, domain, action, arg] = target.split(":");
-  if (domain === "browse" && action === "grps") return browseGroups(ctx);
-  if (domain === "browse" && action === "grp" && arg) return browseCategoriesInGroup(ctx, arg);
+  if (domain === "browse") {
+    if (action === "grps") return browseGroups(ctx);
+    if (action === "grp" && arg) return browseCategoriesInGroup(ctx, arg);
+    if (action === "gvars" && arg) return browseCategoryEntry(ctx, Number(arg), undefined, { back: true });
+    if (action === "gregs" && arg) return backToRegionPicker(ctx, Number(arg));
+  }
   await backToHome(ctx);
+}
+
+/**
+ * `browse:gregs:<categoryId>` — Back from the product list to the region
+ * picker that was shown for this scope. Rebuilds the picker from the stored
+ * edition (resolvedGameVariant) and a fresh region query — the list render
+ * deleted the old region snapshot — and edits the tapped bubble; the numbered
+ * reply keyboard is resent only if it lacks digits for every region. A tap
+ * from another scope (an old bubble) is a stale screen. If the catalog changed
+ * so that the region picker would now be skipped, Back steps over it.
+ */
+export async function backToRegionPicker(ctx: MyContext, categoryId: number): Promise<void> {
+  const shown = Number.isInteger(categoryId) && sc(ctx).categoryId === categoryId ? shownPickersFor(ctx, categoryId) : undefined;
+  if (!shown?.region) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    else await navigateBack(ctx, await listBackTarget(ctx));
+    return;
+  }
+  const gameVariant = sc(ctx).resolvedGameVariant ?? null;
+  const [regions, regionlessCount, regionBack] = await Promise.all([
+    listCategoryGameRegions(prisma, categoryId, gameVariant),
+    countCategoryProductsWithoutGameRegion(prisma, categoryId, gameVariant),
+    regionPickerBackTarget(ctx, categoryId),
+  ]);
+  if (regions.length > 1 && regionlessCount === 0) {
+    await enterGameVariant(ctx, categoryId, gameVariant, sc(ctx).gameVariantEmoji ?? null, regionBack, { variantShown: shown.variant, back: true });
+    return;
+  }
+  await navigateBack(ctx, regionBack);
+}
+
+/** Send the numbered reply keyboard for a picker/list with `count` options and
+ * remember its size. A Back render (`back`) skips it when the keyboard already
+ * on screen offers at least `count` digits — Back edits, it does not stack a
+ * companion message; extra digits answer "invalid number" like any other
+ * out-of-range digit. */
+async function sendNumberedKeyboard(ctx: MyContext, count: number, keyboard: ReturnType<typeof ckb.gamePickerPersistentKb>, back = false): Promise<void> {
+  if (back && (sc(ctx).replyKbDigits ?? 0) >= count) return;
+  await ctx.reply(t(ctx, "browse.use_numbers"), { reply_markup: keyboard });
+  sc(ctx).replyKbDigits = count;
 }
 
 /** `t.me/<bot>?start=prod_<id>` → the Denomination/SKU id (share links), or
@@ -394,14 +496,12 @@ export async function menuCommand(ctx: MyContext): Promise<void> {
   delete sc(ctx).page;
 
   ctx.session.state = BotState.HOME;
-  const text = await buildDashboardText(ctx);
-  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  await renderHome(ctx);
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   ctx.session.state = BotState.HOME;
-  const text = await buildDashboardText(ctx);
-  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  await renderHome(ctx);
 }
 
 // Universal /cancel when no conversation is active.
@@ -437,6 +537,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
   delete sc(ctx).gameRegionDimensionSkipped;
+  delete sc(ctx).shownPickers;
   // Finding I2 (final-review): this screen renders without going through
   // browseProductsFlat/the variant-picker-render/the region-picker-render —
   // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
@@ -487,6 +588,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
   delete sc(ctx).gameRegionDimensionSkipped;
+  delete sc(ctx).shownPickers;
   // Finding I2 (final-review): same reasoning as browseGroups' own reset
   // above — this screen (both its empty-state and its normal category-list
   // render below) never goes through browseProductsFlat/a picker render, so
@@ -535,9 +637,16 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
  * skipped when the category has 0 or 1 distinct value for that dimension, so
  * a category with a single edition/region never shows a pointless 1-button
  * picker.
+ *
+ * `opts.back` marks a Back re-render of the edition picker (`browse:gvars`):
+ * the numbered reply keyboard is then resent only when it lacks digits.
  */
-export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string): Promise<void> {
+export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string, opts: { back?: boolean } = {}): Promise<void> {
   sc(ctx).categoryId = categoryId;
+  // A new category scope: no product picker/detail is open any more, so a
+  // typed Back must not resolve against a leftover one.
+  delete sc(ctx).productId;
+  delete sc(ctx).variantId;
   const category = await getCategory(prisma, categoryId);
   if (!category || !category.isActive || !(await isServiceActive(prisma, category.group as CategoryGroup | null, "bot"))) {
     await browseGroups(ctx);
@@ -565,9 +674,14 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     delete sc(ctx).gameRegionEntries;
     delete sc(ctx).gameVariantDimensionSkipped;
     delete sc(ctx).gameRegionDimensionSkipped;
+    delete sc(ctx).shownPickers;
     await browseProductsFlat(ctx, 0);
     return;
   }
+
+  // Fresh record for this category scope: no picker shown yet (the variant
+  // render below and enterGameVariant fill it in as pickers really render).
+  sc(ctx).shownPickers = { categoryId, variant: false, region: false };
 
   // Guaranteed non-null: the branch above already returned for every other
   // value, so `category.group` here is exactly CategoryGroup.GAME_TOPUP.
@@ -623,9 +737,8 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     // picker's own option count, BEFORE the picker's own inline-keyboard
     // render below, so that edit/send stays the chat's most recently
     // rendered screen (its inline buttons are what a tap should act on).
-    await ctx.reply(t(ctx, "browse.use_numbers"), {
-      reply_markup: ckb.gamePickerPersistentKb(variants.length, ctx.session.lang),
-    });
+    await sendNumberedKeyboard(ctx, variants.length, ckb.gamePickerPersistentKb(variants.length, ctx.session.lang), opts.back);
+    sc(ctx).shownPickers = { categoryId, variant: true, region: false };
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
     // — `cb("browse", "cat", categoryId)` would just re-render this SAME
     // variant picker, a no-op loop, since this category has >1 variant.
@@ -639,7 +752,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   // Variant step auto-skipped (0/1 distinct variant) — no picker was shown,
   // so if the region step DOES render, its own Back must skip straight to
   // the category picker, not re-render this same (skipped) step.
-  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, effectiveBackTarget);
+  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, effectiveBackTarget, { variantShown: false });
 }
 
 /** Shared index-resolution for the variant picker — resolves an index (tapped
@@ -655,7 +768,7 @@ async function resolveGameVariantByIndex(ctx: MyContext, categoryId: number, idx
   if (!entry) return false;
   // A real variant picker WAS shown for this tap — the region step's own Back
   // (if it renders) should re-open it.
-  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId));
+  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId), { variantShown: true });
   return true;
 }
 
@@ -679,6 +792,10 @@ export async function pickGameVariant(ctx: MyContext, categoryId: number, idx: n
  * navigation (Finding I2/3 of the final-review): `browseCategoryEntry`'s
  * skip-path passes the category picker's target; `pickGameVariant` (a real
  * tap on a real picker) passes the variant picker's own target.
+ *
+ * `opts.variantShown` records whether that edition picker was really shown
+ * (scratch.shownPickers, read by the list's Back); `opts.back` marks a Back
+ * re-render of the region picker (backToRegionPicker).
  */
 async function enterGameVariant(
   ctx: MyContext,
@@ -686,7 +803,11 @@ async function enterGameVariant(
   gameVariant: string | null,
   gameVariantEmoji: string | null,
   regionBackTarget: string,
+  opts: { variantShown: boolean; back?: boolean },
 ): Promise<void> {
+  sc(ctx).shownPickers = { categoryId, variant: opts.variantShown, region: false };
+  delete sc(ctx).productId;
+  delete sc(ctx).variantId;
   sc(ctx).resolvedGameVariant = gameVariant;
   // Every path here (browseCategoryEntry's pure-category tail, pickGameVariant
   // on a real picker tap) is by definition NOT the mixed-skip path — clear the
@@ -724,9 +845,8 @@ async function enterGameVariant(
     // Same reasoning as the variant picker's render above — resend the
     // bottom digit keyboard, sized to this picker's own option count, before
     // the picker's own inline-keyboard render.
-    await ctx.reply(t(ctx, "browse.use_numbers"), {
-      reply_markup: ckb.gamePickerPersistentKb(regions.length, ctx.session.lang),
-    });
+    await sendNumberedKeyboard(ctx, regions.length, ckb.gamePickerPersistentKb(regions.length, ctx.session.lang), opts.back);
+    sc(ctx).shownPickers = { categoryId, variant: opts.variantShown, region: true };
     await smartEdit(ctx, t(ctx, "browse.choose_region") + `\n${t(ctx, "hint.region")}`, ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
@@ -982,14 +1102,15 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // the inverse of that, not an allowlist of specific prior screens.
   const needsKeyboardResend = previousActiveScreen !== "products";
   if (needsKeyboardResend) {
-    await ctx.reply(t(ctx, "browse.use_numbers"), {
-      reply_markup: ckb.productsPersistentKb(pageProducts.length, lang),
-    });
+    await sendNumberedKeyboard(ctx, pageProducts.length, ckb.productsPersistentKb(pageProducts.length, lang));
   }
+  // The list's Back: the reply keyboard's Back key (handleBackButton) and, on
+  // a multi-page list, an inline Back row — both from listBackTarget.
   const replyMarkup = ctx.callbackQuery
-    ? ckb.productsNavKb(page, totalPages, lang)
+    ? ckb.productsNavKb(page, totalPages, lang, await listBackTarget(ctx))
     : ckb.productsPersistentKb(pageProducts.length, lang);
   await renderMenuBanner(ctx, text, replyMarkup);
+  if (!ctx.callbackQuery) sc(ctx).replyKbDigits = pageProducts.length;
 }
 
 /**

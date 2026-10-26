@@ -129,8 +129,18 @@ export function mainPersistentKb(lang: string): Keyboard {
  * `productsNavKb` (edits in place) and never resend it, so a later page with
  * a different count won't resize this keyboard — an out-of-range tap there
  * already resolves to "browse.invalid_number" in `handleProductNumber`.
+ *
+ * The last row is `[← Back, 🏠 Menu]`: Back is matched by
+ * `handleProductNumber` → `handleBackButton`, which computes the target from
+ * the screens really shown (handlers/customer.ts `listBackTarget`), so the list
+ * gets its Back without any extra companion message.
  */
 export function productsPersistentKb(count: number, lang: string): Keyboard {
+  return numberedPersistentKb(count, lang);
+}
+
+/** Digits 1..count in rows of 5, then `[← Back, 🏠 Menu]`. */
+function numberedPersistentKb(count: number, lang: string): Keyboard {
   const kb = new Keyboard();
   let inRow = 0;
   for (let n = 1; n <= count; n++) {
@@ -141,7 +151,7 @@ export function productsPersistentKb(count: number, lang: string): Keyboard {
     }
   }
   if (inRow > 0) kb.row();
-  kb.text(persistentLabel("main", lang));
+  kb.text(persistentLabel("back", lang)).text(persistentLabel("main", lang));
   return kb.resized();
 }
 
@@ -156,21 +166,12 @@ export function productsPersistentKb(count: number, lang: string): Keyboard {
  * send of this (a reply keyboard can't ride on the picker's own
  * inline-keyboard edit; only a fresh `sendMessage` can replace the bottom
  * bar). Shared by both the variant and region picker renders since their
- * reply keyboard need is identical — only the option count differs.
+ * reply keyboard need is identical — only the option count differs. Ends
+ * with the same `[← Back, 🏠 Menu]` row; a typed Back there goes where the
+ * picker's own inline Back goes.
  */
 export function gamePickerPersistentKb(count: number, lang: string): Keyboard {
-  const kb = new Keyboard();
-  let inRow = 0;
-  for (let n = 1; n <= count; n++) {
-    kb.text(String(n));
-    if (++inRow === 5) {
-      kb.row();
-      inRow = 0;
-    }
-  }
-  if (inRow > 0) kb.row();
-  kb.text(persistentLabel("main", lang));
-  return kb.resized();
+  return numberedPersistentKb(count, lang);
 }
 
 export function backToMain(lang: string): InlineKeyboard {
@@ -575,15 +576,19 @@ export function qtyInputCancelKb(denominationId: number, lang: string): InlineKe
  * lines), so the per-product tap buttons and the Menu row were dropped — the
  * persistent reply keyboard carries navigation. Only a Prev/Next row remains,
  * and only when the catalog spans more than one page; a single page renders no
- * inline keyboard at all (returns undefined).
+ * inline keyboard at all (returns undefined — its Back is on the reply
+ * keyboard). A multi-page list adds a Back row after Prev/Next carrying
+ * `backTarget` (the caller's `listBackTarget`).
  */
-export function productsNavKb(page: number, totalPages: number, lang: string): InlineKeyboard | undefined {
+export function productsNavKb(page: number, totalPages: number, lang: string, backTarget?: string): InlineKeyboard | undefined {
   if (totalPages <= 1) return undefined;
   const nav: Btn[] = [];
   if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
   if (page < totalPages - 1)
     nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
-  return nav.length ? ik([nav]) : undefined;
+  const rows: Btn[][] = nav.length ? [nav] : [];
+  if (backTarget) rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  return rows.length ? ik(rows) : undefined;
 }
 
 /** One /search hit as stored in the session snapshot: `serviceKey` is the service's locale key (its short tag). */

@@ -64,7 +64,10 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   // variant picker then an optional region picker in front of the
   // category-scoped product list (browseCategoryEntry itself decides whether
   // to show either step). `gvars:<categoryId>` re-enters browseCategoryEntry
-  // — it's the region picker's Back target, re-rendering the variant picker.
+  // — it's the region picker's (and the product list's) Back target,
+  // re-rendering the variant picker. `gregs:<categoryId>` is the product
+  // list's Back to the region picker that was shown for that scope
+  // (customer.backToRegionPicker).
   // `gvar`/`greg:<categoryId>:<idx>` resolve a tapped index against the
   // snapshot browseCategoryEntry/pickGameVariant stashed in scratch.
   const action = parts[2];
@@ -84,7 +87,8 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
       await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     }
   } else if (action === "cat") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
-  else if (action === "gvars") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
+  else if (action === "gvars") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10), undefined, { back: true });
+  else if (action === "gregs") await customer.backToRegionPicker(ctx, parseInt(parts[3]!, 10));
   else if (action === "gvar") await customer.pickGameVariant(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else if (action === "greg") await customer.pickGameRegion(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else {

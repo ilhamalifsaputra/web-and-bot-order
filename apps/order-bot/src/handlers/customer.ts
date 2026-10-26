@@ -65,7 +65,7 @@ import {
   listTicketMessages,
 } from "@app/db";
 import { BotState, type MyContext } from "../context";
-import { smartEdit, renderMenu, consumeInput, menuAnchor, editMenuOnTypedNavigation, isTypedNavigation, markTappedBubbleDeleted, preferTextAnchor, tappedBubbleDeleted } from "../util/chat";
+import { smartEdit, renderMenu, consumeInput, menuAnchor, editMenuOnTypedNavigation, isTypedNavigation, markTappedBubbleDeleted, noticeOnTypedNavigation, preferTextAnchor, tappedBubbleDeleted } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
@@ -129,8 +129,9 @@ interface BrowseScratch {
    * writes no browseEntries. The Game Top-up pickers still record
    * "gameVariant" / "gameRegion" (with their inline-tap snapshots
    * gameVariantEntries / gameRegionEntries) so a typed "← Back" from a
-   * lingering numbered keyboard, and the "use the buttons" reply to a typed
-   * digit, know which picker is showing; digits never resolve against them.
+   * lingering numbered keyboard, and the in-place "use the buttons" re-render
+   * of a typed digit, know which picker is showing; digits never resolve
+   * against them.
    * Undefined on a numbered scope means "products" too — an in-flight session
    * that predates this field never set it. */
   activeNumberedScreen?: "products" | "gameVariant" | "gameRegion";
@@ -533,19 +534,19 @@ async function sendNumberedKeyboard(ctx: MyContext, keyboard: ReturnType<typeof 
   await ctx.reply(t(ctx, "browse.use_numbers"), { reply_markup: keyboard });
 }
 
-/** Callback that re-renders the catalog screen an inline-scope buyer was on
- * (the Back of handleProductNumber's "use the buttons" reply): the open pack
- * detail / pack picker, else the edition / region picker showing, else the
- * product list of the current scope, else the scope's category level. */
-function inlineScreenTarget(ctx: MyContext): string {
+/** Re-render the catalog screen an inline-scope buyer is on (handleProductNumber's
+ * "use the buttons" answer to a typed digit): the open pack detail / pack
+ * picker, else the edition / region picker showing, else the product list of
+ * the current scope on its page, else the scope's category picker. */
+async function rerenderInlineScreen(ctx: MyContext): Promise<void> {
   const s = sc(ctx);
-  if (s.variantId != null) return ckb.cb("browse", "denom", s.variantId);
-  if (s.productId != null) return s.productPage ? ckb.cb("browse", "pick", s.productId, s.productPage) : ckb.cb("browse", "pick", s.productId);
-  if (s.categoryId != null && s.activeNumberedScreen === "gameRegion") return ckb.cb("browse", "gregs", s.categoryId);
-  if (s.categoryId != null && s.activeNumberedScreen === "gameVariant") return ckb.cb("browse", "gvars", s.categoryId);
-  if (s.categoryId != null) return ckb.cb("browse", "prods");
-  if (s.group) return ckb.cb("browse", "grp", s.group);
-  return ckb.cb("menu", "main");
+  if (s.variantId != null) return browseDenomination(ctx, s.variantId);
+  if (s.productId != null) return browseProduct(ctx, s.productId, s.productPage ?? 0);
+  if (s.categoryId != null && s.activeNumberedScreen === "gameRegion") return backToRegionPicker(ctx, s.categoryId);
+  if (s.categoryId != null && s.activeNumberedScreen === "gameVariant") return browseCategoryEntry(ctx, s.categoryId);
+  if (s.categoryId != null) return browseProductsFlat(ctx, s.page ?? 0);
+  if (s.group) return browseCategoriesInGroup(ctx, s.group);
+  return backToHome(ctx);
 }
 
 /** The screen just rendered is a catalog screen: a typed "← Back" may navigate
@@ -1242,8 +1243,8 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     // place, a typed entry ("Products", /listproduk) sends it as ONE message.
     // No digit reply keyboard and no companion message, ever: the bottom
     // keyboard stays whatever it was (mainPersistentKb, or a numbered one left
-    // by a Premium visit until the next Home; a digit typed on it is answered
-    // by handleProductNumber's "use the buttons" reply).
+    // by a Premium visit until the next Home; a digit typed on it re-renders
+    // this list in place with a "use the buttons" line — handleProductNumber).
     await renderMenuBanner(ctx, text, ckb.productListKb(pageProducts, page, totalPages, lang, await listBackTarget(ctx)));
     markCatalogScreen(ctx);
     return;
@@ -1416,13 +1417,20 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
 
   // An INLINE scope (Game Top-up, or any service that is not numbered —
   // @app/core/services usesNumberedSelection) has no numbers to type: its
-  // lists and pickers are picked by inline tap only. A digit typed there (on a
-  // numbered keyboard left from a Premium visit, or by hand) never navigates
-  // and never reaches the numbered-list logic below (whose unscoped fallback
-  // would resolve against the cross-group catalog): one reply pointing at the
-  // buttons, with a Back to the screen the buyer was on.
-  if (!usesNumberedSelection(sc(ctx).group)) {
-    await smartEdit(ctx, t(ctx, "browse.use_buttons"), ckb.backKb(lang, inlineScreenTarget(ctx)));
+  // lists and pickers are picked by inline tap only. A digit typed while one
+  // of its catalog screens is showing (on a numbered keyboard left from a
+  // Premium visit, or by hand) never navigates and never reaches the
+  // numbered-list logic below (whose unscoped fallback would resolve against
+  // the cross-group catalog). Edit first, like a typed Back: the same screen
+  // is re-rendered into the bot-owned menu bubble, buttons kept, with the
+  // "use the buttons" line on top, and the typed digit is deleted — no new
+  // message, however many digits are typed. Off the catalog (Home, Orders,
+  // Wallet…) the digit takes the path below exactly as before.
+  if (sc(ctx).catalogScreen && !usesNumberedSelection(sc(ctx).group)) {
+    editMenuOnTypedNavigation(ctx);
+    noticeOnTypedNavigation(ctx, t(ctx, "browse.use_buttons"));
+    await rerenderInlineScreen(ctx);
+    await consumeInput(ctx);
     return;
   }
 

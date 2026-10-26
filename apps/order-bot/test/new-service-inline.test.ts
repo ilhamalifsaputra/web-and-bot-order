@@ -25,11 +25,11 @@ vi.mock("@app/core/services", async (importOriginal) => {
       translationKey: "browse.group_steam_wallet",
     },
   ] as unknown as typeof real.CUSTOMER_SERVICES;
+  // The real resolvers, reading the longer registry (no copied logic).
   return {
     ...real,
     CUSTOMER_SERVICES: services,
-    serviceForCategoryGroup: (group: string | null) =>
-      services.find((service) => service.group === (group ?? "PREMIUM_APPS")) ?? real.serviceForCategoryGroup(null),
+    serviceForCategoryGroup: (group: string | null) => real.serviceForCategoryGroup(group, services),
     listSelectionFor: (group: string | null | undefined) => real.listSelectionFor(group, services),
     usesNumberedSelection: (group: string | null | undefined) => real.usesNumberedSelection(group, services),
   };
@@ -142,10 +142,15 @@ describe("a newly registered service with no special config", () => {
     // Back steps up to this service's own category picker (2 categories).
     expect(rows(list.sink).at(-1)).toEqual([{ text: t(list.ctx, "menu.back"), callback_data: `v1:browse:grp:${STEAM}` }]);
 
+    // A typed digit: the list bubble is edited in place (notice on top, its
+    // buttons kept) and the digit deleted — no new message.
     const typed = next(list.ctx, { text: "1" });
     await customer.handleProductNumber(typed.ctx);
-    expect(counts(typed.sink)).toEqual(ONE_SEND);
-    expect(sentIncludes(typed.sink, t(typed.ctx, "browse.use_buttons"))).toBe(true);
+    expect(counts(typed.sink)).toEqual({ reply: 0, sendMessage: 0, editMessageText: 1, deleteMessage: 1 });
+    const edit = calls(typed.sink, "editMessageText")[0]!;
+    expect(edit.args[1]).toBe(list.ctx.session.menuMsgId);
+    expect(String(edit.args[2]).startsWith(t(typed.ctx, "browse.use_buttons"))).toBe(true);
+    expect(rows(typed.sink)).toEqual(rows(list.sink));
     expect(sentIncludes(typed.sink, "Netflix")).toBe(false);
   });
 

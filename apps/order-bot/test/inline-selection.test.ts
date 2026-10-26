@@ -17,7 +17,7 @@ import { prisma, createCatalogProduct, createCategory, createDenomination, setSe
 import { CategoryGroup } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
-import type { SessionData } from "../src/context";
+import type { MyContext, SessionData } from "../src/context";
 import { routeCallback } from "../src/handlers/callbacks";
 import * as customer from "../src/handlers/customer";
 import { persistentLabel } from "../src/keyboards/customer";
@@ -259,33 +259,83 @@ describe("a typed digit on a Game Top-up screen never navigates", () => {
     return typed;
   }
 
-  it("on the product list: one 'use the buttons' message, no product opened, no cross-group fallback", async () => {
+  /** Edit first: the bot-owned bubble is edited in place (the same screen,
+   * its buttons kept, the notice on top) and the typed digit is deleted —
+   * never a fresh message. */
+  const EDIT_AND_DELETE = { reply: 0, sendMessage: 0, replyWithPhoto: 0, editMessageText: 1, deleteMessage: 1 };
+  function expectNoticeEditedIn(typed: { ctx: MyContext; sink: SentCall[] }, bubbleId: number | undefined) {
+    expect(bubbleId).toBeDefined();
+    expect(counts(typed.sink)).toEqual(EDIT_AND_DELETE);
+    const edit = calls(typed.sink, "editMessageText")[0]!;
+    expect(edit.args[1]).toBe(bubbleId);
+    expect(String(edit.args[2]).startsWith(t(typed.ctx, "browse.use_buttons"))).toBe(true);
+    expect(calls(typed.sink, "deleteMessage")[0]!.args[1]).toBe(typed.ctx.message!.message_id);
+    expect(typed.ctx.session.menuMsgId).toBe(bubbleId);
+  }
+
+  it("on the product list: the list bubble is edited in place with the notice, its buttons kept, the digit deleted", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
     await product(cat.id, "FF Alpha");
     await product(cat.id, "FF Bravo");
     const tap = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
     await routeCallback(tap.ctx);
     const typed = await typeDigit(tap);
-    expect(counts(typed.sink)).toEqual(ONE_SEND);
-    expect(sentIncludes(typed.sink, t(typed.ctx, "browse.use_buttons"))).toBe(true);
+    expectNoticeEditedIn(typed, tap.ctx.session.menuMsgId);
     expect(sentIncludes(typed.sink, "Choose a top-up amount")).toBe(false);
     // The legacy unscoped lookup would have opened the Premium sample product.
     expect(sentIncludes(typed.sink, "Netflix")).toBe(false);
-    // Its Back returns to the list it came from.
-    expect(rows(typed.sink).at(-1)![0]!.callback_data).toBe("v1:browse:prods");
+    // The same list, with the same inline buttons (Back included).
+    expect(pickButtons(typed.sink).map((x) => x.text)).toEqual(["FF Alpha", "FF Bravo"]);
+    expect(rows(typed.sink)).toEqual(rows(tap.sink));
+    expect(hasReplyKeyboard(typed.sink)).toBe(false);
   });
 
-  it("on the region picker and on the edition picker", async () => {
+  it("three digits in a row: still one bubble — three edits, three deletes, no message added", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "FF Alpha");
+    await product(cat.id, "FF Bravo");
+    const tap = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(tap.ctx);
+    const bubble = tap.ctx.session.menuMsgId;
+    let prev: { ctx: MyContext; sink: SentCall[] } = tap;
+    const all: SentCall[] = [];
+    for (const digit of ["1", "2", "7"]) {
+      prev = await typeDigit(prev, digit);
+      all.push(...prev.sink);
+    }
+    expect(counts(all)).toEqual({ reply: 0, sendMessage: 0, replyWithPhoto: 0, editMessageText: 3, deleteMessage: 3 });
+    expect(calls(all, "editMessageText").every((c) => c.args[1] === bubble)).toBe(true);
+    expect(calls(all, "editMessageReplyMarkup")).toHaveLength(0);
+    expect(prev.ctx.session.menuMsgId).toBe(bubble);
+    expect(pickButtons(prev.sink).map((x) => x.text)).toEqual(["FF Alpha", "FF Bravo"]);
+  });
+
+  it("with no tracked bubble: sends once and tracks it, so the next digit edits that one", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "FF Alpha");
+    await product(cat.id, "FF Bravo");
+    const tap = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(tap.ctx);
+    delete tap.ctx.session.menuMsgId;
+    const first = await typeDigit(tap);
+    expect(counts(first.sink)).toEqual({ reply: 1, sendMessage: 0, replyWithPhoto: 0, editMessageText: 0, deleteMessage: 1 });
+    expect(pickButtons(first.sink).map((x) => x.text)).toEqual(["FF Alpha", "FF Bravo"]);
+    expect(first.ctx.session.menuMsgId).toBeDefined();
+    const second = await typeDigit(first);
+    expectNoticeEditedIn(second, first.ctx.session.menuMsgId);
+  });
+
+  it("on the region picker and on the edition picker: the picker is edited in place, its buttons kept", async () => {
     const reg = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
     await product(reg.id, "ML Indo", { gameRegion: "Indonesia" });
     await product(reg.id, "ML Global", { gameRegion: "Global" });
     const regionScreen = customerCtx({ callbackData: `v1:browse:cat:${reg.id}` });
     await routeCallback(regionScreen.ctx);
     const onRegion = await typeDigit(regionScreen);
-    expect(counts(onRegion.sink)).toEqual(ONE_SEND);
+    expectNoticeEditedIn(onRegion, regionScreen.ctx.session.menuMsgId);
     expect(sentIncludes(onRegion.sink, "ML Indo")).toBe(false);
-    expect(sentIncludes(onRegion.sink, t(onRegion.ctx, "browse.use_buttons"))).toBe(true);
-    expect(rows(onRegion.sink).at(-1)![0]!.callback_data).toBe(`v1:browse:gregs:${reg.id}`);
+    expect(sentIncludes(onRegion.sink, t(onRegion.ctx, "browse.choose_region"))).toBe(true);
+    expect(rows(onRegion.sink)).toEqual(rows(regionScreen.sink));
 
     const ed = await createCategory(prisma, { name: "Genshin", group: CategoryGroup.GAME_TOPUP });
     await product(ed.id, "GI Asia", { gameVariant: "Asia" });
@@ -293,9 +343,24 @@ describe("a typed digit on a Game Top-up screen never navigates", () => {
     const editionScreen = customerCtx({ callbackData: `v1:browse:cat:${ed.id}` });
     await routeCallback(editionScreen.ctx);
     const onEdition = await typeDigit(editionScreen, "2");
-    expect(counts(onEdition.sink)).toEqual(ONE_SEND);
+    expectNoticeEditedIn(onEdition, editionScreen.ctx.session.menuMsgId);
     expect(sentIncludes(onEdition.sink, "GI Europe")).toBe(false);
-    expect(rows(onEdition.sink).at(-1)![0]!.callback_data).toBe(`v1:browse:gvars:${ed.id}`);
+    expect(sentIncludes(onEdition.sink, t(onEdition.ctx, "browse.choose_variant"))).toBe(true);
+    expect(rows(onEdition.sink)).toEqual(rows(editionScreen.sink));
+  });
+
+  it("on the pack picker: the picker is edited in place, its buttons kept", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "FF Alpha");
+    const bravo = await product(cat.id, "FF Bravo");
+    await createDenomination(prisma, { productId: bravo.id, name: "200", type: "SHARED", durationLabel: "200", price: "25000" });
+    const list = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(list.ctx);
+    const open = next(list.ctx, { callbackData: `v1:browse:pick:${bravo.id}` });
+    await routeCallback(open.ctx);
+    const typed = await typeDigit(open);
+    expectNoticeEditedIn(typed, open.ctx.session.menuMsgId);
+    expect(rows(typed.sink)).toEqual(rows(open.sink));
   });
 
   it("a stale numbered snapshot from an earlier Premium visit is never used on a Game screen", async () => {
@@ -307,7 +372,21 @@ describe("a typed digit on a Game Top-up screen never navigates", () => {
     (tap.ctx.session.scratch as Scratch).browseEntries = [sample.product.productId];
     const typed = await typeDigit(tap);
     expect(sentIncludes(typed.sink, "Netflix")).toBe(false);
-    expect(counts(typed.sink)).toEqual(ONE_SEND);
+    expectNoticeEditedIn(typed, tap.ctx.session.menuMsgId);
+  });
+
+  it("off the catalog (Home after a Game visit): no 'use the buttons' notice — the digit takes the non-catalog path it always took", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "FF Alpha");
+    const tap = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(tap.ctx);
+    const home = next(tap.ctx, { text: persistentLabel("main", "en") });
+    await customer.handleProductNumber(home.ctx);
+    expect((home.ctx.session.scratch as { catalogScreen?: boolean }).catalogScreen).toBeFalsy();
+    const typed = await typeDigit(home);
+    expect(sentIncludes(typed.sink, t(typed.ctx, "browse.use_buttons"))).toBe(false);
+    // Not the catalog's edit-in-place answer either (that one deletes the digit).
+    expect(calls(typed.sink, "deleteMessage")).toHaveLength(0);
   });
 });
 

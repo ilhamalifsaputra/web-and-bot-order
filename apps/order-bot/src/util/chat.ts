@@ -119,6 +119,21 @@ export function isTypedNavigation(ctx: MyContext): boolean {
   return typedNavigation.has(ctx);
 }
 
+/** One line shown above the screen a typed navigation renders (this update only). */
+const typedNavigationNotice = new WeakMap<MyContext, string>();
+
+/** The typed navigation's screen carries `notice` above its own text — e.g.
+ * "tap a button" when a digit was typed on an inline-only screen, which then
+ * re-renders that same screen (buttons kept) in the menu bubble. */
+export function noticeOnTypedNavigation(ctx: MyContext, notice: string): void {
+  typedNavigationNotice.set(ctx, notice);
+}
+
+function withTypedNavigationNotice(ctx: MyContext, text: string): string {
+  const notice = typedNavigationNotice.get(ctx);
+  return notice ? `${notice}\n\n${text}` : text;
+}
+
 /** The typed navigation lands on a plain-text screen: a photo anchor is replaced, not captioned. */
 export function preferTextAnchor(ctx: MyContext): void {
   const mode = typedNavigation.get(ctx);
@@ -145,7 +160,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // screen only; a reply keyboard still needs a fresh send).
   const typedNav = typedNavigation.get(ctx);
   if (!ctx.callbackQuery && typedNav && (replyMarkup === undefined || isInline(replyMarkup))) {
-    ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup, { replacePhoto: typedNav.textOnly });
+    ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, { replacePhoto: typedNav.textOnly });
     return;
   }
 
@@ -363,7 +378,7 @@ async function editAnchor(
 export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
   if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
   endScreenModes(ctx);
-  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup, { replacePhoto: typedNavigation.get(ctx)?.textOnly });
+  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, { replacePhoto: typedNavigation.get(ctx)?.textOnly });
 }
 
 /** Render an admin wizard step into the anchor bubble (edit-in-place). */

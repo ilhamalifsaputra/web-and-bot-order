@@ -3110,19 +3110,24 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
 // screens, because a digit typed there resolved against whatever
 // browseEntries last held. The Game Top-up pickers and lists are now
 // inline-only (@app/core/services usesNumberedSelection): a typed digit on a
-// Game screen never resolves against anything — it gets one "use the
-// buttons" reply — so no stale snapshot can ever be read. These tests drive a
+// Game screen never resolves against anything — the screen is re-rendered in
+// place with a "use the buttons" line — so no stale snapshot can ever be read. These tests drive a
 // typed digit straight through handleProductNumber (the real plain-text
 // handler) while a picker is showing.
 // ===========================================================================
 
-/** The one reply a typed digit gets on a Game Top-up screen. */
-function expectUseButtonsReply(c: { ctx: Parameters<typeof t>[0]; sink: SentCall[] }) {
-  expect(sentIncludes(c.sink, t(c.ctx, "browse.use_buttons"))).toBe(true);
-  expect(calls(c.sink, "reply")).toHaveLength(1);
+/** What a typed digit gets on a Game Top-up catalog screen: the bot-owned
+ * bubble edited in place (same screen, "use the buttons" on top) and the
+ * digit deleted — never a new message. */
+function expectUseButtonsEdit(c: { ctx: Parameters<typeof t>[0]; sink: SentCall[] }, bubbleId: number | undefined) {
+  expect(bubbleId).toBeDefined();
+  expect(calls(c.sink, "reply")).toHaveLength(0);
   expect(calls(c.sink, "sendMessage")).toHaveLength(0);
-  expect(calls(c.sink, "editMessageText")).toHaveLength(0);
-  expect(calls(c.sink, "deleteMessage")).toHaveLength(0);
+  expect(calls(c.sink, "editMessageText")).toHaveLength(1);
+  expect(calls(c.sink, "deleteMessage")).toHaveLength(1);
+  const edit = calls(c.sink, "editMessageText")[0]!;
+  expect(edit.args[1]).toBe(bubbleId);
+  expect(String(edit.args[2]).startsWith(t(c.ctx, "browse.use_buttons"))).toBe(true);
 }
 
 /** A reply that carried a reply (bottom) keyboard, if any. */
@@ -3130,7 +3135,7 @@ const replyKeyboardCall = (sink: SentCall[]) =>
   calls(sink, "reply").find((c) => !!(c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined)?.reply_markup?.keyboard);
 
 describe("Task 2: a typed digit on a Game Top-up variant/region picker never resolves (inline-only pickers)", () => {
-  it("a typed digit on the variant picker gets the 'use the buttons' reply, even with a stale browseEntries snapshot", async () => {
+  it("a typed digit on the variant picker re-renders it in place with the 'use the buttons' line, even with a stale browseEntries snapshot", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire Typed", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Typed Diamonds A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
@@ -3143,19 +3148,19 @@ describe("Task 2: a typed digit on a Game Top-up variant/region picker never res
     await customer.browseCategoryEntry(ctx, cat.id); // renders the 2-entry variant picker
     (ctx.session.scratch as Record<string, unknown>).browseEntries = [999999];
 
-    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch } });
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch, menuMsgId: ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
 
-    expectUseButtonsReply(digit);
+    expectUseButtonsEdit(digit, ctx.session.menuMsgId);
     expect(sentIncludes(digit.sink, "FF Typed Diamonds A")).toBe(false);
     expect(sentIncludes(digit.sink, "FF Typed Diamonds B")).toBe(false);
     expect((digit.ctx.session.scratch as { resolvedGameVariant?: string | null }).resolvedGameVariant).toBeUndefined();
-    // Its Back re-renders the picker the buyer was on.
-    const back = ((lastMarkup(digit.sink) as { inline_keyboard: Array<Array<{ callback_data?: string }>> }).inline_keyboard).flat()[0]!;
-    expect(back.callback_data).toBe(`v1:browse:gvars:${cat.id}`);
+    // The picker the buyer was on, its own buttons kept.
+    const kept = ((lastMarkup(digit.sink) as { inline_keyboard: Array<Array<{ callback_data?: string }>> }).inline_keyboard).flat();
+    expect(kept.filter((b) => b.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`))).toHaveLength(2);
   });
 
-  it("a typed digit on the region picker gets the 'use the buttons' reply, even with a stale browseEntries snapshot", async () => {
+  it("a typed digit on the region picker re-renders it in place with the 'use the buttons' line, even with a stale browseEntries snapshot", async () => {
     const cat = await createCategory(prisma, { name: "Valorant Typed", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Typed Points A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
@@ -3168,15 +3173,15 @@ describe("Task 2: a typed digit on a Game Top-up variant/region picker never res
     await customer.browseCategoryEntry(ctx, cat.id); // 1 variant (auto-skipped) + 2 regions -> region picker rendered
     (ctx.session.scratch as Record<string, unknown>).browseEntries = [999999];
 
-    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch } });
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch, menuMsgId: ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
 
-    expectUseButtonsReply(digit);
+    expectUseButtonsEdit(digit, ctx.session.menuMsgId);
     expect(sentIncludes(digit.sink, "VP Typed Points A")).toBe(false);
     expect((digit.ctx.session.scratch as { resolvedGameRegion?: string | null }).resolvedGameRegion).toBeUndefined();
   });
 
-  it("an out-of-range typed digit on the variant picker gets the same single reply, never the invalid-number text or the stale-screen toast", async () => {
+  it("an out-of-range typed digit on the variant picker gets the same in-place answer, never the invalid-number text or the stale-screen toast", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire OOR", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF OOR A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
@@ -3188,10 +3193,10 @@ describe("Task 2: a typed digit on a Game Top-up variant/region picker never res
     const { ctx } = customerCtx();
     await customer.browseCategoryEntry(ctx, cat.id); // 2-entry variant picker
 
-    const digit = customerCtx({ text: "9", session: { ...userSession(), scratch: ctx.session.scratch } });
+    const digit = customerCtx({ text: "9", session: { ...userSession(), scratch: ctx.session.scratch, menuMsgId: ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
 
-    expectUseButtonsReply(digit);
+    expectUseButtonsEdit(digit, ctx.session.menuMsgId);
     expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 2 }))).toBe(false);
     expect(sentIncludes(digit.sink, t(digit.ctx, "error.stale_screen"))).toBe(false);
   });
@@ -3470,12 +3475,12 @@ describe("Finding I2 (final-review): activeNumberedScreen is cleared when a pick
 
     // A stray typed "1" now must NOT hit the stale variant-picker branch
     // (which would show "Enter a number between 1 and 0" against the
-    // now-irrelevant gameVariantEntries) — on this Game Top-up screen it gets
-    // the single "use the buttons" reply instead.
-    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: back.ctx.session.scratch } });
+    // now-irrelevant gameVariantEntries) — on this Game Top-up screen the
+    // category picker is re-rendered in place with "use the buttons" instead.
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: back.ctx.session.scratch, menuMsgId: back.ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
     expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 0 }))).toBe(false);
-    expectUseButtonsReply(digit);
+    expectUseButtonsEdit(digit, back.ctx.session.menuMsgId);
   });
 
   it("browseGroups (a fresh Products entry) always clears a leftover activeNumberedScreen", async () => {

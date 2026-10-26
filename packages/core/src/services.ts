@@ -58,26 +58,37 @@ export const CUSTOMER_SERVICES = [
 export type CustomerService = (typeof CUSTOMER_SERVICES)[number];
 export type CustomerServiceId = CustomerService["id"];
 
-/** Older categories have no group and belong to Premium Apps at display time. */
-export function serviceForCategoryGroup(group: CategoryGroupType | null): CustomerService {
-  return CUSTOMER_SERVICES.find((service) => service.group === (group ?? CategoryGroup.PREMIUM_APPS))
-    ?? CUSTOMER_SERVICES.find((service) => service.group === CategoryGroup.PREMIUM_APPS)!;
+/**
+ * The service a category group belongs to. Older categories have no group and
+ * belong to Premium Apps at display time; an unregistered group resolves to
+ * Premium Apps too. `services` is the registry to read, a parameter only so a
+ * test can add a service of its own; it must hold the Premium Apps entry.
+ */
+// The one-argument signature stays last: `Parameters<typeof serviceForCategoryGroup>` reads it.
+export function serviceForCategoryGroup<S extends CustomerServiceDefinition>(group: string | null | undefined, services: readonly S[]): S;
+export function serviceForCategoryGroup(group: CategoryGroupType | null): CustomerService;
+export function serviceForCategoryGroup(
+  group: string | null | undefined,
+  services: readonly CustomerServiceDefinition[] = CUSTOMER_SERVICES,
+): CustomerServiceDefinition {
+  const service = services.find((entry) => entry.group === (group ?? CategoryGroup.PREMIUM_APPS))
+    ?? services.find((entry) => entry.group === CategoryGroup.PREMIUM_APPS);
+  if (!service) throw new Error("The customer service registry has no Premium Apps entry to resolve unknown groups to.");
+  return service;
 }
 
 /**
- * The list-selection style of a category group, through the same resolution
- * as serviceForCategoryGroup: a null/undefined group (legacy category) and an
- * unregistered group resolve to Premium Apps; a registered service without its
- * own `listSelection` gets the default ("inline"). `services` is the registry
- * to read, a parameter only so a test can add a service of its own.
+ * The list-selection style of a category group, through serviceForCategoryGroup
+ * (a null/undefined group (legacy category) and an unregistered group resolve
+ * to Premium Apps); a registered service without its own `listSelection` gets
+ * the default ("inline"). `services` is the registry to read, a parameter only
+ * so a test can add a service of its own.
  */
 export function listSelectionFor(
   group: string | null | undefined,
   services: readonly CustomerServiceDefinition[] = CUSTOMER_SERVICES,
 ): ListSelection {
-  const premium = services.find((service) => service.group === CategoryGroup.PREMIUM_APPS);
-  const service = services.find((entry) => entry.group === (group ?? CategoryGroup.PREMIUM_APPS)) ?? premium;
-  return service?.listSelection ?? DEFAULT_LIST_SELECTION;
+  return serviceForCategoryGroup(group, services).listSelection ?? DEFAULT_LIST_SELECTION;
 }
 
 /** True when the group's lists use the numbered caption + digit reply keyboard (Premium Apps only today). */

@@ -133,28 +133,58 @@ async function syncLegacyMirror(db: Db, denominationId: number, enabled: boolean
 }
 
 /**
+ * Take the row lock that serializes every write of one denomination's tier
+ * set (and its toggle). Every writer here reads the current tiers, diffs and
+ * writes; without this lock two concurrent saves both diff against the same
+ * old set and the result is a merge nobody saved, or a unique-index error on a
+ * threshold both inserted. Must run inside a transaction; re-taking it within
+ * the same transaction is a no-op.
+ */
+async function lockDenominationTiers(db: Db, denominationId: number): Promise<void> {
+  await db.$queryRaw`SELECT id FROM denominations WHERE id = ${denominationId} FOR UPDATE`;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
+}
+
+/**
  * Write `tiers` as the denomination's complete tier set, without auditing —
  * shared by {@link replaceTiers} and the legacy adapters, whose callers audit
  * themselves. Diffs by minQuantity (the unique key), so an unchanged tier keeps
- * its id. Must run inside a transaction.
+ * its id. Must run inside a transaction, after {@link lockDenominationTiers}.
  */
 async function writeTierSet(db: Db, denominationId: number, tiers: readonly PricingTier[]): Promise<PricingTier[]> {
+  await lockDenominationTiers(db, denominationId);
   const sorted = [...tiers].sort((a, b) => a.minQuantity - b.minQuantity);
   const existing = await db.bulkPricingTier.findMany({ where: { denominationId } });
   const byMin = new Map(existing.map((row) => [row.minQuantity, row]));
   const keep = new Set(sorted.map((t) => t.minQuantity));
   const stale = existing.filter((row) => !keep.has(row.minQuantity)).map((row) => row.id);
-  if (stale.length > 0) await db.bulkPricingTier.deleteMany({ where: { id: { in: stale } } });
-  for (const [index, t] of sorted.entries()) {
-    const data = {
-      discountType: t.discountType,
-      discountValue: new Decimal(t.discountValue),
-      isEnabled: t.isEnabled,
-      sortOrder: index,
-    };
-    const row = byMin.get(t.minQuantity);
-    if (row) await db.bulkPricingTier.update({ where: { id: row.id }, data });
-    else await db.bulkPricingTier.create({ data: { denominationId, minQuantity: t.minQuantity, ...data } });
+  try {
+    if (stale.length > 0) await db.bulkPricingTier.deleteMany({ where: { id: { in: stale } } });
+    for (const [index, t] of sorted.entries()) {
+      const data = {
+        discountType: t.discountType,
+        discountValue: new Decimal(t.discountValue),
+        isEnabled: t.isEnabled,
+        sortOrder: index,
+      };
+      const row = byMin.get(t.minQuantity);
+      if (row) await db.bulkPricingTier.update({ where: { id: row.id }, data });
+      else await db.bulkPricingTier.create({ data: { denominationId, minQuantity: t.minQuantity, ...data } });
+    }
+  } catch (err) {
+    // The lock above makes this unreachable for writers in this module; a
+    // writer that bypassed it (a hand edit) must still not surface as a 500.
+    if (!isUniqueViolation(err)) throw err;
+    logger.warn(
+      { err, denominationId },
+      `Saving the volume pricing tiers of denomination ${denominationId} hit a duplicate threshold written by another change at the same moment. Nothing was saved; the admin is asked to reload and save again.`,
+    );
+    throw new TieredPricingError("INVALID_TIERS", [
+      { code: "DUPLICATE_MIN_QUANTITY", message: "Another change saved the same threshold at the same time. Reload and save again." },
+    ]);
   }
   return listTiers(db, denominationId);
 }
@@ -188,7 +218,9 @@ function describeTier(t: PricingTier): string {
   return `${t.minQuantity}+ units: ${what}${t.isEnabled ? "" : " (disabled)"}`;
 }
 
+/** Lock the denomination's tier set ({@link lockDenominationTiers}), then read it. */
 async function denominationOrThrow(db: Db, denominationId: number) {
+  await lockDenominationTiers(db, denominationId);
   const denomination = await db.denomination.findUnique({
     where: { id: denominationId },
     select: { id: true, name: true, tieredPricingEnabled: true },
@@ -273,6 +305,10 @@ function sameTierSet(current: readonly PricingTier[], next: readonly PricingTier
  * that failed to save. Each part is written (and audited) only when it
  * actually changes — re-saving an unchanged editor writes nothing. Throws
  * TieredPricingError for an invalid set before anything is written.
+ *
+ * The "unchanged?" comparison runs under the denomination row lock, so two
+ * concurrent saves are applied one after the other: the result is exactly one
+ * of the submitted sets, never a merge of both.
  */
 export async function saveTieredPricing(
   db: Db,
@@ -366,6 +402,7 @@ export async function upsertBulkPricingAdapter(
   discountPercent: Decimal,
 ): Promise<BulkPricing> {
   return inTransaction(db, async (tx) => {
+    await lockDenominationTiers(tx, denominationId);
     const existing = await tx.bulkPricing.findUnique({ where: { productId: denominationId } });
     const row = existing
       ? await tx.bulkPricing.update({
@@ -384,6 +421,7 @@ export async function upsertBulkPricingAdapter(
 /** Legacy delete: removes the rule, every tier, and switches tiered pricing off. True if anything was removed. */
 export async function deleteBulkPricingAdapter(db: Db, denominationId: number): Promise<boolean> {
   return inTransaction(db, async (tx) => {
+    await lockDenominationTiers(tx, denominationId);
     const legacy = await tx.bulkPricing.deleteMany({ where: { productId: denominationId } });
     const tiers = await tx.bulkPricingTier.deleteMany({ where: { denominationId } });
     if (legacy.count === 0 && tiers.count === 0) return false;

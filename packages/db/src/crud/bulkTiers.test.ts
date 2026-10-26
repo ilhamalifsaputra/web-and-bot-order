@@ -170,6 +170,42 @@ describe("saveTieredPricing (the admin editor's one save)", () => {
   });
 });
 
+describe("concurrent saves of one denomination", () => {
+  const SET_A = [
+    { minQuantity: 2, discountType: "PERCENTAGE", discountValue: "5" },
+    { minQuantity: 10, discountType: "PERCENTAGE", discountValue: "20" },
+  ];
+  const SET_B = [
+    { minQuantity: 2, discountType: "PERCENTAGE", discountValue: "5" },
+    { minQuantity: 5, discountType: "PERCENTAGE", discountValue: "10" },
+  ];
+  const thresholds = async (id: number) => (await listTiers(prisma, id)).map((t) => t.minQuantity);
+
+  it.each([
+    ["saveTieredPricing", (id: number, tiers: typeof SET_A) => saveTieredPricing(prisma, id, { enabled: true, tiers }, actor)],
+    ["replaceTiers", (id: number, tiers: typeof SET_A) => replaceTiers(prisma, id, tiers, actor)],
+  ])("%s: the final set is exactly one of the two, never a merge, and neither call fails", async (_label, save) => {
+    const id = sample.product.id;
+    for (let round = 0; round < 5; round++) {
+      // Start from a set both saves must diff against (3 is dropped by both).
+      await replaceTiers(prisma, id, [
+        { minQuantity: 2, discountType: "PERCENTAGE", discountValue: "5" },
+        { minQuantity: 3, discountType: "PERCENTAGE", discountValue: "8" },
+      ], actor);
+      const results = await Promise.allSettled([save(id, SET_A), save(id, SET_B)]);
+      expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+      expect([[2, 10], [2, 5]]).toContainEqual(await thresholds(id));
+    }
+  });
+
+  it("two first-ever saves of the same threshold do not surface a unique-index error", async () => {
+    const id = sample.product.id;
+    const results = await Promise.allSettled([replaceTiers(prisma, id, SET_A, actor), replaceTiers(prisma, id, SET_B, actor)]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect([[2, 10], [2, 5]]).toContainEqual(await thresholds(id));
+  });
+});
+
 describe("tiered pricing toggle", () => {
   it("tiers price nothing until the toggle is on; switching it off keeps the tiers but ignores them", async () => {
     const id = sample.product.id;

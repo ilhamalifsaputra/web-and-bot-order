@@ -185,6 +185,14 @@ interface BrowseScratch {
    * only when the current one cannot offer every option (fewer digits), so
    * Back edits in place instead of adding a companion message. */
   replyKbDigits?: number;
+  /** Where the open product was reached from when it was not the catalog
+   * list: a search results page or the Popular list (both open products via
+   * `browse:pick:<id>`, which carries no origin — its 4th segment is the
+   * picker page). Set when those screens render; deleted by every catalog
+   * entry (browseGroups / browseCategoriesInGroup / browseCategoryEntry /
+   * browseProductsFlat) and the main menu, so a stale origin is never used.
+   * Read by originBackTarget for the pack picker / detail Back. */
+  browseOrigin?: { kind: "search"; page: number } | { kind: "popular" };
   /** True only between the "Search again" prompt and the next typed text: that
    * text is the Game Top Up search query. Cleared by every screen render
    * (smartEdit/menuAnchor/renderMenu) and every other callback tap, so it can
@@ -270,6 +278,7 @@ async function renderHome(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
   delete sc(ctx).replyKbDigits;
+  delete sc(ctx).browseOrigin;
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -284,17 +293,16 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     await browseProduct(ctx, sc(ctx).productId!, sc(ctx).productPage ?? 0);
     return;
   }
-  // Viewing a picker (product but no denomination) → back to the product list,
-  // on the page it was opened from (same as the inline Back, browseResume);
-  // browseProductsFlat clamps the page if the list has shrunk since.
-  if (sc(ctx).productId != null) {
-    await browseProductsFlat(ctx, sc(ctx).page ?? 0);
-    return;
-  }
-  // Viewing a collapsed/deep-link detail (denomination but no parent picker) →
-  // back to the product list, not the main menu (don't strand the user).
-  if (sc(ctx).variantId != null) {
-    await browseProductsFlat(ctx, sc(ctx).page ?? 0);
+  // Viewing a picker (product but no denomination), or a collapsed/deep-link
+  // detail (denomination but no parent picker) → back to the search results /
+  // Popular list it was opened from (the same target as its inline Back),
+  // else to the product list on the page it was opened from (same as the
+  // inline Back, browseResume); browseProductsFlat clamps the page if the
+  // list has shrunk since. Never the main menu (don't strand the user).
+  if (sc(ctx).productId != null || sc(ctx).variantId != null) {
+    const origin = originBackTarget(ctx);
+    if (origin) await navigateBack(ctx, origin);
+    else await browseProductsFlat(ctx, sc(ctx).page ?? 0);
     return;
   }
   // Viewing a Game Top-up picker → where that picker's own inline Back goes.
@@ -385,6 +393,27 @@ async function regionPickerBackTarget(ctx: MyContext, categoryId: number): Promi
     : categoryLevelBackTarget(sc(ctx).group);
 }
 
+/**
+ * Back target of a pack picker / detail opened from search results or the
+ * Popular list (scratch.browseOrigin), or undefined when it was opened from
+ * the catalog (the caller then keeps its `browse:prods` / picker target).
+ * A search origin is used only while its snapshot still has that page —
+ * searchPage would answer a stale screen otherwise — and falls back to the
+ * main menu.
+ */
+function originBackTarget(ctx: MyContext): string | undefined {
+  const origin = sc(ctx).browseOrigin;
+  if (origin?.kind === "popular") return ckb.cb("browse", "popular");
+  if (origin?.kind === "search") {
+    const snap = sc(ctx).searchSnapshot;
+    const totalPages = snap ? Math.max(1, Math.ceil(snap.hits.length / PAGE_SIZE)) : 0;
+    return Number.isInteger(origin.page) && origin.page >= 0 && origin.page < totalPages
+      ? ckb.cb("search", "page", origin.page)
+      : ckb.cb("menu", "main");
+  }
+  return undefined;
+}
+
 /** Render a Back target (callback data as carried by an inline Back button);
  * used by a typed Back and by a Back whose own screen no longer applies. */
 async function navigateBack(ctx: MyContext, target: string): Promise<void> {
@@ -394,7 +423,10 @@ async function navigateBack(ctx: MyContext, target: string): Promise<void> {
     if (action === "grp" && arg) return browseCategoriesInGroup(ctx, arg);
     if (action === "gvars" && arg) return browseCategoryEntry(ctx, Number(arg), undefined, { back: true });
     if (action === "gregs" && arg) return backToRegionPicker(ctx, Number(arg));
+    if (action === "popular") return browsePopular(ctx);
   }
+  // originBackTarget only yields a page the snapshot still has.
+  if (domain === "search" && action === "page" && sc(ctx).searchSnapshot) return renderGameSearchPage(ctx, Number(arg));
   await backToHome(ctx);
 }
 
@@ -484,6 +516,8 @@ export async function startCommand(ctx: MyContext): Promise<void> {
 /** `/menu` (and /cancel's fallback) — straight to the Home dashboard. */
 export async function menuCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
+  // A deep-linked product was not opened from search/Popular.
+  delete sc(ctx).browseOrigin;
 
   // Deep-link: prod_<id> → open a denomination detail bubble directly.
   const denomId = deepLinkDenomId(ctx);
@@ -538,6 +572,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).gameVariantDimensionSkipped;
   delete sc(ctx).gameRegionDimensionSkipped;
   delete sc(ctx).shownPickers;
+  delete sc(ctx).browseOrigin;
   // Finding I2 (final-review): this screen renders without going through
   // browseProductsFlat/the variant-picker-render/the region-picker-render —
   // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
@@ -589,6 +624,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).gameVariantDimensionSkipped;
   delete sc(ctx).gameRegionDimensionSkipped;
   delete sc(ctx).shownPickers;
+  delete sc(ctx).browseOrigin;
   // Finding I2 (final-review): same reasoning as browseGroups' own reset
   // above — this screen (both its empty-state and its normal category-list
   // render below) never goes through browseProductsFlat/a picker render, so
@@ -643,6 +679,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
  */
 export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string, opts: { back?: boolean } = {}): Promise<void> {
   sc(ctx).categoryId = categoryId;
+  delete sc(ctx).browseOrigin;
   // A new category scope: no product picker/detail is open any more, so a
   // typed Back must not resolve against a leftover one.
   delete sc(ctx).productId;
@@ -922,14 +959,12 @@ export async function browseResume(ctx: MyContext): Promise<void> {
   await browseGroups(ctx);
 }
 
-export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
-  const lang = ctx.session.lang;
-
-  // A product's own photo (browseProduct/browseDenomination) may still be
-  // showing when Back lands here — this screen is always plain text, and
-  // Telegram can't strip a photo via editMessageCaption (the stale photo
-  // would stay stuck behind the "Product List" caption forever). Delete that
-  // bubble and clear the anchor so the render below sends a fresh message.
+/** A Back tapped on a product's photo bubble that lands on a plain-text
+ * screen: delete that (known obsolete) photo bubble and clear the anchor so
+ * the render sends one fresh message instead of a text screen stuck under the
+ * product photo. Never touches an order's transaction bubble; a failed delete
+ * is ignored. */
+async function dropTappedPhotoBubble(ctx: MyContext): Promise<void> {
   const chatId = ctx.chat?.id;
   const cqMsg = ctx.callbackQuery?.message;
   if (chatId !== undefined && cqMsg && "photo" in cqMsg && cqMsg.photo
@@ -941,6 +976,18 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     }
     ctx.session.menuMsgId = undefined;
   }
+}
+
+export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
+  const lang = ctx.session.lang;
+
+  // A product's own photo (browseProduct/browseDenomination) may still be
+  // showing when Back lands here — this screen is always plain text, and
+  // Telegram can't strip a photo via editMessageCaption (the stale photo
+  // would stay stuck behind the "Product List" caption forever).
+  await dropTappedPhotoBubble(ctx);
+  // A catalog list: whatever product opens from here was not opened from search/Popular.
+  delete sc(ctx).browseOrigin;
 
   // Flat list of mid-tier Products (each with ≥1 active denomination), scoped
   // to the active Category (set by browseCategoryEntry) — no more mixing
@@ -1123,7 +1170,10 @@ export async function browsePopular(ctx: MyContext): Promise<void> {
   ctx.session.state = BotState.PRODUCT_LIST;
 
   const rows = await soldCountsByProduct(prisma, "bot", 10);
+  // Reached by Back from a product photo too (browse:popular) — a text screen.
+  await dropTappedPhotoBubble(ctx);
   if (!rows.length) {
+    delete sc(ctx).browseOrigin;
     await smartEdit(ctx, t(ctx, "browse.popular_empty"), ckb.backToMain(lang));
     return;
   }
@@ -1133,6 +1183,8 @@ export async function browsePopular(ctx: MyContext): Promise<void> {
   );
   const text = `${t(ctx, "browse.popular_title")}\n\n${itemLines.join("\n")}`;
   await smartEdit(ctx, text, ckb.popularKb(rows.map((r) => r.product), lang));
+  // A product opened from here goes Back to this list (originBackTarget).
+  sc(ctx).browseOrigin = { kind: "popular" };
 }
 
 export async function handleProductNumber(ctx: MyContext): Promise<void> {
@@ -1306,6 +1358,8 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   }
   sc(ctx).productId = productId;
   delete sc(ctx).variantId;
+  // Back to the search results / Popular list the product came from, else the list.
+  const pickerBack = originBackTarget(ctx) ?? ckb.cb("browse", "prods");
   const rateContext = await getCanonicalRateContext(prisma);
   const prices = ctxPriceFormatter(ctx, rateContext.rate ? new Decimal(rateContext.rate) : null);
   const sold = await soldCountForProduct(prisma, productId);
@@ -1360,7 +1414,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
     // terms belong on the selected denomination's detail, not this picker.
     // A USD buyer whose rate is unavailable saw Rp prices above — say so, once.
     text += prices.rateNotice(lang);
-    await render(text, ckb.denominationPickerKb(active.map((d) => ({ ...d, buttonLabel: buttonLabels.get(d.id) })), productId, product.name, lang));
+    await render(text, ckb.denominationPickerKb(active.map((d) => ({ ...d, buttonLabel: buttonLabels.get(d.id) })), productId, product.name, lang, pickerBack));
     return;
   }
 
@@ -1382,7 +1436,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "") + `\n${t(ctx, "hint.packs")}`;
   // Remembered so the denomination detail's Back returns to this same page.
   sc(ctx).productPage = pageIndex;
-  await render(text, ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length));
+  await render(text, ckb.canonicalDenominationPickerKb(page.rows, productId, lang, pageIndex, pages.length, pickerBack));
 }
 
 /**
@@ -1539,17 +1593,19 @@ export async function browseDenomination(
   // would immediately re-collapse to this same detail.
   const parentProductId = sc(ctx).productId ?? null;
   const parentPage = parentProductId != null ? (sc(ctx).productPage ?? 0) : 0;
+  // No parent picker: Back to the search results / Popular list it came from, else the list.
+  const fallbackBack = originBackTarget(ctx) ?? ckb.cb("browse", "prods");
   const photoArg = productPhotoArg(d.product);
   if (photoArg) {
     await renderMenu(
       ctx,
       text,
-      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage),
+      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage, fallbackBack),
       photoArg.photo,
       photoArg.needsCache ? cacheProductPhotoFileId(d.product.id) : undefined,
     );
   } else {
-    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage));
+    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage, fallbackBack));
   }
   ctx.session.state = BotState.PRODUCT_DETAIL;
   sc(ctx).variantId = denominationId;
@@ -2160,11 +2216,15 @@ async function renderGameSearchPage(ctx: MyContext, page: number): Promise<void>
   const snap = sc(ctx).searchSnapshot!;
   const totalPages = Math.max(1, Math.ceil(snap.hits.length / PAGE_SIZE));
   const slice = snap.hits.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  // Reached by Back from a product photo too (search:page:<n>) — a text screen.
+  await dropTappedPhotoBubble(ctx);
   await menuAnchor(
     ctx,
     `${t(ctx, "search.results", { query: esc(snap.query), count: snap.hits.length })}\n${t(ctx, "hint.search")}`,
     ckb.gameSearchResultsKb(slice, page, totalPages, lang),
   );
+  // A product opened from this page goes Back to it (originBackTarget).
+  sc(ctx).browseOrigin = { kind: "search", page };
   // The hint tells the buyer to type a name, so the next text is a new query.
   sc(ctx).searchAwaiting = true;
 }
@@ -2179,6 +2239,7 @@ async function runGameSearch(ctx: MyContext, rawQuery: string): Promise<void> {
   });
   if (!products.length) {
     delete sc(ctx).searchSnapshot;
+    delete sc(ctx).browseOrigin;
     await menuAnchor(
       ctx,
       `${t(ctx, "search.no_results", { query: esc(query) })}\n${t(ctx, "hint.search_empty")}`,

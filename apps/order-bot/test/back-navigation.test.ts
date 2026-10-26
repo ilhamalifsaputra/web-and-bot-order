@@ -2,8 +2,8 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, createCatalogProduct, createCategory, createDenomination, setSetting, upsertUser } from "@app/db";
-import { CategoryGroup } from "@app/core/enums";
+import { prisma, createCatalogProduct, createCategory, createDenomination, createOrderDirect, setSetting, upsertUser } from "@app/db";
+import { CategoryGroup, OrderStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, lastMarkup, type FakeCtx, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
@@ -206,6 +206,105 @@ async function openAsiaList(cat: { id: number }) {
   expect(sentIncludes(list.sink, "GI Asia 00")).toBe(true);
   return list;
 }
+
+/** A Game Top-up product with two packs (so it opens a pack picker, not a detail). */
+async function twoPackGame(categoryId: number, name: string) {
+  const p = await createCatalogProduct(prisma, { categoryId, name });
+  await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+  await createDenomination(prisma, { productId: p.id, name: "200", type: "SHARED", durationLabel: "200", price: "29000" });
+  return p;
+}
+
+/** A search result's `browse:pick` callback, found by the product name its label starts with. */
+const resultTarget = (sink: SentCall[], name: string) =>
+  inlineButtons(sink).find((b) => b.text.startsWith(`${name} · `) && b.callback_data?.startsWith("v1:browse:pick:"))!.callback_data!;
+
+const backData = (sink: SentCall[]) => inlineButtons(sink).find((b) => b.text === persistentLabel("back", "en"))?.callback_data;
+
+async function search(query: string) {
+  const s = customerCtx({ match: query });
+  await customer.searchCommand(s.ctx);
+  return s;
+}
+
+describe("Back from a product opened from search or Popular returns there, not to stale browse state", () => {
+  it("search → pack picker: Back targets the results page it came from and re-renders it in place", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    const other = await createCategory(prisma, { name: "Other Games", group: CategoryGroup.GAME_TOPUP });
+    for (let i = 0; i < 11; i++) await twoPackGame(games.id, `Zqx Hero ${String(i).padStart(2, "0")}`);
+    const results = await search("Zqx");
+    // Stale browse scope from an earlier session must not leak into the Back.
+    Object.assign(results.ctx.session.scratch, { categoryId: other.id, group: CategoryGroup.GAME_TOPUP, page: 3 });
+    const page2 = await tap(results.ctx, "v1:search:page:1");
+    const picker = await tap(page2.ctx, resultTarget(page2.sink, "Zqx Hero 10"));
+    expect(backData(picker.sink)).toBe("v1:search:page:1");
+
+    const back = await tap(picker.ctx, "v1:search:page:1");
+    expect(sentIncludes(back.sink, "Zqx Hero 10")).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+  });
+
+  it("search → single-pack detail: Back targets the search results; a typed Back goes there too", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    await product(games.id, "Zqx Solo");
+    const results = await search("Zqx");
+    const detail = await tap(results.ctx, resultTarget(results.sink, "Zqx Solo"));
+    expect(backData(detail.sink)).toBe("v1:search:page:0");
+
+    const typed = await typedBack(detail.ctx);
+    expect(sentIncludes(typed.sink, t(typed.ctx, "search.again_btn"))).toBe(true);
+    expect(sentIncludes(typed.sink, "What are you shopping for")).toBe(false);
+  });
+
+  it("an outdated search snapshot falls back to the main menu instead of a stale results page", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    const hero = await twoPackGame(games.id, "Zqx Hero");
+    const results = await search("Zqx");
+    Object.assign(results.ctx.session.scratch, { browseOrigin: { kind: "search", page: 4 } });
+    const picker = next(results.ctx);
+    await customer.browseProduct(picker.ctx, hero.id);
+    expect(backData(picker.sink)).toBe("v1:menu:main");
+  });
+
+  it("Popular → detail and Popular → pack picker: Back targets Popular", async () => {
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+    );
+    await prisma.order.updateMany({ data: { status: OrderStatus.DELIVERED } });
+    const popular = customerCtx({ callbackData: "v1:browse:popular" });
+    await routeCallback(popular.ctx);
+    const detail = await tap(popular.ctx, `v1:browse:pick:${sample.parentProduct.id}`);
+    expect(backData(detail.sink)).toBe("v1:browse:popular");
+
+    await createDenomination(prisma, { productId: sample.parentProduct.id, name: "Netflix 3 Month", type: "SHARED", durationLabel: "3 Month", price: "90000" });
+    const picker = await tap(detail.ctx, `v1:browse:pick:${sample.parentProduct.id}`);
+    expect(backData(picker.sink)).toBe("v1:browse:popular");
+    const back = await tap(picker.ctx, "v1:browse:popular");
+    expect(sentIncludes(back.sink, sample.parentProduct.name)).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+  });
+
+  it("the origin is forgotten once the customer browses the catalog: a product opened from the list goes back to the list", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    await twoPackGame(games.id, "Zqx Hero A");
+    await twoPackGame(games.id, "Zqx Hero B");
+    const results = await search("Zqx");
+    const list = await tap(results.ctx, `v1:browse:cat:${games.id}`);
+    const picker = next(list.ctx, { text: "1" });
+    await customer.handleProductNumber(picker.ctx);
+    expect(backData(picker.sink)).toBe("v1:browse:prods");
+  });
+
+  it("the origin is forgotten at the main menu too", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    const hero = await twoPackGame(games.id, "Zqx Hero");
+    const results = await search("Zqx");
+    const home = await tap(results.ctx, "v1:menu:main");
+    const picker = next(home.ctx);
+    await customer.browseProduct(picker.ctx, hero.id);
+    expect(backData(picker.sink)).toBe("v1:browse:prods");
+  });
+});
 
 describe("product list Back follows the pickers that were really shown", () => {
   it("edition → region → list: Back returns one step at a time to the region picker, edition picker, category picker, service picker and menu", async () => {

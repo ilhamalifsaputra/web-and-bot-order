@@ -304,6 +304,10 @@ export function denominationDetailKb(
   parentProductId: number | null = null,
   /** Picker page (0-based) the detail was opened from; Back returns to it. */
   parentPage = 0,
+  /** Back target when no parent picker was shown (collapse / deep link):
+   * the product list by default, or the search results / Popular list the
+   * product was opened from (handlers/customer.ts `originBackTarget`). */
+  fallbackBack: string = cb("browse", "prods"),
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   // Stock rows only ever exist for local-inventory SKUs
@@ -357,7 +361,7 @@ export function denominationDetailKb(
           text: coreT("menu.back", lang),
           data: parentPage > 0 ? cb("browse", "pick", parentProductId, parentPage) : cb("browse", "pick", parentProductId),
         }
-      : { text: coreT("menu.back", lang), data: cb("browse", "prods") };
+      : { text: coreT("menu.back", lang), data: fallbackBack };
   rows.push([back]);
   return ik(rows);
 }
@@ -371,8 +375,10 @@ interface DenominationLike {
   buttonLabel?: string;
 }
 
-/** Catalog presenter owns labels and adaptive rows; callbacks stay compatible. */
-export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], productId: number, lang: string, page: number, pageCount: number): InlineKeyboard {
+/** Catalog presenter owns labels and adaptive rows; callbacks stay compatible.
+ * `backTarget`: the product list by default, or the search results / Popular
+ * list the product was opened from. */
+export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], productId: number, lang: string, page: number, pageCount: number, backTarget: string = cb("browse", "prods")): InlineKeyboard {
   // grammY's add() appends to the LAST existing row, so each group of buttons
   // below is built as its own explicit row. Product rows are copied so the
   // presenter's page.rows are never aliased/mutated by the keyboard.
@@ -386,7 +392,7 @@ export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], pro
     if (arrows.length > 0) rows.push(arrows);
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), callback_data: cb("browse", "pick", productId, page) }]);
-  rows.push([{ text: coreT("menu.back", lang), callback_data: cb("browse", "prods") }]);
+  rows.push([{ text: coreT("menu.back", lang), callback_data: backTarget }]);
   return new InlineKeyboard(rows);
 }
 
@@ -400,13 +406,15 @@ export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], pro
  * price); when every button does, `browseProduct` drops the per-plan
  * price/stock lines and the body shows game info instead. A
  * `Perbarui`/Refresh row re-renders the picker (re-reads stock + the "updated"
- * timestamp) and a Back row returns to the flat product list.
+ * timestamp) and a Back row returns to the flat product list — or to the
+ * search results / Popular list the product was opened from (`backTarget`).
  */
 export function denominationPickerKb(
   denominations: DenominationLike[],
   productId: number,
   productName: string,
   lang: string,
+  backTarget: string = cb("browse", "prods"),
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < denominations.length; i += 2) {
@@ -418,7 +426,7 @@ export function denominationPickerKb(
     );
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), data: cb("browse", "pick", productId) }]);
-  rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
   return ik(rows);
 }
 

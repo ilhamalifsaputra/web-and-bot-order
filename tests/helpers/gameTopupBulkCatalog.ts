@@ -8,12 +8,19 @@
  * unlisted same-name row is refused. `--remove` in scripts/lib/seedGameTopup.ts
  * deletes only the manifest's ids.
  *
- * Shape (the data lives in the tables below, not in code):
- *  - "Game Top Up" (shared with the small fixture): plain games, no region.
- *  - "Regional Games": every product has a gameRegion (region = server), so
- *    the bot shows the region picker, then the game list for that region.
- *  - "Game Editions": every product has a gameVariant and a gameRegion, so
- *    the bot shows the edition picker, then the region picker.
+ * Shape (the data lives in the table below, not in code), laid out the way the
+ * bot browses (Group -> Category -> [edition picker] -> [region picker] ->
+ * product -> denomination); the schema has no subcategories:
+ *  - ONE GAME_TOPUP CATEGORY PER GAME, named after the game ("Mobile Legends").
+ *    Region and edition never appear in a category name. Mobile games come
+ *    first (emoji 🎮), PC games after (emoji 🖥️): emoji and sortOrder only.
+ *  - A multi-region game has one product per region (gameRegion = the flagged
+ *    label), so the bot shows the region picker, then that region's packs.
+ *  - An edition game has one product per edition x region (gameVariant +
+ *    gameVariantEmoji + gameRegion): edition picker, then region picker.
+ *  - A single-region game has one product with a gameRegion (no picker); a
+ *    region-less game has one product with no gameRegion. A category never
+ *    mixes products with and without the dimension, so no scope is "mixed".
  *  - "Premium Apps" (shared): plan products (1/3/6/12 months), no game fields.
  *
  * Only fake `supplierSku` values are written; no credentials. Do not import
@@ -48,44 +55,43 @@ interface GameSpec {
   extras?: readonly Extra[];
 }
 
-interface RegionalSpec extends GameSpec {
-  regions: readonly string[];
+export interface BulkGame extends GameSpec {
+  /** Mobile games sort first; PC games get the 🖥️ category emoji. */
+  platform: "mobile" | "pc";
+  /** Region names (no flag); absent = a region-less game with one plain product. */
+  regions?: readonly string[];
+  /** Editions; every edition has all `regions`. */
+  variants?: ReadonlyArray<{ label: string; emoji: string }>;
 }
 
-interface EditionSpec extends GameSpec {
-  variants: ReadonlyArray<{ label: string; emoji: string }>;
-  regions: readonly string[];
-}
+/** The flagged label each region name gets as `Product.gameRegion` (same style as packages/core/src/regionLabel.ts). */
+export const BULK_REGION_LABELS: Readonly<Record<string, string>> = {
+  Indonesia: "\u{1F1EE}\u{1F1E9} Indonesia",
+  Malaysia: "\u{1F1F2}\u{1F1FE} Malaysia",
+  Philippines: "\u{1F1F5}\u{1F1ED} Philippines",
+  Thailand: "\u{1F1F9}\u{1F1ED} Thailand",
+  Singapore: "\u{1F1F8}\u{1F1EC} Singapore",
+  Global: "\u{1F310} Global",
+  Asia: "\u{1F30F} Asia",
+  America: "\u{1F30E} America",
+  Europe: "\u{1F30D} Europe",
+  SEA: "\u{1F30F} SEA",
+  "TW, HK, MO": "\u{1F30F} TW, HK, MO",
+};
 
+const MOBILE_EMOJI = "🎮";
+const PC_EMOJI = "🖥️";
 const MIN_PRICE = 1_500;
 const MAX_PRICE = 2_500_000;
 /** Price multipliers per region position (the first region is the base price). */
 const REGION_FACTOR = [1, 1.06, 1.12, 1.18] as const;
 
-export const BULK_PLAIN_GAMES: readonly GameSpec[] = [
-  { name: "Higgs Domino Island", unit: "M Chips", qtys: [6, 12, 24, 60, 100, 200, 300, 500, 800, 1000, 1500, 2000], rate: 1000, fields: "player", auto: true },
-  { name: "Point Blank", unit: "PB Cash", qtys: [1200, 2400, 3600, 6000, 12000, 24000, 36000, 60000, 120000, 240000, 600000, 1200000], rate: 1.05, fields: "player", nickname: "point-blank" },
-  { name: "Lords Mobile", unit: "Gems", qtys: [40, 100, 300, 500, 1000, 2000, 3000, 5000, 7000, 10000], rate: 150, fields: "player" },
-  { name: "eFootball", unit: "Coins", qtys: [100, 130, 300, 550, 800, 1040, 1600, 2130, 3250, 5700, 12000], rate: 160, fields: "player", auto: true },
-  { name: "Stumble Guys", unit: "Gems", qtys: [50, 100, 250, 500, 750, 1000, 1500, 2500, 5000, 10000], rate: 90, fields: "player" },
-  { name: "Blood Strike", unit: "Gold", qtys: [100, 300, 500, 1000, 2000, 3000, 5000, 6500, 10000, 20000], rate: 140, fields: "player", nickname: "blood-strike", auto: true },
-  { name: "Sausage Man", unit: "Candies", qtys: [60, 120, 180, 300, 600, 980, 1280, 1980, 3280, 6480], rate: 230, fields: "player" },
-  { name: "Hay Day", unit: "Diamonds", qtys: [20, 50, 80, 200, 500, 800, 1200, 2500, 4000, 6500, 14000], rate: 200, fields: "player" },
-  { name: "Clash of Clans", unit: "Gems", qtys: [80, 160, 500, 800, 1200, 2500, 4000, 6500, 14000], rate: 210, fields: "player", extras: [{ name: "Gold Pass Monthly Subscription", price: 79_000 }] },
-  { name: "Clash Royale", unit: "Gems", qtys: [80, 160, 500, 800, 1200, 2500, 4000, 6500, 14000], rate: 210, fields: "player", extras: [{ name: "Pass Royale Monthly Subscription", price: 79_000 }] },
-  { name: "Roblox", unit: "Robux", qtys: [40, 80, 160, 240, 400, 800, 1200, 1700, 2500, 4500, 10000], rate: 215, fields: "uid", auto: true },
-  { name: "Magic Chess Go Go", unit: "Diamonds", qtys: [5, 12, 19, 28, 44, 59, 86, 172, 257, 344, 429, 514], rate: 235, fields: "userZone", nickname: "magic-chess-go-go" },
-  { name: "Honor of Kings", unit: "Tokens", qtys: [16, 80, 240, 400, 560, 800, 1200, 2400, 4000, 8000], rate: 270, fields: "player", nickname: "honor-of-kings" },
-  { name: "Growtopia", unit: "World Lock", qtys: [1, 2, 5, 10, 20, 30, 50, 100, 200, 500, 1000], rate: 1500, fields: "player" },
-  { name: "League of Legends Wild Rift", unit: "Wild Cores", qtys: [65, 125, 250, 425, 725, 1000, 1450, 1850, 2500, 4200, 8750], rate: 160, fields: "player" },
-  { name: "Tower of Fantasy", unit: "Tanium", qtys: [60, 120, 300, 600, 980, 1480, 1980, 3280, 6480], rate: 235, fields: "uid" },
-  { name: "Identity V", unit: "Echoes", qtys: [60, 120, 300, 600, 980, 1480, 1980, 3280, 6480], rate: 235, fields: "player" },
-  { name: "8 Ball Pool", unit: "Cash", qtys: [50, 100, 250, 500, 1000, 1500, 2500, 5000, 10000], rate: 250, fields: "uid" },
-];
+const EDITION_PUBG = [{ label: "Mobile", emoji: "\u{1F4F1}" }, { label: "New State", emoji: "\u{1F680}" }] as const;
 
-export const BULK_REGIONAL_GAMES: readonly RegionalSpec[] = [
+/** One entry per game = one GAME_TOPUP category. Order is the sort order within a platform (popular first). */
+export const BULK_GAMES: readonly BulkGame[] = [
   {
-    name: "Mobile Legends", unit: "Diamonds", rate: 235, fields: "userZone", nickname: "mobile-legends", auto: true,
+    platform: "mobile", name: "Mobile Legends", unit: "Diamonds", rate: 235, fields: "userZone", nickname: "mobile-legends", auto: true,
     qtys: [5, 12, 19, 28, 44, 59, 86, 172, 257, 344, 429, 514, 706, 878, 1038, 2195, 3688, 5532],
     regions: ["Indonesia", "Malaysia", "Philippines", "Global"],
     extras: [
@@ -95,82 +101,94 @@ export const BULK_REGIONAL_GAMES: readonly RegionalSpec[] = [
     ],
   },
   {
-    name: "Free Fire", unit: "Diamonds", rate: 143, fields: "player", nickname: "free-fire", auto: true,
+    platform: "mobile", name: "Free Fire", unit: "Diamonds", rate: 143, fields: "player", nickname: "free-fire", auto: true,
     qtys: [5, 12, 50, 70, 140, 355, 720, 1450, 2180, 3640, 7290],
     regions: ["Indonesia", "Malaysia", "Thailand"],
     extras: [{ name: "Membership Mingguan", price: 29_000 }, { name: "Membership Bulanan", price: 119_000 }],
   },
   {
-    name: "PUBG Mobile", unit: "UC", rate: 155, fields: "player", nickname: "pubg-mobile",
+    platform: "mobile", name: "PUBG", unit: "UC", rate: 155, fields: "player", nickname: "pubg-mobile",
     qtys: [60, 120, 325, 660, 985, 1320, 1800, 2460, 3850, 5650, 8100, 11950, 16200],
+    variants: EDITION_PUBG,
     regions: ["Indonesia", "Global"],
     extras: [{ name: "Elite Pass Plus Season Bundle Pack", price: 149_000 }],
   },
   {
-    name: "Genshin Impact", unit: "Genesis Crystals", rate: 245, fields: "uid", nickname: "genshin-impact",
+    platform: "mobile", name: "Genshin Impact", unit: "Genesis Crystals", rate: 245, fields: "uid", nickname: "genshin-impact",
     qtys: [60, 120, 330, 660, 1090, 1640, 2240, 3010, 3880, 5470, 6480, 8080],
     regions: ["Asia", "America", "Europe", "TW, HK, MO"],
     extras: [{ name: "Blessing of the Welkin Moon", price: 76_000 }, { name: "Welkin Moon Monthly Pass Premium", price: 79_000 }],
   },
   {
-    name: "Honkai Star Rail", unit: "Oneiric Shards", rate: 245, fields: "uid", nickname: "honkai-star-rail",
+    platform: "mobile", name: "Honkai Star Rail", unit: "Oneiric Shards", rate: 245, fields: "uid", nickname: "honkai-star-rail",
     qtys: [40, 60, 120, 300, 600, 980, 1480, 1980, 2480, 3280, 4480, 6480],
     regions: ["Asia", "America", "Europe"],
     extras: [{ name: "Express Supply Pass Monthly", price: 76_000 }],
   },
   {
-    name: "Valorant", unit: "VP", rate: 160, fields: "uid", nickname: "valorant",
-    qtys: [125, 250, 420, 700, 1000, 1375, 2000, 2400, 3400, 4000, 5350, 8150],
-    regions: ["Indonesia", "Singapore", "Philippines"],
-    extras: [{ name: "Battle Pass Premium Plus Bundle", price: 149_000 }],
-  },
-  {
-    name: "Call of Duty Mobile", unit: "CP", rate: 150, fields: "uid", nickname: "call-of-duty-mobile", auto: true,
+    platform: "mobile", name: "Call of Duty", unit: "CP", rate: 150, fields: "uid", nickname: "call-of-duty-mobile", auto: true,
     qtys: [31, 62, 128, 321, 633, 1268, 1900, 2500, 3200, 5000, 6400, 12800],
-    regions: ["Garena Indonesia", "Global"],
+    variants: [{ label: "Mobile", emoji: "\u{1F4F1}" }, { label: "Warzone Mobile", emoji: "\u{1FA82}" }],
+    regions: ["Indonesia", "Global"],
   },
+  { platform: "mobile", name: "Honor of Kings", unit: "Tokens", qtys: [16, 80, 240, 400, 560, 800, 1200, 2400, 4000, 8000], rate: 270, fields: "player", nickname: "honor-of-kings" },
+  { platform: "mobile", name: "Higgs Domino Island", unit: "M Chips", qtys: [6, 12, 24, 60, 100, 200, 300, 500, 800, 1000, 1500, 2000], rate: 1000, fields: "player", auto: true, regions: ["Indonesia"] },
   {
-    name: "Arena of Valor", unit: "Vouchers", rate: 270, fields: "player", nickname: "arena-of-valor",
-    qtys: [16, 40, 80, 240, 400, 560, 800, 1200, 1600, 2400, 4000, 8000],
-    regions: ["Indonesia", "Thailand"],
-  },
-  {
-    name: "Ragnarok M", unit: "Zeny", rate: 205, fields: "userZone",
-    qtys: [30, 60, 150, 300, 600, 980, 1480, 1980, 3280, 6480],
-    regions: ["Indonesia", "SEA"],
-  },
-  {
-    name: "Wuthering Waves", unit: "Lunite", rate: 245, fields: "uid", auto: true,
-    qtys: [60, 120, 300, 600, 980, 1480, 1980, 2480, 3280, 4480, 6480, 9680],
-    regions: ["Asia", "America", "Europe"],
-    extras: [{ name: "Lunite Subscription Monthly", price: 79_000 }],
-  },
-  {
-    name: "Zenless Zone Zero", unit: "Monochrome", rate: 245, fields: "uid",
-    qtys: [60, 120, 300, 600, 980, 1480, 1980, 2480, 3280, 4480, 6480, 9680],
-    regions: ["Asia", "America", "Europe"],
-    extras: [{ name: "Inter-Knot Membership Monthly", price: 79_000 }],
-  },
-  {
-    name: "Marvel Rivals", unit: "Lattice", rate: 150, fields: "uid",
-    qtys: [100, 200, 500, 1000, 1500, 2000, 3000, 5000, 7500, 10000, 15000],
-    regions: ["Global", "Asia"],
-  },
-];
-
-export const BULK_EDITION_GAMES: readonly EditionSpec[] = [
-  {
-    name: "Arena Breakout", unit: "Bonds", rate: 220, fields: "uid", auto: true,
+    platform: "mobile", name: "Arena Breakout", unit: "Bonds", rate: 220, fields: "uid", auto: true,
     qtys: [60, 120, 300, 600, 980, 1480, 1980, 3280, 6480, 9680],
     variants: [{ label: "Standard", emoji: "\u{1F52B}" }, { label: "Infinite", emoji: "♾️" }],
     regions: ["Global", "Indonesia"],
   },
   {
-    name: "PUBG", unit: "UC", rate: 155, fields: "player",
-    qtys: [60, 120, 325, 660, 985, 1320, 1800, 2460, 3850, 5650, 8100],
-    variants: [{ label: "Mobile", emoji: "\u{1F4F1}" }, { label: "New State", emoji: "\u{1F680}" }],
-    regions: ["Indonesia", "Global"],
+    platform: "mobile", name: "Wuthering Waves", unit: "Lunite", rate: 245, fields: "uid", auto: true,
+    qtys: [60, 120, 300, 600, 980, 1480, 1980, 2480, 3280, 4480, 6480, 9680],
+    regions: ["Asia", "America", "Europe"],
+    extras: [{ name: "Lunite Subscription Monthly", price: 79_000 }],
   },
+  {
+    platform: "mobile", name: "Zenless Zone Zero", unit: "Monochrome", rate: 245, fields: "uid",
+    qtys: [60, 120, 300, 600, 980, 1480, 1980, 2480, 3280, 4480, 6480, 9680],
+    regions: ["Asia", "America", "Europe"],
+    extras: [{ name: "Inter-Knot Membership Monthly", price: 79_000 }],
+  },
+  {
+    platform: "mobile", name: "Arena of Valor", unit: "Vouchers", rate: 270, fields: "player", nickname: "arena-of-valor",
+    qtys: [16, 40, 80, 240, 400, 560, 800, 1200, 1600, 2400, 4000, 8000],
+    regions: ["Indonesia", "Thailand"],
+  },
+  {
+    platform: "mobile", name: "Ragnarok M", unit: "Zeny", rate: 205, fields: "userZone",
+    qtys: [30, 60, 150, 300, 600, 980, 1480, 1980, 3280, 6480],
+    regions: ["Indonesia", "SEA"],
+  },
+  { platform: "mobile", name: "Roblox", unit: "Robux", qtys: [40, 80, 160, 240, 400, 800, 1200, 1700, 2500, 4500, 10000], rate: 215, fields: "uid", auto: true },
+  { platform: "mobile", name: "Magic Chess Go Go", unit: "Diamonds", qtys: [5, 12, 19, 28, 44, 59, 86, 172, 257, 344, 429, 514], rate: 235, fields: "userZone", nickname: "magic-chess-go-go" },
+  { platform: "mobile", name: "Lords Mobile", unit: "Gems", qtys: [40, 100, 300, 500, 1000, 2000, 3000, 5000, 7000, 10000], rate: 150, fields: "player" },
+  { platform: "mobile", name: "eFootball", unit: "Coins", qtys: [100, 130, 300, 550, 800, 1040, 1600, 2130, 3250, 5700, 12000], rate: 160, fields: "player", auto: true },
+  { platform: "mobile", name: "Stumble Guys", unit: "Gems", qtys: [50, 100, 250, 500, 750, 1000, 1500, 2500, 5000, 10000], rate: 90, fields: "player" },
+  { platform: "mobile", name: "Blood Strike", unit: "Gold", qtys: [100, 300, 500, 1000, 2000, 3000, 5000, 6500, 10000, 20000], rate: 140, fields: "player", nickname: "blood-strike", auto: true },
+  { platform: "mobile", name: "Sausage Man", unit: "Candies", qtys: [60, 120, 180, 300, 600, 980, 1280, 1980, 3280, 6480], rate: 230, fields: "player", regions: ["Indonesia"] },
+  { platform: "mobile", name: "Hay Day", unit: "Diamonds", qtys: [20, 50, 80, 200, 500, 800, 1200, 2500, 4000, 6500, 14000], rate: 200, fields: "player" },
+  { platform: "mobile", name: "Clash of Clans", unit: "Gems", qtys: [80, 160, 500, 800, 1200, 2500, 4000, 6500, 14000], rate: 210, fields: "player", extras: [{ name: "Gold Pass Monthly Subscription", price: 79_000 }] },
+  { platform: "mobile", name: "Clash Royale", unit: "Gems", qtys: [80, 160, 500, 800, 1200, 2500, 4000, 6500, 14000], rate: 210, fields: "player", extras: [{ name: "Pass Royale Monthly Subscription", price: 79_000 }] },
+  { platform: "mobile", name: "League of Legends Wild Rift", unit: "Wild Cores", qtys: [65, 125, 250, 425, 725, 1000, 1450, 1850, 2500, 4200, 8750], rate: 160, fields: "player" },
+  { platform: "mobile", name: "Tower of Fantasy", unit: "Tanium", qtys: [60, 120, 300, 600, 980, 1480, 1980, 3280, 6480], rate: 235, fields: "uid" },
+  { platform: "mobile", name: "Identity V", unit: "Echoes", qtys: [60, 120, 300, 600, 980, 1480, 1980, 3280, 6480], rate: 235, fields: "player" },
+  { platform: "mobile", name: "8 Ball Pool", unit: "Cash", qtys: [50, 100, 250, 500, 1000, 1500, 2500, 5000, 10000], rate: 250, fields: "uid" },
+  {
+    platform: "pc", name: "Valorant", unit: "VP", rate: 160, fields: "uid", nickname: "valorant",
+    qtys: [125, 250, 420, 700, 1000, 1375, 2000, 2400, 3400, 4000, 5350, 8150],
+    regions: ["Indonesia", "Singapore", "Philippines"],
+    extras: [{ name: "Battle Pass Premium Plus Bundle", price: 149_000 }],
+  },
+  {
+    platform: "pc", name: "Marvel Rivals", unit: "Lattice", rate: 150, fields: "uid",
+    qtys: [100, 200, 500, 1000, 1500, 2000, 3000, 5000, 7500, 10000, 15000],
+    regions: ["Global", "Asia"],
+  },
+  { platform: "pc", name: "Delta Force", unit: "Delta Coins", qtys: [60, 120, 300, 680, 1280, 1980, 3280, 6480, 9680], rate: 150, fields: "uid" },
+  { platform: "pc", name: "Point Blank", unit: "PB Cash", qtys: [1200, 2400, 3600, 6000, 12000, 24000, 36000, 60000, 120000, 240000, 600000, 1200000], rate: 1.05, fields: "player", nickname: "point-blank", regions: ["Indonesia"] },
+  { platform: "pc", name: "Growtopia", unit: "World Lock", qtys: [1, 2, 5, 10, 20, 30, 50, 100, 200, 500, 1000], rate: 1500, fields: "player" },
 ];
 
 interface PremiumSpec {
@@ -238,7 +256,10 @@ export function planGameDenominations(spec: GameSpec, regionIndex: number, skuKe
 }
 
 export interface BulkCatalogResult {
-  categories: { gameTopUp: number; regional: number; editions: number; premiumApps: number };
+  /** Category id per game name (one category per game), and the shared Premium Apps category (0 when not seeded). */
+  categories: { games: Record<string, number>; premiumApps: number };
+  /** Number of per-game categories. */
+  gameCategories: number;
   /** Distinct game titles. */
   games: number;
   /** Distinct (game, region) pairs across all game products. */
@@ -247,13 +268,13 @@ export interface BulkCatalogResult {
   premiumProducts: number;
   products: number;
   denominations: number;
-  /** Product ids by "<category key>/<name>/<variant>/<region>" for assertions. */
+  /** Product ids by "<name>/<variant>/<region>" for assertions. */
   productIds: Record<string, number>;
 }
 
 export async function buildBulkGameTopupCatalog(
   prisma: PrismaClient,
-  opts: { manifest?: SeedManifest } = {},
+  opts: { manifest?: SeedManifest; /** Seed only these games (by name) and skip the Premium Apps; default all. */ games?: readonly string[] } = {},
 ): Promise<BulkCatalogResult> {
   const { manifest } = opts;
 
@@ -267,10 +288,11 @@ export async function buildBulkGameTopupCatalog(
     manifest?.add("categories", created.id);
     return created;
   };
-  const gameCat = await ensureCategory("Game Top Up", CategoryGroup.GAME_TOPUP, 1, "\u{1F3AE}");
-  const regionalCat = await ensureCategory("Regional Games", CategoryGroup.GAME_TOPUP, 4, "\u{1F30F}");
-  const editionsCat = await ensureCategory("Game Editions", CategoryGroup.GAME_TOPUP, 5, "\u{1F3AF}");
-  const premiumCat = await ensureCategory("Premium Apps", CategoryGroup.PREMIUM_APPS, 3, "\u{1F4F1}");
+  const wanted = opts.games ? new Set(opts.games) : null;
+  const games = BULK_GAMES.filter((g) => !wanted || wanted.has(g.name));
+  if (wanted && games.length !== wanted.size) throw new Error(`Unknown bulk game name in ${JSON.stringify([...wanted])}.`);
+  // Mobile games first, then PC (stable, so the table order stays popular-first within a platform).
+  const ordered = [...games.filter((g) => g.platform === "mobile"), ...games.filter((g) => g.platform === "pc")];
 
   const productIds: Record<string, number> = {};
   const gameTitles = new Set<string>();
@@ -315,7 +337,6 @@ export async function buildBulkGameTopupCatalog(
 
   const seedGame = async (
     categoryId: number,
-    categoryKey: string,
     spec: GameSpec,
     placement: { region: string | null; regionIndex: number; variant?: { label: string; emoji: string } | null; sortOrder: number },
   ) => {
@@ -325,7 +346,7 @@ export async function buildBulkGameTopupCatalog(
       gameVariantEmoji: placement.variant?.emoji ?? null,
       sortOrder: placement.sortOrder,
     });
-    productIds[`${categoryKey}/${spec.name}/${placement.variant?.label ?? ""}/${placement.region ?? ""}`] = product.id;
+    productIds[`${spec.name}/${placement.variant?.label ?? ""}/${placement.region ?? ""}`] = product.id;
     gameProducts += 1;
     gameTitles.add(spec.name);
     if (placement.region) regionPairs.add(`${spec.name}|${placement.region}`);
@@ -363,25 +384,28 @@ export async function buildBulkGameTopupCatalog(
     );
   };
 
-  for (const [i, spec] of BULK_PLAIN_GAMES.entries()) {
-    await seedGame(gameCat.id, "plain", spec, { region: null, regionIndex: 0, sortOrder: 10 + i });
-  }
-  for (const [i, spec] of BULK_REGIONAL_GAMES.entries()) {
-    for (const [r, region] of spec.regions.entries()) {
-      await seedGame(regionalCat.id, "regional", spec, { region, regionIndex: r, sortOrder: i * 10 + r });
-    }
-  }
-  for (const [i, spec] of BULK_EDITION_GAMES.entries()) {
-    for (const [v, variant] of spec.variants.entries()) {
-      for (const [r, region] of spec.regions.entries()) {
-        await seedGame(editionsCat.id, "editions", spec, { region, regionIndex: r, variant, sortOrder: i * 100 + v * 10 + r });
+  const gameCategoryIds: Record<string, number> = {};
+  for (const [i, spec] of ordered.entries()) {
+    const category = await ensureCategory(spec.name, CategoryGroup.GAME_TOPUP, 10 + i, spec.platform === "pc" ? PC_EMOJI : MOBILE_EMOJI);
+    gameCategoryIds[spec.name] = category.id;
+    const regions: ReadonlyArray<string | null> = spec.regions ?? [null];
+    const variants: ReadonlyArray<{ label: string; emoji: string } | null> = spec.variants ?? [null];
+    for (const [v, variant] of variants.entries()) {
+      for (const [r, region] of regions.entries()) {
+        await seedGame(category.id, spec, {
+          region: region === null ? null : (BULK_REGION_LABELS[region] ?? region),
+          regionIndex: r,
+          variant,
+          sortOrder: v * 10 + r,
+        });
       }
     }
   }
 
   // Premium Apps: plan denominations, the usual plan flow, no game fields.
-  for (const [i, app] of BULK_PREMIUM_APPS.entries()) {
-    const product = await ensureProduct(premiumCat.id, app.name, { sortOrder: 10 + i, description: app.description });
+  const premiumCat = wanted ? null : await ensureCategory("Premium Apps", CategoryGroup.PREMIUM_APPS, 3, "📱");
+  for (const [i, app] of (premiumCat ? BULK_PREMIUM_APPS : []).entries()) {
+    const product = await ensureProduct(premiumCat!.id, app.name, { sortOrder: 10 + i, description: app.description });
     productIds[`premium/${app.name}//`] = product.id;
     await ensureDenominations(
       product.id,
@@ -403,12 +427,13 @@ export async function buildBulkGameTopupCatalog(
   }
 
   return {
-    categories: { gameTopUp: gameCat.id, regional: regionalCat.id, editions: editionsCat.id, premiumApps: premiumCat.id },
+    categories: { games: gameCategoryIds, premiumApps: premiumCat?.id ?? 0 },
+    gameCategories: ordered.length,
     games: gameTitles.size,
     regions: regionPairs.size,
     gameProducts,
-    premiumProducts: BULK_PREMIUM_APPS.length,
-    products: gameProducts + BULK_PREMIUM_APPS.length,
+    premiumProducts: premiumCat ? BULK_PREMIUM_APPS.length : 0,
+    products: gameProducts + (premiumCat ? BULK_PREMIUM_APPS.length : 0),
     denominations,
     productIds,
   };

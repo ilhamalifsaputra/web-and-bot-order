@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { provisionPgTestSchema, type PgTestSchemaEnv } from "../../tests/helpers/pgTestSchema";
-import { buildGameTopupFixtures, FIXTURE_BUYER_TELEGRAM_ID } from "../../tests/helpers/gameTopupFixtures";
-import { buildBulkGameTopupCatalog } from "../../tests/helpers/gameTopupBulkCatalog";
-import { SeedManifest, SeedConflictError, SEED_MANIFEST_KEY } from "../../tests/helpers/seedManifest";
+import { FIXTURE_BUYER_TELEGRAM_ID } from "../../tests/helpers/gameTopupFixtures";
+import { SeedManifest, SeedConflictError, SEED_MANIFEST_KEY, BULK_LAYOUT_VERSION } from "../../tests/helpers/seedManifest";
 import { expectNoVisibleMarkers } from "../../tests/helpers/seedMarkers";
 import { adoptLegacyTaggedRows, applySeed, removeManifestFixtures, LEGACY_SEED_TAG } from "./seedGameTopup";
 
@@ -48,16 +47,19 @@ describe("applySeed and removeManifestFixtures", () => {
 
     const first = await applySeed(prisma, { bulk: true });
     const afterFirst = await total();
-    expect(afterFirst.products).toBe(74 + 1);
-    expect(afterFirst.denominations).toBe(753 + 1);
-    expect(afterFirst.categories).toBe(5 + 1);
+    // --bulk builds the bulk catalog only (32 per-game categories + Premium Apps), not the small fixture.
+    expect(afterFirst.products).toBe(68 + 1);
+    expect(afterFirst.denominations).toBe(758 + 1);
+    expect(afterFirst.categories).toBe(33 + 1);
+    expect(await prisma.category.count({ where: { name: { in: ["Game Top Up", "Mixed Games", "Regional Games", "Game Editions"] } } })).toBe(0);
     const second = await applySeed(prisma, { bulk: true });
     expect(await total()).toEqual(afterFirst);
-    expect(second.small).toEqual(first.small);
+    expect(second.userId).toBe(first.userId);
+    expect(second.small).toBeUndefined();
     await expectNoVisibleMarkers(prisma);
 
     const manifest = await SeedManifest.load(prisma);
-    expect(manifest.counts()).toEqual({ categories: 5, products: 74, denominations: 753, users: 1 });
+    expect(manifest.counts()).toEqual({ categories: 33, products: 68, denominations: 758, users: 1 });
     expect(manifest.has("categories", shop.cat.id)).toBe(false);
     expect(manifest.has("users", shop.user.id)).toBe(false);
     const stored = (await prisma.setting.findUniqueOrThrow({ where: { key: SEED_MANIFEST_KEY } })).value;
@@ -65,7 +67,7 @@ describe("applySeed and removeManifestFixtures", () => {
 
     const removed = await removeManifestFixtures(prisma, manifest);
     expect(removed.skipped).toEqual([]);
-    expect(removed).toMatchObject({ categories: 5, products: 74, denominations: 753, users: 1 });
+    expect(removed).toMatchObject({ categories: 33, products: 68, denominations: 758, users: 1 });
     expect(await prisma.setting.findUnique({ where: { key: SEED_MANIFEST_KEY } })).toBeNull();
     expect(await total()).toEqual({ categories: 1, products: 1, denominations: 1, users: 1 });
     expect(await prisma.category.findUnique({ where: { id: shop.cat.id } })).not.toBeNull();
@@ -89,7 +91,7 @@ describe("applySeed and removeManifestFixtures", () => {
 
   it("skips manifest rows that orders still reference, keeps them in the manifest, and reports each skip", async () => {
     await wipe();
-    const ids = (await applySeed(prisma, { bulk: false })).small;
+    const ids = (await applySeed(prisma, { bulk: false })).small!;
     const denomId = ids.denominations["ff-70"]!;
     await prisma.order.create({
       data: {
@@ -168,10 +170,10 @@ describe("migration of rows that carry the old visible tag", () => {
     // The order still points at the renamed denomination.
     expect((await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } })).productId).toBe(legacy.coins.id);
     // The builder adopted the migrated rows instead of duplicating them.
-    expect(result.small.categories.gameTopup).toBe(legacy.cat.id);
-    expect(result.small.products.deltaForce).toBe(legacy.delta.id);
-    expect(result.small.products.premiumApp).toBe(legacy.app.id);
-    expect(result.small.userId).toBe(legacy.user.id);
+    expect(result.small!.categories.gameTopup).toBe(legacy.cat.id);
+    expect(result.small!.products.deltaForce).toBe(legacy.delta.id);
+    expect(result.small!.products.premiumApp).toBe(legacy.app.id);
+    expect(result.small!.userId).toBe(legacy.user.id);
     expect(await prisma.product.count({ where: { categoryId: legacy.prem.id } })).toBe(1);
     expect(await prisma.denomination.count({ where: { productId: legacy.app.id } })).toBe(1);
 
@@ -211,14 +213,105 @@ describe("migration of rows that carry the old visible tag", () => {
     expect(await prisma.setting.findUnique({ where: { key: SEED_MANIFEST_KEY } })).toBeNull();
   }, 60_000);
 
-  it("keeps the bulk catalog consistent with the small one after a migration", async () => {
+  it("a bulk apply after a legacy-tag migration ends in the per-game layout and stays idempotent", async () => {
     await wipe();
     await seedLegacyShape();
     await applySeed(prisma, { bulk: true });
-    const manifest = await SeedManifest.load(prisma);
     const before = await total();
-    await buildGameTopupFixtures(prisma, { manifest });
-    await buildBulkGameTopupCatalog(prisma, { manifest });
+    expect(before.categories).toBe(33);
+    await applySeed(prisma, { bulk: true });
     expect(await total()).toEqual(before);
   }, 240_000);
+});
+
+/** The layout the previous --bulk produced: the small fixture plus Regional Games, all in the manifest, no layout version. */
+async function seedOldLayout() {
+  const first = await applySeed(prisma, { bulk: false });
+  const manifest = await SeedManifest.load(prisma);
+  const regional = await prisma.category.create({ data: { name: "Regional Games", slug: "regional-games", group: "GAME_TOPUP", sortOrder: 4 } });
+  const rp = await prisma.product.create({ data: { categoryId: regional.id, name: "Valorant", slug: "valorant-old", gameRegion: "Indonesia" } });
+  const rd = await prisma.denomination.create({
+    data: { productId: rp.id, name: "125 VP", slug: "125-vp-old", type: "SHARED", durationLabel: "125 VP", price: "20000", warrantyDays: 0 },
+  });
+  manifest.add("categories", regional.id);
+  manifest.add("products", rp.id);
+  manifest.add("denominations", rd.id);
+  await manifest.save(prisma);
+  return { small: first.small!, regional, rp, rd };
+}
+
+describe("migration from the old bulk layout to one category per game", () => {
+  it("replaces the manifest's old game categories, keeps Premium Apps and the buyer, leaves real rows alone and records the layout version", async () => {
+    await wipe();
+    const shop = await realShop();
+    const old = await seedOldLayout();
+
+    const result = await applySeed(prisma, { bulk: true });
+
+    expect(result.migrated).toMatchObject({ categories: 3, products: 7, denominations: 10 });
+    for (const name of ["Game Top Up", "Mixed Games", "Regional Games"]) expect(await prisma.category.findUnique({ where: { name } })).toBeNull();
+    expect(await prisma.product.findUnique({ where: { id: old.small.products.mobileLegends } })).toBeNull();
+    expect(await prisma.category.findUnique({ where: { id: old.small.categories.premiumApps } })).not.toBeNull();
+    expect(await prisma.product.findUnique({ where: { id: old.small.products.premiumApp } })).not.toBeNull();
+    expect(result.userId).toBe(old.small.userId);
+    expect(await prisma.user.findUnique({ where: { id: old.small.userId } })).not.toBeNull();
+    // New layout: 32 game categories (+ the shop's own GAME_TOPUP category).
+    expect(await prisma.category.count({ where: { group: "GAME_TOPUP" } })).toBe(32 + 1);
+    const ml = await prisma.category.findUniqueOrThrow({ where: { name: "Mobile Legends" } });
+    expect(await prisma.product.count({ where: { categoryId: ml.id } })).toBe(4);
+    // Premium Apps now holds the old plan product plus the 8 bulk ones.
+    expect(await prisma.product.count({ where: { categoryId: old.small.categories.premiumApps } })).toBe(9);
+
+    const manifest = await SeedManifest.load(prisma);
+    expect(manifest.layout).toBe(BULK_LAYOUT_VERSION);
+    expect(manifest.has("categories", old.regional.id)).toBe(false);
+    expect(manifest.has("categories", shop.cat.id)).toBe(false);
+    expect(await prisma.category.findUnique({ where: { id: shop.cat.id } })).not.toBeNull();
+    expect(await prisma.denomination.findUnique({ where: { id: shop.den.id } })).not.toBeNull();
+    expect(await prisma.user.findUnique({ where: { id: shop.user.id } })).not.toBeNull();
+    await expectNoVisibleMarkers(prisma);
+
+    // Second run: nothing to migrate, nothing new.
+    const before = await total();
+    const again = await applySeed(prisma, { bulk: true });
+    expect(again.migrated).toMatchObject({ categories: 0, products: 0, denominations: 0 });
+    expect(await total()).toEqual(before);
+
+    // The base fixture would collide with the per-game categories, so it is refused until --remove.
+    await expect(applySeed(prisma, { bulk: false })).rejects.toThrow(SeedConflictError);
+    await expect(applySeed(prisma, { bulk: false })).rejects.toThrow(/--bulk/);
+    expect(await total()).toEqual(before);
+
+    // --remove still takes everything in the manifest.
+    const removed = await removeManifestFixtures(prisma, await SeedManifest.load(prisma));
+    expect(removed.skipped).toEqual([]);
+    expect(await prisma.setting.findUnique({ where: { key: SEED_MANIFEST_KEY } })).toBeNull();
+    expect(await prisma.category.findUnique({ where: { id: shop.cat.id } })).not.toBeNull();
+  }, 240_000);
+
+  it("stops cleanly, changing nothing, when an old row is referenced by an order", async () => {
+    await wipe();
+    const old = await seedOldLayout();
+    await prisma.order.create({
+      data: {
+        orderCode: "GTR-MIGRATE-1",
+        userId: old.small.userId,
+        subtotalAmount: "10000",
+        totalAmount: "10000",
+        items: { create: { productId: old.small.denominations["ff-70"]!, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 0 } },
+      },
+    });
+    const before = await total();
+    const manifestBefore = (await prisma.setting.findUniqueOrThrow({ where: { key: SEED_MANIFEST_KEY } })).value;
+
+    await expect(applySeed(prisma, { bulk: true })).rejects.toThrow(SeedConflictError);
+    await expect(applySeed(prisma, { bulk: true })).rejects.toThrow(/Free Fire/);
+
+    // Not half-migrated: every old row is still there, no new category, manifest untouched.
+    expect(await total()).toEqual(before);
+    expect(await prisma.category.findUnique({ where: { name: "Regional Games" } })).not.toBeNull();
+    expect(await prisma.category.findUnique({ where: { name: "Mobile Legends" } })).toBeNull();
+    expect((await prisma.setting.findUniqueOrThrow({ where: { key: SEED_MANIFEST_KEY } })).value).toBe(manifestBefore);
+    expect((await SeedManifest.load(prisma)).layout).toBeUndefined();
+  }, 120_000);
 });

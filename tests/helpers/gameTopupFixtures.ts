@@ -72,6 +72,30 @@ export const LEGACY_PRODUCT_RENAMES: Readonly<Record<string, { name: string; des
 export const FIXTURE_BUYER_FULL_NAME = "Budi Santoso";
 export const FIXTURE_BUYER_USERNAME = "budisantoso";
 
+/**
+ * The buyer (fake Telegram id, not an admin) and the shared settings every Game
+ * Top-up manual test needs: the service on for the bot and the web, minimum
+ * order 0. Used by the small fixture and by the --bulk seed.
+ */
+export async function ensureFixtureBuyerAndSettings(prisma: PrismaClient, manifest?: SeedManifest) {
+  // A buyer with a fake Telegram id (not an admin).
+  const buyerRow = await prisma.user.findUnique({ where: { telegramId: BigInt(FIXTURE_BUYER_TELEGRAM_ID) } });
+  if (buyerRow) guardExisting(manifest, "users", buyerRow.id, "the buyer account with the reserved Telegram id");
+  const user = await upsertUser(prisma, {
+    telegramId: FIXTURE_BUYER_TELEGRAM_ID,
+    username: FIXTURE_BUYER_USERNAME,
+    fullName: FIXTURE_BUYER_FULL_NAME,
+  });
+  manifest?.add("users", user.id);
+
+  // Game Top-up enabled for the bot and the web; no minimum order amount.
+  const gameService = CUSTOMER_SERVICES.find((s) => s.id === "game_topup")!;
+  await setSetting(prisma, gameService.settingKeys.bot, "1");
+  await setSetting(prisma, gameService.settingKeys.web, "1");
+  await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+  return user;
+}
+
 export async function buildGameTopupFixtures(
   prisma: PrismaClient,
   opts: { manifest?: SeedManifest } = {},
@@ -198,21 +222,7 @@ export async function buildGameTopupFixtures(
   });
   ids["premium-plan"] = plan.id;
 
-  // A buyer with a fake Telegram id (not an admin).
-  const buyerRow = await prisma.user.findUnique({ where: { telegramId: BigInt(FIXTURE_BUYER_TELEGRAM_ID) } });
-  if (buyerRow) guardExisting(manifest, "users", buyerRow.id, "the buyer account with the reserved Telegram id");
-  const user = await upsertUser(prisma, {
-    telegramId: FIXTURE_BUYER_TELEGRAM_ID,
-    username: FIXTURE_BUYER_USERNAME,
-    fullName: FIXTURE_BUYER_FULL_NAME,
-  });
-  manifest?.add("users", user.id);
-
-  // Game Top-up enabled for the bot and the web; no minimum order amount.
-  const gameService = CUSTOMER_SERVICES.find((s) => s.id === "game_topup")!;
-  await setSetting(prisma, gameService.settingKeys.bot, "1");
-  await setSetting(prisma, gameService.settingKeys.web, "1");
-  await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+  const user = await ensureFixtureBuyerAndSettings(prisma, manifest);
 
   return {
     categories: { gameTopup: gameCat.id, mixed: mixedCat.id, premiumApps: premiumCat.id },

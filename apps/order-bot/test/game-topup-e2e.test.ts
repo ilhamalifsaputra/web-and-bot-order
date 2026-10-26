@@ -81,6 +81,7 @@ import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { Decimal } from "@app/core/money";
 import { resetDb } from "../../../tests/helpers/sampleData";
+import { buildBulkGameTopupCatalog } from "../../../tests/helpers/gameTopupBulkCatalog";
 import { buildGameTopupFixtures, FIXTURE_BUYER_TELEGRAM_ID, type GameTopupFixtureIds } from "../../../tests/helpers/gameTopupFixtures";
 import { drainBatch } from "../../../packages/outbox-dispatcher/src/dispatcher";
 import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
@@ -331,6 +332,40 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     expect(global.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
     expect(tg.screenText()).toContain("Dragon Raja");
     expect(tg.screenText()).not.toContain("Indonesia");
+    expectOnlyBuyerChat(tg);
+  });
+
+  it("3b. the bulk catalog's multi-region game: category → region picker → only that region's packs", async () => {
+    await buildBulkGameTopupCatalog(prisma, { games: ["Mobile Legends"] });
+    const tg = openBot();
+    expect((await step(tg, () => tg.sendText("/start"))).screen).toEqual(["sendMessage"]);
+    expect((await step(tg, () => tg.pressReply(/Products/))).screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
+    expect((await step(tg, () => tg.press(/Game Top Up/))).screen).toEqual(["editMessageText"]);
+
+    // The game is a category of its own: tapping it opens the region picker, not a list of duplicate-looking rows.
+    const picker = await step(tg, () => tg.press(/Mobile Legends/));
+    expect(picker.screen).toEqual(["sendMessage", "editMessageText"]); // digit keyboard + the picker bubble
+    expect(tg.screenText()).toContain("Choose region:");
+    const regionButtons = tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:greg:"));
+    expect(regionButtons.map((b) => b.text)).toEqual(["🇮🇩 Indonesia", "🇲🇾 Malaysia", "🇵🇭 Philippines", "🌐 Global"]);
+    expect(tg.buttons().some((b) => b.callback_data?.startsWith("v1:browse:denom:"))).toBe(false);
+
+    // Tapping a region edits the same bubble to that region's packs; the button's callback_data is read back from the keyboard.
+    const region = await step(tg, () => tg.press(/Philippines/));
+    expect(region.screen).toEqual(["editMessageText"]);
+    expect(tg.screenText()).toContain("🇵🇭 Philippines");
+    expect(tg.screenText()).not.toContain("Indonesia");
+    const ml = await prisma.category.findUniqueOrThrow({ where: { name: "Mobile Legends" } });
+    const philippines = await prisma.product.findFirstOrThrow({ where: { categoryId: ml.id, gameRegion: { contains: "Philippines" } }, include: { denominations: true } });
+    const others = await prisma.product.findMany({ where: { categoryId: ml.id, id: { not: philippines.id } }, include: { denominations: true } });
+    expect(others).toHaveLength(3);
+    const shown = tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:denom:")).map((b) => Number(b.callback_data!.split(":").pop()));
+    expect(shown.length).toBeGreaterThanOrEqual(15);
+    const philippinesIds = new Set(philippines.denominations.map((d) => d.id));
+    expect(shown.every((id) => philippinesIds.has(id))).toBe(true);
+    const otherIds = new Set(others.flatMap((o) => o.denominations.map((d) => d.id)));
+    expect(shown.some((id) => otherIds.has(id))).toBe(false);
+    expect(await prisma.order.count()).toBe(0);
     expectOnlyBuyerChat(tg);
   });
 

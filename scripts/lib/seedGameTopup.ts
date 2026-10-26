@@ -11,6 +11,7 @@ import type { PrismaClient } from "@prisma/client";
 import { ensureUniqueSlug } from "@app/db";
 import {
   buildGameTopupFixtures,
+  ensureFixtureBuyerAndSettings,
   FIXTURE_BUYER_FULL_NAME,
   FIXTURE_BUYER_TELEGRAM_ID,
   FIXTURE_BUYER_USERNAME,
@@ -18,7 +19,7 @@ import {
   type GameTopupFixtureIds,
 } from "../../tests/helpers/gameTopupFixtures";
 import { buildBulkGameTopupCatalog, type BulkCatalogResult } from "../../tests/helpers/gameTopupBulkCatalog";
-import { SeedConflictError, SeedManifest, type SeedRowKind } from "../../tests/helpers/seedManifest";
+import { BULK_LAYOUT_VERSION, SeedConflictError, SeedManifest, type SeedRowKind } from "../../tests/helpers/seedManifest";
 
 /** The only database this seed may ever touch: the Game Top-up refactor worktree's dev database. */
 export const SEED_DB_NAME = "bot_order_gtr";
@@ -182,28 +183,116 @@ export async function adoptLegacyTaggedRows(prisma: PrismaClient, manifest: Seed
   return adopted;
 }
 
-export interface ApplyResult {
-  adopted: AdoptedCounts;
-  small: GameTopupFixtureIds;
-  bulk: Omit<BulkCatalogResult, "productIds"> | undefined;
+export interface MigratedCounts {
+  categories: number;
+  products: number;
+  denominations: number;
 }
 
 /**
- * Migrate any legacy-tagged rows, then create or adopt the small (and with
- * `bulk` the large) catalog. The manifest is saved even when a later step
- * refuses a same-name shop row, so the rows created so far stay removable.
+ * One-time migration for --bulk. An older bulk layout (the manifest records no
+ * layout version, or one below BULK_LAYOUT_VERSION) put every game into shared
+ * categories such as "Game Top Up" / "Regional Games" / "Game Editions" /
+ * "Mixed Games". Those manifest-owned GAME_TOPUP categories, with their
+ * manifest-owned products and denominations, are removed so the per-game layout
+ * can replace them. Premium Apps rows and the buyer stay. All or nothing: a row
+ * that orders still reference, or a category/product that also holds a row the
+ * seed does not own, stops the run with a SeedConflictError before anything is
+ * deleted (the delete itself is one transaction, so a reference the checks
+ * missed rolls everything back). The manifest is only updated after success.
+ */
+export async function migrateOldBulkLayout(prisma: PrismaClient, manifest: SeedManifest): Promise<MigratedCounts> {
+  const none: MigratedCounts = { categories: 0, products: 0, denominations: 0 };
+  if ((manifest.layout ?? 1) >= BULK_LAYOUT_VERSION) return none;
+
+  const categories = await prisma.category.findMany({
+    where: { id: { in: [...manifest.ids.categories] }, group: "GAME_TOPUP" },
+    select: { id: true, name: true },
+  });
+  if (categories.length === 0) return none;
+  const categoryIds = categories.map((c) => c.id);
+  const products = await prisma.product.findMany({ where: { categoryId: { in: categoryIds } }, select: { id: true, name: true, categoryId: true } });
+  const denominations = await prisma.denomination.findMany({ where: { productId: { in: products.map((p) => p.id) } }, select: { id: true, productId: true } });
+
+  const stop = (reason: string) =>
+    new SeedConflictError(`Cannot move to the per-game catalog layout: ${reason}. Nothing was changed. Resolve that, or run --remove first, then run again.`);
+  const foreignProducts = products.filter((p) => !manifest.has("products", p.id));
+  if (foreignProducts.length > 0) {
+    throw stop(`the category of "${foreignProducts[0]!.name}" holds products that are not part of this seed (${foreignProducts.length} in total)`);
+  }
+  const foreignDenominations = denominations.filter((d) => !manifest.has("denominations", d.id));
+  if (foreignDenominations.length > 0) {
+    const name = products.find((p) => p.id === foreignDenominations[0]!.productId)!.name;
+    throw stop(`the product "${name}" holds denominations that are not part of this seed (${foreignDenominations.length} in total)`);
+  }
+  const referenced = await prisma.orderItem.findMany({
+    where: { productId: { in: denominations.map((d) => d.id) } },
+    select: { productId: true },
+    distinct: ["productId"],
+  });
+  if (referenced.length > 0) {
+    const referencedDenominationIds = new Set(referenced.map((r) => r.productId));
+    const names = [...new Set(denominations.filter((d) => referencedDenominationIds.has(d.id)).map((d) => products.find((p) => p.id === d.productId)!.name))];
+    throw stop(`orders still reference ${referenced.length} denominations of ${names.map((n) => `"${n}"`).join(", ")}`);
+  }
+
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.denomination.deleteMany({ where: { id: { in: denominations.map((d) => d.id) } } });
+        await tx.product.deleteMany({ where: { id: { in: products.map((p) => p.id) } } });
+        await tx.category.deleteMany({ where: { id: { in: categoryIds } } });
+      },
+      { timeout: 120_000, maxWait: 30_000 },
+    );
+  } catch (e) {
+    throw stop(`other rows still reference the old catalog (${e instanceof Error ? e.message.split("\n").pop() : "database error"})`);
+  }
+  for (const d of denominations) manifest.delete("denominations", d.id);
+  for (const p of products) manifest.delete("products", p.id);
+  for (const c of categories) manifest.delete("categories", c.id);
+  return { categories: categories.length, products: products.length, denominations: denominations.length };
+}
+
+export interface ApplyResult {
+  adopted: AdoptedCounts;
+  /** Old-layout rows removed by this run (all zero unless a --bulk run migrated). */
+  migrated: MigratedCounts;
+  /** The small fixture's ids; undefined with --bulk, which builds the per-game catalog instead. */
+  small: GameTopupFixtureIds | undefined;
+  bulk: Omit<BulkCatalogResult, "productIds"> | undefined;
+  /** The buyer's user id (with and without --bulk). */
+  userId: number;
+}
+
+/**
+ * Migrate any legacy-tagged rows, then create or adopt EITHER the small catalog
+ * (default) OR, with `bulk`, the large per-game catalog (replacing an older bulk
+ * layout first, see migrateOldBulkLayout). The two are alternatives: the small
+ * fixture's shared "Game Top Up"/"Mixed Games" categories would sit next to the
+ * per-game categories, so a plain run on a database that already holds the bulk
+ * layout is refused. The manifest is saved even when a later step refuses a
+ * same-name shop row, so the rows created so far stay removable.
  */
 export async function applySeed(prisma: PrismaClient, opts: { bulk: boolean }): Promise<ApplyResult> {
   const manifest = await SeedManifest.load(prisma);
   try {
     const adopted = await adoptLegacyTaggedRows(prisma, manifest);
-    const small = await buildGameTopupFixtures(prisma, { manifest });
-    let bulk: ApplyResult["bulk"];
-    if (opts.bulk) {
-      const { productIds: _productIds, ...summary } = await buildBulkGameTopupCatalog(prisma, { manifest });
-      bulk = summary;
+    if (!opts.bulk) {
+      if ((manifest.layout ?? 0) >= BULK_LAYOUT_VERSION) {
+        throw new SeedConflictError(
+          "The large per-game catalog is already applied, and the small fixture would put a mixed \"Game Top Up\" category next to it. Run with --bulk to keep the large catalog, or --apply --remove first to start over.",
+        );
+      }
+      const small = await buildGameTopupFixtures(prisma, { manifest });
+      return { adopted, migrated: { categories: 0, products: 0, denominations: 0 }, small, bulk: undefined, userId: small.userId };
     }
-    return { adopted, small, bulk };
+    const migrated = await migrateOldBulkLayout(prisma, manifest);
+    // Recorded before the build so a later refusal (a shop namesake) never makes the next run mistake the new categories for the old layout.
+    manifest.layout = BULK_LAYOUT_VERSION;
+    const { productIds: _productIds, ...bulk } = await buildBulkGameTopupCatalog(prisma, { manifest });
+    const user = await ensureFixtureBuyerAndSettings(prisma, manifest);
+    return { adopted, migrated, small: undefined, bulk, userId: user.id };
   } finally {
     await manifest.save(prisma);
   }

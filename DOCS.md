@@ -405,7 +405,15 @@ Prasyarat (di worktree `game-topup-refactor`, bukan di checkout utama):
    `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db`
    (dry run, hanya hitungan), lalu
    `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply`
-   (tambah `--bulk` untuk katalog besar). Skrip menolak jalan kecuali host lokal,
+   (tambah `--bulk` untuk katalog besar **sebagai pengganti** fixture kecil, bukan
+   tambahan: `--bulk` membuat satu kategori Game Top-up per game, sekitar 32 game,
+   game mobile dulu lalu game PC (dibedakan lewat emoji 🎮/🖥️ dan urutan saja,
+   karena skema tidak punya subkategori), plus 8 produk Premium Apps; tanpa
+   `--bulk` yang dibuat hanya fixture kecil "Game Top Up" dan "Mixed Games").
+   Bila manifest masih berisi tata letak bulk lama (Game Top Up / Regional Games /
+   Game Editions / Mixed Games), `--bulk` menghapus baris manifest lama itu dahulu
+   dan berhenti dengan pesan, tanpa mengubah apa pun, bila ada order yang masih
+   merujuknya. Skrip menolak jalan kecuali host lokal,
    DB `bot_order_gtr`, dan flag konfirmasi. Kepemilikan baris dicatat di
    **manifest tak terlihat**: id kategori, produk, denominasi, dan pembeli yang
    dibuat atau diadopsi disimpan sebagai JSON di satu baris setting
@@ -424,8 +432,14 @@ Prasyarat (di worktree `game-topup-refactor`, bukan di checkout utama):
 
 Daftar cek:
 
-- [ ] Penelusuran tiga tingkat: kategori, game, region (bila ada), paket. Game
-  tanpa region langsung ke paket; kategori campuran menampilkan semua produk.
+- [ ] Penelusuran dengan katalog `--bulk`: Game Top-up -> Mobile Legends (satu
+  kategori per game) -> pilih region (Indonesia/Malaysia/Philippines/Global) ->
+  daftar denominasi hanya untuk region itu. Jalur edisi: Game Top-up -> Arena
+  Breakout -> pilih edisi (Standard/Infinite) -> pilih region -> denominasi.
+  Game satu region atau tanpa region (mis. Roblox) langsung ke paket tanpa
+  picker. Dengan fixture kecil (tanpa `--bulk`): kategori, game, region (bila
+  ada), paket; game tanpa region langsung ke paket; kategori campuran
+  menampilkan semua produk.
 - [ ] Satu baris hint di tiap layar (daftar game, edisi, region, paket, search),
   dan label `mulai <harga>` pada daftar produk Game Top-up.
 - [ ] `/search` menemukan produk Game Top-up saja (tidak ada Premium Apps).

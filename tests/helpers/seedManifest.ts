@@ -10,6 +10,14 @@ import type { PrismaClient } from "@prisma/client";
 
 export const SEED_MANIFEST_KEY = "seed_game_topup_manifest";
 
+/**
+ * Layout version the --bulk catalog is built in. 2 = one GAME_TOPUP category per
+ * game (region/edition pickers inside the game). A manifest without a version
+ * (or below this) holds the older layout (Game Top Up / Regional Games / Game
+ * Editions / Mixed Games) that --bulk replaces.
+ */
+export const BULK_LAYOUT_VERSION = 2;
+
 export type SeedRowKind = "categories" | "products" | "denominations" | "users";
 const KINDS: readonly SeedRowKind[] = ["categories", "products", "denominations", "users"];
 
@@ -29,12 +37,16 @@ export class SeedManifest {
     users: new Set(),
   };
 
+  /** Bulk layout version recorded by the last --bulk apply; undefined for a manifest written before versions existed. */
+  layout: number | undefined;
+
   static async load(db: PrismaClient): Promise<SeedManifest> {
     const manifest = new SeedManifest();
     // Read the row directly: getSetting caches for 30 s, and the manifest must always be current.
     const row = await db.setting.findUnique({ where: { key: SEED_MANIFEST_KEY } });
     if (!row) return manifest;
-    const parsed = JSON.parse(row.value) as Partial<Record<SeedRowKind, number[]>>;
+    const parsed = JSON.parse(row.value) as Partial<Record<SeedRowKind, number[]>> & { layout?: number };
+    if (typeof parsed.layout === "number") manifest.layout = parsed.layout;
     for (const kind of KINDS) for (const id of parsed[kind] ?? []) manifest.ids[kind].add(id);
     return manifest;
   }
@@ -70,8 +82,9 @@ export class SeedManifest {
       await deleteSetting(db, SEED_MANIFEST_KEY);
       return;
     }
-    const out: Record<string, number[]> = {};
+    const out: Record<string, number[] | number> = {};
     for (const kind of KINDS) out[kind] = [...this.ids[kind]].sort((a, b) => a - b);
+    if (this.layout !== undefined) out.layout = this.layout;
     await setSetting(db, SEED_MANIFEST_KEY, JSON.stringify(out));
   }
 }

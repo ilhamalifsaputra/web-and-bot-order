@@ -10,7 +10,15 @@
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db                   # dry run: counts only
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply           # create (idempotent)
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove  # delete the manifest's rows only (bulk rows too)
- *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --bulk    # also the large catalog (30+ games, 600+ denominations)
+ *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --bulk    # the large per-game catalog INSTEAD of the small one
+ *
+ * Without --bulk the small fixture is built ("Game Top Up" with a few games and
+ * "Mixed Games"). With --bulk the large catalog is built instead: one Game Top-up
+ * category per game (about 32 games, mobile first then PC), the region and edition
+ * pickers live inside each game, plus 8 Premium Apps and the buyer. The two
+ * never coexist (a mixed "Game Top Up" category would sit next to the per-game
+ * ones); --bulk removes the manifest's rows of the older layout first (stopping
+ * with a message, changing nothing, when an order references one).
  *
  * Refuses unless DATABASE_URL_PRISMA is on localhost/127.0.0.1/::1, the database
  * is exactly "bot_order_gtr", and --confirm-worktree-db is given. It never drops
@@ -36,8 +44,9 @@ Options:
   --apply                Write (default: dry run, prints counts only).
   --remove               Delete only the rows listed in the "${SEED_MANIFEST_KEY}" settings row
                          (without --apply: prints what would go). Real shop rows are never touched.
-  --bulk                 Also create/keep the large catalog (30+ games, regions, editions, 600+ denominations, 8 Premium apps).
-                         --remove always deletes every manifest row, bulk included.
+  --bulk                 Build the large per-game catalog (one category per game with its region/edition pickers, 600+
+                         denominations, 8 Premium apps) instead of the small fixture. An older bulk layout in the manifest
+                         is replaced first. --remove always deletes every manifest row.
   --help, -h             Show this help.
 `;
 
@@ -79,7 +88,7 @@ async function main(): Promise<void> {
     console.log(
       remove
         ? `Would remove the ${c.denominations} denominations, ${c.products} products, ${c.categories} categories and ${c.users} buyer listed in the manifest (rows that real orders still reference are skipped). Run again with --apply --remove to delete.`
-        : `Would create or keep the ${bulk ? "small and bulk " : ""}rows${hasLegacy ? ` and rename the ${legacy.categories + legacy.products + legacy.denominations + legacy.users} old-suffix rows in place` : ""}. Run again with --apply${bulk ? " --bulk" : ""} to write.`,
+        : `Would create or keep the ${bulk ? "large per-game catalog (replacing the manifest's older layout when there is one; no small fixture)" : "small fixture"} rows${hasLegacy ? ` and rename the ${legacy.categories + legacy.products + legacy.denominations + legacy.users} old-suffix rows in place` : ""}. Run again with --apply${bulk ? " --bulk" : ""} to write.`,
     );
     return;
   }
@@ -89,10 +98,14 @@ async function main(): Promise<void> {
     for (const s of result.skipped) console.log(`Skipped: ${s}`);
   } else {
     try {
-      const { adopted, small, bulk: bulkSummary } = await applySeed(prisma, { bulk });
+      const { adopted, migrated, small, bulk: bulkSummary, userId } = await applySeed(prisma, { bulk });
       if (Object.values(adopted).some((n) => n > 0)) console.log(`Renamed in place (old suffix removed): ${JSON.stringify(adopted)}`);
-      console.log(`Ready: categories ${JSON.stringify(small.categories)}, products ${JSON.stringify(small.products)}, buyer user #${small.userId}`);
-      if (bulkSummary) console.log(`Bulk catalog ready: ${JSON.stringify(bulkSummary)}`);
+      if (Object.values(migrated).some((n) => n > 0)) console.log(`Replaced the older catalog layout, removed: ${JSON.stringify(migrated)}`);
+      if (small) console.log(`Ready: categories ${JSON.stringify(small.categories)}, products ${JSON.stringify(small.products)}, buyer user #${small.userId}`);
+      if (bulkSummary) {
+        const { categories, ...counts } = bulkSummary;
+        console.log(`Per-game catalog ready: ${JSON.stringify({ ...counts, premiumAppsCategoryId: categories.premiumApps })}, buyer user #${userId}`);
+      }
     } catch (e) {
       if (e instanceof SeedConflictError) {
         console.error(`Stopped: ${e.message}`);

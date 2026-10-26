@@ -430,7 +430,8 @@ async function computeConfirmation(
           grossSubtotal,
           bulkDiscountAmt,
         );
-        const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount));
+        // The same instant as the unit and the tiers, as createOrderDirect pins it.
+        const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount), pricedAt);
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
           discount: prices.price(discount),

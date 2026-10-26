@@ -100,6 +100,7 @@ import { Decimal } from "@app/core/money";
 import type { Refund, RefundExecution, StockItem, StockReplacement } from "@prisma/client";
 import type { Db } from "./_types";
 import { logAdminAction } from "./audit";
+import { snapshotBulkDiscountFor } from "./bulkTiers";
 import { enqueueOrderDeliveredDm } from "./notifications";
 import { enqueueBuyerOrderReadyEmailIfGuest, getOrder } from "./orders";
 import { createRefund, createRefundItem, executeRefund, transitionRefundStatus } from "./refunds";
@@ -354,9 +355,11 @@ function deadReasonFromText(reason: string): DeadReason {
  *     `discountAmount` (voucher) live only on the `Order` row and are NEVER
  *     applied to `OrderItem.unitPrice`, so paying a unit back at its raw
  *     unitPrice would refund a discounted buyer more than they paid for it.
- *     Split by this line's share of `subtotalAmount`, multiplying before
- *     dividing so the single division happens once against a full-precision
- *     numerator.
+ *     The volume discount is this line's own figure from `bulkTierSnapshot`
+ *     when the order has one (`snapshotBulkDiscountFor`); the voucher, and
+ *     the bulk discount of a snapshot-less historical order, are split by
+ *     this line's share of `subtotalAmount`, multiplying before dividing so
+ *     the single division happens once against a full-precision numerator.
  *  2. **FX.** `OrderItem.unitPrice` is always the catalog's central-IDR price
  *     and does NOT follow `Order.currency` (revenue.ts spells out the bug that
  *     rule exists to prevent). `Refund.currency` is pinned to the ORDER's
@@ -381,19 +384,33 @@ function refundableAmountForUnit(
   order: {
     subtotalAmount: Decimal.Value;
     bulkDiscountAmount: Decimal.Value;
+    bulkTierSnapshot: unknown;
     discountAmount: Decimal.Value;
     currency: string;
     fxRate: Decimal.Value | null;
   },
-  item: { unitPrice: Decimal.Value; quantity: number },
+  item: { productId: number; unitPrice: Decimal.Value; quantity: number },
 ): Decimal {
   const lineGross = new Decimal(item.unitPrice).times(item.quantity);
-  const totalDiscount = new Decimal(order.bulkDiscountAmount).plus(order.discountAmount);
   const orderSubtotal = new Decimal(order.subtotalAmount);
   let net = lineGross;
-  if (totalDiscount.greaterThan(0) && orderSubtotal.greaterThan(0)) {
-    net = lineGross.minus(totalDiscount.times(lineGross).div(orderSubtotal));
+  // A tiered order's snapshot says exactly which line got the volume discount
+  // (the same figure `createRefundItem` budgets against); only an order
+  // without one falls back to prorating `bulkDiscountAmount` by subtotal share.
+  const lineBulk = snapshotBulkDiscountFor(order.bulkTierSnapshot, item.productId, item.quantity);
+  if (lineBulk !== null) {
+    net = net.minus(lineBulk);
+    const voucher = new Decimal(order.discountAmount);
+    if (voucher.greaterThan(0) && orderSubtotal.greaterThan(0)) {
+      net = net.minus(voucher.times(lineGross).div(orderSubtotal));
+    }
+  } else {
+    const totalDiscount = new Decimal(order.bulkDiscountAmount).plus(order.discountAmount);
+    if (totalDiscount.greaterThan(0) && orderSubtotal.greaterThan(0)) {
+      net = lineGross.minus(totalDiscount.times(lineGross).div(orderSubtotal));
+    }
   }
+  net = Decimal.max(0, net);
   if (order.currency !== "IDR" && order.fxRate != null) {
     net = net.div(new Decimal(order.fxRate));
   }
@@ -427,6 +444,7 @@ async function loadUnit(db: Db, orderItemId: number) {
           subtotalAmount: true,
           discountAmount: true,
           bulkDiscountAmount: true,
+          bulkTierSnapshot: true,
           totalAmount: true,
           userId: true,
           // `isGuest`/`guestEmail` ride along for `notifyBuyerOfRedelivery`'s

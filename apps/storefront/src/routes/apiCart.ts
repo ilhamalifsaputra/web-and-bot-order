@@ -8,13 +8,11 @@
  * need the x-csrf-token header.
  */
 import type { FastifyPluginAsync } from "fastify";
-import { Decimal } from "@app/core/money";
 import { prisma, updateCartItemQty, removeFromCart, getCartItemAutoDeliverySource, getDenomination } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { readGuestCart, writeGuestCart, CART_COOKIE, CART_COOKIE_VERSION, type GuestCartLine } from "../shop";
-import { loadCartLines, csrfOk, clampQty } from "./cart";
+import { cartPayload, csrfOk, clampQty } from "./cart";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { Customer } from "../plugins/auth";
 
 /** Write the guest cookie AND patch req.cookies so loadCartLines() (which
  * re-reads the request cookie) sees the value we just set on the reply —
@@ -22,12 +20,6 @@ import type { Customer } from "../plugins/auth";
 function writeGuestCartAndPatch(req: FastifyRequest, reply: FastifyReply, next: GuestCartLine[]): void {
   writeGuestCart(reply, next);
   req.cookies[CART_COOKIE] = JSON.stringify({ v: CART_COOKIE_VERSION, items: next });
-}
-
-async function cartPayload(req: FastifyRequest, customer: Customer | null) {
-  const items = await loadCartLines(req, customer);
-  const subtotal = items.reduce((s, l) => s.plus(l.line_total), new Decimal(0));
-  return { items, subtotal: subtotal.toString() };
 }
 
 const apiCartRoutes: FastifyPluginAsync = async (app) => {

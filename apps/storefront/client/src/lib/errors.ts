@@ -76,3 +76,12 @@ export function humanError(err: unknown, genericKey = "web.error_message"): stri
   if (!key || !(key.startsWith("web.") || key.startsWith("error."))) return t(genericKey);
   return t(key, errorArgsOf(err));
 }
+
+/**
+ * True when an order attempt was refused because the total changed since the
+ * buyer's summary was priced (HTTP 409 `error.quote_changed`, quote binding
+ * A6). Nothing was created or charged; the page re-prices and asks again.
+ */
+export function isQuoteChanged(err: unknown): boolean {
+  return messageOf(err) === "error.quote_changed" && (err as { status?: unknown } | null)?.status === 409;
+}

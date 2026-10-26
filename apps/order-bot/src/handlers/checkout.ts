@@ -17,7 +17,6 @@ import { canonicalProduct } from "@app/core/canonicalProduct";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { boundedCanonicalName } from "../util/canonicalPresenter";
 import { effectiveUnitPrice } from "@app/core/flash";
-import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
 import {
@@ -46,7 +45,7 @@ import {
   buildNicknameProviderEntries,
   resolveNicknameGate,
   countAvailableStock,
-  getBulkPricingForDenomination,
+  quoteBulkForLines,
   getVoucherByCode,
   applyVoucherToSubtotal,
   computeEligibleAmounts,
@@ -99,7 +98,8 @@ import { pollOnce as bybitBscPoll, triggerImmediatePoll as bybitBscImmediatePoll
 import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payments/bybitBscConfirmationTracker";
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
-import { smartEdit, menuAnchor } from "../util/chat";
+import { smartEdit, menuAnchor, MAX_CAPTION_LEN } from "../util/chat";
+import { fitSections } from "../util/tierDisplay";
 import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { sendAccountFile } from "../util/delivery";
 import { flipSettledOrderBubble } from "../jobs";
@@ -396,7 +396,6 @@ async function computeConfirmation(
     getUser(prisma, info.id),
   ]);
   if (product === null || user === null) return null;
-  const bulkRule = await getBulkPricingForDenomination(prisma, productId);
   // Voucher amounts are IDR-canonical; shown in the buyer's display currency.
   const prices = ctxPriceFormatter(ctx, rate);
 
@@ -409,16 +408,25 @@ async function computeConfirmation(
   const isReseller = user.role === UserRole.RESELLER;
   // Same helper createOrderDirect prices with, so the confirmation screen can
   // never quote a figure the order itself won't charge.
-  const unitPrice = effectiveUnitPrice(product, isReseller);
+  // One instant for the unit and the tiers, as createOrderDirect prices them.
+  const pricedAt = new Date();
+  const unitPrice = effectiveUnitPrice(product, isReseller, pricedAt);
   const canonical = canonicalProduct({ denomination: { ...product, createdAt: product.createdAt.toISOString() }, product: product.product, category: product.product.category }, { effectivePriceIDR: unitPrice.toString(), preferredCurrency: parseDisplayCurrency(ctx.session.dbUser?.preferredCurrency) ?? "IDR", rate: rate?.toString(), locale: lang });
   const productName = await boundedCanonicalName(canonical, (html) => ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" }), { includeProductName: true });
-  // Quantized and bulk-reduced exactly the way createOrderDirect does it
-  // (q4 subtotal, then subtract bulkDiscountFor) — this screen previously
-  // multiplied by (1 − percent/100) instead, which is the same value only up to
-  // rounding and is the kind of second spelling that drifts into quoting a
-  // figure the order won't charge.
+  // Quantized and bulk-reduced exactly the way createOrderDirect does it (q4
+  // subtotal, then subtract the volume-tier discount from quoteBulkForLines,
+  // the one helper every preview and order path prices tiers with) — this
+  // screen once multiplied by (1 − percent/100) instead, which is the same
+  // value only up to rounding and is the kind of second spelling that drifts
+  // into quoting a figure the order won't charge.
   const grossSubtotal = quantizeMoney(unitPrice.times(quantity), 4);
-  const bulkDiscountAmt = bulkDiscountFor(grossSubtotal, bulkRule, quantity);
+  const bulkQuote = await quoteBulkForLines(
+    prisma,
+    [{ denominationId: productId, quantity, denomination: product }],
+    isReseller,
+    pricedAt,
+  );
+  const bulkDiscountAmt = bulkQuote.bulkDiscount;
   let subtotal = grossSubtotal.minus(bulkDiscountAmt);
 
   let voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? "";
@@ -441,7 +449,8 @@ async function computeConfirmation(
           grossSubtotal,
           bulkDiscountAmt,
         );
-        const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount));
+        // The same instant as the unit and the tiers, as createOrderDirect pins it.
+        const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal.minus(eligibleBulkDiscount), pricedAt);
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
           discount: prices.price(discount),
@@ -1186,6 +1195,8 @@ export async function renderOrderConfirmation(
   ctx: MyContext,
   productId: number,
   quantity: number,
+  /** `shortNotice`: what `notice` shrinks to when the screen must fit a photo caption. */
+  opts?: { notice?: string; shortNotice?: string },
 ): Promise<void> {
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
@@ -1199,9 +1210,27 @@ export async function renderOrderConfirmation(
     ctx.session.scratch.checkoutIntentId = randomUUID();
   }
   const rails = await offerableRails(r.subtotal, rate);
+  const body = confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate));
+  const notice = opts?.notice;
+  // On a photo anchor the whole screen is a caption (MAX_CAPTION_LEN). The
+  // summary itself never gives way; the notice shrinks to its short form, and
+  // is dropped only when even that does not fit.
+  const captionText = notice
+    ? fitSections(
+        [
+          {
+            text: notice,
+            dropRank: 1,
+            shrink: (budget) => (opts?.shortNotice && opts.shortNotice.length <= budget ? opts.shortNotice : null),
+          },
+          { text: body },
+        ],
+        MAX_CAPTION_LEN,
+      )
+    : undefined;
   await menuAnchor(
     ctx,
-    confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
+    (notice ? notice + "\n\n" : "") + body,
     ckb.orderConfirmKb(
       productId,
       quantity,
@@ -1219,6 +1248,7 @@ export async function renderOrderConfirmation(
       r.fullyCovered,
       r.nonce,
     ),
+    { captionText },
   );
 }
 

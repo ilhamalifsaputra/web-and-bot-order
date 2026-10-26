@@ -38,6 +38,7 @@ import { Decimal } from "@app/core/money";
 import type { Prisma, Refund, RefundExecution, RefundItem } from "@prisma/client";
 import type { Db } from "./_types";
 import { logAdminAction } from "./audit";
+import { snapshotBulkDiscountFor } from "./bulkTiers";
 import { postRefundExecutionPosting } from "./ledgerPostings";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
@@ -340,11 +341,42 @@ export async function transitionRefundStatus(
 }
 
 /**
+ * An OrderItem's IDR value net of the volume discount its own line received —
+ * the per-item refund budget.
+ *
+ * `OrderItem.unitPrice` is the PRE-bulk unit (the volume discount lives only
+ * on the Order row), so budgeting a unit at its raw unitPrice let one unit of
+ * a tier-discounted order be refunded for more than the buyer paid for it (5
+ * units at Rp10.000 under a Rp6.000 tier: Rp10.000 back for a Rp6.000 unit).
+ *
+ * The discount comes from `Order.bulkTierSnapshot` — the line's own
+ * `totalDiscount`, split over that line's units (`snapshotBulkDiscountFor`) —
+ * never an order-wide proration: spreading the discount by subtotal share
+ * would make an untiered line in a mixed cart under-refundable and a tiered
+ * one over-refundable. An order with no snapshot (untiered, or a historical
+ * order priced before tiers existed) keeps the gross `unitPrice × quantity`
+ * budget it always had; no proration is applied retroactively.
+ *
+ * The voucher (`discountAmount`) is deliberately NOT subtracted here:
+ * `stockReplacement` pays a unit net of both, which stays within this budget.
+ */
+function lineNetOfBulkDiscount(
+  order: { bulkTierSnapshot: unknown },
+  item: { productId: number; unitPrice: Decimal.Value; quantity: number },
+): Decimal {
+  const lineGross = new Decimal(item.unitPrice).times(item.quantity);
+  const discount = snapshotBulkDiscountFor(order.bulkTierSnapshot, item.productId, item.quantity);
+  if (discount === null || !discount.greaterThan(0)) return lineGross;
+  return quantizeMoney(Decimal.max(0, lineGross.minus(discount)), 4);
+}
+
+/**
  * Create a per-line RefundItem, enforcing the cross-row sum invariant that
  * RefundItem's own schema doc comment defers to the application layer: the
  * sum of every RefundItem.amount already recorded against this OrderItem,
- * plus this new amount, must never exceed the OrderItem's own subtotal
- * (`unitPrice * quantity`). Reads every sibling RefundItem row for this
+ * plus this new amount, must never exceed the OrderItem's own subtotal net of
+ * its prorated bulk discount (`lineNetOfBulkDiscount`; `unitPrice * quantity`
+ * when the order had none). Reads every sibling RefundItem row for this
  * `orderItemId` (across ALL Refunds, not just the current one) to compute
  * that sum — a partial refund history can span more than one Refund request
  * over time (e.g. buy 3, one turns out dead now and another later).
@@ -458,7 +490,7 @@ async function createRefundItemLocked(
   const amount = parseRefundAmount(args.amount);
   const order = await db.order.findUniqueOrThrow({ where: { id: refund.orderId } });
   if (order.currency !== refund.currency) throw new ValidationError("error.refund_currency_mismatch", { refundCurrency: refund.currency, orderCurrency: order.currency });
-  const subtotal = refundCurrencyAmount(new Decimal(orderItem.unitPrice).times(orderItem.quantity), "IDR", order);
+  const subtotal = refundCurrencyAmount(lineNetOfBulkDiscount(order, orderItem), "IDR", order);
 
   const existing = await db.refundItem.aggregate({
     where: {

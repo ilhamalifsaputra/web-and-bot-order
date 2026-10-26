@@ -187,3 +187,62 @@ describe("shapeProducts — rating aggregation reuses aggregateRating", () => {
     expect(card!.rating_count).toBe(4);
   });
 });
+
+describe("shapeProducts — volume tier badge", () => {
+  type Tier = import("@app/core/bulk").PricingTier;
+  const tier = (minQuantity: number, discountType: Tier["discountType"], discountValue: string, isEnabled = true): Tier => ({
+    id: `t-${minQuantity}-${discountType}`,
+    minQuantity,
+    discountType,
+    discountValue,
+    isEnabled,
+  });
+
+  it("shows no badge when no plan has tiers", () => {
+    const [card] = shapeProducts([productWith([denom()])], {}, new Map());
+    expect(card!.bulk_discount).toBeNull();
+    expect(card!.bulk_min_qty).toBeNull();
+    expect(card!.bulk_up_to).toBe(false);
+  });
+
+  it("states a percent tier exactly, and picks the best tier across plans", () => {
+    const a = denom({ price: "10000" });
+    const b = denom({ price: "20000" });
+    const [card] = shapeProducts(
+      [productWith([a, b])],
+      {},
+      new Map(),
+      { [a.id]: [tier(3, "PERCENTAGE", "10")], [b.id]: [tier(5, "PERCENTAGE", "12.5"), tier(2, "PERCENTAGE", "5")] },
+    );
+    expect(card!.bulk_discount).toBe("12.5");
+    expect(card!.bulk_min_qty).toBe(5);
+    expect(card!.bulk_up_to).toBe(false);
+  });
+
+  it("expresses a fixed-amount tier as a whole percent of the effective unit, rounded down, marked 'up to'", () => {
+    // 3000 off a 7000 unit = 42.86% → 42, never 43.
+    const d = denom({ price: "7000" });
+    const [card] = shapeProducts([productWith([d])], {}, new Map(), { [d.id]: [tier(4, "FIXED_AMOUNT_OFF_PER_UNIT", "3000")] });
+    expect(card!.bulk_discount).toBe("42");
+    expect(card!.bulk_min_qty).toBe(4);
+    expect(card!.bulk_up_to).toBe(true);
+  });
+
+  it("prices a fixed unit price against the viewer's own effective unit (reseller)", () => {
+    // Everyone pays 10000 → a 6000 fixed price is 40% off. A reseller already
+    // pays 8000 → the same tier is 25% off for them.
+    const d = denom({ price: "10000", resellerPrice: "8000" });
+    const tiers = { [d.id]: [tier(5, "FIXED_UNIT_PRICE", "6000")] };
+    expect(shapeProducts([productWith([d])], {}, new Map(), tiers)[0]!.bulk_discount).toBe("40");
+    expect(shapeProducts([productWith([d])], {}, new Map(), tiers, true)[0]!.bulk_discount).toBe("25");
+  });
+
+  it("never advertises a fixed price that would not lower the price, nor a disabled tier", () => {
+    const d = denom({ price: "5000" });
+    const [card] = shapeProducts([productWith([d])], {}, new Map(), {
+      [d.id]: [tier(3, "FIXED_UNIT_PRICE", "6000"), tier(6, "PERCENTAGE", "50", false)],
+    });
+    expect(card!.bulk_discount).toBeNull();
+    expect(card!.bulk_up_to).toBe(false);
+  });
+});

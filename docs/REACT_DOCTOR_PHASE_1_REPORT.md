@@ -256,6 +256,18 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Full vitest on the final source, in eight foreground shards (`--shard=i/8 --maxWorkers=2`, isolated PostgreSQL on port 5591): **651 test files, 12,211 tests, every shard exit 0, 0 failures**. The earlier `VouchersPage.test.tsx` load flake did not recur.
 
 
+## Tiered pricing, storefront part - 23 Oktober 2026
+
+- Worktree `tiered-pricing`, branch `worktree-tiered-pricing`. Storefront client commits `bcbb8619` (tier ladder, quantity quote, cart and summary tier lines) and `fb505e5c` (expected_total quote binding and the "price changed" confirmation).
+- The first full scan showed one warning (`react-doctor/only-export-components`: `tierApplies` exported from `TierPricing.tsx`). Fixed at the cause by moving it to `TierPricing.helpers.ts`, the existing `*.helpers.ts` pattern; no suppression, exclusion or disabled rule.
+- Final source `pnpm doctor:full`: **651 files, "No issues found!"** (0 errors, 0 warnings, both clients, all categories). `pnpm doctor:bugs`: 650 files, no Bugs issues. `pnpm doctor:changed`: 29 files, no Bugs issues. Storefront ESLint clean. `@app/storefront` and `@app/storefront-client` typecheck and `tsc -p tsconfig.test.json --noEmit` exit 0.
+- Runtime correctness is covered by focused client tests (ProductPage, CartPage, CheckoutPage, InstantBuyPage, OrderSummaryCard, ProductCard, strings): 301 tests passed, including a debounce/out-of-order test that proves a later quantity's price is never replaced by an earlier answer. The full `pnpm test` gate was not run in this session (machine memory); it remains due before merge. No live browser session was run.
+
+- Final gate of the whole tiered-pricing branch (26 Oktober 2026, after the whole-branch review fixes): `pnpm doctor:full` **"No issues found!"** (0 errors, 0 warnings, both clients, all categories); `pnpm doctor:bugs` no Bugs issues. `pnpm typecheck` and `pnpm run pretest` (migration drift, timestamps, frontend boundaries, Storefront lint, detection purity) exit 0. Full `pnpm exec vitest run --maxWorkers=2` against the worktree's isolated PostgreSQL (port 5581): **660 test files, 12,432 tests, 0 failures**. This supersedes the "full gate not run" note in the storefront entry above. No live browser session was run.
+
+- Admin tier editor precision follow-up (26 Oktober 2026): `apps/web-admin/client/src/lib/tierDraft.ts` now refuses a fractional rupiah (fixed unit price, amount off per unit) and a percent with more than 2 decimals inline, in the server's wording, and keeps Save disabled. `pnpm doctor:full`: **651 files, "No issues found!"** (0 errors, 0 warnings, both clients, all categories); `pnpm doctor:bugs`: 651 files, no Bugs issues; `pnpm doctor:changed`: 30 files, no Bugs issues. `@app/web-admin-client` typecheck exits 0; `TieredPricingCard.test.tsx` 22 tests passed (both families). The full `pnpm test` gate was not rerun for this follow-up (machine memory); it remains due before merge.
+
+
 ## Game Top-up catalog refactor, Phase 2 - 23 Oktober 2026
 
 - Worktree `game-topup-refactor`, branch `worktree-game-topup-refactor`, 39 commits rebased onto `master` at `f3d960a4` (no conflicts). Net schema and migrations are identical to `master`; the Server level (`gameServer`) and the `game_topup_flow_v2_enabled` flag that were built during the work were both removed again by owner decision, so only region seeding, the region mixed-scope guard, the `From` label, hints and the Game Top-up `/search` remain.

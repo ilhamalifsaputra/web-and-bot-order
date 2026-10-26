@@ -58,7 +58,7 @@ import {
   requestLang, requestCurrency, resolveDisplayCurrency,
   type GuestCartLine,
 } from "../shop";
-import { loadCartLines, loadGuestCartItems, cartCompositionLineOf, originOk } from "./cart";
+import { cartPayload, loadCartLines, loadGuestCartItems, cartCompositionLineOf, originOk } from "./cart";
 import { cartAdditionError } from "@app/core/cartComposition";
 import { performCheckout, performWalletCheckout, readExpectedTotal, quoteChangedBody } from "./checkout";
 import { establishSession } from "./auth";
@@ -563,9 +563,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       req.cookies[CART_COOKIE] = JSON.stringify({ v: CART_COOKIE_VERSION, items: next });
     }
 
-    const items = await loadCartLines(req, customer);
-    const subtotal = items.reduce((s, l) => s.plus(l.line_total), new Decimal(0));
-    return reply.send({ items, subtotal: subtotal.toString() });
+    return reply.send(await cartPayload(req, customer));
   });
 
   // ---- 7. POST /checkout ----
@@ -577,8 +575,9 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       /** Guest checkout only — the contact address the order is tracked by.
        * Ignored entirely for a signed-in buyer. */
       guest_email?: string;
-      /** Wallet methods only (A6): the total the buyer was quoted, in the
-       * wallet's currency — see readExpectedTotal (./checkout). Optional. */
+      /** The total the buyer was quoted (A6): the wallet's currency for a
+       * wallet method, the IDR `total` for a gateway method — see
+       * readExpectedTotal (./checkout). Optional. */
       expected_total?: unknown;
     };
   }>("/checkout", async (req, reply) => {
@@ -601,12 +600,14 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
     const isWalletMethod = method === "wallet_idr" || method === "wallet_usdt";
 
-    // Quote binding (A6): a wallet checkout debits the balance in this very
-    // request, so a client may echo the total it showed the buyer and have the
-    // debit refused (409) if the live total differs. Only the wallet methods
-    // read it — a gateway order's amount is shown on the pay page before any
-    // money moves. A malformed value is refused here, before anything runs.
-    const expected = isWalletMethod ? readExpectedTotal(req.body?.expected_total) : { ok: true as const, value: null };
+    // Quote binding (A6): a client may echo the total it showed the buyer and
+    // have the order refused (409) if the live total differs. A wallet method
+    // compares it in the wallet's currency (`total` / `total_usdt`); every
+    // gateway method compares it with the IDR `total` the summary showed — a
+    // volume tier, price or voucher edited between the preview and the click
+    // must never be charged unconfirmed. Absent, nothing changes. A malformed
+    // value is refused here, before anything runs.
+    const expected = readExpectedTotal(req.body?.expected_total);
     if (!expected.ok) return reply.code(400).send({ error: "invalid_request" });
     // Appended to the idempotency hash only when present, so a request without
     // a quote hashes byte-for-byte as it did before this field existed.
@@ -762,6 +763,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
         method,
         voucherCode,
         req.body?.customer_data,
+        expected.value,
       );
 
       // Mail the recovery code to guests only — a registered buyer has an
@@ -796,6 +798,9 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     } catch (e) {
       if (e instanceof ValidationError) {
         return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
+      }
+      if (e instanceof QuoteMismatchError) {
+        return respond(409, withGuestCsrf(quoteChangedBody(e), isGuest, customer));
       }
       throw e;
     }

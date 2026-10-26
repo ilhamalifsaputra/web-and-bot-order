@@ -24,7 +24,7 @@ import {
   searchCatalog,
   stockStatusCounts,
   productRatingSummaries,
-  activeBulkPricingByDenomination,
+  activeTiersByDenomination,
   listReviews,
   featuredReviews,
   type CatalogProduct,
@@ -33,7 +33,16 @@ import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
 import { resolveDenomIconKind } from "./denomIcon";
 import { productTemplate } from "./productTemplate";
 import { resolveBotUsername, resolveSupportTelegramUrl } from "./shop";
-import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
+import { aggregateRating, shapeProducts, sortProductCards, type SortKey, type TierMap } from "./cards";
+import { legacyBulkView, tierLadder, tierRuleView } from "./tierView";
+
+/**
+ * The effective volume tiers of every denomination on a set of catalog rows,
+ * in ONE query (activeTiersByDenomination batches by id) — never one per card.
+ */
+async function tiersForProducts(products: readonly CatalogProduct[]): Promise<TierMap> {
+  return activeTiersByDenomination(prisma, products.flatMap((p) => p.denominations.map((d) => d.id)));
+}
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -52,13 +61,12 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 
 /** Home page data — shaped for the JSON API (GET /api/v1/pages/home). */
 export async function homePageData() {
-  const [categories, products, stock, ratings, bulk, reviews, waNumber, heroUrl] =
+  const [categories, products, stock, ratings, reviews, waNumber, heroUrl] =
     await Promise.all([
       listActiveCategories(prisma, "web"),
       listNewestCatalogProducts(prisma, "web", 12),
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
-      activeBulkPricingByDenomination(prisma),
       featuredReviews(prisma, 4),
       // WhatsApp button on the contact section — set in web-admin Settings ›
       // Website; empty/unset hides the button.
@@ -67,7 +75,7 @@ export async function homePageData() {
       getSetting(prisma, "web_hero_url"),
     ]);
   const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  const cards = shapeProducts(products, stock, ratingByDenom, bulk);
+  const cards = shapeProducts(products, stock, ratingByDenom, await tiersForProducts(products));
 
   // Real testimonials from delivered-order reviews (≥4★ with a comment).
   const testimonials = reviews
@@ -104,16 +112,15 @@ export async function categoryPageData(rawSlug: string, sort: SortKey = "default
   const slug = (rawSlug ?? "").trim();
   const category = slug ? await getCategoryBySlug(prisma, slug, "web") : null;
   if (!category || !category.isActive) return null;
-  const [categories, products, stock, ratings, bulk] = await Promise.all([
+  const [categories, products, stock, ratings] = await Promise.all([
     listActiveCategories(prisma, "web"),
     listCatalogProducts(prisma, "web", category.id),
     stockStatusCounts(prisma),
     productRatingSummaries(prisma),
-    activeBulkPricingByDenomination(prisma),
   ]);
   const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
   // Same shaper as /search & home — one source of truth for grid cards.
-  const cards = shapeProducts(products, stock, ratingByDenom, bulk);
+  const cards = shapeProducts(products, stock, ratingByDenom, await tiersForProducts(products));
   return {
     category,
     categories,
@@ -140,9 +147,9 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
   if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) return null;
 
   // Per-denomination stock + bulk-pricing badge (price-asc order preserved).
-  const [stock, bulkRules, reviews, sameCategoryProducts, ratings, rateContext] = await Promise.all([
+  const [stock, productTiers, reviews, sameCategoryProducts, ratings, rateContext] = await Promise.all([
     stockStatusCounts(prisma),
-    activeBulkPricingByDenomination(prisma),
+    activeTiersByDenomination(prisma, product.denominations.map((d) => d.id)),
     // Reviews are tied to the specific denomination the customer bought —
     // gather across every active denomination of this Product, not just
     // the cheapest, or reviews left on other plans silently disappear.
@@ -155,14 +162,16 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
   const displayContext: Omit<CanonicalProductContext, "effectivePriceIDR"> = { ...rateContext, preferredCurrency: display.preferredCurrency ?? "IDR", locale: display.locale ?? "id", generatedAt: new Date().toISOString() };
 
   const catName = product.category.name;
+  // One pricing instant for every plan and tier rung on the page.
+  const pricedAt = new Date();
   const denominations = product.denominations.map((d) => {
     const available = stock[d.id]?.available ?? 0;
-    const rule = bulkRules[d.id];
-    const salePrice = flashPrice(d);
-    const unit = effectiveUnitPrice(d, isReseller);
+    const tiers = productTiers[d.id] ?? [];
+    const salePrice = flashPrice(d, pricedAt);
+    const unit = effectiveUnitPrice(d, isReseller, pricedAt);
     // Badge only when the flash price is the one this viewer actually gets —
     // the same rule flashViewFor applies to a cart line.
-    const flashPct = salePrice !== null && unit.equals(salePrice) ? activeFlashPercent(d) : null;
+    const flashPct = salePrice !== null && unit.equals(salePrice) ? activeFlashPercent(d, pricedAt) : null;
     const canonical = canonicalProduct({ denomination: { ...d, createdAt: d.createdAt.toISOString() }, product, category: product.category, stockAvailable: hasSellableStock(d, available) }, { ...displayContext, effectivePriceIDR: unit.toString() });
     return {
       id: d.id,
@@ -191,7 +200,16 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
       // client gates buying on, so it never re-derives the rule itself.
       uses_local_inventory: usesLocalInventory(d),
       purchasable: canonical.availability.purchasable,
-      bulk: rule ? { min_quantity: rule.minQuantity, discount_percent: rule.discountPercent } : null,
+      // Legacy single-rule view (older clients): the lowest-threshold percent
+      // tier, derived from the tiers exactly like the `bulk_pricing` mirror.
+      bulk: legacyBulkView(tiers),
+      // Every effective volume tier of this plan (toggle on, enabled, valid),
+      // lowest threshold first — the rules as configured.
+      tiers: tiers.map(tierRuleView),
+      // The ladder the plan picker shows: each tier with the unit price the
+      // engine charges this viewer at its threshold (server-priced; the client
+      // never derives a price from `tiers`). Rungs that save nothing are left out.
+      tier_ladder: tierLadder(d, tiers, isReseller, pricedAt),
       // Provider and manual SKUs never have stock rows, so `available`/
       // `in_stock` above are 0/false for them by design — the client gates
       // purchasability on `purchasable` instead. additional_fields is the
@@ -215,7 +233,7 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
     sameCategoryProducts.filter((p) => p.id !== product.id),
     stock,
     ratingByDenom,
-    bulkRules,
+    await tiersForProducts(sameCategoryProducts),
     isReseller,
   ).slice(0, RELATED_PRODUCTS_LIMIT);
   // Same weighted-average-across-denominations logic ProductCard's rating
@@ -276,14 +294,13 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
 /** Search page data — shaped for the JSON API (GET /api/v1/pages/search). */
 export async function searchPageData(rawQ: string, sort: SortKey = "default") {
   const q = (rawQ ?? "").trim();
-  const [products, stock, ratings, bulk] = await Promise.all([
+  const [products, stock, ratings] = await Promise.all([
     q ? searchCatalog(prisma, q, "web", 24) : Promise.resolve([] as CatalogProduct[]),
     stockStatusCounts(prisma),
     productRatingSummaries(prisma),
-    activeBulkPricingByDenomination(prisma),
   ]);
   const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  const cards = shapeProducts(products, stock, ratingByDenom, bulk);
+  const cards = shapeProducts(products, stock, ratingByDenom, await tiersForProducts(products));
   return {
     q,
     products: sortProductCards(products, cards, sort),
@@ -293,17 +310,17 @@ export async function searchPageData(rawQ: string, sort: SortKey = "default") {
 
 /**
  * Shared tail of the two full-grid shelves below: shape a set of catalog rows
- * into sorted cards. The three companion queries (stock counts, ratings, bulk
- * rules) are catalog-wide, so they're the same work whichever shelf asked.
+ * into sorted cards. Stock counts and ratings are catalog-wide; the volume
+ * tiers are one batched query for exactly the shelf's denominations.
  */
 async function shelfFrom(products: CatalogProduct[], sort: SortKey) {
-  const [stock, ratings, bulk] = await Promise.all([
+  const [stock, ratings, tiers] = await Promise.all([
     stockStatusCounts(prisma),
     productRatingSummaries(prisma),
-    activeBulkPricingByDenomination(prisma),
+    tiersForProducts(products),
   ]);
   const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  const cards = shapeProducts(products, stock, ratingByDenom, bulk);
+  const cards = shapeProducts(products, stock, ratingByDenom, tiers);
   return {
     products: sortProductCards(products, cards, sort),
     low_threshold: config.LOW_STOCK_THRESHOLD,

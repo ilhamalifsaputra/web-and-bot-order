@@ -332,11 +332,17 @@ export function stockItemsKb(
 }
 
 /** Bulk pricing management keyboard for a single product. */
-export function bulkPricingKb(productId: number, hasRule: boolean, lang: string): InlineKeyboard {
-  const rows: Btn[][] = [
-    [{ text: hasRule ? "✏️ Update Rule" : "➕ Add Rule", data: cb("adm", "bulk", "new", productId) }],
-  ];
-  if (hasRule) {
+export function bulkPricingKb(
+  productId: number,
+  hasRule: boolean,
+  lang: string,
+  opts?: { readOnly?: boolean },
+): InlineKeyboard {
+  // Read-only (tiers the bot cannot express, managed in the web admin): Back only.
+  const rows: Btn[][] = opts?.readOnly
+    ? []
+    : [[{ text: hasRule ? "✏️ Update Rule" : "➕ Add Rule", data: cb("adm", "bulk", "new", productId) }]];
+  if (hasRule && !opts?.readOnly) {
     rows.push([{ text: "🗑 Delete Rule", data: cb("adm", "bulk", "del", productId) }]);
   }
   rows.push([{ text: coreT("menu.back", lang), data: cb("adm", "prod", "edit", productId) }]);

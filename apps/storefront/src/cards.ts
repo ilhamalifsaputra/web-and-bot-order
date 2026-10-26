@@ -10,9 +10,10 @@
 import type { CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
-import { activeBulkPercent } from "@app/core/bulk";
+import type { PricingTier } from "@app/core/bulk";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset, type ThumbnailKind } from "./images";
+import { bestTierBadge, type TierBadge } from "./tierView";
 
 export type ProductCard = {
   slug: string;
@@ -38,8 +39,15 @@ export type ProductCard = {
   available: number;
   rating: number | null;
   rating_count: number;
+  /** The best volume-tier saving across the product's plans, as a percent
+   * string — exact for a percent tier, a whole percent rounded down for a
+   * fixed-amount/fixed-price tier (see `bulk_up_to`). Null when no tier saves. */
   bulk_discount: string | null;
+  /** The quantity that best saving starts at. */
   bulk_min_qty: number | null;
+  /** True when `bulk_discount` was derived from a fixed-amount or fixed-price
+   * tier, so the badge reads "up to". Additive. */
+  bulk_up_to: boolean;
   /** Live flash discount on the SAME denomination that set `from_price`, or
    * null. Deliberately not "the biggest discount on the product": the card
    * shows one headline price, and a badge describing a different plan would
@@ -67,8 +75,8 @@ export type ProductCard = {
 type StockMap = Record<number, { available: number }>;
 /** Rating summaries keyed by denomination id (`productId` column = SKU). */
 type RatingMap = Map<number, { avg: number | null; count: number }>;
-/** Active bulk-pricing rules keyed by denomination id. */
-type BulkMap = Record<number, { minQuantity: number; discountPercent: string }>;
+/** Effective volume tiers keyed by denomination id (`activeTiersByDenomination`). */
+export type TierMap = Record<number, PricingTier[]>;
 
 /**
  * Weighted average rating + true count across a set of denomination ids. A
@@ -113,10 +121,12 @@ export function shapeProducts(
   products: CatalogProduct[],
   stock: StockMap,
   ratings: RatingMap,
-  bulk: BulkMap = {},
+  tiers: TierMap = {},
   isReseller = false,
 ): ProductCard[] {
   const cards: ProductCard[] = [];
+  // One pricing instant for the whole grid.
+  const now = new Date();
   for (const p of products) {
     const denoms = p.denominations; // active, price-asc (cheapest first)
     if (denoms.length === 0) continue; // listCatalogProducts already filters these out
@@ -136,19 +146,15 @@ export function shapeProducts(
     // stray rows (if any) must not inflate the product's figure.
     const localDenoms = denoms.filter((d) => usesLocalInventory(d));
     const available = localDenoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
-    // Best (largest) active bulk discount across this product's denominations.
-    let bulkDiscount: string | null = null;
-    let bulkMinQty: number | null = null;
+    // Best volume-tier saving across this product's denominations, priced by
+    // the engine for THIS shopper (a fixed-amount tier's percent depends on
+    // the unit it comes off). Only the effective tier set reaches here
+    // (toggle on, enabled, valid on read — effectiveTiersByDenomination), so
+    // the badge never advertises a tier checkout would refuse to honour.
+    let best: TierBadge | null = null;
     for (const d of denoms) {
-      const rule = bulk[d.id];
-      // activeBulkPercent, not the raw column: a badge must never advertise a
-      // rule checkout would refuse to honour (@app/core/bulk validates the
-      // stored row on read, the way activeFlashPercent does).
-      const percent = rule ? activeBulkPercent(rule, rule.minQuantity) : null;
-      if (percent && (bulkDiscount === null || percent.greaterThan(bulkDiscount))) {
-        bulkDiscount = rule!.discountPercent;
-        bulkMinQty = rule!.minQuantity;
-      }
+      const badge = bestTierBadge(d, tiers[d.id] ?? [], isReseller, now);
+      if (badge && (best === null || badge.percent.greaterThan(best.percent))) best = badge;
     }
     // The flash badge describes the plan behind `from_price` — NOT the biggest
     // discount on the product, the way the bulk badge above does. The two
@@ -186,8 +192,9 @@ export function shapeProducts(
       available,
       rating,
       rating_count: ratingCount,
-      bulk_discount: bulkDiscount,
-      bulk_min_qty: bulkMinQty,
+      bulk_discount: best ? best.percent.toString() : null,
+      bulk_min_qty: best ? best.minQuantity : null,
+      bulk_up_to: best?.upTo ?? false,
       flash_discount: flashDiscount,
       from_base_price: fromBasePrice,
       flash_ends_at: flashEndsAt,

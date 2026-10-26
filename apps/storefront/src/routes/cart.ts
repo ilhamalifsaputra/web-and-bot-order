@@ -27,9 +27,11 @@ import {
   countAvailableStock,
   activeServiceGroups,
   getCanonicalRateContext,
+  quoteBulkForLines,
 } from "@app/db";
 import type { Customer } from "../plugins/auth";
 import { productImage } from "../images";
+import { linePricingView, type LinePricingView } from "../tierView";
 import { readGuestCart, requestLang, requestCurrency, resolveDisplayCurrency } from "../shop";
 import { constantTimeEqual } from "../auth";
 
@@ -126,6 +128,43 @@ export interface CartLineView {
    * the discount; this is only what the line needs to strike through the old
    * price and count down to the end of the sale. */
   flash: FlashLineView | null;
+  /** The line priced at its quantity by the volume-tier engine — the same
+   * `quoteBulkForLines` checkout and order creation use. `unit_price` and
+   * `line_total` above stay the pre-tier figures (older clients); the tier
+   * discount, the discounted unit and the net line total live here. Additive. */
+  pricing: LinePricingView;
+}
+
+/** The cart payload every cart endpoint answers with. */
+export interface CartPayload {
+  items: CartLineView[];
+  /** Σ line_total — before the volume-tier discount (unchanged meaning). */
+  subtotal: string;
+  /** Σ per-line tier savings — the figure the checkout summary shows as "Quantity deal". */
+  bulk_discount: string;
+  /** subtotal − bulk_discount: what the cart costs before any voucher. */
+  total: string;
+}
+
+/**
+ * Shape the cart page payload. The totals are sums of the per-line engine
+ * results, so they agree with the checkout preview (computeTotals sums the
+ * same quoteBulkForLines result) to the rupiah.
+ */
+export async function cartPayload(req: FastifyRequest, customer: Customer | null): Promise<CartPayload> {
+  const items = await loadCartLines(req, customer);
+  let subtotal = new Decimal(0);
+  let bulk = new Decimal(0);
+  for (const line of items) {
+    subtotal = subtotal.plus(line.line_total);
+    bulk = bulk.plus(line.pricing.savings);
+  }
+  return {
+    items,
+    subtotal: subtotal.toString(),
+    bulk_discount: bulk.toString(),
+    total: subtotal.minus(bulk).toString(),
+  };
 }
 
 /**
@@ -160,9 +199,10 @@ export interface FlashLineView {
 export function flashViewFor(
   denom: Parameters<typeof activeFlashPercent>[0] & { price: Decimal.Value; resellerPrice: Decimal.Value | null },
   unit: Decimal,
+  now: Date = new Date(),
 ): FlashLineView | null {
-  const percent = activeFlashPercent(denom);
-  const sale = flashPrice(denom);
+  const percent = activeFlashPercent(denom, now);
+  const sale = flashPrice(denom, now);
   if (percent === null || sale === null || !unit.equals(sale)) return null;
   return {
     discount_percent: percent.toString(),
@@ -207,6 +247,9 @@ export async function loadCartLines(
   const groups = await activeServiceGroups(prisma, "web");
   const display = { ...await getCanonicalRateContext(prisma), preferredCurrency: resolveDisplayCurrency(customer?.user, requestCurrency(req)) ?? "IDR", locale: requestLang(req), generatedAt: new Date().toISOString() };
   const canonicalOf = (denom: GuestCartItem["product"], unit: Decimal, available: number) => canonicalProduct({ denomination: { ...denom, createdAt: denom.createdAt.toISOString() }, product: denom.product, category: denom.product.category, stockAvailable: hasSellableStock(denom, available) }, { ...display, effectivePriceIDR: unit.toString() });
+  // One pricing instant for every line, like computeTotals — a flash sale
+  // ending mid-request must not price half the cart before it and half after.
+  const pricedAt = new Date();
   if (customer) {
     const isReseller = customer.user.role === UserRole.RESELLER;
     // Join the parent Product so the line can show `Product - Denomination`.
@@ -217,12 +260,19 @@ export async function loadCartLines(
         visibleRows.push(row);
       }
     }
+    // Every line's volume tiers in ONE query, priced by the checkout engine.
+    const quote = await quoteBulkForLines(
+      prisma,
+      visibleRows.map((r) => ({ denominationId: r.productId, quantity: r.quantity, denomination: r.product })),
+      isReseller,
+      pricedAt,
+    );
     return Promise.all(
       visibleRows
-        .map(async (r) => {
+        .map(async (r, index) => {
           const denom = r.product; // the Denomination (SKU)
           const parent = denom.product; // the mid-tier Product
-          const unit = effectiveUnitPrice(denom, isReseller);
+          const unit = effectiveUnitPrice(denom, isReseller, pricedAt);
           const available = await countAvailableStock(prisma, r.productId);
           return {
             canonical: canonicalOf(denom, unit, available),
@@ -244,22 +294,34 @@ export async function loadCartLines(
             delivery_type: denom.deliveryType,
             auto_delivery_source: denom.autoDeliverySource,
             uses_local_inventory: usesLocalInventory(denom),
-            flash: flashViewFor(denom, unit),
+            flash: flashViewFor(denom, unit, pricedAt),
+            pricing: linePricingView(quote.lines[index]!.priced),
           };
         }),
     );
   }
   const lines = readGuestCart(req);
-  const resolved = await Promise.all(
+  const fetched = await Promise.all(
     lines.map(async (l) => {
       const [denom, available] = await Promise.all([
         getDenominationWithProduct(prisma, l.p),
         countAvailableStock(prisma, l.p),
       ]);
       if (!denom || !denom.isActive || !groups.has(denom.product.category.group ?? CategoryGroup.PREMIUM_APPS)) return null;
+      return { line: l, denom, available };
+    }),
+  );
+  const present = fetched.filter((f): f is NonNullable<typeof f> => f !== null);
+  // Guests are never resellers, so the everyone price is the right one.
+  const quote = await quoteBulkForLines(
+    prisma,
+    present.map((f) => ({ denominationId: f.line.p, quantity: f.line.q, denomination: f.denom })),
+    false,
+    pricedAt,
+  );
+  return present.map(({ line: l, denom, available }, index) => {
       const parent = denom.product; // mid-tier Product (+ category)
-      // Guests are never resellers, so the everyone price is the right one.
-      const unit = effectiveUnitPrice(denom, false);
+      const unit = effectiveUnitPrice(denom, false, pricedAt);
       return {
         canonical: canonicalOf(denom, unit, available),
         key: l.p,
@@ -279,9 +341,8 @@ export async function loadCartLines(
         delivery_type: denom.deliveryType,
         auto_delivery_source: denom.autoDeliverySource,
         uses_local_inventory: usesLocalInventory(denom),
-        flash: flashViewFor(denom, unit),
+        flash: flashViewFor(denom, unit, pricedAt),
+        pricing: linePricingView(quote.lines[index]!.priced),
       } satisfies CartLineView;
-    }),
-  );
-  return resolved.filter((l): l is NonNullable<typeof l> => l !== null);
+  });
 }

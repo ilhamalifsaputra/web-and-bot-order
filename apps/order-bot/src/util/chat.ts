@@ -86,6 +86,17 @@ export async function consumeInput(ctx: MyContext): Promise<void> {
   }
 }
 
+/**
+ * Options for a render that may land on a photo bubble. `captionText` is the
+ * caption-sized form of the screen (fitted to MAX_CAPTION_LEN by the caller,
+ * which knows what may give way); it is used whenever the bubble actually
+ * being edited turns out to be a photo, so the decision follows that bubble's
+ * type rather than a guess made before the edit.
+ */
+export interface RenderOptions {
+  captionText?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Per-update render modes (never persisted: they describe THIS update only)
 // ---------------------------------------------------------------------------
@@ -152,7 +163,7 @@ function endScreenModes(ctx: MyContext): void {
 }
 
 /** Render the next customer screen (edit on tap, send on typed input). */
-export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
+export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup, opts?: RenderOptions): Promise<void> {
   endScreenModes(ctx);
   const body = truncateText(text);
 
@@ -160,7 +171,10 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // screen only; a reply keyboard still needs a fresh send).
   const typedNav = typedNavigation.get(ctx);
   if (!ctx.callbackQuery && typedNav && (replyMarkup === undefined || isInline(replyMarkup))) {
-    ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, { replacePhoto: typedNav.textOnly });
+    ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
+      replacePhoto: typedNav.textOnly,
+      captionText: opts?.captionText !== undefined ? withTypedNavigationNotice(ctx, opts.captionText) : undefined,
+    });
     return;
   }
 
@@ -180,7 +194,8 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
       // A photo+caption bubble (e.g. the QR payment screen) can't take an
       // editMessageText — edit its caption in place, like adminEdit does.
       if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
-        await ctx.editMessageCaption({ caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+        const caption = opts?.captionText !== undefined ? truncateText(opts.captionText) : body;
+        await ctx.editMessageCaption({ caption, parse_mode: "HTML", reply_markup: replyMarkup });
       } else {
         await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
       }
@@ -219,7 +234,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
 // Telegram caption limit. A banner-as-photo render carries the menu text as the
 // photo caption, so anything longer than this can't ride along — we fall back to
 // a plain text render (no banner) for that screen.
-const MAX_CAPTION_LEN = 1024;
+export const MAX_CAPTION_LEN = 1024;
 
 /**
  * Render a menu screen, optionally with a banner image on top. When `photoFileId`
@@ -327,9 +342,11 @@ async function editAnchor(
   anchorId: number | undefined,
   text: string,
   replyMarkup?: Markup,
-  opts: { replacePhoto?: boolean } = {},
+  /** `replacePhoto`: see the photo branch below; `captionText`: see RenderOptions. */
+  opts: RenderOptions & { replacePhoto?: boolean } = {},
 ): Promise<number | undefined> {
   const body = truncateText(text);
+  const captionBody = opts.captionText !== undefined ? truncateText(opts.captionText) : body;
   const chatId = ctx.chat?.id;
   let anchorGone = false;
   if (chatId !== undefined && anchorId !== undefined && !(await isTransactionBubble(ctx, anchorId)) && (replyMarkup === undefined || isInline(replyMarkup))) {
@@ -345,9 +362,9 @@ async function editAnchor(
         // bubble per step instead of one wizard bubble.
         // `replacePhoto`: a plain-text screen (typed Back from a product
         // photo) — the photo is obsolete, drop it like an over-long caption.
-        if (body.length <= MAX_CAPTION_LEN && !opts.replacePhoto) {
+        if (captionBody.length <= MAX_CAPTION_LEN && !opts.replacePhoto) {
           try {
-            await ctx.api.editMessageCaption(chatId, anchorId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+            await ctx.api.editMessageCaption(chatId, anchorId, { caption: captionBody, parse_mode: "HTML", reply_markup: replyMarkup });
             return anchorId;
           } catch (captionErr) {
             if (isNotModified(captionErr)) return anchorId;
@@ -375,10 +392,13 @@ async function editAnchor(
 }
 
 /** Render a customer wizard step into the anchor bubble (edit-in-place). */
-export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
-  if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
+export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup, opts?: RenderOptions): Promise<void> {
+  if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup, opts);
   endScreenModes(ctx);
-  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, { replacePhoto: typedNavigation.get(ctx)?.textOnly });
+  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
+    replacePhoto: typedNavigation.get(ctx)?.textOnly,
+    captionText: opts?.captionText !== undefined ? withTypedNavigationNotice(ctx, opts.captionText) : undefined,
+  });
 }
 
 /** Render an admin wizard step into the anchor bubble (edit-in-place). */

@@ -130,7 +130,7 @@ interface TopupLineBody {
  * `error.out_of_stock` there, which is the only place that answer can't be
  * stale by the time it matters.
  */
-async function resolveTopupDenomination(rawId: unknown) {
+export async function resolveTopupDenomination(rawId: unknown) {
   const denominationId = Number(rawId);
   if (!Number.isInteger(denominationId) || denominationId <= 0) return null;
   const denom = await getDenominationWithProduct(prisma, denominationId);
@@ -149,7 +149,7 @@ async function resolveTopupDenomination(rawId: unknown) {
  * and then marks the WHOLE order delivered, so a multi-unit order for such a
  * SKU would charge the buyer for units they can never receive.
  */
-function resolveTopupQuantity(rawQty: unknown, denom: Denomination): number | null {
+export function resolveTopupQuantity(rawQty: unknown, denom: Denomination): number | null {
   const qty = rawQty == null ? 1 : Number(rawQty);
   if (!Number.isInteger(qty) || qty < 1 || qty > 99) return null;
   if (denom.autoDeliverySource === "digiflazz" && qty !== 1) return null;
@@ -288,8 +288,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       /** Guest checkout only — the contact address the order is tracked by.
        * Ignored entirely for a signed-in buyer. */
       guest_email?: string;
-      /** Wallet methods only (A6): the total the buyer was quoted, in the
-       * wallet's currency — see readExpectedTotal (./checkout). Optional. */
+      /** The total the buyer was quoted (A6): the wallet's currency for a
+       * wallet method, the IDR `total` for a gateway method — see
+       * readExpectedTotal (./checkout). Optional. */
       expected_total?: unknown;
     };
   }>("/topup/order", async (req, reply) => {
@@ -339,11 +340,11 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     const isWalletMethod = method === "wallet_idr" || method === "wallet_usdt";
 
     // Quote binding (A6) — same rule as POST /api/v1/checkout (routes/api.ts):
-    // only the wallet methods, which debit in this request, read it; a
-    // malformed value is refused before anything runs; and it joins the
-    // idempotency hash only when present, so quote-less requests hash exactly
-    // as they did before.
-    const expected = isWalletMethod ? readExpectedTotal(req.body?.expected_total) : { ok: true as const, value: null };
+    // a wallet method compares it in the wallet's currency, a gateway method
+    // with the preview's IDR `total`; a malformed value is refused before
+    // anything runs; and it joins the idempotency hash only when present, so
+    // quote-less requests hash exactly as they did before.
+    const expected = readExpectedTotal(req.body?.expected_total);
     if (!expected.ok) return reply.code(400).send({ error: "invalid_request" });
     const quoteHashPart = expected.value ? { expectedTotal: expected.value.toString() } : {};
 
@@ -512,6 +513,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         method,
         voucherCode,
         req.body?.customer_data,
+        expected.value,
       );
 
       // Mail the recovery code to guests only, keyed on the BUYER'S ROW
@@ -533,6 +535,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     } catch (e) {
       if (e instanceof ValidationError) {
         return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
+      }
+      if (e instanceof QuoteMismatchError) {
+        return respond(409, withGuestCsrf(quoteChangedBody(e), isGuest, customer));
       }
       throw e;
     }

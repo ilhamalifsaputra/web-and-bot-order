@@ -76,6 +76,19 @@ describe("ProductCard", () => {
     expect(screen.getByText("Buy 3+ and save 15%")).toBeInTheDocument();
   });
 
+  it("rounds a fractional tier percent down, never up", () => {
+    renderCard(<ProductCard p={{ ...base, bulk_discount: "12.5", bulk_min_qty: 4 }} fx="16000" lowThreshold={5} />);
+    expect(screen.getByText("−12%")).toBeInTheDocument();
+    expect(screen.getByText("Buy 4+ and save 12%")).toBeInTheDocument();
+    expect(screen.queryByText("−13%")).not.toBeInTheDocument();
+  });
+
+  it("says 'up to' for a saving the server derived from a fixed-amount tier", () => {
+    renderCard(<ProductCard p={{ ...base, bulk_discount: "40", bulk_min_qty: 5, bulk_up_to: true }} fx="16000" lowThreshold={5} />);
+    expect(screen.getByText("up to −40%")).toBeInTheDocument();
+    expect(screen.getByText("Buy 5+ and save up to 40%")).toBeInTheDocument();
+  });
+
   it("styles the bulk discount badge as an opaque savings chip, not an error colour", () => {
     renderCard(
       <ProductCard p={{ ...base, bulk_discount: "15", bulk_min_qty: 3 }} fx="16000" lowThreshold={5} />,

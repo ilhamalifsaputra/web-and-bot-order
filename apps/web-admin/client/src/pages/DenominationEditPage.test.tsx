@@ -14,6 +14,14 @@ vi.mock("../api/client", () => ({
   apiDelete: vi.fn(),
 }));
 
+// The tier editor loads its own endpoint and has its own tests (TieredPricingCard.test.tsx); here only
+// what the page hands it matters.
+vi.mock("../components/catalog/TieredPricingCard", () => ({
+  TieredPricingCard: ({ denominationId, productId, isGame }: { denominationId: number; productId?: string; isGame: boolean }) => (
+    <div data-testid="tiered-pricing-card">{`denomination ${denominationId}, product ${productId}, ${isGame ? "game" : "premium"}`}</div>
+  ),
+}));
+
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
@@ -395,6 +403,13 @@ describe("DenominationEditPage", () => {
 
 describe("DenominationEditPage Telegram button hints", () => {
   const withGroup = (group: string) => ({ product: { ...PRODUCT_DETAIL.product, category: { id: 3, name: "Cat", group } } });
+
+  it.each([["GAME_TOPUP", "game"], ["PREMIUM_APPS", "premium"]])("hands the tier editor this SKU and its family (%s), replacing the old bulk pricing block", async (group, family) => {
+    vi.mocked(apiGet).mockResolvedValue(withGroup(group));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    expect(await screen.findByTestId("tiered-pricing-card")).toHaveTextContent(`denomination 10, product 42, ${family}`);
+    expect(screen.queryByText("Bulk Pricing")).not.toBeInTheDocument();
+  });
 
   it("Game Top Up: hints Name and Quantity Unit", async () => {
     vi.mocked(apiGet).mockResolvedValue(withGroup("GAME_TOPUP"));

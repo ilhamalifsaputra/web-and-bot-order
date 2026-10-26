@@ -125,6 +125,15 @@ afterAll(async () => {
 
 // --- ctx builders ----------------------------------------------------------
 
+/**
+ * The total a confirmation for 1 × the 5.00 sample product shows. A wallet
+ * tap is refused unless the confirmation it came from remembered its total,
+ * so a test that taps Complete Order directly seeds it.
+ */
+function shownQuote5(): Record<string, string> {
+  return { [`${sample.product.id}:1`]: "5" };
+}
+
 function userSession(): Partial<SessionData> {
   return {
     lang: "en",
@@ -4722,7 +4731,7 @@ describe("checkout handlers", () => {
 
     const { ctx, sink } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
-      session: { ...userSession(), scratch: { useWalletIdr: true, checkoutIntentId } },
+      session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true, checkoutIntentId } },
     });
     await primeQuote(ctx, sample.product.id, 1);
     await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
@@ -5166,7 +5175,7 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
     const { ctx, sink } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
-      session: { ...userSession(), scratch: { useWalletIdr: true } },
+      session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true } },
     });
 
     // The routed tap carries the nonce of the Complete Order screen it came from.
@@ -5226,7 +5235,7 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     await setSetting(prisma, "usd_idr_rate", "1"); // rate 1 keeps the USDT total numerically equal to the 5.00 price
     const { ctx, sink } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
-      session: { ...userSession(), scratch: { useWalletUsdt: true } },
+      session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletUsdt: true } },
     });
 
     // The routed tap carries the nonce of the Complete Order screen it came from.
@@ -6962,7 +6971,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
     const { ctx, sink } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
-      session: { ...userSession(), scratch: { useWalletIdr: true, customerData: DIGIFLAZZ_CUSTOMER_DATA } },
+      session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true, customerData: DIGIFLAZZ_CUSTOMER_DATA } },
     });
     let telegramCallsAtTrigger = -1;
     vi.mocked(triggerDigiflazzDispatch).mockImplementationOnce(() => {
@@ -6989,7 +6998,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     const { ctx, sink } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
       cbMessage: { message_id: 888, chat: { id: 42 }, date: 0 },
-      session: { ...userSession(), menuMsgId: 888, scratch: { useWalletIdr: true, customerData: provider === "DIGIFLAZZ" ? DIGIFLAZZ_CUSTOMER_DATA : undefined } },
+      session: { ...userSession(), menuMsgId: 888, scratch: { shownQuotes: shownQuote5(), useWalletIdr: true, customerData: provider === "DIGIFLAZZ" ? DIGIFLAZZ_CUSTOMER_DATA : undefined } },
     });
     if (provider === "DIGIFLAZZ") ctx.session.scratch.customerInputOwner = await currentInputOwner(sample.product.id, 1);
 
@@ -7016,7 +7025,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
     const { ctx } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
-      session: { ...userSession(), scratch: { useWalletIdr: true } },
+      session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true } },
     });
 
     await primeQuote(ctx, sample.product.id, 1);
@@ -7031,7 +7040,7 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
     const { ctx, sink } = customerCtx({
       callbackData: `v1:walletpay:${sample.product.id}:1`,
-      session: { ...userSession(), scratch: { useWalletIdr: true } },
+      session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true } },
     });
     // The checkout is paid and delivered before either inline pass runs; a DB
     // error in a pass must leave the row to the background worker, not reach

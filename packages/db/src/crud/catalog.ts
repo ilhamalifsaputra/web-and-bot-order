@@ -27,6 +27,7 @@ import type { Db } from "./_types";
 import { slugify } from "../migrate/slug";
 import { forgetDigiflazzAutoDeactivatedIds } from "./digiflazzAutoDeactivated";
 import { logAdminAction } from "./audit";
+import { deleteBulkPricingAdapter, legacyBulkRuleView, upsertBulkPricingAdapter } from "./bulkTiers";
 import { activeServiceGroups, isServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
 import { normalize as normalizeDetection, type KnowledgeBase } from "@app/core/detection";
@@ -1036,27 +1037,24 @@ export async function upsertBulkPricing(
   if (!Number.isInteger(args.minQuantity) || args.minQuantity < 1) {
     throw new ValidationError("error.invalid_min_quantity");
   }
-  const existing = await db.bulkPricing.findUnique({ where: { productId: denominationId } });
-  if (existing) {
-    return db.bulkPricing.update({
-      where: { productId: denominationId },
-      data: { minQuantity: args.minQuantity, discountPercent, isActive: true },
-    });
-  }
-  return db.bulkPricing.create({
-    data: { productId: denominationId, minQuantity: args.minQuantity, discountPercent },
-  });
+  // Since tiered pricing (crud/bulkTiers.ts) the rule is stored as the SKU's
+  // one PERCENTAGE tier, with the old bulk_pricing row still written beside it
+  // so a rollback to pre-tier code keeps the same rule.
+  return upsertBulkPricingAdapter(db, denominationId, args.minQuantity, discountPercent);
 }
 
+/**
+ * The SKU's bulk rule in the legacy single-rule shape, derived from its tiers
+ * (the authoritative source): the lowest enabled PERCENTAGE tier while tiered
+ * pricing is on, else null. Display only — pricing goes through the tiers.
+ */
 export function getBulkPricingForDenomination(db: Db, denominationId: number) {
-  return db.bulkPricing.findFirst({ where: { productId: denominationId, isActive: true } });
+  return legacyBulkRuleView(db, denominationId);
 }
 
+/** Remove the SKU's bulk rule: the legacy row, every tier, and the tiered-pricing toggle. */
 export async function deleteBulkPricing(db: Db, denominationId: number): Promise<boolean> {
-  const existing = await db.bulkPricing.findUnique({ where: { productId: denominationId } });
-  if (!existing) return false;
-  await db.bulkPricing.delete({ where: { productId: denominationId } });
-  return true;
+  return deleteBulkPricingAdapter(db, denominationId);
 }
 
 export function listBulkPricingRules(db: Db) {
@@ -1067,6 +1065,10 @@ export function listBulkPricingRules(db: Db) {
 /**
  * Active quantity-discount rules keyed by denomination id, so catalog grids can
  * show a "buy N+, save X%" badge without an N+1 query per card.
+ *
+ * Still reads the legacy `bulk_pricing` table: every tier write re-derives that
+ * row as a mirror (crud/bulkTiers.ts `legacyViewOfTiers`), so it stays the
+ * lowest PERCENTAGE tier. Tier-aware callers use `activeTiersByDenomination`.
  */
 export async function activeBulkPricingByDenomination(
   db: Db,

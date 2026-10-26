@@ -35,7 +35,7 @@ import {
   type SentCall,
   type MakeCtxOptions,
 } from "./helpers/ctx";
-import type { SessionData } from "../src/context";
+import type { MyContext, SessionData } from "../src/context";
 import { t } from "../src/util/i18n";
 import { ticketUserReplyConversation } from "../src/conversations/customer";
 import { voucherConversation } from "../src/conversations/checkout";
@@ -932,6 +932,33 @@ describe("admin conversations", () => {
     expect(JSON.stringify(answers[0]!.args)).toContain(t(entry, "admin.bulk_tiers_web_only"));
     expect(calls(sink, "editMessageText")).toHaveLength(0);
     expect((await listTiers(prisma, sample.product.id)).map((x) => x.minQuantity)).toEqual([3, 10]);
+  });
+
+  it("bulkPricing: a multi-tier set saved in the web admin while the bot waited for input is not overwritten (re-checked in the write)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
+    // The entry check passes (no tiers yet); the web editor saves a two-tier
+    // set between the bot's two prompts.
+    const webSaveThenPercent = (async () => {
+      await replaceTiers(
+        prisma,
+        sample.product.id,
+        [
+          { minQuantity: 3, discountType: "PERCENTAGE", discountValue: "10" },
+          { minQuantity: 10, discountType: "FIXED_UNIT_PRICE", discountValue: "3" },
+        ],
+        { adminId: null },
+      );
+      return msg(sink, { text: "10" });
+    }) as unknown as () => MyContext;
+    const conv = new FakeConversation([msg(sink, { text: "5" }), webSaveThenPercent]);
+    await bulkPricingConversation(conv.asMyConversation(), entry);
+
+    expect((await listTiers(prisma, sample.product.id)).map((x) => x.minQuantity)).toEqual([3, 10]);
+    expect(await prisma.auditLog.count({ where: { action: "bulk_pricing_set" } })).toBe(0);
+    const edits = calls(sink, "editMessageText");
+    expect(JSON.stringify(edits.at(-1)!.args)).toContain(t(entry, "admin.bulk_tiers_web_only"));
+    expect(JSON.stringify(sink)).not.toContain(t(entry, "admin.bulk_saved", { minQty: 5, pct: "10" }));
   });
 
   it("ticketReply: saves an ADMIN reply, flips status, DMs the customer", async () => {

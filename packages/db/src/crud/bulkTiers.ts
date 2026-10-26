@@ -390,10 +390,42 @@ export async function activeTiersByDenomination(
 // ---------------------------------------------------------------------------
 
 /**
+ * True when a legacy single-rule write can replace `tiers` without losing
+ * anything: no tiers, or exactly one PERCENTAGE tier. The bot admin's
+ * read-only view uses the same rule.
+ */
+export function legacyRuleCanReplace(tiers: readonly PricingTier[]): boolean {
+  return tiers.length <= 1 && tiers.every((t) => t.discountType === "PERCENTAGE");
+}
+
+/**
+ * Thrown by the legacy adapters when the denomination's current tier set is
+ * more than one legacy percentage rule can express (several tiers, or a
+ * fixed-amount tier) — a legacy save or delete would silently wipe it.
+ * Nothing has been written when this is thrown.
+ */
+export class LegacyBulkRuleConflictError extends ValidationError {
+  constructor(public readonly denominationId: number) {
+    super("error.bulk_pricing_tier_set_conflict", { denominationId });
+    this.name = "LegacyBulkRuleConflictError";
+  }
+}
+
+/** Under the tier lock: refuse when the current set is not one legacy rule. */
+async function assertLegacyReplaceable(db: Db, denominationId: number): Promise<void> {
+  if (!legacyRuleCanReplace(await listTiers(db, denominationId))) {
+    throw new LegacyBulkRuleConflictError(denominationId);
+  }
+}
+
+/**
  * Legacy "N+ units, X% off" setter: writes the rule as the denomination's ONE
- * PERCENTAGE tier (replacing any others), switches tiered pricing on, and keeps
- * the old `bulk_pricing` row written too. Not audited — its callers (web admin
- * bulk-pricing route, bot admin) write their own audit line.
+ * PERCENTAGE tier, switches tiered pricing on, and keeps the old `bulk_pricing`
+ * row written too. Refuses (LegacyBulkRuleConflictError) when the current set
+ * is more than one percentage tier — checked under the row lock, so a tier set
+ * the web editor saves between a caller's own check and this write is never
+ * overwritten. Not audited — its callers (web admin bulk-pricing route, bot
+ * admin) write their own audit line.
  */
 export async function upsertBulkPricingAdapter(
   db: Db,
@@ -403,6 +435,7 @@ export async function upsertBulkPricingAdapter(
 ): Promise<BulkPricing> {
   return inTransaction(db, async (tx) => {
     await lockDenominationTiers(tx, denominationId);
+    await assertLegacyReplaceable(tx, denominationId);
     const existing = await tx.bulkPricing.findUnique({ where: { productId: denominationId } });
     const row = existing
       ? await tx.bulkPricing.update({
@@ -418,10 +451,15 @@ export async function upsertBulkPricingAdapter(
   });
 }
 
-/** Legacy delete: removes the rule, every tier, and switches tiered pricing off. True if anything was removed. */
+/**
+ * Legacy delete: removes the rule, every tier, and switches tiered pricing off.
+ * True if anything was removed. Refuses like {@link upsertBulkPricingAdapter}
+ * when the set is more than one percentage tier.
+ */
 export async function deleteBulkPricingAdapter(db: Db, denominationId: number): Promise<boolean> {
   return inTransaction(db, async (tx) => {
     await lockDenominationTiers(tx, denominationId);
+    await assertLegacyReplaceable(tx, denominationId);
     const legacy = await tx.bulkPricing.deleteMany({ where: { productId: denominationId } });
     const tiers = await tx.bulkPricingTier.deleteMany({ where: { denominationId } });
     if (legacy.count === 0 && tiers.count === 0) return false;

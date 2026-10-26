@@ -238,4 +238,28 @@ describe("PUT pricing-tiers", () => {
     expect(detail.statsByDenom[denomId].rule).toMatchObject({ minQuantity: 5 });
     expect(detail.statsByDenom[denomId].pricingTiers).toEqual({ enabled: true, count: 1 });
   });
+
+  it("the legacy POST and DELETE bulk-pricing endpoints refuse with 409 a tier set one percent rule cannot express, changing and auditing nothing", async () => {
+    const { denomId } = await seedDenomination();
+    expect((await put(denomId, { enabled: true, tiers: EXAMPLE })).statusCode).toBe(200);
+    const before = await listTiers(prisma, denomId);
+    const auditBefore = await prisma.auditLog.count();
+    const legacy = (method: "POST" | "DELETE") =>
+      app.inject({
+        method,
+        url: `/api/catalog/denominations/${denomId}/bulk-pricing`,
+        headers: method === "POST" ? { "content-type": "application/json", "x-csrf-token": csrf } : { "x-csrf-token": csrf },
+        cookies: { [COOKIE]: cookie },
+        ...(method === "POST" ? { payload: JSON.stringify({ minQuantity: 5, discountPercent: "10" }) } : {}),
+      });
+
+    for (const method of ["POST", "DELETE"] as const) {
+      const res = await legacy(method);
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json().error).toMatch(/harga bertingkat/i);
+    }
+    expect(await listTiers(prisma, denomId)).toEqual(before);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } })).tieredPricingEnabled).toBe(true);
+    expect(await prisma.auditLog.count()).toBe(auditBefore);
+  });
 });

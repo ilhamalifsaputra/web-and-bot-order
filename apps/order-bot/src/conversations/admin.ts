@@ -42,6 +42,7 @@ import {
   getDenomination,
   isDigiflazzPriceOverridden,
   upsertBulkPricing,
+  LegacyBulkRuleConflictError,
   listTiers,
   getTicket,
   replyToTicket,
@@ -1100,17 +1101,28 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
   }
 
   const adminTg = ctx.from!.id;
-  await prisma.$transaction(async (tx) => {
-    await upsertBulkPricing(tx, { productId, minQuantity: minQty, discountPercent: pct });
-    const admin = await getUserByTelegramId(tx, adminTg);
-    await logAdminAction(tx, {
-      adminId: requireAdminId(admin),
-      action: "bulk_pricing_set",
-      targetType: "product",
-      targetId: productId,
-      details: `Set bulk pricing: minimum quantity ${minQty}, discount ${pct}%.`,
+  try {
+    await prisma.$transaction(async (tx) => {
+      await upsertBulkPricing(tx, { productId, minQuantity: minQty, discountPercent: pct });
+      const admin = await getUserByTelegramId(tx, adminTg);
+      await logAdminAction(tx, {
+        adminId: requireAdminId(admin),
+        action: "bulk_pricing_set",
+        targetType: "product",
+        targetId: productId,
+        details: `Set bulk pricing: minimum quantity ${minQty}, discount ${pct}%.`,
+      });
     });
-  });
+  } catch (err) {
+    // The web editor saved a set the bot cannot express while this
+    // conversation was waiting for input: the adapter re-checked under its
+    // row lock and wrote nothing, so say so instead of "saved".
+    if (err instanceof LegacyBulkRuleConflictError) {
+      await adminEdit(ctx, t(ctx, "admin.bulk_tiers_web_only"), akb.backToAdminKb(lang));
+      return;
+    }
+    throw err;
+  }
 
   await adminEdit(ctx, t(ctx, "admin.bulk_saved", { minQty, pct }), akb.backToAdminKb(lang));
 }

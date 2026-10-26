@@ -39,6 +39,7 @@ import {
   markStockDead,
   getBulkPricingForDenomination,
   deleteBulkPricing,
+  LegacyBulkRuleConflictError,
   listTiers,
   listOpenTickets,
   countOpenTickets,
@@ -619,27 +620,35 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
 async function deleteBulkPricingHandler(ctx: MyContext, productId: number): Promise<void> {
   // A stale Delete tap from before the web admin added tiers the bot cannot
   // express must not wipe them.
-  if (!botCanEditTiers(await listTiers(prisma, productId))) {
+  const refuse = async () => {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.bulk_tiers_web_only"), show_alert: true });
     await showBulkPricing(ctx, productId);
-    return;
-  }
+  };
+  if (!botCanEditTiers(await listTiers(prisma, productId))) return refuse();
   const adminTg = ctx.from!.id;
-  const deleted = await prisma.$transaction(async (tx) => {
-    const ok = await deleteBulkPricing(tx, productId);
-    if (ok) {
-      const denomination = await tx.denomination.findUnique({ where: { id: productId } });
-      const admin = await getUserByTelegramId(tx, adminTg);
-      await logAdminAction(tx, {
-        adminId: requireAdminId(admin),
-        action: "bulk_pricing_delete",
-        targetType: "product",
-        targetId: productId,
-        details: `Removed bulk pricing for "${denomination?.name ?? productId}".`,
-      });
-    }
-    return ok;
-  });
+  let deleted: boolean;
+  try {
+    deleted = await prisma.$transaction(async (tx) => {
+      const ok = await deleteBulkPricing(tx, productId);
+      if (ok) {
+        const denomination = await tx.denomination.findUnique({ where: { id: productId } });
+        const admin = await getUserByTelegramId(tx, adminTg);
+        await logAdminAction(tx, {
+          adminId: requireAdminId(admin),
+          action: "bulk_pricing_delete",
+          targetType: "product",
+          targetId: productId,
+          details: `Removed bulk pricing for "${denomination?.name ?? productId}".`,
+        });
+      }
+      return ok;
+    });
+  } catch (err) {
+    // The web editor saved a multi-tier set after the check above; the
+    // adapter re-checked under its row lock and wrote nothing.
+    if (err instanceof LegacyBulkRuleConflictError) return refuse();
+    throw err;
+  }
   await ctx.answerCallbackQuery({
     text: t(ctx, deleted ? "admin.toast.bulk_deleted" : "admin.toast.bulk_none"),
     show_alert: true,

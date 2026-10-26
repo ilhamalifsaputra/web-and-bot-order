@@ -22,6 +22,7 @@ import {
   getBulkPricingForDenomination,
   upsertBulkPricing,
   deleteBulkPricing,
+  LegacyBulkRuleConflictError,
   listTiers,
   saveTieredPricing,
   createCatalogProduct,
@@ -103,6 +104,10 @@ function gameNavigationFields(body: Record<string, unknown>) {
 
 const THUMBNAIL_KINDS = ["game", "voucher", "steam", "entertainment", "app", "generic"] as const;
 const CURRENCY_ICON_KINDS = ["diamond", "coin", "key", "card", "voucher"] as const;
+
+/** The legacy single-rule endpoints refuse to overwrite a set only the tier editor can express. */
+const LEGACY_BULK_CONFLICT_MESSAGE =
+  "Denominasi ini memakai beberapa tingkat harga bertingkat atau potongan nominal, jadi aturan diskon tunggal tidak bisa disimpan atau dihapus dari sini. Ubah lewat editor harga bertingkat; tidak ada yang diubah.";
 
 /**
  * A product's optional catalog-presentation classification (Fase 12 task
@@ -1011,6 +1016,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     try {
       await upsertBulkPricing(prisma, { denominationId: id, minQuantity, discountPercent });
     } catch (e) {
+      if (e instanceof LegacyBulkRuleConflictError) return reply.code(409).send({ error: LEGACY_BULK_CONFLICT_MESSAGE });
       if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
@@ -1030,7 +1036,13 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const existing = await getDenominationWithProduct(prisma, id);
     if (!existing) return reply.code(404).send({ error: "Denomination not found." });
 
-    const removed = await deleteBulkPricing(prisma, id);
+    let removed: boolean;
+    try {
+      removed = await deleteBulkPricing(prisma, id);
+    } catch (e) {
+      if (e instanceof LegacyBulkRuleConflictError) return reply.code(409).send({ error: LEGACY_BULK_CONFLICT_MESSAGE });
+      throw e;
+    }
     if (removed) {
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,

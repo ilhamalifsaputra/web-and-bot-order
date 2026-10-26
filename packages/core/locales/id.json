@@ -386,6 +386,7 @@
   "error.out_of_stock": "<b>{product}</b> habis. Coba produk lain.",
   "error.invalid_pricing_tiers": "Tingkat harga bertingkat ini tidak valid. Periksa jumlah yang sama dan nilainya.",
   "error.invalid_pricing_quantity": "Jumlah tersebut tidak valid untuk perhitungan harga.",
+  "error.bulk_pricing_tier_set_conflict": "Produk ini memakai beberapa tingkat harga atau tingkat potongan nominal. Ubah lewat editor harga bertingkat; tidak ada yang diubah.",
   "error.product_unavailable": "Produk ini sedang tidak tersedia. Coba produk lain.",
   "error.payment_amount_invalid": "Jumlah pembayaran harus berupa angka yang valid, terbatas, dan lebih besar dari nol.",
   "error.payment_fee_invalid": "Biaya dan jumlah bersih sebuah pembayaran harus berupa angka yang valid, terbatas, dan tidak negatif.",

@@ -8,11 +8,13 @@
  */
 import type { PricingTier } from "@app/core/bulk";
 import { Decimal } from "@app/core/money";
+import { legacyRuleCanReplace } from "@app/db";
 import { formatIdr } from "./format";
 
 /** True when the bot's single-rule editor can change this tier set without losing anything. */
 export function botCanEditTiers(tiers: readonly PricingTier[]): boolean {
-  return tiers.length <= 1 && tiers.every((t) => t.discountType === "PERCENTAGE");
+  // The same rule the legacy adapters re-check under their row lock.
+  return legacyRuleCanReplace(tiers);
 }
 
 /** One line per tier, lowest threshold first. */

@@ -22,6 +22,7 @@ import {
   deleteBulkPricing,
   getBulkPricingForDenomination,
   activeBulkPricingByDenomination,
+  LegacyBulkRuleConflictError,
 } from "@app/db";
 
 let db: TestDb;
@@ -269,9 +270,26 @@ describe("priceLineWithTiers", () => {
 });
 
 describe("legacy single-rule adapters", () => {
+  it.each([
+    ["several tiers", THREE_TIERS],
+    ["one fixed-amount tier", [{ minQuantity: 3, discountType: "FIXED_UNIT_PRICE", discountValue: "8000" }]],
+  ])("refuses to replace or delete %s (not one legacy percentage rule) and changes nothing", async (_label, tiers) => {
+    const id = sample.product.id;
+    await replaceTiers(prisma, id, tiers, actor);
+    await setTieredPricingEnabled(prisma, id, true, actor);
+    const before = await listTiers(prisma, id);
+
+    await expect(upsertBulkPricing(prisma, { denominationId: id, minQuantity: 4, discountPercent: "12.5" })).rejects.toBeInstanceOf(
+      LegacyBulkRuleConflictError,
+    );
+    await expect(deleteBulkPricing(prisma, id)).rejects.toBeInstanceOf(LegacyBulkRuleConflictError);
+    expect(await listTiers(prisma, id)).toEqual(before);
+    expect((await prisma.denomination.findUniqueOrThrow({ where: { id } })).tieredPricingEnabled).toBe(true);
+  });
+
   it("upsertBulkPricing writes one PERCENTAGE tier, turns tiered pricing on, and still writes the bulk_pricing row", async () => {
     const id = sample.product.id;
-    await replaceTiers(prisma, id, THREE_TIERS, actor);
+    await replaceTiers(prisma, id, [{ minQuantity: 2, discountType: "PERCENTAGE", discountValue: "10" }], actor);
     const row = await upsertBulkPricing(prisma, { denominationId: id, minQuantity: 4, discountPercent: "12.5" });
 
     expect(row.productId).toBe(id);

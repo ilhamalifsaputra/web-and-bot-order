@@ -434,6 +434,73 @@ describe("bot admin bulk pricing screen", () => {
     expect(await prisma.bulkPricingTier.count({ where: { denominationId: sample.product.id } })).toBe(2);
   });
 
+  /** A two-tier set the bot cannot express, as the web admin's tier editor saves it. */
+  async function webSavesMultiTierSet() {
+    await replaceTiers(
+      prisma,
+      sample.product.id,
+      [
+        { minQuantity: 3, discountType: "PERCENTAGE", discountValue: "20" },
+        { minQuantity: 5, discountType: "FIXED_UNIT_PRICE", discountValue: "6000" },
+      ],
+      { adminId: null },
+    );
+  }
+
+  const tierSnapshot = async () =>
+    (await prisma.bulkPricingTier.findMany({ where: { denominationId: sample.product.id }, orderBy: { minQuantity: "asc" } }))
+      .map((x) => [x.minQuantity, x.discountType, new Decimal(x.discountValue).toString()]);
+
+  it("Delete tapped on the editable screen after the web admin saved a multi-tier set is refused: tiers untouched, no audit, one answer + one edit", async () => {
+    // The admin opens the editable screen while the denomination still has one percentage rule…
+    await upsertBulkPricing(prisma, { denominationId: sample.product.id, minQuantity: 2, discountPercent: "5" });
+    const screen = await adminCtx(`v1:adm:bulk:menu:${sample.product.id}`);
+    await handleAdminCallback(screen.ctx, screen.ctx.callbackQuery!.data!.split(":"));
+    expect(buttons(screen.sink)).toContain(`v1:adm:bulk:del:${sample.product.id}`);
+
+    // …then the web admin replaces it with a multi-tier set, and only then is Delete tapped.
+    await webSavesMultiTierSet();
+    const auditBefore = await prisma.auditLog.count();
+    const { ctx, sink } = await adminCtx(`v1:adm:bulk:del:${sample.product.id}`);
+    await handleAdminCallback(ctx, ctx.callbackQuery!.data!.split(":"));
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers).toHaveLength(1);
+    expect(JSON.stringify(answers[0]!.args)).toContain("managed in the web admin");
+    expect(budget(sink)).toEqual({ sendMessage: 0, sendPhoto: 0, editMessageText: 1, editMessageCaption: 0, deleteMessage: 0, sendDocument: 0 });
+    // The redraw is the read-only screen: no Update/Delete left to tap.
+    expect(buttons(sink)).not.toContain(`v1:adm:bulk:del:${sample.product.id}`);
+    expect(await tierSnapshot()).toEqual([[3, "PERCENTAGE", "20"], [5, "FIXED_UNIT_PRICE", "6000"]]);
+    expect(await prisma.auditLog.count()).toBe(auditBefore);
+    expect(await prisma.auditLog.count({ where: { action: "bulk_pricing_delete" } })).toBe(0);
+  });
+
+  it("a multi-tier set the web admin saves between the handler's check and its write is not deleted (re-checked under the row lock)", async () => {
+    await upsertBulkPricing(prisma, { denominationId: sample.product.id, minQuantity: 2, discountPercent: "5" });
+    const auditBefore = await prisma.auditLog.count({ where: { NOT: { action: { startsWith: "pricing_tiers" } } } });
+    const { ctx, sink } = await adminCtx(`v1:adm:bulk:del:${sample.product.id}`);
+    // The handler's own pre-check sees the single editable rule; the web save lands just before its transaction.
+    const realTransaction = prisma.$transaction.bind(prisma);
+    const spy = vi.spyOn(prisma, "$transaction").mockImplementationOnce((async (...args: unknown[]) => {
+      await webSavesMultiTierSet();
+      return (realTransaction as (...a: unknown[]) => unknown)(...args);
+    }) as typeof prisma.$transaction);
+    try {
+      await handleAdminCallback(ctx, ctx.callbackQuery!.data!.split(":"));
+    } finally {
+      spy.mockRestore();
+    }
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers).toHaveLength(1);
+    expect(JSON.stringify(answers[0]!.args)).toContain("managed in the web admin");
+    expect(budget(sink)).toEqual({ sendMessage: 0, sendPhoto: 0, editMessageText: 1, editMessageCaption: 0, deleteMessage: 0, sendDocument: 0 });
+    expect(await tierSnapshot()).toEqual([[3, "PERCENTAGE", "20"], [5, "FIXED_UNIT_PRICE", "6000"]]);
+    // Only the web save's own audit rows were added; the refused delete wrote none.
+    expect(await prisma.auditLog.count({ where: { NOT: { action: { startsWith: "pricing_tiers" } } } })).toBe(auditBefore);
+    expect(await prisma.auditLog.count({ where: { action: "bulk_pricing_delete" } })).toBe(0);
+  });
+
   it("a single percentage rule keeps the editable screen", async () => {
     await upsertBulkPricing(prisma, { denominationId: sample.product.id, minQuantity: 1, discountPercent: "5" });
     const { ctx, sink } = await adminCtx(`v1:adm:bulk:menu:${sample.product.id}`);

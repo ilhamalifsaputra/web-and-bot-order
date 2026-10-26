@@ -5,6 +5,8 @@
  * button; typed input (command/text/photo) sends a NEW message. On edit
  * failure (e.g. editing a photo+caption bubble, or "message is not modified")
  * we fall through to a fresh send so the user always gets a response.
+ * Exceptions: wizard anchors (menuAnchor/adminAnchor) and a typed "← Back"
+ * (editMenuOnTypedNavigation) edit the session-tracked bubble instead.
  */
 import { InputFile, type InlineKeyboard, type Keyboard } from "grammy";
 import { GrammyError } from "grammy";
@@ -84,22 +86,79 @@ export async function consumeInput(ctx: MyContext): Promise<void> {
   }
 }
 
-/** Render the next customer screen (edit on tap, send on typed input). */
-export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
+// ---------------------------------------------------------------------------
+// Per-update render modes (never persisted: they describe THIS update only)
+// ---------------------------------------------------------------------------
+
+/** Updates whose tapped bubble was deleted during this update (a product photo
+ * dropped on Back): no render may try to edit or retire it any more. */
+const tappedBubbleGone = new WeakSet<MyContext>();
+/** Typed navigation (a typed "← Back") that renders into the bot-owned menu
+ * bubble (menuMsgId) like a wizard anchor, instead of sending a new bubble.
+ * `textOnly` — the target is a plain-text screen, so a photo anchor (a product
+ * photo) is deleted and replaced rather than captioned with it. */
+const typedNavigation = new WeakMap<MyContext, { textOnly: boolean }>();
+
+/** Record that this update deleted the tapped bubble (see tappedBubbleGone). */
+export function markTappedBubbleDeleted(ctx: MyContext): void {
+  tappedBubbleGone.add(ctx);
+}
+
+/** True once markTappedBubbleDeleted ran for this update. */
+export function tappedBubbleDeleted(ctx: MyContext): boolean {
+  return tappedBubbleGone.has(ctx);
+}
+
+/** This (typed) update navigates by editing the menu bubble; see typedNavigation. */
+export function editMenuOnTypedNavigation(ctx: MyContext): void {
+  typedNavigation.set(ctx, { textOnly: false });
+}
+
+/** True while a typed navigation renders into the menu bubble. */
+export function isTypedNavigation(ctx: MyContext): boolean {
+  return typedNavigation.has(ctx);
+}
+
+/** The typed navigation lands on a plain-text screen: a photo anchor is replaced, not captioned. */
+export function preferTextAnchor(ctx: MyContext): void {
+  const mode = typedNavigation.get(ctx);
+  if (mode) mode.textOnly = true;
+}
+
+/** Input modes and the "a catalog screen is showing" mark end with every render;
+ * a catalog screen marks itself again right after its own render. */
+function endScreenModes(ctx: MyContext): void {
   // Clear qty-input / wallet-topup-amount-input mode on any navigation so
   // neither leaks into a later typed message on an unrelated screen.
   ctx.session.awaitingQtyDenomId = undefined;
   ctx.session.awaitingTopupCurrency = undefined;
   delete ctx.session.scratch.searchAwaiting;
+  delete ctx.session.scratch.catalogScreen;
+}
+
+/** Render the next customer screen (edit on tap, send on typed input). */
+export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
+  endScreenModes(ctx);
   const body = truncateText(text);
+
+  // A typed "← Back" edits the bot-owned menu bubble in place (an inline
+  // screen only; a reply keyboard still needs a fresh send).
+  const typedNav = typedNavigation.get(ctx);
+  if (!ctx.callbackQuery && typedNav && (replyMarkup === undefined || isInline(replyMarkup))) {
+    ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup, { replacePhoto: typedNav.textOnly });
+    return;
+  }
 
   // Reply keyboards can't attach to an edit — only edit when the markup is
   // inline (or absent); otherwise fall through to a fresh send carrying it.
-  const tappedId = ctx.callbackQuery?.message?.message_id;
+  const tappedGone = tappedBubbleGone.has(ctx);
+  const tappedId = tappedGone ? undefined : ctx.callbackQuery?.message?.message_id;
   // Transaction status bubbles remain owned by their coordinator. Navigating
   // opens the menu separately so another order cannot inherit this message.
   const transactionBubble = await isTransactionBubble(ctx, tappedId);
-  if (ctx.callbackQuery && !transactionBubble && (replyMarkup === undefined || isInline(replyMarkup))) {
+  // A tapped bubble deleted earlier in this update is not edited (the call
+  // could only fail): straight to the fresh send below.
+  if (ctx.callbackQuery && !tappedGone && !transactionBubble && (replyMarkup === undefined || isInline(replyMarkup))) {
     const cqMsg = ctx.callbackQuery.message;
     let edited = true;
     try {
@@ -136,7 +195,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
       return;
     }
   }
-  const prev = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
+  const prev = ctx.session.menuMsgId ?? tappedId;
   const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
   if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
   ctx.session.menuMsgId = msg.message_id;
@@ -163,16 +222,19 @@ export async function renderMenu(
   photo?: string | InputFile,
   onPhotoSent?: (fileId: string) => void | Promise<void>,
 ): Promise<void> {
-  ctx.session.awaitingQtyDenomId = undefined;
-  ctx.session.awaitingTopupCurrency = undefined;
-  delete ctx.session.scratch.searchAwaiting;
+  endScreenModes(ctx);
   const body = truncateText(text);
+  const inlineOrNone = replyMarkup === undefined || isInline(replyMarkup);
 
-  if (photo && body.length <= MAX_CAPTION_LEN) {
+  // A typed "← Back" renders into the menu bubble (smartEdit): its caption when
+  // that bubble is a photo, else its text — never a new photo bubble.
+  if (photo && body.length <= MAX_CAPTION_LEN && !(typedNavigation.has(ctx) && !ctx.callbackQuery && inlineOrNone)) {
     // Editing in place only works when we're on a callback and the current
     // bubble is already a photo (the menus here use reply keyboards, so this is
-    // rare — the common path is a fresh photo send below).
-    if (ctx.callbackQuery && !(await isTransactionBubble(ctx, ctx.callbackQuery.message?.message_id)) && (replyMarkup === undefined || isInline(replyMarkup))) {
+    // rare — the common path is a fresh photo send below). A tapped bubble
+    // deleted earlier in this update is never edited.
+    const tappedGone = tappedBubbleGone.has(ctx);
+    if (ctx.callbackQuery && !tappedGone && !(await isTransactionBubble(ctx, ctx.callbackQuery.message?.message_id)) && inlineOrNone) {
       const cqMsg = ctx.callbackQuery.message;
       if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
         let edited = true;
@@ -197,7 +259,7 @@ export async function renderMenu(
         }
       }
     }
-    const prev = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
+    const prev = ctx.session.menuMsgId ?? (tappedGone ? undefined : ctx.callbackQuery?.message?.message_id);
     const msg = await ctx.replyWithPhoto(photo, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
     if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
     ctx.session.menuMsgId = msg.message_id;
@@ -250,6 +312,7 @@ async function editAnchor(
   anchorId: number | undefined,
   text: string,
   replyMarkup?: Markup,
+  opts: { replacePhoto?: boolean } = {},
 ): Promise<number | undefined> {
   const body = truncateText(text);
   const chatId = ctx.chat?.id;
@@ -265,7 +328,9 @@ async function editAnchor(
         // product-detail photo): its caption is the editable part. Without
         // this, every typed step fell through to a fresh send — one new
         // bubble per step instead of one wizard bubble.
-        if (body.length <= MAX_CAPTION_LEN) {
+        // `replacePhoto`: a plain-text screen (typed Back from a product
+        // photo) — the photo is obsolete, drop it like an over-long caption.
+        if (body.length <= MAX_CAPTION_LEN && !opts.replacePhoto) {
           try {
             await ctx.api.editMessageCaption(chatId, anchorId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
             return anchorId;
@@ -297,10 +362,8 @@ async function editAnchor(
 /** Render a customer wizard step into the anchor bubble (edit-in-place). */
 export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
   if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
-  ctx.session.awaitingQtyDenomId = undefined;
-  ctx.session.awaitingTopupCurrency = undefined;
-  delete ctx.session.scratch.searchAwaiting;
-  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup);
+  endScreenModes(ctx);
+  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup, { replacePhoto: typedNavigation.get(ctx)?.textOnly });
 }
 
 /** Render an admin wizard step into the anchor bubble (edit-in-place). */

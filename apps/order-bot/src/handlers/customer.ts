@@ -65,7 +65,7 @@ import {
   listTicketMessages,
 } from "@app/db";
 import { BotState, type MyContext } from "../context";
-import { smartEdit, renderMenu, consumeInput, menuAnchor } from "../util/chat";
+import { smartEdit, renderMenu, consumeInput, menuAnchor, editMenuOnTypedNavigation, isTypedNavigation, markTappedBubbleDeleted, preferTextAnchor, tappedBubbleDeleted } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
@@ -179,12 +179,13 @@ interface BrowseScratch {
    * browseCategoriesInGroup, so a flag from another scope is never read (it
    * is also ignored unless its categoryId matches the current scope). */
   shownPickers?: { categoryId: number; variant: boolean; region: boolean };
-  /** Digit count of the numbered reply keyboard last sent to this chat
-   * (productsPersistentKb / gamePickerPersistentKb); deleted when Home's menu
-   * keyboard replaces it. A Back re-render of a picker resends the keyboard
-   * only when the current one cannot offer every option (fewer digits), so
-   * Back edits in place instead of adding a companion message. */
-  replyKbDigits?: number;
+  /** True while the screen showing is a catalog screen (service / category /
+   * edition / region picker, product list, pack picker, pack detail). Every
+   * render (smartEdit / renderMenu / menuAnchor) clears it and each catalog
+   * render sets it again right after (markCatalogScreen), so it is false on
+   * review, payment, QR wait, wizard prompts, receipts, search results and
+   * Popular. Gates the typed "← Back" (handleBackButton). */
+  catalogScreen?: boolean;
   /** Where the open product was reached from when it was not the catalog
    * list: a search results page or the Popular list (both open products via
    * `browse:pick:<id>`, which carries no origin — its 4th segment is the
@@ -283,12 +284,34 @@ async function backToHome(ctx: MyContext): Promise<void> {
 async function renderHome(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
-  delete sc(ctx).replyKbDigits;
   delete sc(ctx).browseOrigin;
   delete sc(ctx).skippedListProductId;
 }
 
+/**
+ * The typed "← Back" key of the numbered reply keyboard. That keyboard stays
+ * on screen after the catalog (review, payment, QR wait, wizard prompts,
+ * receipts), so Back navigates the catalog only while a catalog screen is the
+ * one showing (`scratch.catalogScreen`, set by each catalog render and cleared
+ * by every other render) or from the quantity prompt (its Cancel goes to the
+ * same detail). Anywhere else it does exactly what the typed Menu key does.
+ *
+ * A catalog Back edits the bot-owned menu bubble (menuMsgId) in place, like a
+ * wizard anchor, and then deletes the typed "← Back" (accepted typed input;
+ * a failed delete is ignored). Only Home is a fresh send: its menu reply
+ * keyboard cannot ride on an edit.
+ */
 async function handleBackButton(ctx: MyContext): Promise<void> {
+  if (ctx.session.awaitingQtyDenomId == null && !sc(ctx).catalogScreen) {
+    await backToHome(ctx);
+    return;
+  }
+  editMenuOnTypedNavigation(ctx);
+  await navigateCatalogBack(ctx);
+  await consumeInput(ctx);
+}
+
+async function navigateCatalogBack(ctx: MyContext): Promise<void> {
   const qtyDenomId = ctx.session.awaitingQtyDenomId;
   if (qtyDenomId != null) {
     ctx.session.awaitingQtyDenomId = undefined;
@@ -493,15 +516,20 @@ export async function backToRegionPicker(ctx: MyContext, categoryId: number): Pr
   await navigateBack(ctx, regionBack);
 }
 
-/** Send the numbered reply keyboard for a picker/list with `count` options and
- * remember its size. A Back render (`back`) skips it when the keyboard already
- * on screen offers at least `count` digits — Back edits, it does not stack a
- * companion message; extra digits answer "invalid number" like any other
- * out-of-range digit. */
-async function sendNumberedKeyboard(ctx: MyContext, count: number, keyboard: ReturnType<typeof ckb.gamePickerPersistentKb>, back = false): Promise<void> {
-  if (back && (sc(ctx).replyKbDigits ?? 0) >= count) return;
+/** Send the numbered reply keyboard for a picker/list with `count` options. A
+ * Back render (`back`) never sends it: Back edits in place and never stacks a
+ * companion message — the picker's inline keyboard already has a button per
+ * option, and a digit the bottom keyboard lacks can still be typed (a spare
+ * one answers "invalid number", like any other out-of-range digit). */
+async function sendNumberedKeyboard(ctx: MyContext, keyboard: ReturnType<typeof ckb.gamePickerPersistentKb>, back = false): Promise<void> {
+  if (back) return;
   await ctx.reply(t(ctx, "browse.use_numbers"), { reply_markup: keyboard });
-  sc(ctx).replyKbDigits = count;
+}
+
+/** The screen just rendered is a catalog screen: a typed "← Back" may navigate
+ * from it (see BrowseScratch.catalogScreen). Call right after the render. */
+function markCatalogScreen(ctx: MyContext): void {
+  sc(ctx).catalogScreen = true;
 }
 
 /** `t.me/<bot>?start=prod_<id>` → the Denomination/SKU id (share links), or
@@ -557,6 +585,11 @@ export async function menuCommand(ctx: MyContext): Promise<void> {
   // Deep-link: prod_<id> → open a denomination detail bubble directly.
   const denomId = deepLinkDenomId(ctx);
   if (denomId !== undefined) {
+    // Not opened from a pack picker: a product left open earlier must not
+    // become this detail's parent (its Back would open an unrelated picker).
+    delete sc(ctx).productId;
+    delete sc(ctx).productPage;
+    delete sc(ctx).variantId;
     await browseDenomination(ctx, denomId);
     return;
   }
@@ -629,6 +662,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
     t(ctx, "browse.group_picker_title"),
     ckb.groupPickerKb(lang, enabledServices),
   );
+  markCatalogScreen(ctx);
 }
 
 /**
@@ -684,6 +718,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   const upTarget = await upToServicesTarget();
   if (!categories.length) {
     await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang, upTarget));
+    markCatalogScreen(ctx);
     return;
   }
   if (categories.length === 1) {
@@ -696,6 +731,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   }
   const gameListHint = group === CategoryGroup.GAME_TOPUP ? `\n${t(ctx, "hint.game_list")}` : "";
   await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }) + gameListHint, ckb.categoryPickerKb(categories, ctx.session.lang, upTarget));
+  markCatalogScreen(ctx);
 }
 
 /**
@@ -816,7 +852,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     // picker's own option count, BEFORE the picker's own inline-keyboard
     // render below, so that edit/send stays the chat's most recently
     // rendered screen (its inline buttons are what a tap should act on).
-    await sendNumberedKeyboard(ctx, variants.length, ckb.gamePickerPersistentKb(variants.length, ctx.session.lang), opts.back);
+    await sendNumberedKeyboard(ctx, ckb.gamePickerPersistentKb(variants.length, ctx.session.lang), opts.back);
     sc(ctx).shownPickers = { categoryId, variant: true, region: false };
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
     // — `cb("browse", "cat", categoryId)` would just re-render this SAME
@@ -826,6 +862,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
       t(ctx, "browse.choose_variant") + `\n${t(ctx, "hint.variant")}`,
       ckb.gameVariantPickerKb(variants, categoryId, effectiveBackTarget, ctx.session.lang),
     );
+    markCatalogScreen(ctx);
     return;
   }
   // Variant step auto-skipped (0/1 distinct variant) — no picker was shown,
@@ -925,9 +962,10 @@ async function enterGameVariant(
     // Same reasoning as the variant picker's render above — resend the
     // bottom digit keyboard, sized to this picker's own option count, before
     // the picker's own inline-keyboard render.
-    await sendNumberedKeyboard(ctx, regions.length, ckb.gamePickerPersistentKb(regions.length, ctx.session.lang), opts.back);
+    await sendNumberedKeyboard(ctx, ckb.gamePickerPersistentKb(regions.length, ctx.session.lang), opts.back);
     sc(ctx).shownPickers = { categoryId, variant: opts.variantShown, region: true };
     await smartEdit(ctx, t(ctx, "browse.choose_region") + `\n${t(ctx, "hint.region")}`, ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
+    markCatalogScreen(ctx);
     return;
   }
   await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
@@ -1011,14 +1049,22 @@ export async function browseResume(ctx: MyContext): Promise<void> {
  * product photo. Never touches an order's transaction bubble; a failed delete
  * is ignored. */
 async function dropTappedPhotoBubble(ctx: MyContext): Promise<void> {
+  // A typed Back has no tapped bubble: it edits the menu bubble instead, and
+  // a product photo there is replaced (not captioned) by this text screen.
+  if (isTypedNavigation(ctx)) {
+    preferTextAnchor(ctx);
+    return;
+  }
   // At most once per update: a Back render can pass through several screens'
   // entry points (category entry → product list) that each call this.
-  if (photoDropped.has(ctx)) return;
+  if (tappedBubbleDeleted(ctx)) return;
   const chatId = ctx.chat?.id;
   const cqMsg = ctx.callbackQuery?.message;
   if (chatId !== undefined && cqMsg && "photo" in cqMsg && cqMsg.photo
     && !(await ownsTransactionMessageAt(prisma, chatId, cqMsg.message_id))) {
-    photoDropped.add(ctx);
+    // Marked before the delete: the render that follows never edits or
+    // retires this bubble (it sends the one replacement directly).
+    markTappedBubbleDeleted(ctx);
     try {
       await ctx.api.deleteMessage(chatId, cqMsg.message_id);
     } catch {
@@ -1027,7 +1073,17 @@ async function dropTappedPhotoBubble(ctx: MyContext): Promise<void> {
     ctx.session.menuMsgId = undefined;
   }
 }
-const photoDropped = new WeakSet<MyContext>();
+
+/** Search results and Popular leave the catalog path: forget the product /
+ * pack left open there (and the pickers recorded for it), so neither a typed
+ * Back nor a later product opened from these screens resolves against it. */
+function forgetCatalogPath(ctx: MyContext): void {
+  delete sc(ctx).productId;
+  delete sc(ctx).productPage;
+  delete sc(ctx).variantId;
+  delete sc(ctx).skippedListProductId;
+  delete sc(ctx).shownPickers;
+}
 
 /** dropTappedPhotoBubble for the picker screens (service / category / edition /
  * region pickers), only when the tap came from a product screen — a product
@@ -1107,6 +1163,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
     await smartEdit(ctx, t(ctx, "browse.no_products"), await emptyListKb(ctx));
+    markCatalogScreen(ctx);
     return;
   }
 
@@ -1205,16 +1262,19 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // since it's written unconditionally below on every render) — so the fix is
   // the inverse of that, not an allowlist of specific prior screens.
   const needsKeyboardResend = previousActiveScreen !== "products";
+  // A typed Back edits the menu bubble like a tap edits its own: inline markup.
+  const editsInPlace = !!ctx.callbackQuery || isTypedNavigation(ctx);
   if (needsKeyboardResend) {
-    await sendNumberedKeyboard(ctx, pageProducts.length, ckb.productsPersistentKb(pageProducts.length, lang));
+    await sendNumberedKeyboard(ctx, ckb.productsPersistentKb(pageProducts.length, lang), isTypedNavigation(ctx));
   }
-  // The list's Back: the reply keyboard's Back key (handleBackButton) and, on
-  // a multi-page list, an inline Back row — both from listBackTarget.
-  const replyMarkup = ctx.callbackQuery
+  // The list's Back, from listBackTarget: an inline Back row on every edited
+  // list (single page too — an edited bubble carries it for free) and the
+  // reply keyboard's Back key (handleBackButton).
+  const replyMarkup = editsInPlace
     ? ckb.productsNavKb(page, totalPages, lang, await listBackTarget(ctx))
     : ckb.productsPersistentKb(pageProducts.length, lang);
   await renderMenuBanner(ctx, text, replyMarkup);
-  if (!ctx.callbackQuery) sc(ctx).replyKbDigits = pageProducts.length;
+  markCatalogScreen(ctx);
 }
 
 /**
@@ -1229,6 +1289,7 @@ export async function browsePopular(ctx: MyContext): Promise<void> {
   const rows = await soldCountsByProduct(prisma, "bot", 10);
   // Reached by Back from a product photo too (browse:popular) — a text screen.
   await dropTappedPhotoBubble(ctx);
+  forgetCatalogPath(ctx);
   if (!rows.length) {
     delete sc(ctx).browseOrigin;
     await smartEdit(ctx, t(ctx, "browse.popular_empty"), ckb.backToMain(lang));
@@ -1363,6 +1424,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
 
   if (!entries.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), await emptyListKb(ctx));
+    markCatalogScreen(ctx);
     return;
   }
 
@@ -1425,6 +1487,7 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
     } else {
       await renderMenuBanner(ctx, text, keyboard);
     }
+    markCatalogScreen(ctx);
   };
 
   if (!isGame) {
@@ -1662,6 +1725,7 @@ export async function browseDenomination(
   } else {
     await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId, parentPage, fallbackBack));
   }
+  markCatalogScreen(ctx);
   ctx.session.state = BotState.PRODUCT_DETAIL;
   sc(ctx).variantId = denominationId;
   sc(ctx).quantity = qty;
@@ -2286,6 +2350,7 @@ async function renderGameSearchPage(ctx: MyContext, page: number): Promise<void>
   const slice = snap.hits.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   // Reached by Back from a product photo too (search:page:<n>) — a text screen.
   await dropTappedPhotoBubble(ctx);
+  forgetCatalogPath(ctx);
   await menuAnchor(
     ctx,
     `${t(ctx, "search.results", { query: esc(snap.query), count: snap.hits.length })}\n${t(ctx, "hint.search")}`,
@@ -2308,6 +2373,7 @@ async function runGameSearch(ctx: MyContext, rawQuery: string): Promise<void> {
   if (!products.length) {
     delete sc(ctx).searchSnapshot;
     delete sc(ctx).browseOrigin;
+    forgetCatalogPath(ctx);
     await menuAnchor(
       ctx,
       `${t(ctx, "search.no_results", { query: esc(query) })}\n${t(ctx, "hint.search_empty")}`,

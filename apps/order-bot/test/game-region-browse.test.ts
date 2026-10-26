@@ -87,10 +87,14 @@ function regionIdx(sink: SentCall[], catId: number, label: string): number {
 
 type Scratch = { activeNumberedScreen?: string };
 
-// Exact Telegram call counts of the typed Back from the product list (pinned from the observed run).
+// Exact Telegram call counts of the typed Back from the product list when the
+// session tracks no menu bubble (a fresh session carrying only the scratch):
+// one send that becomes the tracked bubble, and the typed "← Back" deleted.
+// With a tracked bubble the typed Back is one edit instead (back-navigation.test.ts).
 const BACK_SEND = 0;
 const BACK_REPLY = 1;
 const BACK_EDIT = 0;
+const BACK_DELETE = 1;
 
 describe("region picker", () => {
   it("a region tap lists every product in that region with the same Telegram call budget", async () => {
@@ -236,7 +240,8 @@ describe("region picker", () => {
     expect(calls(back.sink, "sendMessage")).toHaveLength(BACK_SEND);
     expect(calls(back.sink, "reply")).toHaveLength(BACK_REPLY);
     expect(calls(back.sink, "editMessageText")).toHaveLength(BACK_EDIT);
-    expect(calls(back.sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(back.sink, "deleteMessage").map((c) => c.args[1])).toEqual(Array(BACK_DELETE).fill(back.ctx.message!.message_id));
+    expect(back.ctx.session.menuMsgId).toBeDefined();
   });
 
   it("a region-less product that is inactive does not make the scope mixed", async () => {

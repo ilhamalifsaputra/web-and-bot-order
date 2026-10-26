@@ -481,14 +481,14 @@ describe("customer handlers", () => {
     expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 555 });
   });
 
-  it("Product List has no inline keyboard on a single page (selection is by typed number)", async () => {
+  it("Product List on a single page carries only its Back row inline (selection is by typed number)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
     await customer.browseProductsFlat(ctx, 0);
-    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined;
-    // No per-product pick buttons, no Menu row, no Prev/Next — the persistent
-    // reply keyboard navigates and the user picks by typing the listed number.
-    const flat = (markup?.inline_keyboard ?? []).flat();
-    expect(flat.length).toBe(0);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> } | undefined;
+    // No per-product pick buttons, no Menu row, no Prev/Next — the user picks by
+    // typing the listed number. The edited bubble carries its Back (an unscoped
+    // list goes to the main menu), so Back is one edit, not a typed key.
+    expect(markup?.inline_keyboard).toEqual([[{ text: persistentLabel("back", "en"), callback_data: "v1:menu:main" }]]);
   });
 
   it("browseProductsFlat sets a numbered persistent keyboard sized to the active product count on a fresh (non-callback) entry", async () => {
@@ -1815,7 +1815,8 @@ describe("denomination picker", () => {
 
     it("Back with no recorded list page (stale session) falls back to page 1 without error", async () => {
       const { cat } = await makeListScene(CategoryGroup.GAME_TOPUP, 2, 12);
-      const back = await pressBack({ categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, productId: 123456 });
+      // catalogScreen: the picker is the screen showing (a typed Back elsewhere is Menu).
+      const back = await pressBack({ categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, productId: 123456, catalogScreen: true });
       expect(bodyText(back.sink)).toContain("Page 1/2");
       expect(pageOf(back.ctx)).toBe(0);
     });
@@ -2591,9 +2592,10 @@ describe("group/category browsing handlers", () => {
     // case covered by the next test), so Back must still land there.
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
     await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
+    // catalogScreen: the list is the screen showing (a typed Back elsewhere is Menu).
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, cat.name)).toBe(true);
@@ -2608,7 +2610,7 @@ describe("group/category browsing handlers", () => {
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
@@ -2617,7 +2619,7 @@ describe("group/category browsing handlers", () => {
   it("Back from a category-scoped list with no recorded group falls back to the group picker (never Home)", async () => {
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId } },
+      session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
@@ -2626,7 +2628,7 @@ describe("group/category browsing handlers", () => {
   it("Back from the category-free Premium Apps product list returns to the group picker", async () => {
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { group: CategoryGroup.PREMIUM_APPS } },
+      session: { ...userSession(), scratch: { group: CategoryGroup.PREMIUM_APPS, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);

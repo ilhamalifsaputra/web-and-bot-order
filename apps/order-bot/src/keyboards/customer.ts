@@ -589,14 +589,13 @@ export function qtyInputCancelKb(denominationId: number, lang: string): InlineKe
  * Slim pagination keyboard for the Product List (§3). The list itself is now
  * driven by typed numbers (handleProductNumber resolves the caption's numbered
  * lines), so the per-product tap buttons and the Menu row were dropped — the
- * persistent reply keyboard carries navigation. Only a Prev/Next row remains,
- * and only when the catalog spans more than one page; a single page renders no
- * inline keyboard at all (returns undefined — its Back is on the reply
- * keyboard). A multi-page list adds a Back row after Prev/Next carrying
- * `backTarget` (the caller's `listBackTarget`).
+ * persistent reply keyboard carries the digits and Menu. A Prev/Next row only
+ * when the catalog spans more than one page, then a Back row carrying
+ * `backTarget` (the caller's `listBackTarget`) on every page — a single page
+ * too, so Back is one edit of this bubble rather than a typed reply-keyboard
+ * key. No `backTarget` and a single page → undefined (no inline keyboard).
  */
 export function productsNavKb(page: number, totalPages: number, lang: string, backTarget?: string): InlineKeyboard | undefined {
-  if (totalPages <= 1) return undefined;
   const nav: Btn[] = [];
   if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
   if (page < totalPages - 1)

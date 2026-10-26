@@ -1,12 +1,22 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, createCatalogProduct, createCategory, createDenomination, createOrderDirect, createTicket, setSetting, upsertUser } from "@app/db";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// A QR payment screen without a real gateway call (typed Back on the QR wait).
+vi.mock("@app/core/payments/tokopay", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+  createTransaction: vi.fn().mockResolvedValue({ trxId: "TP-BACK", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: "100" }),
+}));
+
+import { prisma, adjustWallet, createCatalogProduct, createCategory, createDenomination, createOrderDirect, createTicket, setSetting, upsertUser } from "@app/db";
 import { t as coreT } from "@app/core/i18n";
 import { CategoryGroup, OrderStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, sentIncludes, lastMarkup, type FakeCtx, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, sentIncludes, lastMarkup, FakeConversation, type FakeCtx, type SentCall } from "./helpers/ctx";
+import { primeQuote, quoteNonce } from "./helpers/quote";
+import * as checkout from "../src/handlers/checkout";
+import { voucherConversation } from "../src/conversations/checkout";
 import type { SessionData } from "../src/context";
 import { routeCallback } from "../src/handlers/callbacks";
 import * as customer from "../src/handlers/customer";
@@ -51,7 +61,8 @@ function userSession(): Partial<SessionData> {
 }
 
 function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
-  return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), ...opts });
+  // Failed edits are recorded too, so a count never hides a wasted call.
+  return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), recordFailedCalls: true, ...opts });
 }
 
 /** A later update in the same chat: shares the previous screen's session (scratch + menuMsgId). */
@@ -171,10 +182,15 @@ const counts = (sink: SentCall[]) => ({
   editMessageCaption: calls(sink, "editMessageCaption").length,
   deleteMessage: calls(sink, "deleteMessage").length,
   sendDocument: calls(sink, "sendDocument").length,
+  failedEdit: sink.filter((c) => c.method.startsWith("failed:")).length,
 });
-const ONE_EDIT = { sendMessage: 0, reply: 0, editMessageText: 1, editMessageCaption: 0, deleteMessage: 0, sendDocument: 0 };
-const ONE_SEND = { sendMessage: 0, reply: 1, editMessageText: 0, editMessageCaption: 0, deleteMessage: 0, sendDocument: 0 };
-const NOTHING = { sendMessage: 0, reply: 0, editMessageText: 0, editMessageCaption: 0, deleteMessage: 0, sendDocument: 0 };
+const NOTHING = { sendMessage: 0, reply: 0, editMessageText: 0, editMessageCaption: 0, deleteMessage: 0, sendDocument: 0, failedEdit: 0 };
+const ONE_EDIT = { ...NOTHING, editMessageText: 1 };
+const ONE_SEND = { ...NOTHING, reply: 1 };
+/** A typed Back: the bot-owned bubble is edited and the typed "← Back" deleted. */
+const TYPED_BACK = { ...NOTHING, editMessageText: 1, deleteMessage: 1 };
+/** A typed Back that lands on Home: Home carries the menu reply keyboard, so one send; the typed text is deleted. */
+const TYPED_BACK_HOME = { ...NOTHING, reply: 1, deleteMessage: 1 };
 
 type Scratch = { activeNumberedScreen?: string; gameRegionEntries?: string[]; browseEntries?: number[] };
 const scratchOf = (c: { ctx: { session: { scratch: unknown } } }) => c.ctx.session.scratch as Scratch;
@@ -319,22 +335,112 @@ describe("product list Back follows the pickers that were really shown", () => {
     expect(sees.regionPicker(toRegion)).toBe(true);
     expect(inlineButtons(toRegion.sink).filter((b) => b.callback_data?.startsWith(`v1:browse:greg:${cat.id}:`))).toHaveLength(2);
     expect(scratchOf(toRegion).activeNumberedScreen).toBe("gameRegion");
-    // A typed Back cannot edit (no tapped bubble): exactly one new bubble, no companion keyboard message.
-    expect(counts(toRegion.sink)).toEqual(ONE_SEND);
+    // A typed Back edits the bot's own bubble (the list) and deletes the typed
+    // text: no new bubble, no companion keyboard message, nothing left behind.
+    const bubble = list.ctx.session.menuMsgId;
+    const pinTyped = (c: FakeCtx) => {
+      expect(counts(c.sink)).toEqual(TYPED_BACK);
+      expect(calls(c.sink, "editMessageText")[0]!.args[1]).toBe(bubble);
+      expect(calls(c.sink, "deleteMessage")[0]!.args[1]).toBe(c.ctx.message!.message_id);
+      expect(c.ctx.session.menuMsgId).toBe(bubble);
+    };
+    pinTyped(toRegion);
 
     const toEdition = await typedBack(toRegion.ctx);
     expect(sees.variantPicker(toEdition)).toBe(true);
-    expect(counts(toEdition.sink)).toEqual(ONE_SEND);
+    pinTyped(toEdition);
 
     const toCategories = await typedBack(toEdition.ctx);
     expect(sentIncludes(toCategories.sink, "Honkai Star Rail")).toBe(true);
-    expect(counts(toCategories.sink)).toEqual(ONE_SEND);
+    pinTyped(toCategories);
 
     const toServices = await typedBack(toCategories.ctx);
     expect(sentIncludes(toServices.sink, "What are you shopping for")).toBe(true);
+    pinTyped(toServices);
 
     const toMenu = await typedBack(toServices.ctx);
     expect(isHome(toMenu.sink)).toBe(true);
+    expect(counts(toMenu.sink)).toEqual(TYPED_BACK_HOME);
+  });
+
+  it("a typed Back with no tracked bubble sends once, tracks it, and every later typed Back edits that bubble", async () => {
+    const cat = await genshin();
+    const list = await openAsiaList(cat);
+    list.ctx.session.menuMsgId = undefined;
+    const toRegion = await typedBack(list.ctx);
+    expect(sees.regionPicker(toRegion)).toBe(true);
+    expect(counts(toRegion.sink)).toEqual({ ...NOTHING, reply: 1, deleteMessage: 1 });
+    const tracked = toRegion.ctx.session.menuMsgId;
+    expect(tracked).toBeDefined();
+    const toEdition = await typedBack(toRegion.ctx);
+    expect(counts(toEdition.sink)).toEqual(TYPED_BACK);
+    expect(calls(toEdition.sink, "editMessageText")[0]!.args[1]).toBe(tracked);
+  });
+
+  it("a typed Back from a product photo to a text picker replaces the photo once instead of captioning it", async () => {
+    const cat = await genshin();
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const edition = await tap(entry.ctx, tapTarget(entry.sink, "Standard"));
+    const detail = await tap(edition.ctx, tapTarget(edition.sink, "Europe"));
+    const photoId = detail.ctx.session.menuMsgId!;
+    const back = next(detail.ctx, { text: BACK, photoMessageIds: [photoId] });
+    await customer.handleProductNumber(back.ctx);
+    expect(sees.regionPicker(back)).toBe(true);
+    // One failed text edit (the bot cannot know the anchor is a photo), the photo
+    // and the typed text deleted, one picker sent: the chat holds one bubble.
+    expect(counts(back.sink)).toEqual({ ...NOTHING, reply: 1, deleteMessage: 2, failedEdit: 1 });
+    expect(calls(back.sink, "editMessageCaption")).toHaveLength(0);
+    expect(calls(back.sink, "deleteMessage").map((c) => c.args[1])).toEqual([photoId, back.ctx.message!.message_id]);
+  });
+
+  it("a single-page list reached by a tap carries its own inline Back; tapping it edits the region picker in place with no companion keyboard", async () => {
+    const cat = await genshin();
+    const list = await openAsiaList(cat);
+    expect(rowsOf(list.sink)).toEqual([[[BACK, `v1:browse:gregs:${cat.id}`]]]);
+    const back = await tap(list.ctx, `v1:browse:gregs:${cat.id}`);
+    expect(sees.regionPicker(back)).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+  });
+
+  it("Back from a 2-product list to a 5-region picker never sends a companion 'use the numbers' message, tapped or typed", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Impact", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Honkai Star Rail", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "GI Asia 1", { gameRegion: "Asia" });
+    await product(cat.id, "GI Asia 2", { gameRegion: "Asia" });
+    for (const region of ["Europe", "America", "TW HK MO", "SEA"]) await product(cat.id, `GI ${region}`, { gameRegion: region });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    expect(bottomKeyboard(entry.sink)).toHaveLength(7); // 5 digits + Back + Menu
+    const list = await tap(entry.ctx, tapTarget(entry.sink, "Asia"));
+    expect(bottomKeyboard(list.sink)).toEqual(["1", "2", BACK, MENU]);
+
+    const tapped = await tap(list.ctx, `v1:browse:gregs:${cat.id}`);
+    expect(sees.regionPicker(tapped)).toBe(true);
+    expect(inlineButtons(tapped.sink).filter((b) => b.callback_data?.startsWith(`v1:browse:greg:${cat.id}:`))).toHaveLength(5);
+    expect(sentIncludes(tapped.sink, t(tapped.ctx, "browse.use_numbers"))).toBe(false);
+    expect(counts(tapped.sink)).toEqual(ONE_EDIT);
+
+    const list2 = await tap(tapped.ctx, tapTarget(tapped.sink, "Asia"));
+    const typed = await typedBack(list2.ctx);
+    expect(sees.regionPicker(typed)).toBe(true);
+    expect(sentIncludes(typed.sink, t(typed.ctx, "browse.use_numbers"))).toBe(false);
+    expect(counts(typed.sink)).toEqual(TYPED_BACK);
+  });
+
+  it("a legacy (null-group) category's list goes Back to the service level, tapped and typed", async () => {
+    const legacy = await createCategory(prisma, { name: "Legacy Apps" });
+    await prisma.category.update({ where: { id: legacy.id }, data: { group: null } });
+    await product(legacy.id, "Legacy One");
+    await product(legacy.id, "Legacy Two");
+    const list = customerCtx({ callbackData: `v1:browse:cat:${legacy.id}` });
+    await routeCallback(list.ctx);
+    expect(sentIncludes(list.sink, "Legacy Two")).toBe(true);
+    expect(rowsOf(list.sink)).toEqual([[[BACK, "v1:browse:grps"]]]);
+
+    const typed = await typedBack(list.ctx);
+    expect(sentIncludes(typed.sink, "What are you shopping for")).toBe(true);
+    expect(counts(typed.sink)).toEqual(TYPED_BACK);
   });
 
   it("the picker reply keyboards carry Back too", async () => {
@@ -366,7 +472,8 @@ describe("product list Back follows the pickers that were really shown", () => {
     // The bubble vanished: exactly one replacement message, and its id becomes the anchor.
     const goneId = again.ctx.session.menuMsgId!;
     const gone = await tap(again.ctx, `v1:browse:gregs:${cat.id}`, { deletedMessageIds: [goneId] });
-    expect(counts(gone.sink)).toEqual(ONE_SEND);
+    // The bot cannot know the bubble is gone until its one edit fails.
+    expect(counts(gone.sink)).toEqual({ ...ONE_SEND, failedEdit: 1 });
     expect(gone.ctx.session.menuMsgId).toBeDefined();
     expect(gone.ctx.session.menuMsgId).not.toBe(goneId);
   });
@@ -648,7 +755,7 @@ describe("Back chains edit the bubble in place", () => {
 
     const goneId = again.ctx.session.menuMsgId!;
     const gone = await tap(again.ctx, "v1:help:open", { deletedMessageIds: [goneId] });
-    expect(counts(gone.sink)).toEqual(ONE_SEND);
+    expect(counts(gone.sink)).toEqual({ ...ONE_SEND, failedEdit: 1 });
     expect(gone.ctx.session.menuMsgId).not.toBe(goneId);
 
     const toMenu = await tap(gone.ctx, tapTarget(gone.sink, BACK));
@@ -774,7 +881,9 @@ describe("a region (or edition) holding one product skips its one-line list, and
       cbMessage: { message_id: photoId, chat: { id: 42, type: "private" }, date: 0, photo: [{ file_id: "p" }] },
     });
     expect(sees.regionPicker(back)).toBe(true);
+    // The photo was just deleted: no edit is attempted on it, and its keyboard is not "retired".
     expect(counts(back.sink)).toEqual({ ...ONE_SEND, deleteMessage: 1 });
+    expect(calls(back.sink, "editMessageReplyMarkup").some((c) => c.args[1] === photoId)).toBe(false);
   });
 
   it("a product listed with others still goes Back to its list", async () => {
@@ -783,6 +892,158 @@ describe("a region (or edition) holding one product skips its one-line list, and
     const detail = next(list.ctx, { text: "1" });
     await customer.handleProductNumber(detail.ctx);
     expect(backData(detail.sink)).toBe("v1:browse:prods");
+  });
+});
+
+describe("a typed Back outside the catalog behaves exactly like the typed Menu key", () => {
+  /** The Premium sample product's detail, opened from the catalog list (catalog scratch set). */
+  async function openDetail() {
+    const list = settledCtx({ callbackData: `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}` });
+    await routeCallback(list.ctx);
+    const detail = await tap(list.ctx, `v1:browse:pick:${sample.parentProduct.id}`);
+    expect(backData(detail.sink)).toBe("v1:browse:prods");
+    return detail;
+  }
+  /** Home, one send, nothing edited (no transaction/payment bubble touched), no catalog screen. */
+  function pinMenu(c: FakeCtx) {
+    expect(isHome(c.sink)).toBe(true);
+    expect(counts(c.sink)).toEqual(ONE_SEND);
+    expect(sentIncludes(c.sink, "Product List")).toBe(false);
+    expect(c.ctx.session.scratch.productId).toBeUndefined();
+    expect(c.ctx.session.scratch.variantId).toBeUndefined();
+  }
+  async function typedMenu(prev: { session: SessionData }) {
+    const menu = next(prev, { text: MENU });
+    await customer.handleProductNumber(menu.ctx);
+    return menu;
+  }
+
+  it("on the order review: Home (like Menu), never the product detail or list", async () => {
+    const detail = await openDetail();
+    const review = await tap(detail.ctx, `v1:walletm:back:${sample.product.id}:1`);
+    expect(sentIncludes(review.sink, "Confirm Order")).toBe(true);
+    const back = await typedBack(review.ctx);
+    pinMenu(back);
+    expect(counts(back.sink)).toEqual(counts((await typedMenu(review.ctx)).sink));
+  });
+
+  it("on the USDT payment-method screen: Home", async () => {
+    const detail = await openDetail();
+    const methods = await tap(detail.ctx, `v1:usdt:${sample.product.id}:1`);
+    const back = await typedBack(methods.ctx);
+    pinMenu(back);
+  });
+
+  it("on the fully wallet-covered confirm: Home", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const detail = await openDetail();
+    const confirm = await tap(detail.ctx, `v1:walletm:idr:${sample.product.id}:1`);
+    expect(sentIncludes(confirm.sink, "Fully paid from your wallet credit")).toBe(true);
+    pinMenu(await typedBack(confirm.ctx));
+  });
+
+  it("on the QR payment wait: Home; the QR bubble is neither edited nor deleted", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const detail = await openDetail();
+    const review = await tap(detail.ctx, `v1:walletm:back:${sample.product.id}:1`);
+    const pay = next(review.ctx, { callbackData: "v1:payq", cbMessage: { message_id: review.ctx.session.menuMsgId, chat: { id: 42, type: "private" }, date: 0 } });
+    await primeQuote(pay.ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(pay.ctx, sample.product.id, 1, quoteNonce(pay.ctx));
+    expect(calls(pay.sink, "replyWithPhoto")).toHaveLength(1);
+    const back = await typedBack(pay.ctx);
+    pinMenu(back);
+  });
+
+  it("inside a wizard prompt (voucher entry): the wizard exits to Home like Menu, no catalog Back", async () => {
+    const detail = await openDetail();
+    const review = await tap(detail.ctx, `v1:walletm:back:${sample.product.id}:1`);
+    const start = next(review.ctx, { callbackData: `v1:voucher:start:${sample.product.id}:1`, cbMessage: { message_id: review.ctx.session.menuMsgId, chat: { id: 42, type: "private" }, date: 0 } });
+    const back = next(review.ctx, { text: BACK });
+    await voucherConversation(new FakeConversation([back.ctx]).asMyConversation(), start.ctx);
+    expect(sentIncludes(start.sink, t(start.ctx, "checkout.enter_voucher"))).toBe(true);
+    pinMenu(back);
+  });
+
+  it("on search results: Home (the results' own Back), never an old catalog picker", async () => {
+    const cat = await genshin();
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const regions = await tap(entry.ctx, tapTarget(entry.sink, "Standard"));
+    expect(sees.regionPicker(regions)).toBe(true);
+    const results = next(regions.ctx, { match: "GI" });
+    await customer.searchCommand(results.ctx);
+    const back = await typedBack(results.ctx);
+    expect(sees.regionPicker(back)).toBe(false);
+    pinMenu(back);
+  });
+});
+
+describe("stale product scratch never steers Back", () => {
+  it("list → pack detail → /search → typed Back is Home; a product opened from the results goes Back to them", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    const hero = await twoPackGame(games.id, "Zqx Hero");
+    await twoPackGame(games.id, "Zqx Other");
+    const list = customerCtx({ callbackData: `v1:browse:cat:${games.id}` });
+    await routeCallback(list.ctx);
+    const picker = await tap(list.ctx, `v1:browse:pick:${hero.id}`);
+    const pack = inlineButtons(picker.sink).find((b) => b.callback_data?.startsWith("v1:browse:denom:"))!.callback_data!;
+    const detail = await tap(picker.ctx, pack);
+    expect(detail.ctx.session.scratch.variantId).toBeDefined();
+
+    const results = next(detail.ctx, { match: "Zqx" });
+    await customer.searchCommand(results.ctx);
+    expect(results.ctx.session.scratch.productId).toBeUndefined();
+    expect(results.ctx.session.scratch.variantId).toBeUndefined();
+    expect(results.ctx.session.scratch.productPage).toBeUndefined();
+    const home = await typedBack(results.ctx);
+    expect(isHome(home.sink)).toBe(true);
+    expect(sentIncludes(home.sink, "Zqx Hero")).toBe(false);
+
+    const again = next(home.ctx, { match: "Zqx" });
+    await customer.searchCommand(again.ctx);
+    const opened = await tap(again.ctx, resultTarget(again.sink, "Zqx Other"));
+    const back = await typedBack(opened.ctx);
+    expect(sentIncludes(back.sink, t(back.ctx, "search.again_btn"))).toBe(true);
+    expect(counts(back.sink)).toEqual(TYPED_BACK);
+  });
+
+  it("Popular clears the open product too", async () => {
+    await deliveredSale();
+    const list = settledCtx({ callbackData: `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}` });
+    await routeCallback(list.ctx);
+    const detail = await tap(list.ctx, `v1:browse:pick:${sample.parentProduct.id}`);
+    const popular = await tap(detail.ctx, "v1:browse:popular");
+    expect(popular.ctx.session.scratch.productId).toBeUndefined();
+    expect(popular.ctx.session.scratch.variantId).toBeUndefined();
+    const home = await typedBack(popular.ctx);
+    expect(isHome(home.sink)).toBe(true);
+  });
+
+  it("a prod_<id> deep link ignores a product picker left open earlier", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    const hero = await twoPackGame(games.id, "Zqx Hero");
+    const list = customerCtx({ callbackData: `v1:browse:cat:${games.id}` });
+    await routeCallback(list.ctx);
+    const picker = await tap(list.ctx, `v1:browse:pick:${hero.id}`);
+    expect(picker.ctx.session.scratch.productId).toBe(hero.id);
+    const link = next(picker.ctx, { match: `prod_${sample.product.id}` });
+    await customer.menuCommand(link.ctx);
+    expect(backData(link.sink)).toBe("v1:browse:prods");
+    expect(link.ctx.session.scratch.productId).toBeUndefined();
+  });
+});
+
+describe("fully wallet-covered confirm", () => {
+  it("its Back re-renders the pack detail in place", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const confirm = settledCtx({ callbackData: `v1:walletm:idr:${sample.product.id}:1` });
+    await routeCallback(confirm.ctx);
+    expect(backData(confirm.sink)).toBe(`v1:browse:denom:${sample.product.id}`);
+    const back = await tap(confirm.ctx, `v1:browse:denom:${sample.product.id}`);
+    expect(sentIncludes(back.sink, sample.parentProduct.name)).toBe(true);
+    expect(sentIncludes(back.sink, "Fully paid from your wallet credit")).toBe(false);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
   });
 });
 

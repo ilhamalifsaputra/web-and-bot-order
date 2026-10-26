@@ -100,9 +100,27 @@ function readMinQuantity(d: TierDraft): number | null {
   return n >= 1 ? n : null;
 }
 
+// The server's own wording for the same refusals (apps/web-admin/src/lib/pricingTiers.ts), so the editor and a
+// refused save say the same thing.
+const PERCENT_SHAPE_ERROR = "Diskon persen harus ditulis seperti 10, 10,5 atau 10.5.";
+const MONEY_SHAPE_ERROR = "Nominal harus dalam rupiah, ditulis seperti 10000 atau 10.000.";
+const MONEY_PRECISION_ERROR = "Nominal tier harus rupiah bulat, tanpa sen.";
+const PERCENT_PRECISION_ERROR = "Diskon persen paling banyak 2 angka di belakang koma.";
+
+/**
+ * Why a readable value carries more precision than the server stores it with, or null — the client mirror of
+ * `tierValuePrecisionProblem` (packages/db/src/crud/bulkTiers.ts): a rupiah amount (fixed unit price, amount off
+ * per unit) must be whole rupiah, a percent may have at most 2 decimals. Refused, never rounded.
+ */
+function precisionError(type: TierDiscountType, value: Decimal): string | null {
+  if (type === "PERCENTAGE") return value.decimalPlaces() > 2 ? PERCENT_PRECISION_ERROR : null;
+  return value.isInteger() ? null : MONEY_PRECISION_ERROR;
+}
+
 /**
  * Inline errors per row key: a threshold that is not a whole number >= 1, a threshold already used, rows out of
- * ascending order, and a value the server would refuse (unreadable, zero, or a percent over 100).
+ * ascending order, and a value the server would refuse (unreadable, more precise than it is stored, zero, or a
+ * percent over 100).
  */
 export function validateDrafts(drafts: readonly TierDraft[]): Record<string, TierRowErrors> {
   const errors: Record<string, TierRowErrors> = {};
@@ -119,11 +137,11 @@ export function validateDrafts(drafts: readonly TierDraft[]): Record<string, Tie
       previous = previous === null ? min : Math.max(previous, min);
     }
     const value = readDraftValue(d);
+    const precision = value === null ? null : precisionError(d.discountType, value);
     if (value === null) {
-      rowErrors.value =
-        d.discountType === "PERCENTAGE"
-          ? "Tulis persen seperti 10, 10,5 atau 10.5."
-          : "Tulis nominal rupiah seperti 10000, 10.000 atau 10000,50.";
+      rowErrors.value = d.discountType === "PERCENTAGE" ? PERCENT_SHAPE_ERROR : MONEY_SHAPE_ERROR;
+    } else if (precision !== null) {
+      rowErrors.value = precision;
     } else if (value.lessThanOrEqualTo(0)) {
       rowErrors.value = "Nilai harus lebih dari nol.";
     } else if (d.discountType === "PERCENTAGE" && value.greaterThan(100)) {

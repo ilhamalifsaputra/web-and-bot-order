@@ -122,7 +122,7 @@ describe("TieredPricingCard", () => {
     const value = within(tierRows()[1]!).getByLabelText("Harga per item (Rp)");
     await user.clear(value);
     await user.type(value, "1.2.3");
-    expect(screen.getByText("Tulis nominal rupiah seperti 10000, 10.000 atau 10000,50.")).toBeInTheDocument();
+    expect(screen.getByText("Nominal harus dalam rupiah, ditulis seperti 10000 atau 10.000.")).toBeInTheDocument();
     expect(saveButton()).toBeDisabled();
   });
 
@@ -177,6 +177,92 @@ describe("TieredPricingCard", () => {
     await user.type(input, "5");
     expect(screen.getByTestId("sim-total")).toHaveTextContent("Rp50.000");
     expect(screen.getByText("Harga bertingkat nonaktif, jadi simulasi memakai harga dasar.")).toBeInTheDocument();
+  });
+});
+
+/**
+ * The server refuses a tier value more precise than it is stored (apps/web-admin/src/lib/pricingTiers.ts,
+ * `tierValuePrecisionProblem`): a rupiah amount must be whole rupiah, a percent at most 2 decimals. The editor
+ * refuses the same values inline, in the server's own words, before a save is ever sent.
+ */
+describe("TieredPricingCard tier value precision", () => {
+  const MONEY_PRECISION = "Nominal tier harus rupiah bulat, tanpa sen.";
+  const PERCENT_PRECISION = "Diskon persen paling banyak 2 angka di belakang koma.";
+  const PERCENT_SHAPE = "Diskon persen harus ditulis seperti 10, 10,5 atau 10.5.";
+
+  const withTier = (tier: TierState["tiers"][number]): TierState => ({ ...EXAMPLE, cost_price: null, tiers: [tier] });
+  const FIXED_PRICE = { id: "t3", min_quantity: 3, discount_type: "FIXED_UNIT_PRICE", discount_value: "8000", is_enabled: true } as const;
+  const AMOUNT_OFF = { id: "t3", min_quantity: 3, discount_type: "FIXED_AMOUNT_OFF_PER_UNIT", discount_value: "1000", is_enabled: true } as const;
+  const PERCENT = { id: "t3", min_quantity: 3, discount_type: "PERCENTAGE", discount_value: "10", is_enabled: true } as const;
+
+  async function typeValue(label: string, text: string) {
+    const user = userEvent.setup();
+    const input = within(tierRows()[0]!).getByLabelText(label);
+    await user.clear(input);
+    await user.type(input, text);
+    return input;
+  }
+
+  it.each([
+    [true, "item"],
+    [false, "paket"],
+  ])("refuses a fractional fixed unit price (isGame=%s, %s), typed by shape", async (isGame, unit) => {
+    renderCard(withTier(FIXED_PRICE), isGame);
+    await screen.findByText("Harga dasar");
+    const input = await typeValue(`Harga per ${unit} (Rp)`, "8000,5");
+    expect(within(tierRows()[0]!).getByText(MONEY_PRECISION)).toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByText("Perbaiki tier yang ditandai sebelum menyimpan.")).toBeInTheDocument();
+
+    // "10.000" is ten thousand by shape — whole rupiah, so it is accepted again.
+    await typeValue(`Harga per ${unit} (Rp)`, "7.000");
+    expect(screen.queryByText(MONEY_PRECISION)).not.toBeInTheDocument();
+    expect(screen.getByTestId("tier-unit-price")).toHaveTextContent("Rp7.000");
+    expect(saveButton()).toBeEnabled();
+  });
+
+  it.each([
+    [true, "item"],
+    [false, "paket"],
+  ])("refuses a fractional amount off per unit (isGame=%s, %s)", async (isGame, unit) => {
+    renderCard(withTier(AMOUNT_OFF), isGame);
+    await screen.findByText("Harga dasar");
+    await typeValue(`Potongan per ${unit} (Rp)`, "1.000,50");
+    expect(within(tierRows()[0]!).getByText(MONEY_PRECISION)).toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
+
+    await typeValue(`Potongan per ${unit} (Rp)`, "1.500");
+    expect(screen.queryByText(MONEY_PRECISION)).not.toBeInTheDocument();
+    expect(saveButton()).toBeEnabled();
+  });
+
+  it.each([true, false])("refuses a typed percent with 3 decimals but accepts 2 (isGame=%s)", async (isGame) => {
+    renderCard(withTier(PERCENT), isGame);
+    await screen.findByText("Harga dasar");
+    // The server's percent reader refuses this shape outright, so its shape message is the one shown.
+    await typeValue("Diskon (%)", "12,345");
+    expect(within(tierRows()[0]!).getByText(PERCENT_SHAPE)).toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
+
+    await typeValue("Diskon (%)", "12,25");
+    expect(screen.queryByText(PERCENT_SHAPE)).not.toBeInTheDocument();
+    expect(saveButton()).toBeEnabled();
+  });
+
+  it("refuses a stored value more precise than allowed, even untouched (exact pre-fill)", async () => {
+    renderCard({
+      ...EXAMPLE,
+      cost_price: null,
+      tiers: [
+        { ...PERCENT, id: "p", min_quantity: 2, discount_value: "12.345" },
+        { ...FIXED_PRICE, id: "f", min_quantity: 3, discount_value: "8000.5" },
+      ],
+    });
+    await screen.findByText("Harga dasar");
+    expect(within(tierRows()[0]!).getByText(PERCENT_PRECISION)).toBeInTheDocument();
+    expect(within(tierRows()[1]!).getByText(MONEY_PRECISION)).toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
   });
 });
 

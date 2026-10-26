@@ -296,11 +296,12 @@ function expectOneEditOnly(sink: SentCall[]) {
   }
 }
 
-/** What a repeated pay tap is answered with: the duplicate alert on every rail.
- *  The gateway rails find the pending order (the duplicate pre-check); the
+/** What a repeated pay tap is answered with. The gateway rails find the
+ *  pending order (the duplicate pre-check) and say it is still pending; the
  *  wallet rail settles in one step, so it remembers the nonce it paid
- *  (`walletPaidNonce`) and answers a second tap of that nonce the same way. */
-const OBSERVED_SECOND_TAP_TOAST = (_rail: Rail, ctx: MyContext) => t(ctx, "checkout.duplicate_pending");
+ *  (`walletPaidNonce`) and says a second tap of that nonce is already paid. */
+const OBSERVED_SECOND_TAP_TOAST = (rail: Rail, ctx: MyContext) =>
+  t(ctx, rail.method === PaymentMethod.WALLET ? "checkout.wallet_already_paid" : "checkout.duplicate_pending");
 
 describe.each(RAILS)("price lock: $name", (rail) => {
   beforeEach(async () => {
@@ -704,7 +705,7 @@ describe("wallet rail: a double tap of the button that just paid", () => {
     expect(calls(sink, "conversation.enter")).toHaveLength(0);
     const answers = calls(sink, "answerCallbackQuery");
     expect(answers).toHaveLength(1);
-    expect(answers[0]!.args[0]).toEqual({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+    expect(answers[0]!.args[0]).toEqual({ text: t(ctx, "checkout.wallet_already_paid"), show_alert: true });
   }
 
   const WALLET_RAILS = RAILS.filter((r) => r.method === PaymentMethod.WALLET);
@@ -780,7 +781,15 @@ describe("wallet rail: a double tap of the button that just paid", () => {
 
     expect(await ordersOf()).toHaveLength(2);
     expect(session.scratch.walletPaidNonce).toBe(second);
-    expect(toasts(sink).includes(t(tap(session, rail.callback).ctx, "checkout.duplicate_pending"))).toBe(false);
+    expect(toasts(sink).includes(t(tap(session, rail.callback).ctx, "checkout.wallet_already_paid"))).toBe(false);
+
+    // A second tap of the new button is the one that gets the already-paid alert.
+    const again: SentCall[] = [];
+    await rail.pay(onNext(`${rail.callback}:${sample.product.id}:1:${second}`, again), sample.product.id, 1, second);
+    expect(await ordersOf()).toHaveLength(2);
+    expect(calls(again, "answerCallbackQuery").map((c) => c.args[0])).toEqual([
+      { text: t(tap(session, rail.callback).ctx, "checkout.wallet_already_paid"), show_alert: true },
+    ]);
   });
 
   it("a malformed or missing nonce never matches the remembered one", async () => {

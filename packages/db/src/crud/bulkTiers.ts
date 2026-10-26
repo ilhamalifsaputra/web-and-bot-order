@@ -440,6 +440,41 @@ export interface BulkTierSnapshot {
   lines: BulkTierSnapshotLine[];
 }
 
+/**
+ * The volume discount an order's stored snapshot gave `quantity` units of
+ * `denominationId`, or null when the order carries no usable snapshot (an
+ * untiered order, or a historical one priced before tiers existed — callers
+ * must not invent a per-line split for those).
+ *
+ * A snapshot line holds its own `totalDiscount`, so a mixed cart's untiered
+ * line gets 0 here rather than a share of another line's discount. Several
+ * lines of the same denomination are pooled (Σ discount / Σ quantity). The
+ * result is rounded UP to 4dp: callers subtract it from a budget, and a budget
+ * must never exceed what the buyer actually paid.
+ */
+export function snapshotBulkDiscountFor(snapshot: unknown, denominationId: number, quantity: number): Decimal | null {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const lines = (snapshot as { lines?: unknown }).lines;
+  if (!Array.isArray(lines)) return null;
+  let discount = ZERO;
+  let units = 0;
+  for (const raw of lines) {
+    const line = raw as Partial<BulkTierSnapshotLine> | null;
+    if (!line || line.denominationId !== denominationId) continue;
+    let lineDiscount: Decimal;
+    try {
+      lineDiscount = new Decimal(line.totalDiscount ?? 0);
+    } catch {
+      return null;
+    }
+    if (!lineDiscount.isFinite() || typeof line.quantity !== "number" || line.quantity <= 0) return null;
+    discount = discount.plus(lineDiscount);
+    units += line.quantity;
+  }
+  if (units === 0 || !discount.greaterThan(0)) return ZERO;
+  return discount.times(quantity).div(units).toDecimalPlaces(4, Decimal.ROUND_UP);
+}
+
 export type PricedLineWithTiers = TieredPrice & {
   /** The unit before tiers: reseller/flash already applied (`effectiveUnitPrice`). */
   effectiveUnit: Decimal;

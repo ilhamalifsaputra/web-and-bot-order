@@ -38,6 +38,7 @@ import { Decimal } from "@app/core/money";
 import type { Prisma, Refund, RefundExecution, RefundItem } from "@prisma/client";
 import type { Db } from "./_types";
 import { logAdminAction } from "./audit";
+import { snapshotBulkDiscountFor } from "./bulkTiers";
 import { postRefundExecutionPosting } from "./ledgerPostings";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
@@ -340,31 +341,33 @@ export async function transitionRefundStatus(
 }
 
 /**
- * An OrderItem's IDR value net of its prorated share of the order's
- * `bulkDiscountAmount` — the per-item refund budget.
+ * An OrderItem's IDR value net of the volume discount its own line received —
+ * the per-item refund budget.
  *
  * `OrderItem.unitPrice` is the PRE-bulk unit (the volume discount lives only
  * on the Order row), so budgeting a unit at its raw unitPrice let one unit of
  * a tier-discounted order be refunded for more than the buyer paid for it (5
- * units at Rp10.000 under a Rp6.000 tier: Rp10.000 back for a Rp6.000 unit),
- * with only the order-wide ceiling standing in the way. The share is split by
- * the line's part of `subtotalAmount`, multiply-before-divide, exactly as
- * `revenue.ts` (`orderItemRevenueIdr`) and `stockReplacement.ts`
- * (`refundableAmountForUnit`) prorate, and quantized to 4dp like the latter.
+ * units at Rp10.000 under a Rp6.000 tier: Rp10.000 back for a Rp6.000 unit).
  *
- * The voucher (`discountAmount`) is deliberately NOT subtracted here, keeping
- * this change to the bulk discount: `stockReplacement` already pays a unit
- * net of both, which stays within this budget.
+ * The discount comes from `Order.bulkTierSnapshot` — the line's own
+ * `totalDiscount`, split over that line's units (`snapshotBulkDiscountFor`) —
+ * never an order-wide proration: spreading the discount by subtotal share
+ * would make an untiered line in a mixed cart under-refundable and a tiered
+ * one over-refundable. An order with no snapshot (untiered, or a historical
+ * order priced before tiers existed) keeps the gross `unitPrice × quantity`
+ * budget it always had; no proration is applied retroactively.
+ *
+ * The voucher (`discountAmount`) is deliberately NOT subtracted here:
+ * `stockReplacement` pays a unit net of both, which stays within this budget.
  */
 function lineNetOfBulkDiscount(
-  order: { subtotalAmount: Decimal.Value; bulkDiscountAmount: Decimal.Value },
-  item: { unitPrice: Decimal.Value; quantity: number },
+  order: { bulkTierSnapshot: unknown },
+  item: { productId: number; unitPrice: Decimal.Value; quantity: number },
 ): Decimal {
   const lineGross = new Decimal(item.unitPrice).times(item.quantity);
-  const bulk = new Decimal(order.bulkDiscountAmount);
-  const orderSubtotal = new Decimal(order.subtotalAmount);
-  if (!bulk.greaterThan(0) || !orderSubtotal.greaterThan(0)) return lineGross;
-  return quantizeMoney(lineGross.minus(bulk.times(lineGross).div(orderSubtotal)), 4);
+  const discount = snapshotBulkDiscountFor(order.bulkTierSnapshot, item.productId, item.quantity);
+  if (discount === null || !discount.greaterThan(0)) return lineGross;
+  return quantizeMoney(Decimal.max(0, lineGross.minus(discount)), 4);
 }
 
 /**

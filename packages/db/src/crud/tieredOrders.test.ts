@@ -346,7 +346,8 @@ describe("refund budget of a tier-discounted unit", () => {
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: created!.id } });
 
     const refund = await createRefund(prisma, { orderId: created!.id, amount: "10000", currency: "IDR", adminId: actor.adminId });
-    // 10000 is the unit's pre-tier price; the buyer paid 6000 for it.
+    // 10000 is the unit's pre-tier price; the snapshot's line discount
+    // (20000 over 5 units) means the buyer paid 6000 for it.
     await expect(
       createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "10000", adminId: actor.adminId }),
     ).rejects.toMatchObject({ key: "error.refund_exceeds_item_subtotal" });
@@ -355,6 +356,51 @@ describe("refund budget of a tier-discounted unit", () => {
     ).rejects.toMatchObject({ key: "error.refund_exceeds_item_subtotal" });
     const row = await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "6000", adminId: actor.adminId });
     expect(row.amount.toString()).toBe("6000");
+  });
+
+  it("in a mixed cart only the tiered line's units carry the tier discount; the untiered line keeps its full price", async () => {
+    // A: 5 × 10000 with 40% off at 5 (20000 off); B: 1 × 50000, no tiers.
+    const a = await sku("10000");
+    await replaceTiers(prisma, a.id, [{ minQuantity: 5, discountType: "PERCENTAGE", discountValue: "40" }], actor);
+    await setTieredPricingEnabled(prisma, a.id, true, actor);
+    const b = await sku("50000");
+    const user = await buyer(9303);
+    await addToCart(prisma, user.id, a.id, 5);
+    await addToCart(prisma, user.id, b.id, 1);
+    const created = await createOrderFromCart(prisma, { channel: "web", user });
+    const paid = (await finalizeOrderPayment(prisma, created!.id, { currency: OrderCurrency.IDR }))!;
+    expect(new Decimal(paid.bulkDiscountAmount).equals("20000")).toBe(true);
+    expect(new Decimal(paid.totalAmount).equals("80000")).toBe(true);
+
+    const itemB = await prisma.orderItem.findFirstOrThrow({ where: { orderId: created!.id, productId: b.id } });
+    const itemsA = await prisma.orderItem.findMany({ where: { orderId: created!.id, productId: a.id } });
+    expect(itemsA).toHaveLength(5);
+
+    const refund = await createRefund(prisma, { orderId: created!.id, amount: "80000", currency: "IDR", adminId: actor.adminId });
+    // B was never discounted: its whole 50000 is refundable.
+    const rowB = await createRefundItem(prisma, { refundId: refund.id, orderItemId: itemB.id, amount: "50000", adminId: actor.adminId });
+    expect(rowB.amount.toString()).toBe("50000");
+    // Each A unit cost 6000 after the tier (30000 / 5).
+    await expect(
+      createRefundItem(prisma, { refundId: refund.id, orderItemId: itemsA[0]!.id, amount: "6000.01", adminId: actor.adminId }),
+    ).rejects.toMatchObject({ key: "error.refund_exceeds_item_subtotal" });
+    for (const item of itemsA) {
+      const row = await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "6000", adminId: actor.adminId });
+      expect(row.amount.toString()).toBe("6000");
+    }
+  });
+
+  it("a historical order with a bulk discount but no tier snapshot keeps its gross unit budget (no retroactive proration)", async () => {
+    const d = await sku("10000");
+    const user = await buyer(9304);
+    const created = await createOrderDirect(prisma, { channel: "bot", user, productId: d.id, quantity: 2 });
+    await finalizeOrderPayment(prisma, created!.id, { currency: OrderCurrency.IDR });
+    // A pre-tier order: the legacy single rule stored only bulkDiscountAmount.
+    await prisma.order.update({ where: { id: created!.id }, data: { bulkDiscountAmount: "2000", totalAmount: "18000" } });
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: created!.id } });
+    const refund = await createRefund(prisma, { orderId: created!.id, amount: "10000", currency: "IDR", adminId: actor.adminId });
+    const row = await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "10000", adminId: actor.adminId });
+    expect(row.amount.toString()).toBe("10000");
   });
 
   it("an order without a bulk discount keeps the full unit price as its budget", async () => {

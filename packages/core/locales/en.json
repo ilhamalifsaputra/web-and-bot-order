@@ -180,6 +180,8 @@
   "browse.group_premium_apps": "💎 Premium Apps",
   "browse.invalid_number": "Enter a number between 1 and {max}.",
   "browse.list_decorated": "📦 <b>Product List</b>\n\n{items}\n\n📄 Page {page}/{total}\n💡 Enter a number to view details.",
+  "browse.list_inline": "📦 <b>Product List</b>\n\n{items}\n\n📄 Page {page}/{total}",
+  "browse.use_buttons": "Tap a button on the list to choose.",
   "browse.product_from_price": "from {price}",
   "hint.game_list": "Pick a game, or type /search to look one up.",
   "hint.variant": "Choose the game edition.",

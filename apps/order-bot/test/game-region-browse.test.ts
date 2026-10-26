@@ -108,10 +108,11 @@ describe("region picker", () => {
 
     for (const name of ["FF Alpha", "FF Bravo", "FF Charlie"]) expect(sentIncludes(tap.sink, name)).toBe(true);
     expect(sentIncludes(tap.sink, "FF Delta")).toBe(false);
-    expect((tap.ctx.session.scratch as Scratch).activeNumberedScreen).toBe("products");
-    // One digit-keyboard resend plus the list edit; nothing else.
+    // An inline list: no numbered screen recorded.
+    expect((tap.ctx.session.scratch as Scratch).activeNumberedScreen).toBeUndefined();
+    // The list edit only: no digit keyboard, no companion message.
     expect(calls(tap.sink, "sendMessage")).toHaveLength(0);
-    expect(calls(tap.sink, "reply")).toHaveLength(1);
+    expect(calls(tap.sink, "reply")).toHaveLength(0);
     expect(calls(tap.sink, "editMessageText")).toHaveLength(1);
     expect(calls(tap.sink, "deleteMessage")).toHaveLength(0);
   });
@@ -138,10 +139,10 @@ describe("region picker", () => {
     for (const name of ["FF Alpha", "FF Bravo", "FF Charlie", "FF Delta", "FF Echo"]) expect(sentIncludes(entry.sink, name)).toBe(true);
     expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_region"))).toBe(false);
     expect(sentIncludes(entry.sink, ":greg:")).toBe(false);
-    expect((entry.ctx.session.scratch as Scratch).activeNumberedScreen).toBe("products");
-    // Digit-keyboard resend plus the list edit; no picker, no extra send or delete.
+    expect((entry.ctx.session.scratch as Scratch).activeNumberedScreen).toBeUndefined();
+    // The list edit only; no picker, no companion, no extra send or delete.
     expect(calls(entry.sink, "sendMessage")).toHaveLength(0);
-    expect(calls(entry.sink, "reply")).toHaveLength(1);
+    expect(calls(entry.sink, "reply")).toHaveLength(0);
     expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
     expect(calls(entry.sink, "deleteMessage")).toHaveLength(0);
   });
@@ -154,7 +155,7 @@ describe("region picker", () => {
     await routeCallback(entry.ctx);
     expect(sentIncludes(entry.sink, "FF Alpha")).toBe(true);
     expect(sentIncludes(entry.sink, "FF Echo")).toBe(true);
-    expect(calls(entry.sink, "reply")).toHaveLength(1);
+    expect(calls(entry.sink, "reply")).toHaveLength(0);
     expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
   });
 
@@ -183,7 +184,7 @@ describe("region picker", () => {
     await routeCallback(entry.ctx);
     expect(sentIncludes(entry.sink, t(entry.ctx, "browse.choose_region"))).toBe(true);
     expect(buttons(entry.sink).filter((b) => b.callback_data?.includes(":greg:"))).toHaveLength(2);
-    expect(calls(entry.sink, "reply")).toHaveLength(1);
+    expect(calls(entry.sink, "reply")).toHaveLength(0);
     expect(calls(entry.sink, "editMessageText")).toHaveLength(1);
 
     // Picking a region filters: only that region's products are listed.
@@ -219,7 +220,7 @@ describe("region picker", () => {
     expect(scratch.resolvedGameVariant).toBe("Global");
     expect(scratch.resolvedGameRegion).toBeUndefined();
     expect(calls(tap.sink, "sendMessage")).toHaveLength(0);
-    expect(calls(tap.sink, "reply")).toHaveLength(1);
+    expect(calls(tap.sink, "reply")).toHaveLength(0);
     expect(calls(tap.sink, "editMessageText")).toHaveLength(1);
     expect(calls(tap.sink, "deleteMessage")).toHaveLength(0);
   });

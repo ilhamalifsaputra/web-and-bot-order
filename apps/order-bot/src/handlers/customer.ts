@@ -21,7 +21,7 @@ import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel, parseDisplayCurrency } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
-import { CUSTOMER_SERVICES, serviceForCategoryGroup } from "@app/core/services";
+import { CUSTOMER_SERVICES, serviceForCategoryGroup, usesNumberedSelection } from "@app/core/services";
 import {
   prisma,
   ownsTransactionMessageAt,
@@ -120,14 +120,19 @@ const PENDING_PAYMENT_METHOD_LABEL_KEYS: Partial<Record<string, string>> = {
 interface BrowseScratch {
   page?: number;
   browseEntries?: number[];
-  /** Which numbered list a typed digit currently resolves against — set by
-   * whichever of browseProductsFlat / the variant-picker render / the
-   * region-picker render ran most recently. Each of those three clears the
-   * OTHER two scratch fields (browseEntries / gameVariantEntries /
-   * gameRegionEntries) at the same time it sets this, so a stale list can
-   * never be read even by accident. Undefined means "products" too — an
-   * in-flight session that predates this field never set it, and its only
-   * possible numbered screen before this field existed was the product list. */
+  /** Which list screen is showing — set by whichever of browseProductsFlat /
+   * the edition-picker render / the region-picker render ran most recently.
+   * "products" is written only by a NUMBERED list (Premium Apps,
+   * usesNumberedSelection): it is the screen a typed digit resolves against
+   * (browseEntries) and keeps the digit keyboard from being resent on a page
+   * turn. An inline list (Game Top-up and every other service) deletes it and
+   * writes no browseEntries. The Game Top-up pickers still record
+   * "gameVariant" / "gameRegion" (with their inline-tap snapshots
+   * gameVariantEntries / gameRegionEntries) so a typed "← Back" from a
+   * lingering numbered keyboard, and the "use the buttons" reply to a typed
+   * digit, know which picker is showing; digits never resolve against them.
+   * Undefined on a numbered scope means "products" too — an in-flight session
+   * that predates this field never set it. */
   activeNumberedScreen?: "products" | "gameVariant" | "gameRegion";
   /** The active Category scope for the flat product list (Products entry
    * flow's third step) — set by browseCategoryEntry, read by
@@ -140,9 +145,10 @@ interface BrowseScratch {
    * handleBackButton return to the right category picker without a DB read. */
   group?: string;
   /** Snapshot of the variant options rendered by the current variant picker
-   * (browseCategoryEntry) — pickGameVariant resolves its tapped index
-   * against this, the same numbered-snapshot pattern browseEntries uses for
-   * the flat product list. */
+   * (browseCategoryEntry) — pickGameVariant resolves its tapped inline index
+   * (`gvar:<cat>:<i>`) against this, so a catalog change between render and
+   * tap cannot shift the options. Written with the picker itself; no digit
+   * keyboard or companion message is involved. */
   gameVariantEntries?: { label: string; emoji: string | null }[];
   /** The Game Top Up variant (Product.gameVariant) resolved for the active
    * browse session — null means "this category has no variant dimension" (0
@@ -372,14 +378,16 @@ async function upToServicesTarget(): Promise<string> {
 }
 
 /**
- * Back target of a screen whose parent is the category picker. Only Game
- * Top-up with 2+ active categories shows that picker; a single category is
- * auto-skipped, Premium Apps never shows categories, and an unknown group has
- * none, so those step over it to the service level (upToServicesTarget).
- * Recomputed fresh, not trusted from a stored "was it skipped" flag.
+ * Back target of a screen whose parent is the category picker. A registered
+ * service other than Premium Apps (Game Top-up, or any service added later)
+ * with 2+ active categories shows that picker (browseCategoriesInGroup); a
+ * single category is auto-skipped, Premium Apps never shows categories, and an
+ * unknown group has none, so those step over it to the service level
+ * (upToServicesTarget). Recomputed fresh, not trusted from a stored "was it
+ * skipped" flag.
  */
 async function categoryLevelBackTarget(group: string | undefined): Promise<string> {
-  if (group === CategoryGroup.GAME_TOPUP) {
+  if (group != null && group !== CategoryGroup.PREMIUM_APPS && CUSTOMER_SERVICES.some((service) => service.group === group)) {
     const categories = await listActiveCategoriesByGroup(prisma, group, "bot");
     if (categories.length > 1) return ckb.cb("browse", "grp", group);
   }
@@ -476,7 +484,7 @@ async function navigateBack(ctx: MyContext, target: string): Promise<void> {
   if (domain === "browse") {
     if (action === "grps") return browseGroups(ctx);
     if (action === "grp" && arg) return browseCategoriesInGroup(ctx, arg);
-    if (action === "gvars" && arg) return browseCategoryEntry(ctx, Number(arg), undefined, { back: true });
+    if (action === "gvars" && arg) return browseCategoryEntry(ctx, Number(arg));
     if (action === "gregs" && arg) return backToRegionPicker(ctx, Number(arg));
     if (action === "popular") return browsePopular(ctx);
   }
@@ -489,10 +497,10 @@ async function navigateBack(ctx: MyContext, target: string): Promise<void> {
  * `browse:gregs:<categoryId>` — Back from the product list to the region
  * picker that was shown for this scope. Rebuilds the picker from the stored
  * edition (resolvedGameVariant) and a fresh region query — the list render
- * deleted the old region snapshot — and edits the tapped bubble; the numbered
- * reply keyboard is resent only if it lacks digits for every region. A tap
- * from another scope (an old bubble) is a stale screen. If the catalog changed
- * so that the region picker would now be skipped, Back steps over it.
+ * deleted the old region snapshot — and edits the tapped bubble; nothing else
+ * is sent. A tap from another scope (an old bubble) is a stale screen. If the
+ * catalog changed so that the region picker would now be skipped, Back steps
+ * over it.
  */
 export async function backToRegionPicker(ctx: MyContext, categoryId: number): Promise<void> {
   const shown = Number.isInteger(categoryId) && sc(ctx).categoryId === categoryId ? shownPickersFor(ctx, categoryId) : undefined;
@@ -510,20 +518,34 @@ export async function backToRegionPicker(ctx: MyContext, categoryId: number): Pr
     regionPickerBackTarget(ctx, categoryId),
   ]);
   if (regions.length > 1 && regionlessCount === 0) {
-    await enterGameVariant(ctx, categoryId, gameVariant, sc(ctx).gameVariantEmoji ?? null, regionBack, { variantShown: shown.variant, back: true });
+    await enterGameVariant(ctx, categoryId, gameVariant, sc(ctx).gameVariantEmoji ?? null, regionBack, { variantShown: shown.variant });
     return;
   }
   await navigateBack(ctx, regionBack);
 }
 
-/** Send the numbered reply keyboard for a picker/list with `count` options. A
- * Back render (`back`) never sends it: Back edits in place and never stacks a
- * companion message — the picker's inline keyboard already has a button per
- * option, and a digit the bottom keyboard lacks can still be typed (a spare
- * one answers "invalid number", like any other out-of-range digit). */
-async function sendNumberedKeyboard(ctx: MyContext, keyboard: ReturnType<typeof ckb.gamePickerPersistentKb>, back = false): Promise<void> {
+/** Send the numbered reply keyboard of a NUMBERED product list (Premium Apps;
+ * usesNumberedSelection) as its one companion message. A Back render (`back`)
+ * never sends it: Back edits in place and never stacks a companion message. An
+ * inline service never calls this. */
+async function sendNumberedKeyboard(ctx: MyContext, keyboard: ReturnType<typeof ckb.productsPersistentKb>, back = false): Promise<void> {
   if (back) return;
   await ctx.reply(t(ctx, "browse.use_numbers"), { reply_markup: keyboard });
+}
+
+/** Callback that re-renders the catalog screen an inline-scope buyer was on
+ * (the Back of handleProductNumber's "use the buttons" reply): the open pack
+ * detail / pack picker, else the edition / region picker showing, else the
+ * product list of the current scope, else the scope's category level. */
+function inlineScreenTarget(ctx: MyContext): string {
+  const s = sc(ctx);
+  if (s.variantId != null) return ckb.cb("browse", "denom", s.variantId);
+  if (s.productId != null) return s.productPage ? ckb.cb("browse", "pick", s.productId, s.productPage) : ckb.cb("browse", "pick", s.productId);
+  if (s.categoryId != null && s.activeNumberedScreen === "gameRegion") return ckb.cb("browse", "gregs", s.categoryId);
+  if (s.categoryId != null && s.activeNumberedScreen === "gameVariant") return ckb.cb("browse", "gvars", s.categoryId);
+  if (s.categoryId != null) return ckb.cb("browse", "prods");
+  if (s.group) return ckb.cb("browse", "grp", s.group);
+  return ckb.cb("menu", "main");
 }
 
 /** The screen just rendered is a catalog screen: a typed "← Back" may navigate
@@ -747,12 +769,10 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
  * landing on the (now variant/region-scoped) product list — each step is
  * skipped when the category has 0 or 1 distinct value for that dimension, so
  * a category with a single edition/region never shows a pointless 1-button
- * picker.
- *
- * `opts.back` marks a Back re-render of the edition picker (`browse:gvars`):
- * the numbered reply keyboard is then resent only when it lacks digits.
+ * picker. Every picker here is inline-only (no digit keyboard, no companion
+ * message), so a Back re-render (`browse:gvars`) is the same single edit.
  */
-export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string, opts: { back?: boolean } = {}): Promise<void> {
+export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string): Promise<void> {
   // A Back from a product photo lands on a text picker: drop the photo first.
   await dropProductPhoto(ctx);
   sc(ctx).categoryId = categoryId;
@@ -840,19 +860,13 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   delete sc(ctx).gameRegionDimensionSkipped;
 
   if (variants.length > 1) {
+    // Inline-only picker: the snapshot serves the inline tap (gvar:<cat>:<i>)
+    // and activeNumberedScreen records which screen is showing (typed Back /
+    // the typed-digit reply). No digit keyboard, no companion message.
     sc(ctx).gameVariantEntries = variants;
     sc(ctx).activeNumberedScreen = "gameVariant";
-    // A typed digit must resolve against THIS picker now, not whatever the
-    // flat list or the region picker last snapshotted — see
-    // BrowseScratch.activeNumberedScreen.
     delete sc(ctx).browseEntries;
     delete sc(ctx).gameRegionEntries;
-    // Telegram can't edit away the OLD bottom ReplyKeyboardMarkup (only a
-    // fresh sendMessage can replace it) — resend it now, sized to this
-    // picker's own option count, BEFORE the picker's own inline-keyboard
-    // render below, so that edit/send stays the chat's most recently
-    // rendered screen (its inline buttons are what a tap should act on).
-    await sendNumberedKeyboard(ctx, ckb.gamePickerPersistentKb(variants.length, ctx.session.lang), opts.back);
     sc(ctx).shownPickers = { categoryId, variant: true, region: false };
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
     // — `cb("browse", "cat", categoryId)` would just re-render this SAME
@@ -871,14 +885,12 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, effectiveBackTarget, { variantShown: false });
 }
 
-/** Shared index-resolution for the variant picker — resolves an index (tapped
- * via the inline picker's callback, or typed as a digit while it's the active
- * numbered screen, see handleProductNumber) against the gameVariantEntries
- * snapshot taken when that picker was rendered, then continues into the
- * region step. Returns false when the index doesn't match a snapshotted
- * entry (stale screen) — the caller decides how to surface that: a toast for
- * a callback tap (pickGameVariant), an inline message for a typed digit
- * (handleProductNumber). */
+/** Index-resolution for the variant picker — resolves the index tapped on
+ * the inline picker (`gvar:<cat>:<i>`) against the gameVariantEntries snapshot
+ * taken when that picker was rendered, then continues into the region step.
+ * Returns false when the index doesn't match a snapshotted entry (stale
+ * screen); pickGameVariant answers that with a toast. A typed digit never
+ * reaches this (the pickers are inline-only, see handleProductNumber). */
 async function resolveGameVariantByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
   const entry = sc(ctx).gameVariantEntries?.[idx];
   if (!entry) return false;
@@ -910,8 +922,7 @@ export async function pickGameVariant(ctx: MyContext, categoryId: number, idx: n
  * tap on a real picker) passes the variant picker's own target.
  *
  * `opts.variantShown` records whether that edition picker was really shown
- * (scratch.shownPickers, read by the list's Back); `opts.back` marks a Back
- * re-render of the region picker (backToRegionPicker).
+ * (scratch.shownPickers, read by the list's Back).
  */
 async function enterGameVariant(
   ctx: MyContext,
@@ -919,7 +930,7 @@ async function enterGameVariant(
   gameVariant: string | null,
   gameVariantEmoji: string | null,
   regionBackTarget: string,
-  opts: { variantShown: boolean; back?: boolean },
+  opts: { variantShown: boolean },
 ): Promise<void> {
   sc(ctx).shownPickers = { categoryId, variant: opts.variantShown, region: false };
   delete sc(ctx).productId;
@@ -952,17 +963,12 @@ async function enterGameVariant(
   }
   delete sc(ctx).gameRegionDimensionSkipped;
   if (regions.length > 1) {
+    // Inline-only picker, like the edition picker above: snapshot for the
+    // inline tap (greg:<cat>:<i>), no digit keyboard, no companion message.
     sc(ctx).gameRegionEntries = regions;
     sc(ctx).activeNumberedScreen = "gameRegion";
-    // A typed digit must resolve against THIS picker now, not whatever the
-    // flat list or the variant picker last snapshotted — see
-    // BrowseScratch.activeNumberedScreen.
     delete sc(ctx).browseEntries;
     delete sc(ctx).gameVariantEntries;
-    // Same reasoning as the variant picker's render above — resend the
-    // bottom digit keyboard, sized to this picker's own option count, before
-    // the picker's own inline-keyboard render.
-    await sendNumberedKeyboard(ctx, ckb.gamePickerPersistentKb(regions.length, ctx.session.lang), opts.back);
     sc(ctx).shownPickers = { categoryId, variant: opts.variantShown, region: true };
     await smartEdit(ctx, t(ctx, "browse.choose_region") + `\n${t(ctx, "hint.region")}`, ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     markCatalogScreen(ctx);
@@ -971,11 +977,10 @@ async function enterGameVariant(
   await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
 }
 
-/** Shared index-resolution for the region picker — same pattern as
- * resolveGameVariantByIndex, resolving an index (tapped via the inline
- * picker's callback, or typed as a digit while it's the active numbered
- * screen) against the gameRegionEntries snapshot. Returns false on a stale
- * index — region strings can legitimately be "" so the entry is checked with
+/** Index-resolution for the region picker — same pattern as
+ * resolveGameVariantByIndex, resolving the inline tap (`greg:<cat>:<i>`)
+ * against the gameRegionEntries snapshot. Returns false on a stale index —
+ * region strings can legitimately be "" so the entry is checked with
  * `=== undefined`, not falsy. */
 async function resolveGameRegionByIndex(ctx: MyContext, categoryId: number, idx: number): Promise<boolean> {
   const region = sc(ctx).gameRegionEntries?.[idx];
@@ -1174,8 +1179,20 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
 
   ctx.session.state = BotState.PRODUCT_LIST;
   sc(ctx).page = page;
-  sc(ctx).browseEntries = pageProducts.map((p) => p.id);
-  sc(ctx).activeNumberedScreen = "products";
+  // How this scope's buyer picks a product (@app/core/services): a NUMBERED
+  // list (Premium Apps) by typing / tapping its caption number; an INLINE list
+  // (Game Top-up and every other service) by tapping its own inline button.
+  // A legacy null group resolves to Premium Apps (numbered), as before.
+  const numbered = usesNumberedSelection(sc(ctx).group);
+  if (numbered) {
+    sc(ctx).browseEntries = pageProducts.map((p) => p.id);
+    sc(ctx).activeNumberedScreen = "products";
+  } else {
+    // Nothing for a typed digit to resolve against (handleProductNumber
+    // answers it with "use the buttons" instead), and no picker is showing.
+    delete sc(ctx).browseEntries;
+    delete sc(ctx).activeNumberedScreen;
+  }
   // A typed digit must resolve against THIS list now, not whatever a
   // variant/region picker last snapshotted — see
   // BrowseScratch.activeNumberedScreen.
@@ -1197,7 +1214,9 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   const isReseller = ctx.session.dbUser?.role === UserRole.RESELLER;
   let renderedFrom = false;
   const itemLines = pageProducts.map((p, i) => {
-    const line = `${i + 1}. ${esc(p.name)}`;
+    // An inline list names each product in full (its button may be shortened)
+    // but carries no number: the buyer taps, never types.
+    const line = numbered ? `${i + 1}. ${esc(p.name)}` : `• ${esc(p.name)}`;
     if (!prices || !isGameProduct(p)) return line;
     // Stock is intentionally ignored (same as the storefront cards): From is the
     // cheapest active priced pack, even if it is currently out of stock.
@@ -1207,7 +1226,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     return `${line} — ${t(ctx, "browse.product_from_price", { price: prices.price(Decimal.min(...unitPrices)) })}`;
   });
 
-  const text = t(ctx, "browse.list_decorated", {
+  const text = t(ctx, numbered ? "browse.list_decorated" : "browse.list_inline", {
     page: page + 1,
     total: totalPages,
     items: itemLines.join("\n"),
@@ -1217,6 +1236,20 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     // The game-list hint only fits a page made up entirely of Game Top-up products.
     (allGameProducts ? `\n${t(ctx, "hint.game_list")}` : "");
 
+  if (!numbered) {
+    // INLINE list: one button per product (browse:pick:<id>), Prev/Next, then
+    // the Back row (listBackTarget), always inline — a tap edits this bubble in
+    // place, a typed entry ("Products", /listproduk) sends it as ONE message.
+    // No digit reply keyboard and no companion message, ever: the bottom
+    // keyboard stays whatever it was (mainPersistentKb, or a numbered one left
+    // by a Premium visit until the next Home; a digit typed on it is answered
+    // by handleProductNumber's "use the buttons" reply).
+    await renderMenuBanner(ctx, text, ckb.productListKb(pageProducts, page, totalPages, lang, await listBackTarget(ctx)));
+    markCatalogScreen(ctx);
+    return;
+  }
+
+  // NUMBERED list (Premium Apps) from here on, unchanged.
   // No per-product inline buttons: the user picks the number shown in the
   // caption (handleProductNumber resolves it against browseEntries), either
   // by typing it or by tapping it on the persistent keyboard below. Prev/Next
@@ -1231,9 +1264,9 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   //
   // Finding I1 (final-review): a variant/region picker tap (pickGameVariant/
   // pickGameRegion) that lands here IS a callback — the picker's own bottom
-  // keyboard (gamePickerPersistentKb, sized to ITS OWN option count) is still
-  // showing, and Telegram can only replace a ReplyKeyboardMarkup via a fresh
-  // send, not an edit.
+  // keyboard (then a numbered keyboard sized to ITS OWN option count; the
+  // pickers are inline-only now) was still showing, and Telegram can only
+  // replace a ReplyKeyboardMarkup via a fresh send, not an edit.
   //
   // Finding (final-review round 2): the first fix for I1 made THIS list's own
   // message use `productsPersistentKb` (no Prev/Next) whenever it landed here
@@ -1381,32 +1414,15 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   if (!/^\d+$/.test(text) || text.length > 4) return;
   const idx = parseInt(text, 10);
 
-  // A variant/region picker is the active numbered screen — resolve the
-  // typed digit against ITS OWN snapshot instead of falling through to the
-  // product-list logic below, which would otherwise silently resolve against
-  // a stale or unscoped browseEntries (see BrowseScratch.activeNumberedScreen
-  // for why exactly one of these three fields is ever populated at a time).
-  // "products", or undefined (an in-flight session that predates this
-  // field), falls through unchanged to the existing browseEntries logic.
-  const activeScreen = sc(ctx).activeNumberedScreen;
-  if (activeScreen === "gameVariant" || activeScreen === "gameRegion") {
-    const pickerEntries = activeScreen === "gameVariant" ? sc(ctx).gameVariantEntries : sc(ctx).gameRegionEntries;
-    const count = pickerEntries?.length ?? 0;
-    const categoryId = sc(ctx).categoryId;
-    // categoryId is always set alongside these entries by browseCategoryEntry/
-    // enterGameVariant — shouldn't normally be missing. Bounds-check first
-    // (matching the existing browseEntries out-of-range message below
-    // exactly), so a missing categoryId on an otherwise-valid index also
-    // degrades to that same message rather than a silent no-op.
-    if (idx < 1 || idx > count || categoryId == null) {
-      await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: count }), ckb.backToMain(lang));
-      return;
-    }
-    if (activeScreen === "gameVariant") {
-      await resolveGameVariantByIndex(ctx, categoryId, idx - 1);
-    } else {
-      await resolveGameRegionByIndex(ctx, categoryId, idx - 1);
-    }
+  // An INLINE scope (Game Top-up, or any service that is not numbered —
+  // @app/core/services usesNumberedSelection) has no numbers to type: its
+  // lists and pickers are picked by inline tap only. A digit typed there (on a
+  // numbered keyboard left from a Premium visit, or by hand) never navigates
+  // and never reaches the numbered-list logic below (whose unscoped fallback
+  // would resolve against the cross-group catalog): one reply pointing at the
+  // buttons, with a Back to the screen the buyer was on.
+  if (!usesNumberedSelection(sc(ctx).group)) {
+    await smartEdit(ctx, t(ctx, "browse.use_buttons"), ckb.backKb(lang, inlineScreenTarget(ctx)));
     return;
   }
 

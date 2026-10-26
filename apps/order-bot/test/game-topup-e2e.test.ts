@@ -163,25 +163,30 @@ function expectOnlyBuyerChat(tg: FakeTelegram) {
   expect([...tg.chatIds()]).toEqual([String(BUYER)]);
 }
 
-/** /start → Products → Game Top Up group → a category's numbered list. */
+/** /start → Products → Game Top Up group → a category's inline product list. */
 async function openGameCategory(tg: FakeTelegram, category: RegExp, startScreen: string[] = ["sendMessage"]) {
   expect((await step(tg, () => tg.sendText("/start"))).screen).toEqual(startScreen);
   const products = await step(tg, () => tg.pressReply(/Products/));
   expect(products.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
   expect((await step(tg, () => tg.press(/Game Top Up/))).screen).toEqual(["editMessageText"]);
   const list = await step(tg, () => tg.press(category));
-  // A number-pad reply keyboard, then the list itself in the browse bubble.
-  expect(list.screen).toEqual(["sendMessage", "editMessageText"]);
+  // The list itself in the browse bubble, nothing else: no digit keyboard, no companion message.
+  expect(list.screen).toEqual(["editMessageText"]);
+  expect(list.calls.some((c) => JSON.stringify(c.payload).includes(coreT("browse.use_numbers", EN)))).toBe(false);
+  // One inline button per product, read back from the rendered keyboard.
+  expect(tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:pick:")).length).toBeGreaterThan(0);
   return textOf(list.calls.find((c) => c.method === "editMessageText")!);
 }
 
 /**
  * Game product → pack → Buy → one-message account input → review. Returns the
- * review screen's text. `pack` matches the pack button label.
+ * review screen's text. `product` matches the product's inline list button,
+ * `pack` the pack button label.
  */
-async function buyGamePack(tg: FakeTelegram, listNumber: string, pack: RegExp, account: string, example = "123456789 1234") {
-  const picker = await step(tg, () => tg.sendText(listNumber));
-  expect(picker.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
+async function buyGamePack(tg: FakeTelegram, product: RegExp, pack: RegExp, account: string, example = "123456789 1234") {
+  // Tapping the product's list button edits the same bubble into its pack picker.
+  const picker = await step(tg, () => tg.press(product));
+  expect(picker.screen).toEqual(["editMessageText"]);
   expect((await step(tg, () => tg.press(pack))).screen).toEqual(["editMessageText"]);
   const prompt = await step(tg, () => tg.press(/Buy/));
   expect(prompt.screen).toEqual(["editMessageText"]);
@@ -209,7 +214,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     const list = await openGameCategory(tg, /Game Top Up/);
     expect(list).toContain("Mobile Legends");
 
-    const review = await buyGamePack(tg, "1", /^257/, "123456789 1234");
+    const review = await buyGamePack(tg, /^Mobile Legends/, /^257/, "123456789 1234");
     // Both account fields, shown separately, and the review's own buttons only.
     expect(review).toContain(coreT("checkout.review_title", EN));
     expect(review).toMatch(/User ID: <code>123456789<\/code>/);
@@ -271,7 +276,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
   it("2. price lock: a price change after Continue re-renders the payment screen; the old button never pays, the new one pays once at the new price", async () => {
     const tg = openBot();
     await openGameCategory(tg, /Game Top Up/);
-    await buyGamePack(tg, "1", /^86/, "123456789 1234");
+    await buyGamePack(tg, /^Mobile Legends/, /^86/, "123456789 1234");
     expect((await step(tg, () => tg.press(/Continue/))).screen).toEqual(["editMessageText"]);
     const oldPay = tg.findButton(/QRIS/);
     expect(tg.screenText()).toContain(formatIdrFor(new Decimal("20000"), EN));
@@ -312,14 +317,14 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     expect(list).toContain("Delta Force");
 
     // Regional game: its pack screen is headed by the region.
-    const ml = await step(tg, () => tg.sendText("1"));
-    expect(ml.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
+    const ml = await step(tg, () => tg.press(/^Mobile Legends/));
+    expect(ml.screen).toEqual(["editMessageText"]);
     expect(tg.screenText()).toContain("Indonesia");
 
     // Delta Force (no region, one pack): straight to the pack, no region text.
     await openGameCategory(tg, /^🎮 Game Top Up$/, AGAIN);
-    const df = await step(tg, () => tg.sendText("3"));
-    expect(df.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
+    const df = await step(tg, () => tg.press(/^Delta Force/));
+    expect(df.screen).toEqual(["editMessageText"]);
     expect(tg.screenText()).toContain("Delta Force");
     expect(tg.screenText()).toContain("300 Delta Coins");
     expect(tg.screenText()).not.toContain("Indonesia");
@@ -328,8 +333,8 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     // Mixed category: the regional product and both region-less ones.
     const mixed = await openGameCategory(tg, /Mixed Games/, AGAIN);
     for (const name of ["Ragnarok Origin", "Dragon Raja", "Perfect World Mobile"]) expect(mixed).toContain(name);
-    const global = await step(tg, () => tg.sendText("2"));
-    expect(global.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
+    const global = await step(tg, () => tg.press(/^Dragon Raja/));
+    expect(global.screen).toEqual(["editMessageText"]);
     expect(tg.screenText()).toContain("Dragon Raja");
     expect(tg.screenText()).not.toContain("Indonesia");
     expectOnlyBuyerChat(tg);
@@ -344,7 +349,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
 
     // The game is a category of its own: tapping it opens the region picker, not a list of duplicate-looking rows.
     const picker = await step(tg, () => tg.press(/Mobile Legends/));
-    expect(picker.screen).toEqual(["sendMessage", "editMessageText"]); // digit keyboard + the picker bubble
+    expect(picker.screen).toEqual(["editMessageText"]); // the picker bubble only: no digit keyboard, no companion
     expect(tg.screenText()).toContain("Choose region:");
     const regionButtons = tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:greg:"));
     expect(regionButtons.map((b) => b.text)).toEqual(["🇮🇩 Indonesia", "🇲🇾 Malaysia", "🇵🇭 Philippines", "🌐 Global"]);
@@ -436,11 +441,11 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
   it("6. reminder: one DM to the buyer ~5 minutes before expiry, deduplicated, and none once a payment was detected", async () => {
     const tg = openBot();
     await openGameCategory(tg, /Game Top Up/);
-    await buyGamePack(tg, "1", /^86/, "123456789 1234");
+    await buyGamePack(tg, /^Mobile Legends/, /^86/, "123456789 1234");
     const unpaid = await continueAndPay(tg);
     // The QR photo is the live anchor now; /start leaves its buttons alone.
     await openGameCategory(tg, /Game Top Up/);
-    await buyGamePack(tg, "2", /^70/, "987654321", "123456789");
+    await buyGamePack(tg, /^Free Fire/, /^70/, "987654321", "123456789");
     const detected = await continueAndPay(tg);
     expect(detected.id).not.toBe(unpaid.id);
 
@@ -480,7 +485,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     it("a tracked QR photo is retired by a new cancelled status message, so no extra expiry push is queued (route 1b)", async () => {
       const tg = openBot();
       await openGameCategory(tg, /Game Top Up/);
-      await buyGamePack(tg, "1", /^86/, "123456789 1234");
+      await buyGamePack(tg, /^Mobile Legends/, /^86/, "123456789 1234");
       const order = await continueAndPay(tg);
       await backdate(order.id);
 
@@ -504,7 +509,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
       }));
       const tg = openBot();
       await openGameCategory(tg, /Game Top Up/);
-      await buyGamePack(tg, "1", /^86/, "123456789 1234");
+      await buyGamePack(tg, /^Mobile Legends/, /^86/, "123456789 1234");
       expect((await step(tg, () => tg.press(/Continue/))).screen).toEqual(["editMessageText"]);
       expect((await step(tg, () => tg.press(/QRIS/))).screen).toEqual(["editMessageText"]);
       const order = await prisma.order.findFirstOrThrow();

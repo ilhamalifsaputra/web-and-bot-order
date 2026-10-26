@@ -308,8 +308,9 @@ describe("Back from a product opened from search or Popular returns there, not t
     await twoPackGame(games.id, "Zqx Hero B");
     const results = await search("Zqx");
     const list = await tap(results.ctx, `v1:browse:cat:${games.id}`);
-    const picker = next(list.ctx, { text: "1" });
-    await customer.handleProductNumber(picker.ctx);
+    // Opened by tapping its inline list button (a Game list has no numbers).
+    const picker = await tap(list.ctx, tapTarget(list.sink, "Zqx Hero A"));
+    expect(sentIncludes(picker.sink, t(picker.ctx, "browse.use_buttons"))).toBe(false);
     expect(backData(picker.sink)).toBe("v1:browse:prods");
   });
 
@@ -328,8 +329,10 @@ describe("product list Back follows the pickers that were really shown", () => {
   it("edition → region → list: Back returns one step at a time to the region picker, edition picker, category picker, service picker and menu", async () => {
     const cat = await genshin();
     const list = await openAsiaList(cat);
-    // The list's bottom keyboard (sent with the region tap's existing companion) carries Back next to Menu.
-    expect(bottomKeyboard(list.sink)).toEqual(["1", "2", persistentLabel("back", "en"), persistentLabel("main", "en")]);
+    // A Game list is inline-only: no bottom keyboard rides with it. The typed
+    // "← Back" below is the key of a numbered keyboard left by an earlier
+    // Premium visit, which still navigates the catalog.
+    expect(bottomKeyboard(list.sink)).toEqual([]);
 
     const toRegion = await typedBack(list.ctx);
     expect(sees.regionPicker(toRegion)).toBe(true);
@@ -397,7 +400,9 @@ describe("product list Back follows the pickers that were really shown", () => {
   it("a single-page list reached by a tap carries its own inline Back; tapping it edits the region picker in place with no companion keyboard", async () => {
     const cat = await genshin();
     const list = await openAsiaList(cat);
-    expect(rowsOf(list.sink)).toEqual([[[BACK, `v1:browse:gregs:${cat.id}`]]]);
+    // One button per product, then the Back row.
+    expect(rowsOf(list.sink).map((row) => row.map(([text]) => text))).toEqual([["GI Asia 00"], ["GI Asia 01"], [BACK]]);
+    expect(rowsOf(list.sink).at(-1)).toEqual([[BACK, `v1:browse:gregs:${cat.id}`]]);
     const back = await tap(list.ctx, `v1:browse:gregs:${cat.id}`);
     expect(sees.regionPicker(back)).toBe(true);
     expect(counts(back.sink)).toEqual(ONE_EDIT);
@@ -411,9 +416,12 @@ describe("product list Back follows the pickers that were really shown", () => {
     for (const region of ["Europe", "America", "TW HK MO", "SEA"]) await product(cat.id, `GI ${region}`, { gameRegion: region });
     const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
     await routeCallback(entry.ctx);
-    expect(bottomKeyboard(entry.sink)).toHaveLength(7); // 5 digits + Back + Menu
+    // Inline-only: neither the picker nor the list sends a digit keyboard.
+    expect(bottomKeyboard(entry.sink)).toEqual([]);
+    expect(counts(entry.sink)).toEqual(ONE_EDIT);
     const list = await tap(entry.ctx, tapTarget(entry.sink, "Asia"));
-    expect(bottomKeyboard(list.sink)).toEqual(["1", "2", BACK, MENU]);
+    expect(bottomKeyboard(list.sink)).toEqual([]);
+    expect(counts(list.sink)).toEqual(ONE_EDIT);
 
     const tapped = await tap(list.ctx, `v1:browse:gregs:${cat.id}`);
     expect(sees.regionPicker(tapped)).toBe(true);
@@ -443,19 +451,24 @@ describe("product list Back follows the pickers that were really shown", () => {
     expect(counts(typed.sink)).toEqual(TYPED_BACK);
   });
 
-  it("the picker reply keyboards carry Back too", async () => {
+  it("the pickers send no reply keyboard; their own inline keyboard carries Back", async () => {
     const cat = await genshin();
     const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
     await routeCallback(entry.ctx);
-    expect(bottomKeyboard(entry.sink)).toEqual(["1", "2", persistentLabel("back", "en"), persistentLabel("main", "en")]);
+    expect(bottomKeyboard(entry.sink)).toEqual([]);
+    expect(counts(entry.sink)).toEqual(ONE_EDIT);
+    expect(inlineButtons(entry.sink).at(-1)).toEqual({ text: BACK, callback_data: `v1:browse:grp:${CategoryGroup.GAME_TOPUP}` });
   });
 
   it("a multi-page list's inline Back re-renders the region picker by editing the same bubble; a double tap and a deleted bubble add nothing extra", async () => {
     const cat = await genshin(11);
     const list = await openAsiaList(cat);
     const rows = (lastMarkup(list.sink) as Markup).inline_keyboard!;
-    expect(rows.map((row) => row.map((b) => b.callback_data))).toEqual([["v1:browse:page:1"], [`v1:browse:gregs:${cat.id}`]]);
-    expect(rows[1]![0]!.text).toBe(persistentLabel("back", "en"));
+    // Ten product buttons, then Next, then Back.
+    expect(rows).toHaveLength(12);
+    expect(rows.slice(0, 10).every((row) => row.length === 1 && row[0]!.callback_data!.startsWith("v1:browse:pick:"))).toBe(true);
+    expect(rows.slice(10).map((row) => row.map((b) => b.callback_data))).toEqual([["v1:browse:page:1"], [`v1:browse:gregs:${cat.id}`]]);
+    expect(rows[11]![0]!.text).toBe(persistentLabel("back", "en"));
 
     const back = await tap(list.ctx, `v1:browse:gregs:${cat.id}`);
     expect(sees.regionPicker(back)).toBe(true);
@@ -889,8 +902,9 @@ describe("a region (or edition) holding one product skips its one-line list, and
   it("a product listed with others still goes Back to its list", async () => {
     const cat = await genshin();
     const list = await openAsiaList(cat);
-    const detail = next(list.ctx, { text: "1" });
-    await customer.handleProductNumber(detail.ctx);
+    // Opened by tapping its inline list button (a Game list has no numbers).
+    const detail = await tap(list.ctx, tapTarget(list.sink, "GI Asia 00"));
+    expect(sentIncludes(detail.sink, t(detail.ctx, "browse.use_buttons"))).toBe(false);
     expect(backData(detail.sink)).toBe("v1:browse:prods");
   });
 });

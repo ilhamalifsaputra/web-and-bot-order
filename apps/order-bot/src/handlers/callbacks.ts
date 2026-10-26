@@ -9,7 +9,7 @@
  */
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { CategoryGroup } from "@app/core/enums";
+import { CUSTOMER_SERVICES } from "@app/core/services";
 import { logger } from "@app/core/logger";
 import {
   prisma,
@@ -81,13 +81,15 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   else if (action === "grps") await customer.browseGroups(ctx);
   else if (action === "grp") {
     const group = parts[3];
-    if (group && (Object.values(CategoryGroup) as string[]).includes(group)) {
+    // Any service in the registry (@app/core/services), so a service added
+    // there later opens without touching this router.
+    if (group && CUSTOMER_SERVICES.some((service) => service.group === group)) {
       await customer.browseCategoriesInGroup(ctx, group);
     } else {
       await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     }
   } else if (action === "cat") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
-  else if (action === "gvars") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10), undefined, { back: true });
+  else if (action === "gvars") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
   else if (action === "gregs") await customer.backToRegionPicker(ctx, parseInt(parts[3]!, 10));
   else if (action === "gvar") await customer.pickGameVariant(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else if (action === "greg") await customer.pickGameRegion(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));

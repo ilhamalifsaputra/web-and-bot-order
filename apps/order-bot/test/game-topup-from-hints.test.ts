@@ -118,8 +118,8 @@ describe("From price", () => {
     const { ctx, sink } = await openList(cat.id);
     const prices = ctxPriceFormatter(ctx, null);
     const text = bubbleText(sink);
-    expect(text).toContain(`1. Diamonds A — ${fromLine(ctx, prices.price(15000))}`);
-    expect(text).toContain(`2. Diamonds B — ${fromLine(ctx, prices.price(50000))}`);
+    expect(text).toContain(`• Diamonds A — ${fromLine(ctx, prices.price(15000))}`);
+    expect(text).toContain(`• Diamonds B — ${fromLine(ctx, prices.price(50000))}`);
     expect(text).toContain("Rp15,000");
   });
 
@@ -128,9 +128,9 @@ describe("From price", () => {
     await product(cat.id, "Reseller Game", [{ price: 15000, resellerPrice: 12000 }, 20000]);
     await product(cat.id, "Zz Reseller Filler", [90000]);
     const reseller = await openList(cat.id, { role: UserRole.RESELLER });
-    expect(bubbleText(reseller.sink)).toContain(`1. Reseller Game — ${fromLine(reseller.ctx, "Rp12,000")}`);
+    expect(bubbleText(reseller.sink)).toContain(`• Reseller Game — ${fromLine(reseller.ctx, "Rp12,000")}`);
     const buyer = await openList(cat.id, { role: UserRole.CUSTOMER });
-    expect(bubbleText(buyer.sink)).toContain(`1. Reseller Game — ${fromLine(buyer.ctx, "Rp15,000")}`);
+    expect(bubbleText(buyer.sink)).toContain(`• Reseller Game — ${fromLine(buyer.ctx, "Rp15,000")}`);
   });
 
   it("uses a live flash price when it beats the base price", async () => {
@@ -146,7 +146,7 @@ describe("From price", () => {
       },
     });
     const { ctx, sink } = await openList(cat.id);
-    expect(bubbleText(sink)).toContain(`1. Flash Game — ${fromLine(ctx, "Rp10,000")}`);
+    expect(bubbleText(sink)).toContain(`• Flash Game — ${fromLine(ctx, "Rp10,000")}`);
   });
 
   it("formats through the buyer's language and currency (IDR id buyer vs USD en buyer)", async () => {
@@ -155,7 +155,7 @@ describe("From price", () => {
     await product(cat.id, "Currency Game", [16000]);
     await product(cat.id, "Zz Currency Filler", [90000]);
     const idr = await openList(cat.id, { lang: "id", preferredCurrency: "IDR" });
-    expect(bubbleText(idr.sink)).toContain("1. Currency Game — mulai Rp16.000");
+    expect(bubbleText(idr.sink)).toContain("• Currency Game — mulai Rp16.000");
 
     const usd = await openList(cat.id, { lang: "en", preferredCurrency: "USD" });
     const expected = ctxPriceFormatter(usd.ctx, new Decimal(16000)).price(16000);
@@ -170,12 +170,12 @@ describe("From price", () => {
     await product(cat.id, "Zz NoRate Filler", [90000]);
     const { ctx, sink } = await openList(cat.id, { lang: "en", preferredCurrency: "USD" });
     const text = bubbleText(sink);
-    expect(text).toContain("1. NoRate Game — from Rp16,000");
+    expect(text).toContain("• NoRate Game — from Rp16,000");
     expect(text).not.toContain("$");
     expect(text).toContain(ctxPriceFormatter(ctx, null).rateNotice("en").trim());
     expect(text.indexOf(t(ctx, "currency.rate_unavailable"))).toBeLessThan(text.indexOf(t(ctx, "hint.game_list")));
     expect(calls(sink, "sendMessage")).toHaveLength(0);
-    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "reply")).toHaveLength(0);
     expect(calls(sink, "editMessageText")).toHaveLength(1);
     expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
@@ -202,7 +202,7 @@ describe("hints", () => {
     expect(text.endsWith(t(ctx, "hint.game_list"))).toBe(true);
     expect(text).not.toContain(t(ctx, "hint.packs"));
     expect(calls(sink, "sendMessage")).toHaveLength(0);
-    expect(calls(sink, "reply")).toHaveLength(1); // digit keyboard resend, as before
+    expect(calls(sink, "reply")).toHaveLength(0); // inline list: no digit keyboard, no companion
     expect(calls(sink, "editMessageText")).toHaveLength(1);
     expect(calls(sink, "deleteMessage")).toHaveLength(0);
   });
@@ -217,7 +217,7 @@ describe("hints", () => {
     const variantStep = await openList(cat.id);
     expect(bubbleText(variantStep.sink).endsWith(t(variantStep.ctx, "hint.variant"))).toBe(true);
     expect(calls(variantStep.sink, "editMessageText")).toHaveLength(1);
-    expect(calls(variantStep.sink, "reply")).toHaveLength(1);
+    expect(calls(variantStep.sink, "reply")).toHaveLength(0);
     expect(calls(variantStep.sink, "sendMessage")).toHaveLength(0);
 
     const regionStep = tapCtx(variantStep.ctx, {}, { callbackData: `v1:browse:gvar:${cat.id}:0` });

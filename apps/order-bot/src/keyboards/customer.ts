@@ -16,7 +16,7 @@ import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtBalance, formatIdrFor, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
-import { LIST_LABEL_MAX_CHARS, MAX_LABEL_WIDTH, visualWidth } from "@app/core/buttonLimits";
+import { LIST_LABEL_MAX_CHARS, MAX_LABEL_BYTES, MAX_LABEL_WIDTH, visualWidth } from "@app/core/buttonLimits";
 import type { CatalogButton } from "../util/canonicalPresenter";
 
 export const CB_PREFIX = "v1";
@@ -117,7 +117,9 @@ export function mainPersistentKb(lang: string): Keyboard {
 }
 
 /**
- * Reply keyboard shown while browsing the product list: digits 1..count
+ * Reply keyboard shown while browsing a NUMBERED product list (Premium Apps
+ * only — `usesNumberedSelection`, @app/core/services; every other service and
+ * the Game Top-up edition/region pickers are inline-only): digits 1..count
  * (rows of 5) so a customer can tap a number instead of typing it, plus a
  * Menu button back to `mainPersistentKb`. `count` is the number of products
  * on the entry page (always page 0 — see `browseProductsFlat`), so a small
@@ -153,25 +155,6 @@ function numberedPersistentKb(count: number, lang: string): Keyboard {
   if (inRow > 0) kb.row();
   kb.text(persistentLabel("back", lang)).text(persistentLabel("main", lang));
   return kb.resized();
-}
-
-/**
- * Reply keyboard shown while a Game Top Up variant/region picker is the
- * active numbered screen: digits 1..count (rows of 5) so a customer can tap
- * or type the same number the picker's own inline buttons carry, plus a Menu
- * button back to `mainPersistentKb`. Identical shape to
- * `productsPersistentKb`, just sized to the picker's own option count
- * instead of the product-list page size — see `BrowseScratch.activeNumberedScreen`
- * in `handlers/customer.ts` for why entering a picker needs its own fresh
- * send of this (a reply keyboard can't ride on the picker's own
- * inline-keyboard edit; only a fresh `sendMessage` can replace the bottom
- * bar). Shared by both the variant and region picker renders since their
- * reply keyboard need is identical — only the option count differs. Ends
- * with the same `[← Back, 🏠 Menu]` row; a typed Back there goes where the
- * picker's own inline Back goes.
- */
-export function gamePickerPersistentKb(count: number, lang: string): Keyboard {
-  return numberedPersistentKb(count, lang);
 }
 
 /** Menu-only footer for error and terminal screens (no screen to go back to). */
@@ -586,14 +569,16 @@ export function qtyInputCancelKb(denominationId: number, lang: string): InlineKe
 }
 
 /**
- * Slim pagination keyboard for the Product List (§3). The list itself is now
- * driven by typed numbers (handleProductNumber resolves the caption's numbered
- * lines), so the per-product tap buttons and the Menu row were dropped — the
- * persistent reply keyboard carries the digits and Menu. A Prev/Next row only
- * when the catalog spans more than one page, then a Back row carrying
- * `backTarget` (the caller's `listBackTarget`) on every page — a single page
- * too, so Back is one edit of this bubble rather than a typed reply-keyboard
- * key. No `backTarget` and a single page → undefined (no inline keyboard).
+ * Slim pagination keyboard for a NUMBERED Product List (§3) — Premium Apps
+ * only (`usesNumberedSelection`, @app/core/services). That list is driven by
+ * typed numbers (handleProductNumber resolves the caption's numbered lines),
+ * so it carries no per-product tap buttons and no Menu row — the numbered
+ * reply keyboard carries the digits and Menu. A Prev/Next row only when the
+ * catalog spans more than one page, then a Back row carrying `backTarget`
+ * (the caller's `listBackTarget`) on every page — a single page too, so Back
+ * is one edit of this bubble rather than a typed reply-keyboard key. No
+ * `backTarget` and a single page → undefined (no inline keyboard). Every other
+ * service's list uses {@link productListKb} instead.
  */
 export function productsNavKb(page: number, totalPages: number, lang: string, backTarget?: string): InlineKeyboard | undefined {
   const nav: Btn[] = [];
@@ -603,6 +588,60 @@ export function productsNavKb(page: number, totalPages: number, lang: string, ba
   const rows: Btn[][] = nav.length ? [nav] : [];
   if (backTarget) rows.push(backRow(lang, backTarget, false));
   return rows.length ? ik(rows) : undefined;
+}
+
+/** `text` + `suffix` within the phone budget: at most MAX_LABEL_WIDTH cells and
+ * MAX_LABEL_BYTES UTF-8 bytes, `text` cut by whole code points (never a
+ * split emoji) and ending in "…" when it had to shorten; `suffix` is kept. */
+function fitLabel(text: string, suffix = ""): string {
+  let out = clipToCells(text, MAX_LABEL_WIDTH - visualWidth(suffix));
+  while (Buffer.byteLength(`${out}${suffix}`, "utf8") > MAX_LABEL_BYTES) {
+    const chars = Array.from(out.endsWith("…") ? out.slice(0, -1) : out);
+    chars.pop();
+    out = `${chars.join("")}…`;
+  }
+  return `${out}${suffix}`;
+}
+
+/** At most `max` code points (never a split surrogate pair), ending in "…" when cut. */
+function cutChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
+}
+
+/**
+ * The INLINE product list (every service except a numbered one —
+ * `usesNumberedSelection`, @app/core/services): one button per product on the
+ * page (`browse:pick:<id>`, one per row), then Prev/Next when the list spans
+ * more than one page, then the Back row to `backTarget` (the caller's
+ * `listBackTarget`) on every page, a single page too. The label is the product
+ * name, cut at LIST_LABEL_MAX_CHARS characters like the popular-product
+ * buttons (but by whole code points, never splitting an emoji) and then to
+ * the phone budget (MAX_LABEL_WIDTH cells, MAX_LABEL_BYTES bytes); the list
+ * body shows every full name, so a shortened label stays explained. Two names
+ * that would read the same get " (2)", " (3)"… in list order.
+ */
+export function productListKb(
+  products: Array<{ id: number; name: string }>,
+  page: number,
+  totalPages: number,
+  lang: string,
+  backTarget: string,
+): InlineKeyboard {
+  const seen = new Map<string, number>();
+  const rows: Btn[][] = products.map((p) => {
+    let text = fitLabel(cutChars(p.name.replace(/\s+/g, " ").trim(), LIST_LABEL_MAX_CHARS));
+    const count = (seen.get(text) ?? 0) + 1;
+    seen.set(text, count);
+    if (count > 1) text = fitLabel(text, ` (${count})`);
+    return [{ text, data: cb("browse", "pick", p.id) }];
+  });
+  const nav: Btn[] = [];
+  if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
+  if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
+  if (nav.length) rows.push(nav);
+  rows.push(backRow(lang, backTarget, false));
+  return ik(rows);
 }
 
 /** One /search hit as stored in the session snapshot: `serviceKey` is the service's locale key (its short tag). */

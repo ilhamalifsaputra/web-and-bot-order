@@ -1,7 +1,7 @@
 import {
   CUSTOMER_SERVICES,
   serviceForCategoryGroup,
-  type CustomerService,
+  type CustomerServiceDefinition,
   type ServiceChannel,
 } from "@app/core/services";
 import type { CategoryGroup } from "@app/core/enums";
@@ -13,9 +13,11 @@ import type { Db } from "./_types";
  * The channel key wins whenever its row exists; otherwise the pre-split legacy key
  * decides; with neither row the service is on. Only "false" (any case/whitespace) disables.
  */
-async function resolveServiceEnabled(db: Db, service: CustomerService, channel: ServiceChannel): Promise<boolean> {
+async function resolveServiceEnabled(db: Db, service: CustomerServiceDefinition, channel: ServiceChannel): Promise<boolean> {
   const channelSetting = await db.setting.findUnique({ where: { key: service.settingKeys[channel] } });
-  const setting = channelSetting ?? await db.setting.findUnique({ where: { key: service.legacySettingKey } });
+  // A service added after the per-channel split has no legacy key.
+  const setting = channelSetting
+    ?? (service.legacySettingKey ? await db.setting.findUnique({ where: { key: service.legacySettingKey } }) : null);
   return setting?.value.trim().toLowerCase() !== "false";
 }
 

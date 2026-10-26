@@ -304,7 +304,12 @@ tanpa isian ini, termasuk layanan baru, mendapat `"inline"`), dibaca lewat
 `usesNumberedSelection(group)`. Game Top-up: daftar produk berupa tombol inline
 per produk + Prev/Next + ← Kembali, picker edisi/region juga inline, tanpa pesan
 pendamping "Gunakan angka..." dan tanpa keyboard bawah angka; angka yang
-diketik di layar Game dijawab satu pesan `browse.use_buttons`. Premium Apps
+diketik di layar katalog Game tidak menambah pesan: layar yang sama diedit di
+tempat (tombolnya tetap) dengan baris `browse.use_buttons` di atasnya, dan angka
+yang diketik dihapus; di luar katalog (Home, Pesanan, Dompet) angka tetap
+berjalan seperti sebelumnya. Premium Apps = grup `PREMIUM_APPS` atau grup
+kosong/tidak terdaftar (`serviceForCategoryGroup`); layanan terdaftar lain
+memakai `listSelection` registrinya (default inline). Premium Apps
 tetap bernomor. Cara menambah layanan baru (mis. Steam Wallet): lihat
 `.claude/skills/bot-ux-grammy/SKILL.md`, bagian "How to add a new service".
 
@@ -457,9 +462,11 @@ Daftar cek:
   produk (nama lengkap tetap di teks), Prev/Next, dan ← Kembali (juga pada
   daftar satu halaman). Ulangi region -> ← Kembali -> region lain beberapa
   kali: jumlah pesan di chat tidak bertambah. Ketik "Produk" dengan satu layanan
-  dan satu game: tepat satu pesan. Ketik angka di layar Game: satu balasan
-  "Pilih dengan menekan tombol pada daftar." dengan ← Kembali ke layar itu,
-  tanpa membuka produk apa pun.
+  dan satu game: tepat satu pesan. Ketik angka (tiga kali) di layar Game: layar
+  itu diedit di tempat dengan baris "Pilih dengan menekan tombol pada daftar."
+  di atasnya, tombolnya tetap, angkanya terhapus, tanpa pesan baru dan tanpa
+  membuka produk apa pun. Ketik angka di Home setelah membuka Game: baris itu
+  tidak muncul.
 - [ ] Satu baris hint di tiap layar (daftar game, edisi, region, paket, search),
   dan label `mulai <harga>` pada daftar produk Game Top-up.
 - [ ] `/search` menemukan produk Game Top-up saja (tidak ada Premium Apps).

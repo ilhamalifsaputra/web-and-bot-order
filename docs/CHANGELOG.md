@@ -40,7 +40,9 @@ tag git yang sungguhan sampai dokumen ini ditulis.
     Kembali, picker edisi/region tanpa pesan pendamping "Gunakan angka di bawah
     untuk memilih:" dan tanpa keyboard bawah angka, sehingga pesan tidak lagi
     menumpuk saat bolak-balik region; jalur ketik "Produk" menjadi satu pesan;
-    angka yang diketik di layar Game dijawab satu pesan "pilih lewat tombol".
+    angka yang diketik di layar katalog Game mengedit layar itu di tempat
+    (tombol tetap, baris "pilih lewat tombol" di atasnya) dan angkanya dihapus,
+    tanpa pesan baru.
     Premium Apps tetap bernomor. Gaya pilih diatur sekali per layanan
     (`listSelection` di `packages/core/src/services.ts`). Tidak ada perubahan
     skema. Rollback: revert kode; keyboard angka kembali muncul pada kunjungan

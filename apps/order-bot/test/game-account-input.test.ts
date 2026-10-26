@@ -1037,6 +1037,23 @@ describe("MAX_GAME_ACCOUNT_UNITS gate", () => {
     expect(coreT("checkout.account_units_cap", "id", { max: 20 })).toContain("20");
   });
 
+  // The gate itself does not answer the callback: every path to it is a tap
+  // routed through routeCallback, which answers once after the dispatcher
+  // returns. Pinned through the router so the spinner can never be left on.
+  it.each([
+    ["Buy", (id: number) => `v1:buy:${id}:${MAX_GAME_ACCOUNT_UNITS + 1}`],
+    ["wallet menu Back", (id: number) => `v1:walletm:back:${id}:${MAX_GAME_ACCOUNT_UNITS + 1}`],
+  ] as const)("21 units from a routed %s tap: one edit and the callback answered exactly once, no spinner", async (_n, data) => {
+    const denom = await makeDenom([USER_ID, ZONE_ID]);
+    const sink: SentCall[] = [];
+    const session = { ...userSession(), menuMsgId: BUBBLE } as SessionData;
+    await routeCallback(tapCtx({ sink, session }, data(denom.id)));
+    expect(screenCalls(sink)).toEqual(["editMessageText"]);
+    expect(lastEditText(sink)).toBe(capText());
+    expect(calls(sink, "answerCallbackQuery")).toHaveLength(1);
+    expect(calls(sink, "conversation.enter")).toHaveLength(0);
+  });
+
   it.each([["PREMIUM_APPS", "PREMIUM_APPS"], ["null group", null]] as const)("%s keeps its quantity", async (_n, group) => {
     const denom = await makeDenom([USER_ID], { group });
     const { ctx, sink } = await gate(denom.id, MAX_GAME_ACCOUNT_UNITS + 1);

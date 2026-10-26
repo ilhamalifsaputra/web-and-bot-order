@@ -588,6 +588,10 @@ const QUOTE_FOR_KEY = "quoteFor";
  *  `clearPlayerInputScratch` (conversations/nicknameCheck.ts). */
 export const QUOTE_SCRATCH_KEYS = [QUOTE_KEY, QUOTE_NONCE_KEY, QUOTE_FOR_KEY] as const;
 
+/** The paid wallet nonce marker (see `completeOrderWithWallet`). A new render
+ *  never draws it as its own nonce (`newQuoteNonce`). */
+const WALLET_PAID_NONCE_KEY = "walletPaidNonce";
+
 /** Plain decimal notation, which is what `Decimal#toFixed()` writes. */
 const QUOTE_SHAPE = /^\d+(\.\d+)?$/;
 
@@ -597,12 +601,14 @@ const NONCE_SHAPE = /^[0-9a-z]{6}$/;
 const NONCE_SPACE = 36 ** 6;
 
 /** A fresh random quote nonce (a plain string, so the session stays JSON). */
-function newQuoteNonce(previous?: unknown): string {
-  // Never repeat the stored nonce, so a button of the render being replaced can
-  // never match the render that replaces it.
+function newQuoteNonce(...excluded: unknown[]): string {
+  // Never repeat an excluded nonce: the stored one, so a button of the render
+  // being replaced can never match the render that replaces it, and the
+  // remembered paid wallet nonce, so a new pay button is never answered as a
+  // second tap of the one that already paid.
   for (;;) {
     const nonce = (randomBytes(4).readUInt32BE(0) % NONCE_SPACE).toString(36).padStart(6, "0");
-    if (nonce !== previous) return nonce;
+    if (!excluded.includes(nonce)) return nonce;
   }
 }
 
@@ -660,7 +666,7 @@ export async function quoteConfirmation(
     clearQuote(ctx);
     return null;
   }
-  const nonce = newQuoteNonce(ctx.session.scratch[QUOTE_NONCE_KEY]);
+  const nonce = newQuoteNonce(ctx.session.scratch[QUOTE_NONCE_KEY], ctx.session.scratch[WALLET_PAID_NONCE_KEY]);
   ctx.session.scratch[QUOTE_KEY] = r.subtotalBeforeWallet.toFixed();
   ctx.session.scratch[QUOTE_NONCE_KEY] = nonce;
   ctx.session.scratch[QUOTE_FOR_KEY] = quoteKeyFor(productId, quantity);
@@ -2402,10 +2408,8 @@ async function tickStatusMessageAfterWalletCheckout(ctx: MyContext, orderId: num
  * conversation. One plain string (the session stays JSON), replaced by the next
  * wallet order's nonce; deliberately not one of `QUOTE_SCRATCH_KEYS` or
  * `clearAccountInput`'s keys, which the order itself clears. `/cancel` wipes it
- * with the rest of the scratch.
+ * with the rest of the scratch. Declared with the quote keys (WALLET_PAID_NONCE_KEY).
  */
-const WALLET_PAID_NONCE_KEY = "walletPaidNonce";
-
 export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number, nonce?: string): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;

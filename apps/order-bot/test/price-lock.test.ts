@@ -37,6 +37,21 @@ vi.mock("@app/db", async (orig) => {
     applyVoucherToSubtotal: vi.fn(actual.applyVoucherToSubtotal),
   };
 });
+// Lets one test queue the 4 random bytes a quote nonce is drawn from, to force
+// a collision; every other call goes to the real generator.
+const nonceBytes = vi.hoisted(() => ({ queue: [] as number[] }));
+vi.mock("node:crypto", async (orig) => {
+  const actual = await orig<typeof import("node:crypto")>();
+  const randomBytes = ((size: number, ...rest: unknown[]) => {
+    if (size === 4 && rest.length === 0 && nonceBytes.queue.length > 0) {
+      const b = Buffer.alloc(4);
+      b.writeUInt32BE(nonceBytes.queue.shift()!);
+      return b;
+    }
+    return (actual.randomBytes as (...a: unknown[]) => unknown)(size, ...rest);
+  }) as typeof actual.randomBytes;
+  return { ...actual, default: { ...actual, randomBytes }, randomBytes };
+});
 vi.mock("@app/core/payments/nowpayments", async (orig) => ({
   ...(await orig<typeof import("@app/core/payments/nowpayments")>()),
   createInvoice: vi.fn().mockResolvedValue({ invoiceId: "NP-TEST", invoiceUrl: "https://nowpayments.test/invoice/NP-TEST" }),
@@ -75,6 +90,7 @@ import * as checkout from "../src/handlers/checkout";
 let sample: SampleData;
 
 beforeEach(async () => {
+  nonceBytes.queue = [];
   await resetDb(prisma);
   invalidateRateCache();
   sample = await buildSampleData(prisma);
@@ -790,6 +806,23 @@ describe("wallet rail: a double tap of the button that just paid", () => {
     expect(calls(again, "answerCallbackQuery").map((c) => c.args[0])).toEqual([
       { text: t(tap(session, rail.callback).ctx, "checkout.wallet_already_paid"), show_alert: true },
     ]);
+  });
+
+  it("a new render never draws the remembered paid nonce (nor the previous quote's) as its own nonce", async () => {
+    await WALLET_RAILS[0]!.setup();
+    const session = await buyerSession(WALLET_RAILS[0]!);
+    const paid = (1).toString(36).padStart(6, "0");
+    const previous = (2).toString(36).padStart(6, "0");
+    session.scratch.walletPaidNonce = paid;
+    session.scratch.quoteNonce = previous;
+    // The generator draws the paid nonce, then the previous quote's, then a free one.
+    nonceBytes.queue = [1, 2, 3];
+    const sink: SentCall[] = [];
+    await checkout.showOrderConfirmation(tap(session, "v1:buy", sink).ctx, sample.product.id, 1);
+    expect(nonceBytes.queue).toEqual([]);
+    expect(session.scratch.quoteNonce).toBe((3).toString(36).padStart(6, "0"));
+    expect(nonceOn(sink, "v1:walletpay")).toBe(session.scratch.quoteNonce);
+    expect(session.scratch.walletPaidNonce).toBe(paid);
   });
 
   it("a malformed or missing nonce never matches the remembered one", async () => {

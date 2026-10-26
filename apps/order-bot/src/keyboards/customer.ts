@@ -26,7 +26,7 @@ export function cb(...parts: Array<string | number>): string {
   return [CB_PREFIX, ...parts.map(String)].join(":");
 }
 
-interface Btn {
+export interface Btn {
   text: string;
   data?: string;
   /** When set, builds a native "copy to clipboard" button instead of a callback button. */
@@ -174,23 +174,40 @@ export function gamePickerPersistentKb(count: number, lang: string): Keyboard {
   return numberedPersistentKb(count, lang);
 }
 
+/** Menu-only footer for error and terminal screens (no screen to go back to). */
 export function backToMain(lang: string): InlineKeyboard {
-  return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
+  return ik([[{ text: coreT("menu.main", lang), data: MENU_MAIN }]]);
+}
+
+const MENU_MAIN = cb("menu", "main");
+
+/**
+ * The one Back row every navigation screen ends with: `← Back` to `target`
+ * (the screen really above, computed by the caller), then `🏠 Menu` when
+ * `withMenu`. A screen whose parent is the main menu itself passes
+ * `cb("menu", "main")` and gets the single Back (a Menu button beside it would
+ * be a duplicate), so Menu is never added next to a Back that already goes
+ * there. Labels come only from the locale (`menu.back` / `menu.main`).
+ */
+export function backRow(lang: string, target: string, withMenu = true): Btn[] {
+  const row: Btn[] = [{ text: coreT("menu.back", lang), data: target }];
+  if (withMenu && target !== MENU_MAIN) row.push({ text: coreT("menu.main", lang), data: MENU_MAIN });
+  return row;
+}
+
+/** A screen whose only navigation is the Back row (see {@link backRow}). */
+export function backKb(lang: string, target: string, withMenu = true): InlineKeyboard {
+  return ik([backRow(lang, target, withMenu)]);
 }
 
 /** A single Back button to the pack (denomination) screen. */
 export function backToPackKb(productId: number, lang: string): InlineKeyboard {
-  return ik([[{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }]]);
+  return ik([backRow(lang, cb("browse", "denom", productId), false)]);
 }
 
 /** Confirmation footer after a restock subscription: back to the denomination + menu. */
 export function restockSubscribedKb(denominationId: number, lang: string): InlineKeyboard {
-  return ik([
-    [
-      { text: coreT("menu.back", lang), data: cb("browse", "denom", denominationId) },
-      { text: coreT("menu.main", lang), data: cb("menu", "main") },
-    ],
-  ]);
+  return ik([backRow(lang, cb("browse", "denom", denominationId))]);
 }
 
 /** Confirmation footer after a user closes their own ticket. */
@@ -355,14 +372,11 @@ export function denominationDetailKb(
   rows.push([
     { text: coreT("browse.refresh_btn", lang), data: cb("browse", "refresh", denom.id, qty) },
   ]);
-  const back: Btn =
+  const backTarget =
     parentProductId != null
-      ? {
-          text: coreT("menu.back", lang),
-          data: parentPage > 0 ? cb("browse", "pick", parentProductId, parentPage) : cb("browse", "pick", parentProductId),
-        }
-      : { text: coreT("menu.back", lang), data: fallbackBack };
-  rows.push([back]);
+      ? parentPage > 0 ? cb("browse", "pick", parentProductId, parentPage) : cb("browse", "pick", parentProductId)
+      : fallbackBack;
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -426,7 +440,7 @@ export function denominationPickerKb(
     );
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), data: cb("browse", "pick", productId) }]);
-  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -448,7 +462,8 @@ export function groupPickerKb(
         text: coreT(service.translationKey, lang),
         data: cb("browse", "grp", service.group),
       }))] : []),
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    // Its parent is the main menu: one Back, no duplicate Menu button.
+    backRow(lang, MENU_MAIN),
   ]);
 }
 
@@ -480,15 +495,7 @@ export function categoryPickerKb(categories: CategoryLike[], lang: string, backT
       })),
     );
   }
-  const mainMenu = cb("menu", "main");
-  rows.push(
-    backTarget === mainMenu
-      ? [{ text: coreT("menu.back", lang), data: mainMenu }]
-      : [
-          { text: coreT("menu.back", lang), data: backTarget },
-          { text: coreT("menu.main", lang), data: mainMenu },
-        ],
-  );
+  rows.push(backRow(lang, backTarget));
   return ik(rows);
 }
 
@@ -521,7 +528,7 @@ export function gameVariantPickerKb(
       })),
     );
   }
-  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -555,7 +562,7 @@ export function gameRegionPickerKb(
       })),
     );
   }
-  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -595,7 +602,7 @@ export function productsNavKb(page: number, totalPages: number, lang: string, ba
   if (page < totalPages - 1)
     nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
   const rows: Btn[][] = nav.length ? [nav] : [];
-  if (backTarget) rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  if (backTarget) rows.push(backRow(lang, backTarget, false));
   return rows.length ? ik(rows) : undefined;
 }
 
@@ -609,8 +616,9 @@ export interface SearchHit {
 /**
  * Game Top Up search results: `<name> · <service tag>` per hit, the
  * name cut so the whole label stays within MAX_LABEL_WIDTH, then Prev/Next
- * (`search:page:<n>`), Search again and Menu, each on its own row. `hits` is the
- * current page's slice of the snapshot.
+ * (`search:page:<n>`), Search again and Back, each on its own row. `hits` is the
+ * current page's slice of the snapshot. The results are a top-level screen, so
+ * Back goes to the main menu (no duplicate Menu button).
  */
 export function gameSearchResultsKb(hits: SearchHit[], page: number, totalPages: number, lang: string): InlineKeyboard {
   const rows: Btn[][] = hits.map((h) => {
@@ -625,24 +633,26 @@ export function gameSearchResultsKb(hits: SearchHit[], page: number, totalPages:
     rows.push(nav);
   }
   rows.push([{ text: coreT("search.again_btn", lang), data: cb("search", "again") }]);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  rows.push(backRow(lang, MENU_MAIN));
   return ik(rows);
 }
 
-/** Search prompt / empty state: Search again (re-arms the prompt) and Menu. */
+/** No-results screen: Search again (re-arms the prompt) and Back to the main
+ * menu (the empty search keeps no results page to return to). */
 export function gameSearchEmptyKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("search.again_btn", lang), data: cb("search", "again") }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    backRow(lang, MENU_MAIN),
   ]);
 }
 
-/** Inline keyboard for the Produk Populer list — one `browse:pick` button per product + Menu row. */
+/** Inline keyboard for the Produk Populer list — one `browse:pick` button per
+ * product, then Back to the main menu (its parent; no duplicate Menu). */
 export function popularKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
     { text: truncLabel(p.name, LIST_LABEL_MAX_CHARS), data: cb("browse", "pick", p.id) },
   ]);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  rows.push(backRow(lang, MENU_MAIN));
   return ik(rows);
 }
 
@@ -663,10 +673,9 @@ export function ordersListKb(orders: OrderLike[], lang: string): InlineKeyboard 
       ]);
     }
   }
-  rows.push([
-    { text: coreT("order.all_history_btn", lang), data: cb("order", "allhistory") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push([{ text: coreT("order.all_history_btn", lang), data: cb("order", "allhistory") }]);
+  // My Orders hangs off the main menu: one Back on its own row, no duplicate Menu.
+  rows.push(backRow(lang, MENU_MAIN));
   return ik(rows);
 }
 
@@ -700,10 +709,7 @@ export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
     }
   }
   rows.push([{ text: coreT("help.support_btn", lang), data: cb("support", "open", order.id) }]);
-  rows.push([
-    { text: coreT("menu.back", lang), data: cb("order", "list") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push(backRow(lang, cb("order", "list")));
   return ik(rows);
 }
 
@@ -761,7 +767,7 @@ export function orderConfirmKb(
     rows.push([
       { text: coreT("checkout.complete_order_btn", lang), data: pay("walletpay") },
     ]);
-    rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }]);
+    rows.push(backRow(lang, cb("browse", "denom", productId), false));
     return ik(rows);
   }
   if (voucherCode) {
@@ -819,7 +825,7 @@ export function usdtMethodsKb(
   if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: pay("payb") }]);
   if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: pay("paybc") }]);
   if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: pay("payn") }]);
-  rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
+  rows.push(backRow(lang, cb("buy", productId, qty), false));
   return ik(rows);
 }
 
@@ -866,7 +872,7 @@ export function walletCreditKb(
           },
     ]);
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("walletm", "back", productId, qty) }]);
+  rows.push(backRow(lang, cb("walletm", "back", productId, qty), false));
   return ik(rows);
 }
 
@@ -913,7 +919,7 @@ export function accountReviewKb(productId: number, qty: number, lang: string): I
   return ik([
     [{ text: coreT("checkout.review_continue_btn", lang), data: cb("rev", "go", productId, qty) }],
     [{ text: coreT("checkout.review_change_btn", lang), data: cb("rev", "chg", productId, qty) }],
-    [{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }],
+    backRow(lang, cb("browse", "denom", productId), false),
   ]);
 }
 
@@ -922,7 +928,7 @@ export function accountReviewKb(productId: number, qty: number, lang: string): I
 export function accountReviewTooLargeKb(productId: number, qty: number, lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("checkout.review_change_btn", lang), data: cb("rev", "chg", productId, qty) }],
-    [{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }],
+    backRow(lang, cb("browse", "denom", productId), false),
   ]);
 }
 
@@ -991,11 +997,20 @@ export function bybitBscTrackingKb(order: { id: number; status: string }, lang: 
 // Wallet top-up
 // ---------------------------------------------------------------------------
 
-/** Wallet screen footer: a Top Up entry point + the usual Menu escape. */
+/** Top-up receipt footer (settledPaymentKb): another Top Up + the Menu escape.
+ * A receipt is a terminal screen, so it keeps Menu instead of a Back. */
 export function walletKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("wallet.topup_btn", lang), data: cb("topup", "open") }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    [{ text: coreT("menu.main", lang), data: MENU_MAIN }],
+  ]);
+}
+
+/** The Wallet screen (a main-menu section): Top Up, then one Back to the main menu. */
+export function walletViewKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("wallet.topup_btn", lang), data: cb("topup", "open") }],
+    backRow(lang, MENU_MAIN),
   ]);
 }
 
@@ -1006,7 +1021,7 @@ export function topupCurrencyKb(lang: string): InlineKeyboard {
       { text: coreT("wallet.topup_currency_idr_btn", lang), data: cb("topup", "currency", "idr") },
       { text: coreT("wallet.topup_currency_usdt_btn", lang), data: cb("topup", "currency", "usdt") },
     ],
-    [{ text: coreT("menu.back", lang), data: cb("wallet", "view") }],
+    backRow(lang, cb("wallet", "view"), false),
   ]);
 }
 
@@ -1045,7 +1060,7 @@ export function topupMethodsKb(
     if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("topup", "pay", "bybitbsc") }]);
     if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("topup", "pay", "nowpayments") }]);
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("topup", "currency", currency.toLowerCase()) }]);
+  rows.push(backRow(lang, cb("topup", "currency", currency.toLowerCase()), false));
   return ik(rows);
 }
 
@@ -1071,7 +1086,7 @@ const TICKET_ICONS: Record<string, string> = {
   [TicketStatus.CLOSED]: "⚫",
 };
 
-/** User's ticket list with status icons. */
+/** User's ticket list with status icons; Back to the Help Center it is opened from. */
 export function myTicketsKb(tickets: TicketLike[], lang: string, page = 1, total = tickets.length): InlineKeyboard {
   const rows: Btn[][] = tickets.map((tk) => {
     const icon = TICKET_ICONS[tk.status] ?? "⚪";
@@ -1082,7 +1097,7 @@ export function myTicketsKb(tickets: TicketLike[], lang: string, page = 1, total
   if (page > 1) navigation.push({ text: coreT("helpdesk.previous", lang), data: cb("ticket", "list", page - 1) });
   if (page * 6 < total) navigation.push({ text: coreT("helpdesk.next", lang), data: cb("ticket", "list", page + 1) });
   if (navigation.length) rows.push(navigation);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  rows.push(backRow(lang, cb("help", "open")));
   return ik(rows);
 }
 
@@ -1097,10 +1112,7 @@ export function ticketViewKb(ticketId: number, statusValue: string, lang: string
   } else if (reopenable) {
     rows.push([{ text: coreT("ticket.btn_reopen", lang), data: cb("ticket", "reopen", ticketId) }]);
   }
-  rows.push([
-    { text: coreT("menu.back", lang), data: cb("ticket", "list") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push(backRow(lang, cb("ticket", "list")));
   return ik(rows);
 }
 
@@ -1127,11 +1139,11 @@ export function orderPickerKb(orders: OrderPickerLike[], lang: string): InlineKe
 
 /** Shown when a customer tries to link a new ticket to an order that
  * already has one open — "view the existing ticket" instead of filing a
- * duplicate. */
+ * duplicate. Back goes to My Tickets (the support wizard has ended). */
 export function ticketDuplicateKb(ticketId: number, lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("support.duplicate_open_ticket_view_btn", lang), data: cb("ticket", "view", ticketId) }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    backRow(lang, cb("ticket", "list")),
   ]);
 }
 
@@ -1148,12 +1160,16 @@ export function supportPhotoPromptKb(photoCount: number, lang = "en"): InlineKey
 // Language
 // ---------------------------------------------------------------------------
 
-export function languageKb(): InlineKeyboard {
+/** Language picker. `backTarget` adds the `[← Back, 🏠 Menu]` row; the caller
+ * omits it during onboarding (handlers/customer.ts settingsBackTarget), so the
+ * first-run flow never offers a way around the currency choice. */
+export function languageKb(lang = "en", backTarget?: string): InlineKeyboard {
   return ik([
     [
       { text: "🇬🇧 English", data: cb("lang", "set", "en") },
       { text: "🇮🇩 Indonesia", data: cb("lang", "set", "id") },
     ],
+    ...(backTarget ? [backRow(lang, backTarget)] : []),
   ]);
 }
 
@@ -1161,12 +1177,14 @@ export function languageKb(): InlineKeyboard {
 // Display currency (/start onboarding, after language)
 // ---------------------------------------------------------------------------
 
-export function currencyKb(lang = "en"): InlineKeyboard {
+/** Display-currency picker; `backTarget` as for {@link languageKb}. */
+export function currencyKb(lang = "en", backTarget?: string): InlineKeyboard {
   return ik([
     [
       { text: `🇺🇸 ${coreT("currency.usd", lang)}`, data: cb("cur", "set", "USD") },
       { text: `🇮🇩 ${coreT("currency.idr", lang)}`, data: cb("cur", "set", "IDR") },
     ],
+    ...(backTarget ? [backRow(lang, backTarget)] : []),
   ]);
 }
 
@@ -1174,7 +1192,8 @@ export function currencyKb(lang = "en"): InlineKeyboard {
 // Help Center hub
 // ---------------------------------------------------------------------------
 
-/** Help Center hub keyboard — one feature button per row + a Menu back row. */
+/** Help Center hub keyboard — one feature button per row, then one Back to the
+ * main menu (its parent; no duplicate Menu button). */
 export function helpCenterKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("help.referral_btn", lang), data: cb("ref", "view") }],
@@ -1184,7 +1203,7 @@ export function helpCenterKb(lang: string): InlineKeyboard {
     [{ text: coreT("help.terms_btn", lang), data: cb("page", "terms") }],
     [{ text: coreT("help.support_btn", lang), data: cb("support", "open") }],
     [{ text: coreT("help.tickets_btn", lang), data: cb("ticket", "list") }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    backRow(lang, MENU_MAIN),
   ]);
 }
 

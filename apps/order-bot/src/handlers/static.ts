@@ -5,11 +5,12 @@
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { t } from "../util/i18n";
-import { backToMain } from "../keyboards/customer";
+import { backKb, cb } from "../keyboards/customer";
 
+/** Each page sits under the Help Center: `[← Back, 🏠 Menu]`, Back to the hub. */
 async function sendStatic(ctx: MyContext, key: string): Promise<void> {
   const lang = ctx.session.lang;
-  await smartEdit(ctx, t(ctx, key), backToMain(lang));
+  await smartEdit(ctx, t(ctx, key), backKb(lang, cb("help", "open")));
 }
 
 export const showFaq = (ctx: MyContext) => sendStatic(ctx, "faq.content");

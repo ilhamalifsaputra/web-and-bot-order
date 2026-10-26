@@ -2191,7 +2191,7 @@ describe("denomination picker", () => {
 // ===========================================================================
 
 describe("group and category pickers", () => {
-  it("groupPickerKb renders exactly the two group buttons plus a menu row", () => {
+  it("groupPickerKb renders exactly the two group buttons plus one Back row to the main menu", () => {
     const kb = groupPickerKb("en");
     const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
     expect(rows.length).toBe(2);
@@ -2199,7 +2199,8 @@ describe("group and category pickers", () => {
       `v1:browse:grp:${CategoryGroup.GAME_TOPUP}`,
       `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}`,
     ]);
-    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:menu:main"]);
+    // Its parent is the main menu: a single Back, no duplicate Menu button.
+    expect(rows[1]!).toEqual([{ text: persistentLabel("back", "en"), callback_data: "v1:menu:main" }]);
   });
 
   it("groupPickerKb omits disabled service groups", () => {

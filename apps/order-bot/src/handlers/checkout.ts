@@ -539,31 +539,51 @@ async function computeConfirmation(
 // the same bubble is redrawn with the new price for another confirm tap.
 // ---------------------------------------------------------------------------
 
-interface ShownQuote {
-  productId: number;
-  quantity: number;
-  /** IDR total after bulk and voucher, before wallet credit — createOrderDirect's `afterDiscount`. */
-  total: string;
-}
+/**
+ * Session scratch key of the shown totals: `{ "<productId>:<quantity>": "<IDR
+ * total after bulk and voucher, before wallet credit>" }` — createOrderDirect's
+ * `afterDiscount`. One entry per confirmation the buyer has open, so tapping an
+ * older bubble (product X) after opening another (Y) is still bound to the
+ * figure X's bubble shows, not left unbound because Y replaced it.
+ */
+export const SHOWN_QUOTES_KEY = "shownQuotes";
+/** Bound on remembered confirmations; the oldest is forgotten first. */
+const MAX_SHOWN_QUOTES = 8;
 
-const SHOWN_QUOTE_KEY = "shownQuote";
+const quoteKey = (productId: number, quantity: number) => `${productId}:${quantity}`;
+
+function shownQuotes(ctx: MyContext): Record<string, string> {
+  const raw = ctx.session.scratch[SHOWN_QUOTES_KEY];
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, string>) : {};
+}
 
 /** Remember the total this confirmation bubble shows, keyed by what it is for. */
 function rememberShownQuote(ctx: MyContext, productId: number, quantity: number, r: ConfirmRender): void {
-  const quote: ShownQuote = { productId, quantity, total: r.subtotalBeforeWallet.toString() };
-  ctx.session.scratch[SHOWN_QUOTE_KEY] = quote;
+  const key = quoteKey(productId, quantity);
+  // Re-inserted at the end so the bound below drops the least recently shown.
+  const entries = Object.entries(shownQuotes(ctx)).filter(([k]) => k !== key);
+  entries.push([key, r.subtotalBeforeWallet.toString()]);
+  ctx.session.scratch[SHOWN_QUOTES_KEY] = Object.fromEntries(entries.slice(-MAX_SHOWN_QUOTES));
+}
+
+/** Forget the shown total once its order exists; other open confirmations stay bound. */
+function forgetShownQuote(ctx: MyContext, productId: number, quantity: number): void {
+  const rest = Object.entries(shownQuotes(ctx)).filter(([k]) => k !== quoteKey(productId, quantity));
+  if (rest.length > 0) ctx.session.scratch[SHOWN_QUOTES_KEY] = Object.fromEntries(rest);
+  else delete ctx.session.scratch[SHOWN_QUOTES_KEY];
 }
 
 /**
  * The IDR total last shown for exactly this product and quantity, or null when
- * no confirmation for it was drawn (a direct or older tap is then not bound,
- * exactly as before).
+ * no confirmation for it was drawn. A gateway rail then proceeds unbound (its
+ * invoice shows the amount before money moves); a wallet rail refuses
+ * ({@link refuseUnquotedWalletTap}).
  */
 function shownQuoteIdr(ctx: MyContext, productId: number, quantity: number): Decimal | null {
-  const q = ctx.session.scratch[SHOWN_QUOTE_KEY] as Partial<ShownQuote> | undefined;
-  if (!q || q.productId !== productId || q.quantity !== quantity || typeof q.total !== "string") return null;
+  const total = shownQuotes(ctx)[quoteKey(productId, quantity)];
+  if (typeof total !== "string") return null;
   try {
-    return new Decimal(q.total);
+    return new Decimal(total);
   } catch {
     return null;
   }
@@ -586,6 +606,23 @@ async function showQuoteChanged(ctx: MyContext, productId: number, quantity: num
     `A bot payment tap was refused because the order total changed after the confirmation was shown; the buyer is shown the new total and must confirm again, and nothing was charged.`,
   );
   await renderOrderConfirmation(ctx, productId, quantity, { notice: t(ctx, "checkout.quote_changed") });
+}
+
+/**
+ * A wallet debit (or a discount-covered order) moves money the moment the tap
+ * lands, with no invoice in between to show the amount — so it never runs
+ * unbound. With no remembered total for this product and quantity (a session
+ * reset, a bubble older than the bound), nothing is charged: the same bubble is
+ * redrawn with the current price, which remembers it, and the buyer taps again.
+ */
+async function refuseUnquotedWalletTap(ctx: MyContext, productId: number, quantity: number): Promise<boolean> {
+  if (shownQuoteIdr(ctx, productId, quantity) !== null) return false;
+  logger.info(
+    { productId, quantity },
+    `A bot wallet payment tap was refused because no confirmed total was remembered for this product and quantity; nothing was charged, and the buyer is shown the current total to confirm again.`,
+  );
+  await renderOrderConfirmation(ctx, productId, quantity, { notice: t(ctx, "checkout.quote_changed") });
+  return true;
 }
 
 export async function showOrderConfirmation(
@@ -1027,7 +1064,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1153,7 +1190,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1277,7 +1314,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -1391,7 +1428,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -1569,7 +1606,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // Based on order.totalAmount (what's actually sent to the gateway as
   // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
@@ -1780,7 +1817,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
@@ -1998,6 +2035,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       return;
     }
   }
+  if (await refuseUnquotedWalletTap(ctx, productId, quantity)) return;
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
   const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
@@ -2102,7 +2140,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
   delete ctx.session.scratch.checkoutIntentId;
-  delete ctx.session.scratch[SHOWN_QUOTE_KEY];
+  forgetShownQuote(ctx, productId, quantity);
 
   // A synchronous wallet checkout uses the same coordinator as gateway rails.
   // Its known checkout screen is already adopted inside the settlement commit.

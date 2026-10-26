@@ -400,13 +400,23 @@ Prasyarat (di worktree `game-topup-refactor`, bukan di checkout utama):
    (tanpa `--accept-data-loss`) pada database worktree itu.
 3. `WEB_PORT` dan `STOREFRONT_PORT` di `.env` worktree dibuat berbeda dari
    worktree lain.
-4. Seed fixture (bertanda `[SEED-GTR]`, tanpa kredensial provider):
+4. Seed fixture (nama tampak seperti toko sungguhan, tanpa penanda terlihat dan
+   tanpa kredensial provider):
    `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db`
    (dry run, hanya hitungan), lalu
-   `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply`.
-   Skrip menolak jalan kecuali host lokal, DB `bot_order_gtr`, dan flag
-   konfirmasi. Ia juga menyalakan layanan Game Top-up (bot dan web) dan menyetel
-   minimum order 0 (setting bersama; `--remove` tidak mengembalikannya).
+   `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply`
+   (tambah `--bulk` untuk katalog besar). Skrip menolak jalan kecuali host lokal,
+   DB `bot_order_gtr`, dan flag konfirmasi. Kepemilikan baris dicatat di
+   **manifest tak terlihat**: id kategori, produk, denominasi, dan pembeli yang
+   dibuat atau diadopsi disimpan sebagai JSON di satu baris setting
+   `seed_game_topup_manifest` (hanya di DB target, tanpa rahasia). Baris yang
+   namanya sama tetapi tidak ada di manifest (baris toko asli) **ditolak**, tidak
+   diambil alih, dan namanya dilaporkan. `--apply` juga mengganti nama di tempat
+   (id dan order tetap) baris lama yang masih berakhiran ` [SEED-GTR]` lalu
+   memasukkannya ke manifest; bila nama bersih bentrok dengan baris asli,
+   skrip berhenti dengan pesan jelas dan tidak mengubah apa pun. Ia juga
+   menyalakan layanan Game Top-up (bot dan web) dan menyetel minimum order 0
+   (setting bersama; `--remove` tidak mengembalikannya).
 5. Token bot dibaca dari setting DB `bot_token` (bukan `.env`); salin dari DB dev
    sesuai [CATALOG_BUTTONS.md](docs/CATALOG_BUTTONS.md) bagian 9. **Hanya satu
    worktree yang boleh menjalankan order-bot** pada token yang sama (dua poller
@@ -436,7 +446,9 @@ Daftar cek:
 - [ ] Kontrol: Premium Apps tidak menampilkan `mulai`, hint, atau layar review.
 - [ ] Bersihkan: `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove`,
   lalu hentikan bot dan `docker compose -f docker-compose.postgres.yml -p gtr down`.
-  `--remove` tanpa `--apply` hanya mencetak apa yang akan dihapus. Baris seed
+  `--remove` hanya menghapus id yang ada di manifest (baris toko asli tidak
+  pernah disentuh) dan menghapus baris manifest hanya bila tidak ada yang
+  dilewati; tanpa `--apply` hanya mencetak hitungan dari manifest. Baris seed
   yang masih dirujuk order milik penguji (atau riwayat dompet) **dilewati dan
   dilaporkan**, bukan dihapus: biarkan saja, atau hapus order tes itu secara
   manual hanya di DB worktree. Penghapusan denominasi seed ikut menghapus

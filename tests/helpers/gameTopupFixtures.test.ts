@@ -4,12 +4,13 @@ import { CUSTOMER_SERVICES, serviceForCategoryGroup } from "@app/core/services";
 import { CategoryGroup } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "./testdb";
 import { buildGameTopupFixtures } from "./gameTopupFixtures";
+import { SeedManifest, SeedConflictError, SEED_MANIFEST_KEY } from "./seedManifest";
+import { expectNoVisibleMarkers } from "./seedMarkers";
 
 let db: TestDb;
 beforeAll(async () => { db = await makeTestDb(); });
 afterAll(async () => { await db.cleanup(); });
 
-const TAG = " [SEED-GTR]";
 const counts = async () => ({
   categories: await db.prisma.category.count(),
   products: await db.prisma.product.count(),
@@ -18,10 +19,10 @@ const counts = async () => ({
 });
 
 describe("buildGameTopupFixtures", () => {
-  it("creates the expected shapes and is idempotent when tagged", async () => {
-    const first = await buildGameTopupFixtures(db.prisma, { tag: TAG });
+  it("creates the expected shapes and is idempotent without any visible marker", async () => {
+    const first = await buildGameTopupFixtures(db.prisma);
     const afterFirst = await counts();
-    const second = await buildGameTopupFixtures(db.prisma, { tag: TAG });
+    const second = await buildGameTopupFixtures(db.prisma);
     expect(await counts()).toEqual(afterFirst);
     expect(second).toEqual(first);
 
@@ -35,14 +36,14 @@ describe("buildGameTopupFixtures", () => {
     expect(game.group).toBe(CategoryGroup.GAME_TOPUP);
     expect(premium.group).toBe(CategoryGroup.PREMIUM_APPS);
 
-    // Every created name carries the tag.
-    for (const row of [game, mixed, premium]) expect(row.name.endsWith(TAG)).toBe(true);
+    // Realistic names, no visible marker anywhere.
+    expect([game.name, mixed.name, premium.name]).toEqual(["Game Top Up", "Mixed Games", "Premium Apps"]);
     const products = await db.prisma.product.findMany({ include: { denominations: true } });
     expect(products).toHaveLength(7);
-    for (const p of products) {
-      expect(p.name.endsWith(TAG)).toBe(true);
-      for (const d of p.denominations) expect(d.name.endsWith(TAG)).toBe(true);
-    }
+    await expectNoVisibleMarkers(db.prisma);
+    const buyer = await db.prisma.user.findUniqueOrThrow({ where: { id: first.userId } });
+    expect(buyer.fullName).toBe("Budi Santoso");
+    expect(buyer.username).toBe("budisantoso");
 
     // Mobile Legends style.
     const ml = products.find((p) => p.id === first.products.mobileLegends)!;
@@ -96,5 +97,41 @@ describe("buildGameTopupFixtures", () => {
 
     // No provider credentials were written.
     expect(await db.prisma.setting.count({ where: { key: { contains: "api_key" } } })).toBe(0);
+  }, 60_000);
+
+  it("records every created row in the manifest, adopts them on a second run and refuses an unmanifested same-name row", async () => {
+    await db.prisma.denomination.deleteMany();
+    await db.prisma.product.deleteMany();
+    await db.prisma.category.deleteMany();
+    await db.prisma.user.deleteMany();
+    await db.prisma.setting.deleteMany({ where: { key: SEED_MANIFEST_KEY } });
+
+    // A shop's own category that happens to share a name with a seed category.
+    const real = await db.prisma.category.create({ data: { name: "Game Top Up", slug: "game-top-up", group: "GAME_TOPUP" } });
+    const manifest = new SeedManifest();
+    await expect(buildGameTopupFixtures(db.prisma, { manifest })).rejects.toThrow(SeedConflictError);
+    await expect(buildGameTopupFixtures(db.prisma, { manifest })).rejects.toThrow(/"Game Top Up"/);
+    expect(await db.prisma.product.count()).toBe(0);
+    expect(manifest.has("categories", real.id)).toBe(false);
+
+    await db.prisma.category.delete({ where: { id: real.id } });
+    const ids = await buildGameTopupFixtures(db.prisma, { manifest });
+    await manifest.save(db.prisma);
+    const loaded = await SeedManifest.load(db.prisma);
+    expect(loaded.counts()).toEqual({
+      categories: await db.prisma.category.count(),
+      products: await db.prisma.product.count(),
+      denominations: await db.prisma.denomination.count(),
+      users: 1,
+    });
+    expect(loaded.has("users", ids.userId)).toBe(true);
+
+    // Second run with the stored manifest: same ids, nothing new.
+    const again = await buildGameTopupFixtures(db.prisma, { manifest: loaded });
+    expect(again).toEqual(ids);
+    expect(await db.prisma.product.count()).toBe(7);
+
+    // An unmanifested buyer who owns the fake Telegram id is refused too.
+    await expect(buildGameTopupFixtures(db.prisma, { manifest: new SeedManifest() })).rejects.toThrow(SeedConflictError);
   }, 60_000);
 });

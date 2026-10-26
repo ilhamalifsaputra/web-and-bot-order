@@ -1,10 +1,12 @@
 /**
  * Large, realistic Game Top-up + Premium Apps seed catalog for manual testing
  * (browse pagination, search, the region and edition pickers, button-label
- * limits). Sibling of gameTopupFixtures.ts: same tag convention, same crud
- * helpers, same idempotency (each row is found by its deterministic name
- * before it is created), and the same `--remove` path in
- * scripts/lib/seedGameTopup.ts cleans it because every name carries the tag.
+ * limits). Sibling of gameTopupFixtures.ts: realistic names with no marker, the
+ * same crud helpers, the same idempotency (each row is found by its
+ * deterministic name before it is created) and the same ownership record: with
+ * `opts.manifest` created ids are recorded, listed rows are adopted and an
+ * unlisted same-name row is refused. `--remove` in scripts/lib/seedGameTopup.ts
+ * deletes only the manifest's ids.
  *
  * Shape (the data lives in the tables below, not in code):
  *  - "Game Top Up" (shared with the small fixture): plain games, no region.
@@ -22,6 +24,7 @@ import { createCategory, createCatalogProduct, createDenomination } from "@app/d
 import { CategoryGroup } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
+import { guardExisting, type SeedManifest } from "./seedManifest";
 
 type FieldKind = "player" | "uid" | "userZone";
 
@@ -225,7 +228,7 @@ export function planGameDenominations(spec: GameSpec, regionIndex: number, skuKe
       qty,
       unit: spec.unit,
       price,
-      sku: spec.auto && i % 3 === 0 ? `fixture-${skuKey}-${qty}` : null,
+      sku: spec.auto && i % 3 === 0 ? `${skuKey}-${qty}` : null,
     });
   });
   for (const extra of spec.extras ?? []) {
@@ -250,14 +253,19 @@ export interface BulkCatalogResult {
 
 export async function buildBulkGameTopupCatalog(
   prisma: PrismaClient,
-  opts: { tag?: string } = {},
+  opts: { manifest?: SeedManifest } = {},
 ): Promise<BulkCatalogResult> {
-  const tag = opts.tag ?? "";
-  const n = (name: string) => `${name}${tag}`;
+  const { manifest } = opts;
 
   const ensureCategory = async (name: string, group: string, sortOrder: number, emoji: string) => {
-    const existing = await prisma.category.findUnique({ where: { name: n(name) } });
-    return existing ?? createCategory(prisma, { name: n(name), group, sortOrder, emoji });
+    const existing = await prisma.category.findUnique({ where: { name } });
+    if (existing) {
+      guardExisting(manifest, "categories", existing.id, `the category "${name}"`);
+      return existing;
+    }
+    const created = await createCategory(prisma, { name, group, sortOrder, emoji });
+    manifest?.add("categories", created.id);
+    return created;
   };
   const gameCat = await ensureCategory("Game Top Up", CategoryGroup.GAME_TOPUP, 1, "\u{1F3AE}");
   const regionalCat = await ensureCategory("Regional Games", CategoryGroup.GAME_TOPUP, 4, "\u{1F30F}");
@@ -276,9 +284,15 @@ export async function buildBulkGameTopupCatalog(
     extra: { gameRegion?: string | null; gameVariant?: string | null; gameVariantEmoji?: string | null; sortOrder: number; description?: string },
   ) => {
     const existing = await prisma.product.findFirst({
-      where: { categoryId, name: n(name), gameRegion: extra.gameRegion ?? null, gameVariant: extra.gameVariant ?? null },
+      where: { categoryId, name, gameRegion: extra.gameRegion ?? null, gameVariant: extra.gameVariant ?? null },
     });
-    return existing ?? createCatalogProduct(prisma, { categoryId, name: n(name), ...extra });
+    if (existing) {
+      guardExisting(manifest, "products", existing.id, `the product "${name}"`);
+      return existing;
+    }
+    const created = await createCatalogProduct(prisma, { categoryId, name, ...extra });
+    manifest?.add("products", created.id);
+    return created;
   };
 
   /** Creates the missing denominations of one product; the existing names come from a single query. */
@@ -286,11 +300,16 @@ export async function buildBulkGameTopupCatalog(
     productId: number,
     planned: ReadonlyArray<{ name: string; price: number; durationLabel?: string; create: (name: string) => Parameters<typeof createDenomination>[1] }>,
   ) => {
-    const have = new Set((await prisma.denomination.findMany({ where: { productId }, select: { name: true } })).map((d) => d.name));
+    const have = new Map((await prisma.denomination.findMany({ where: { productId }, select: { id: true, name: true } })).map((d) => [d.name, d.id]));
     for (const p of planned) {
       denominations += 1;
-      if (have.has(n(p.name))) continue;
-      await createDenomination(prisma, p.create(n(p.name)));
+      const existingId = have.get(p.name);
+      if (existingId !== undefined) {
+        guardExisting(manifest, "denominations", existingId, `the denomination "${p.name}"`);
+        continue;
+      }
+      const created = await createDenomination(prisma, p.create(p.name));
+      manifest?.add("denominations", created.id);
     }
   };
 

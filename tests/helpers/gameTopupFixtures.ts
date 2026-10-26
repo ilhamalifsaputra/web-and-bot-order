@@ -6,11 +6,14 @@
  * Built with the repo's real crud helpers (the same ones tests/e2e/seed.ts and
  * apps/order-bot/test/game-account-input.test.ts use), never raw inserts.
  *
- * Idempotency: when `opts.tag` is given, every created name carries it and each
- * row is found by that deterministic name before it is created, so running the
- * builder twice yields the same ids and no duplicates. Without a tag the builder
- * assumes an empty database (category names are unique, so a second untagged
- * run would fail on the name rather than duplicate).
+ * Idempotency: names are realistic and carry no marker. Each row is found by its
+ * deterministic (category, product, denomination) name before it is created, so
+ * running the builder twice yields the same ids and no duplicates. Pass
+ * `opts.manifest` (tests/helpers/seedManifest.ts) when seeding a database that
+ * may hold a shop's own rows: created ids are recorded in it, a row already in
+ * it is adopted, and a same-name row that is NOT in it is refused with a
+ * SeedConflictError instead of being taken over. Without a manifest (the E2E
+ * test's empty database) any same-name row is reused.
  *
  * No provider credentials are written: the Digiflazz denomination carries a
  * fake `supplierSku` only. Do not import this from product code.
@@ -28,6 +31,7 @@ import { CategoryGroup } from "@app/core/enums";
 import { CUSTOMER_SERVICES } from "@app/core/services";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
+import { guardExisting, type SeedManifest } from "./seedManifest";
 
 /** A fake Telegram id that is not in ADMIN_IDS (the buyer for E2E and manual taps). */
 export const FIXTURE_BUYER_TELEGRAM_ID = 7_770_000_001;
@@ -52,24 +56,51 @@ function field(key: string, id: string, en: string): AdditionalField {
   return { key, label: { id, en }, type: AdditionalFieldType.NUMBER, required: true, options: [], placeholder: "" };
 }
 
+/**
+ * Old product names and descriptions from before the seed lost its visible
+ * marker, so the one-time migration (scripts/lib/seedGameTopup.ts) can rename
+ * already-seeded rows in place instead of leaving them next to new ones.
+ */
+export const LEGACY_PRODUCT_RENAMES: Readonly<Record<string, { name: string; description?: string }>> = {
+  "Mixed Game Regional": { name: "Ragnarok Origin" },
+  "Mixed Game Global": { name: "Dragon Raja" },
+  "Mixed Game Plain": { name: "Perfect World Mobile" },
+  "Streaming App": { name: "Vidio Platinum", description: "Akun Vidio Platinum tanpa iklan, termasuk film, serial, dan siaran olahraga." },
+};
+
+/** The buyer's visible profile, shared with the migration. */
+export const FIXTURE_BUYER_FULL_NAME = "Budi Santoso";
+export const FIXTURE_BUYER_USERNAME = "budisantoso";
+
 export async function buildGameTopupFixtures(
   prisma: PrismaClient,
-  opts: { tag?: string } = {},
+  opts: { manifest?: SeedManifest } = {},
 ): Promise<GameTopupFixtureIds> {
-  const tag = opts.tag ?? "";
-  const n = (name: string) => `${name}${tag}`;
+  const { manifest } = opts;
 
   const ensureCategory = async (name: string, group: string, sortOrder: number, emoji: string) => {
-    const existing = await prisma.category.findUnique({ where: { name: n(name) } });
-    return existing ?? createCategory(prisma, { name: n(name), group, sortOrder, emoji });
+    const existing = await prisma.category.findUnique({ where: { name } });
+    if (existing) {
+      guardExisting(manifest, "categories", existing.id, `the category "${name}"`);
+      return existing;
+    }
+    const created = await createCategory(prisma, { name, group, sortOrder, emoji });
+    manifest?.add("categories", created.id);
+    return created;
   };
   const ensureProduct = async (
     categoryId: number,
     name: string,
     extra: { gameRegion?: string | null; sortOrder?: number; description?: string },
   ) => {
-    const existing = await prisma.product.findFirst({ where: { categoryId, name: n(name) } });
-    return existing ?? createCatalogProduct(prisma, { categoryId, name: n(name), ...extra });
+    const existing = await prisma.product.findFirst({ where: { categoryId, name } });
+    if (existing) {
+      guardExisting(manifest, "products", existing.id, `the product "${name}"`);
+      return existing;
+    }
+    const created = await createCatalogProduct(prisma, { categoryId, name, ...extra });
+    manifest?.add("products", created.id);
+    return created;
   };
   const ensureDenomination = async (
     productId: number,
@@ -77,15 +108,21 @@ export async function buildGameTopupFixtures(
     price: string,
     extra: Omit<Parameters<typeof createDenomination>[1], "productId" | "name" | "price" | "type" | "durationLabel"> & { durationLabel?: string },
   ) => {
-    const existing = await prisma.denomination.findFirst({ where: { productId, name: n(name) } });
-    return existing ?? createDenomination(prisma, {
+    const existing = await prisma.denomination.findFirst({ where: { productId, name } });
+    if (existing) {
+      guardExisting(manifest, "denominations", existing.id, `the denomination "${name}"`);
+      return existing;
+    }
+    const created = await createDenomination(prisma, {
       productId,
-      name: n(name),
+      name,
       price: new Decimal(price),
       type: "SHARED",
-      durationLabel: n(name),
+      durationLabel: name,
       ...extra,
     });
+    manifest?.add("denominations", created.id);
+    return created;
   };
 
   const gameCat = await ensureCategory("Game Top Up", CategoryGroup.GAME_TOPUP, 1, "\u{1F3AE}");
@@ -129,7 +166,7 @@ export async function buildGameTopupFixtures(
     qtyValue: 257,
     qtyUnit: "Diamonds",
     autoDeliverySource: "digiflazz",
-    supplierSku: "fixture-ml257",
+    supplierSku: "ml257",
     ...mlExtra,
   });
   ids["ml-257-auto"] = mlAuto.id;
@@ -144,16 +181,16 @@ export async function buildGameTopupFixtures(
   await gameDenom(df.id, "df-300", 300, "Delta Coins", "45000", [field("uid", "UID", "UID")]);
 
   // Mixed category: one product with a region, two without.
-  const mixedA = await ensureProduct(mixedCat.id, "Mixed Game Regional", { gameRegion: "Indonesia", sortOrder: 1 });
-  const mixedB = await ensureProduct(mixedCat.id, "Mixed Game Global", { sortOrder: 2 });
-  const mixedC = await ensureProduct(mixedCat.id, "Mixed Game Plain", { sortOrder: 3 });
+  const mixedA = await ensureProduct(mixedCat.id, "Ragnarok Origin", { gameRegion: "Indonesia", sortOrder: 1 });
+  const mixedB = await ensureProduct(mixedCat.id, "Dragon Raja", { sortOrder: 2 });
+  const mixedC = await ensureProduct(mixedCat.id, "Perfect World Mobile", { sortOrder: 3 });
   const one = [field("player_id", "ID Pemain", "Player ID")];
   await gameDenom(mixedA.id, "mixed-a", 100, "Coins", "15000", one);
   await gameDenom(mixedB.id, "mixed-b", 100, "Coins", "16000", one);
   await gameDenom(mixedC.id, "mixed-c", 100, "Coins", "17000", one);
 
   // Premium Apps control: a plan denomination, no game metadata.
-  const app = await ensureProduct(premiumCat.id, "Streaming App", { description: "Control product for the Premium Apps flow." });
+  const app = await ensureProduct(premiumCat.id, "Vidio Platinum", { description: LEGACY_PRODUCT_RENAMES["Streaming App"]!.description });
   const plan = await ensureDenomination(app.id, "1 Month Plan", "55000", {
     durationLabel: "1 Month",
     deliveryType: "manual",
@@ -162,11 +199,14 @@ export async function buildGameTopupFixtures(
   ids["premium-plan"] = plan.id;
 
   // A buyer with a fake Telegram id (not an admin).
+  const buyerRow = await prisma.user.findUnique({ where: { telegramId: BigInt(FIXTURE_BUYER_TELEGRAM_ID) } });
+  if (buyerRow) guardExisting(manifest, "users", buyerRow.id, "the buyer account with the reserved Telegram id");
   const user = await upsertUser(prisma, {
     telegramId: FIXTURE_BUYER_TELEGRAM_ID,
-    username: "fixture_buyer",
-    fullName: n("Fixture Buyer"),
+    username: FIXTURE_BUYER_USERNAME,
+    fullName: FIXTURE_BUYER_FULL_NAME,
   });
+  manifest?.add("users", user.id);
 
   // Game Top-up enabled for the bot and the web; no minimum order amount.
   const gameService = CUSTOMER_SERVICES.find((s) => s.id === "game_topup")!;

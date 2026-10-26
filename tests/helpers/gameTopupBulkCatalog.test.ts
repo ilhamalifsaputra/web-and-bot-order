@@ -5,12 +5,13 @@ import { MAX_LABEL_WIDTH, MAX_LABEL_BYTES, visualWidth } from "@app/core/buttonL
 import { makeTestDb, type TestDb } from "./testdb";
 import { buildBulkGameTopupCatalog, BULK_REGIONAL_GAMES } from "./gameTopupBulkCatalog";
 import { buildGameTopupFixtures } from "./gameTopupFixtures";
+import { SeedManifest, SeedConflictError } from "./seedManifest";
+import { expectNoVisibleMarkers } from "./seedMarkers";
 
 let db: TestDb;
 beforeAll(async () => { db = await makeTestDb(); });
 afterAll(async () => { await db.cleanup(); });
 
-const TAG = " [SEED-GTR]";
 const counts = async () => ({
   categories: await db.prisma.category.count(),
   products: await db.prisma.product.count(),
@@ -19,7 +20,7 @@ const counts = async () => ({
 
 describe("buildBulkGameTopupCatalog", () => {
   it("builds a large catalog that is valid, separated by family and idempotent", async () => {
-    const first = await buildBulkGameTopupCatalog(db.prisma, { tag: TAG });
+    const first = await buildBulkGameTopupCatalog(db.prisma);
     const afterFirst = await counts();
     expect(first.games).toBeGreaterThanOrEqual(30);
     expect(first.products).toBeGreaterThanOrEqual(60);
@@ -29,14 +30,13 @@ describe("buildBulkGameTopupCatalog", () => {
     expect(afterFirst.products).toBe(first.products);
     expect(afterFirst.denominations).toBe(first.denominations);
 
-    const second = await buildBulkGameTopupCatalog(db.prisma, { tag: TAG });
+    const second = await buildBulkGameTopupCatalog(db.prisma);
     expect(await counts()).toEqual(afterFirst);
     expect(second).toEqual(first);
 
     // Family comes from the category group, never from names.
     const products = await db.prisma.product.findMany({ include: { category: true, denominations: true } });
     for (const p of products) {
-      expect(p.name.endsWith(TAG)).toBe(true);
       if (p.category.group === CategoryGroup.GAME_TOPUP) {
         expect(serviceForCategoryGroup(p.category.group as never).id).toBe("game_topup");
         expect(p.denominations.length).toBeGreaterThanOrEqual(8);
@@ -66,7 +66,7 @@ describe("buildBulkGameTopupCatalog", () => {
     const regionalCat = products.filter((p) => p.categoryId === first.categories.regional);
     expect(regionalCat.length).toBeGreaterThan(25);
     expect(regionalCat.every((p) => p.gameRegion && !p.gameVariant)).toBe(true);
-    const mlRegions = regionalCat.filter((p) => p.name === `Mobile Legends${TAG}`).map((p) => p.gameRegion).sort();
+    const mlRegions = regionalCat.filter((p) => p.name === "Mobile Legends").map((p) => p.gameRegion).sort();
     expect(mlRegions).toEqual(["Global", "Indonesia", "Malaysia", "Philippines"]);
     const editionCat = products.filter((p) => p.categoryId === first.categories.editions);
     expect(editionCat.length).toBeGreaterThanOrEqual(8);
@@ -86,8 +86,7 @@ describe("buildBulkGameTopupCatalog", () => {
       const key = `${d.productId}|${d.name}`;
       expect(seen.has(key)).toBe(false);
       seen.add(key);
-      expect(d.name.endsWith(TAG)).toBe(true);
-      const bare = d.name.slice(0, -TAG.length);
+      const bare = d.name;
       expect(visualWidth(bare)).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
       expect(Buffer.byteLength(bare)).toBeLessThanOrEqual(MAX_LABEL_BYTES);
       if (visualWidth(bare) >= 33) nearCap += 1;
@@ -98,7 +97,7 @@ describe("buildBulkGameTopupCatalog", () => {
       if (d.supplierSku) {
         withSku += 1;
         expect(d.autoDeliverySource).toBe("digiflazz");
-        expect(d.supplierSku.startsWith("fixture-")).toBe(true);
+        expect(d.supplierSku.toLowerCase()).not.toContain("fixture");
       }
     }
     expect(withNickname).toBeGreaterThan(50);
@@ -114,10 +113,38 @@ describe("buildBulkGameTopupCatalog", () => {
   }, 120_000);
 
   it("shares categories with the small fixture without duplicating them", async () => {
-    await buildGameTopupFixtures(db.prisma, { tag: TAG });
+    await buildGameTopupFixtures(db.prisma);
     const names = (await db.prisma.category.findMany({ select: { name: true } })).map((c) => c.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names.filter((x) => x === `Game Top Up${TAG}`)).toHaveLength(1);
-    expect(names.filter((x) => x === `Premium Apps${TAG}`)).toHaveLength(1);
+    expect(names.filter((x) => x === "Game Top Up")).toHaveLength(1);
+    expect(names.filter((x) => x === "Premium Apps")).toHaveLength(1);
   }, 120_000);
+
+  it("shows no seed marker anywhere, adopts its manifest rows on a second run and refuses an unmanifested namesake", async () => {
+    await expectNoVisibleMarkers(db.prisma);
+
+    // Fresh database: manifest-mode run twice gives the same ids and the documented totals.
+    await db.prisma.denomination.deleteMany();
+    await db.prisma.product.deleteMany();
+    await db.prisma.category.deleteMany();
+    await db.prisma.user.deleteMany();
+    const manifest = new SeedManifest();
+    await buildGameTopupFixtures(db.prisma, { manifest });
+    const first = await buildBulkGameTopupCatalog(db.prisma, { manifest });
+    const total = await counts();
+    expect(total).toEqual({ categories: 5, products: 74, denominations: 753 });
+    const again = await buildBulkGameTopupCatalog(db.prisma, { manifest });
+    expect(again).toEqual(first);
+    expect(await counts()).toEqual(total);
+    await expectNoVisibleMarkers(db.prisma);
+
+    // A shop product with the same name in a seed category is refused, not taken over.
+    const regional = await db.prisma.category.findUniqueOrThrow({ where: { name: "Regional Games" } });
+    const valorant = await db.prisma.product.findFirstOrThrow({ where: { categoryId: regional.id, name: "Valorant", gameRegion: "Indonesia" } });
+    await db.prisma.denomination.deleteMany({ where: { productId: valorant.id } });
+    await db.prisma.product.delete({ where: { id: valorant.id } });
+    manifest.delete("products", valorant.id);
+    await db.prisma.product.create({ data: { categoryId: regional.id, name: "Valorant", slug: "valorant-shop-own", gameRegion: "Indonesia" } });
+    await expect(buildBulkGameTopupCatalog(db.prisma, { manifest })).rejects.toThrow(/"Valorant"/);
+  }, 180_000);
 });

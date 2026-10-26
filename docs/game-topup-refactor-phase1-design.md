@@ -305,7 +305,7 @@ Phase 5 menambah fixture bersama, skrip seed manual, tes E2E, dan runbook. Tidak
 
 **Artefak:**
 - Pembangun fixture bersama: `tests/helpers/gameTopupFixtures.ts` (`buildGameTopupFixtures`), dengan tes `tests/helpers/gameTopupFixtures.test.ts`.
-- Skrip seed manual: `scripts/seed-game-topup-fixtures.ts` (guard di `scripts/lib/seedGameTopup.ts`); menolak kecuali host lokal, DB `bot_order_gtr`, dan `--confirm-worktree-db`; `--apply`, `--apply --remove`.
+- Skrip seed manual: `scripts/seed-game-topup-fixtures.ts` (guard di `scripts/lib/seedGameTopup.ts`); menolak kecuali host lokal, DB `bot_order_gtr`, dan `--confirm-worktree-db`; `--apply`, `--apply --remove`. Kepemilikan baris dicatat di manifest tak terlihat (setting `seed_game_topup_manifest`), bukan di nama; `--remove` hanya menghapus id manifest.
 - Tes E2E: `apps/order-bot/test/game-topup-e2e.test.ts` (transport Telegram palsu, gateway di-stub).
 - Runbook: `docs/MIGRATIONS.md`, `docs/ROLLBACK.md`, `docs/CHANGELOG.md`, dan daftar cek smoke di `DOCS.md`. `docs/RELEASE_NOTES.md` tidak disentuh (butuh keputusan nomor versi dari pemilik).
 

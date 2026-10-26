@@ -1,24 +1,30 @@
 /**
  * Seed (or remove) the Game Top-up manual-test catalog in the Game Top-up
  * worktree's own database, so `@testtoko_bot` shows Game Top-up in its browse
- * menu. Rows share the builder with the E2E test (tests/helpers/gameTopupFixtures.ts)
- * and every name carries the tag " [SEED-GTR]".
+ * menu. Rows share the builder with the E2E test (tests/helpers/gameTopupFixtures.ts).
+ * Names look like a real shop's: nothing visible marks them as seed data.
+ * Ownership is an invisible manifest instead: the ids of every row this script
+ * created or adopted are stored as JSON in one settings row,
+ * `seed_game_topup_manifest`, in the target database only (no secrets).
  *
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db                   # dry run: counts only
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply           # create (idempotent)
- *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove  # delete tagged rows only (bulk rows too)
+ *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove  # delete the manifest's rows only (bulk rows too)
  *   pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --bulk    # also the large catalog (30+ games, 600+ denominations)
  *
  * Refuses unless DATABASE_URL_PRISMA is on localhost/127.0.0.1/::1, the database
  * is exactly "bot_order_gtr", and --confirm-worktree-db is given. It never drops
- * a schema, never runs `db push`, and writes no provider credentials. It does
- * switch Game Top-up on for the bot and web and set the minimum order amount to 0
- * (shared settings; --remove leaves them as they are).
+ * a schema, never runs `db push`, and writes no provider credentials. It refuses
+ * to adopt a category/product/denomination/buyer that already exists under a seed
+ * name but is not in the manifest (a shop's real row). --apply also renames, in
+ * place, rows left by the first version of this seed that still end in the old
+ * visible suffix, and adds them to the manifest. It does switch Game Top-up on
+ * for the bot and web and set the minimum order amount to 0 (shared settings;
+ * --remove leaves them as they are).
  */
 import { prisma, redactConnectionUrls } from "@app/db";
-import { assertSeedTarget, parseSeedArgs, removeTaggedFixtures, SEED_TAG } from "./lib/seedGameTopup";
-import { buildGameTopupFixtures } from "../tests/helpers/gameTopupFixtures";
-import { buildBulkGameTopupCatalog } from "../tests/helpers/gameTopupBulkCatalog";
+import { assertSeedTarget, parseSeedArgs, applySeed, removeManifestFixtures, LEGACY_SEED_TAG } from "./lib/seedGameTopup";
+import { SeedConflictError, SeedManifest, SEED_MANIFEST_KEY } from "../tests/helpers/seedManifest";
 
 const USAGE = `Seed the Game Top-up manual-test catalog into the worktree database.
 
@@ -28,18 +34,19 @@ Usage:
 Options:
   --confirm-worktree-db  Required. Confirms DATABASE_URL_PRISMA is this worktree's bot_order_gtr.
   --apply                Write (default: dry run, prints counts only).
-  --remove               Delete only the rows tagged "${SEED_TAG.trim()}" (without --apply: prints what would go).
+  --remove               Delete only the rows listed in the "${SEED_MANIFEST_KEY}" settings row
+                         (without --apply: prints what would go). Real shop rows are never touched.
   --bulk                 Also create/keep the large catalog (30+ games, regions, editions, 600+ denominations, 8 Premium apps).
-                         --remove always deletes every tagged row, bulk included.
+                         --remove always deletes every manifest row, bulk included.
   --help, -h             Show this help.
 `;
 
-async function tagged() {
+async function legacyTagged() {
   return {
-    categories: await prisma.category.count({ where: { name: { endsWith: SEED_TAG } } }),
-    products: await prisma.product.count({ where: { name: { endsWith: SEED_TAG } } }),
-    denominations: await prisma.denomination.count({ where: { name: { endsWith: SEED_TAG } } }),
-    users: await prisma.user.count({ where: { fullName: { endsWith: SEED_TAG } } }),
+    categories: await prisma.category.count({ where: { name: { endsWith: LEGACY_SEED_TAG } } }),
+    products: await prisma.product.count({ where: { name: { endsWith: LEGACY_SEED_TAG } } }),
+    denominations: await prisma.denomination.count({ where: { name: { endsWith: LEGACY_SEED_TAG } } }),
+    users: await prisma.user.count({ where: { fullName: { endsWith: LEGACY_SEED_TAG } } }),
   };
 }
 
@@ -61,30 +68,41 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const before = await tagged();
+  const manifest = await SeedManifest.load(prisma);
+  const legacy = await legacyTagged();
   console.log(`Seed Game Top-up fixtures (${apply ? (remove ? "APPLY, remove" : "APPLY, create") : "dry run, nothing written"})`);
-  console.log(`Tagged rows now: ${JSON.stringify(before)}`);
+  console.log(`Rows in the manifest now: ${JSON.stringify(manifest.counts())}`);
+  const hasLegacy = Object.values(legacy).some((n) => n > 0);
+  if (hasLegacy) console.log(`Rows from the first seed version still ending in "${LEGACY_SEED_TAG.trim()}": ${JSON.stringify(legacy)}`);
   if (!apply) {
+    const c = manifest.counts();
     console.log(
       remove
-        ? `Would remove the ${before.denominations} denominations, ${before.products} products, ${before.categories} categories and ${before.users} buyer tagged "${SEED_TAG.trim()}" (rows that real orders still reference are skipped). Run again with --apply --remove to delete.`
-        : `Would create or keep the ${bulk ? "small and bulk " : ""}rows tagged "${SEED_TAG.trim()}". Run again with --apply${bulk ? " --bulk" : ""} to write.`,
+        ? `Would remove the ${c.denominations} denominations, ${c.products} products, ${c.categories} categories and ${c.users} buyer listed in the manifest (rows that real orders still reference are skipped). Run again with --apply --remove to delete.`
+        : `Would create or keep the ${bulk ? "small and bulk " : ""}rows${hasLegacy ? ` and rename the ${legacy.categories + legacy.products + legacy.denominations + legacy.users} old-suffix rows in place` : ""}. Run again with --apply${bulk ? " --bulk" : ""} to write.`,
     );
     return;
   }
   if (remove) {
-    const result = await removeTaggedFixtures(prisma, SEED_TAG);
+    const result = await removeManifestFixtures(prisma, manifest);
     console.log(`Removed: ${JSON.stringify({ ...result, skipped: undefined })}`);
     for (const s of result.skipped) console.log(`Skipped: ${s}`);
   } else {
-    const ids = await buildGameTopupFixtures(prisma, { tag: SEED_TAG });
-    console.log(`Ready: categories ${JSON.stringify(ids.categories)}, products ${JSON.stringify(ids.products)}, buyer user #${ids.userId}`);
-    if (bulk) {
-      const { productIds: _productIds, ...summary } = await buildBulkGameTopupCatalog(prisma, { tag: SEED_TAG });
-      console.log(`Bulk catalog ready: ${JSON.stringify(summary)}`);
+    try {
+      const { adopted, small, bulk: bulkSummary } = await applySeed(prisma, { bulk });
+      if (Object.values(adopted).some((n) => n > 0)) console.log(`Renamed in place (old suffix removed): ${JSON.stringify(adopted)}`);
+      console.log(`Ready: categories ${JSON.stringify(small.categories)}, products ${JSON.stringify(small.products)}, buyer user #${small.userId}`);
+      if (bulkSummary) console.log(`Bulk catalog ready: ${JSON.stringify(bulkSummary)}`);
+    } catch (e) {
+      if (e instanceof SeedConflictError) {
+        console.error(`Stopped: ${e.message}`);
+        process.exitCode = 1;
+      } else {
+        throw e;
+      }
     }
   }
-  console.log(`Tagged rows after: ${JSON.stringify(await tagged())}`);
+  console.log(`Rows in the manifest after: ${JSON.stringify((await SeedManifest.load(prisma)).counts())}`);
 }
 
 main()

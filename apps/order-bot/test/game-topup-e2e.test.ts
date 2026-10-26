@@ -232,7 +232,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
 
     // --- the payment lands (web-process webhook seam) and Digiflazz delivers ---
     digiflazzMock.createTransaction.mockResolvedValue({
-      status: "Sukses", refId: order.orderCode, buyerSkuCode: "fixture-ml257", customerNo: "1234567891234",
+      status: "Sukses", refId: order.orderCode, buyerSkuCode: "ml257", customerNo: "1234567891234",
       message: "success", rc: "00", sn: "SN-FIXTURE-1", price: new Decimal("57000"),
     });
     const settled = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: `TP-${order.orderCode}`, amount: qrisChargeAmount(order.totalAmount) });
@@ -240,7 +240,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toMatchObject({ claimed: 1, delivered: 1, failed: 0 });
     // Zone appended to the id per providerInputMapping {"keys":["user_id","zone_id"],"separator":""}.
     expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
-    expect(digiflazzMock.createTransaction.mock.calls[0]![1]).toMatchObject({ refId: order.orderCode, buyerSkuCode: "fixture-ml257", customerNo: "1234567891234" });
+    expect(digiflazzMock.createTransaction.mock.calls[0]![1]).toMatchObject({ refId: order.orderCode, buyerSkuCode: "ml257", customerNo: "1234567891234" });
 
     const delivered = await prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { statusHistory: { orderBy: { id: "asc" } } } });
     expect(delivered.status).toBe(OrderStatus.DELIVERED);
@@ -326,10 +326,10 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
 
     // Mixed category: the regional product and both region-less ones.
     const mixed = await openGameCategory(tg, /Mixed Games/, AGAIN);
-    for (const name of ["Mixed Game Regional", "Mixed Game Global", "Mixed Game Plain"]) expect(mixed).toContain(name);
+    for (const name of ["Ragnarok Origin", "Dragon Raja", "Perfect World Mobile"]) expect(mixed).toContain(name);
     const global = await step(tg, () => tg.sendText("2"));
     expect(global.screen).toEqual(["sendMessage", "editMessageReplyMarkup"]);
-    expect(tg.screenText()).toContain("Mixed Game Global");
+    expect(tg.screenText()).toContain("Dragon Raja");
     expect(tg.screenText()).not.toContain("Indonesia");
     expectOnlyBuyerChat(tg);
   });
@@ -365,7 +365,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     const list = await step(tg, () => tg.press(/Premium Apps/));
     expect(list.screen).toEqual(["sendMessage", "editMessageText"]);
     const listText = textOf(list.calls.find((c) => c.method === "editMessageText")!);
-    expect(listText).toContain("Streaming App");
+    expect(listText).toContain("Vidio Platinum");
     expect(listText.toLowerCase()).not.toContain("from");
     expect(listText).not.toContain("/search");
 

@@ -43,8 +43,12 @@ tag git yang sungguhan sampai dokumen ini ditulis.
   pembangun fixture bersama `tests/helpers/gameTopupFixtures.ts` untuk uji
   manual Game Top-up di `@testtoko_bot`. Skrip menolak jalan kecuali host lokal,
   nama database `bot_order_gtr`, dan flag `--confirm-worktree-db`; bawaannya dry
-  run, `--apply` menulis, `--apply --remove` hanya menghapus baris bertanda
-  `[SEED-GTR]`. Rollback: hapus file; data seed dibersihkan dengan `--remove`.
+  run, `--apply` menulis, `--apply --remove` hanya menghapus id yang tercatat di
+  manifest tak terlihat (setting `seed_game_topup_manifest`); nama seed tampak
+  seperti toko sungguhan, tanpa penanda. Baris bernama sama yang tidak ada di
+  manifest ditolak, dan baris lama berakhiran ` [SEED-GTR]` diganti namanya di
+  tempat saat `--apply`. Rollback: hapus file; data seed dibersihkan dengan
+  `--remove`.
 - **Saklar layanan (Top Up Game / Premium Apps) kini dipisah per kanal: bot
   Telegram dan website.** Tiap layanan punya dua kunci setting,
   `service_<id>_enabled_bot` dan `service_<id>_enabled_web`; halaman Settings

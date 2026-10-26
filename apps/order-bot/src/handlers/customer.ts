@@ -193,6 +193,12 @@ interface BrowseScratch {
    * browseProductsFlat) and the main menu, so a stale origin is never used.
    * Read by originBackTarget for the pack picker / detail Back. */
   browseOrigin?: { kind: "search"; page: number } | { kind: "popular" };
+  /** The product opened straight from a region/edition holding exactly one
+   * product (enterGameRegion's collapse): its one-line list was never shown,
+   * so its picker/detail Back goes to the screen above that list
+   * (productBackTarget). Only honoured for this product id; deleted by every
+   * catalog entry and the main menu, like browseOrigin. */
+  skippedListProductId?: number;
   /** True only between the "Search again" prompt and the next typed text: that
    * text is the Game Top Up search query. Cleared by every screen render
    * (smartEdit/menuAnchor/renderMenu) and every other callback tap, so it can
@@ -279,6 +285,7 @@ async function renderHome(ctx: MyContext): Promise<void> {
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
   delete sc(ctx).replyKbDigits;
   delete sc(ctx).browseOrigin;
+  delete sc(ctx).skippedListProductId;
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -300,9 +307,11 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   // inline Back, browseResume); browseProductsFlat clamps the page if the
   // list has shrunk since. Never the main menu (don't strand the user).
   if (sc(ctx).productId != null || sc(ctx).variantId != null) {
-    const origin = originBackTarget(ctx);
-    if (origin) await navigateBack(ctx, origin);
-    else await browseProductsFlat(ctx, sc(ctx).page ?? 0);
+    const variantId = sc(ctx).variantId;
+    const productId = sc(ctx).productId ?? (variantId != null ? (await getDenomination(prisma, variantId))?.productId : undefined);
+    const target = productId != null ? await productBackTarget(ctx, productId) : (originBackTarget(ctx) ?? ckb.cb("browse", "prods"));
+    if (target === ckb.cb("browse", "prods")) await browseProductsFlat(ctx, sc(ctx).page ?? 0);
+    else await navigateBack(ctx, target);
     return;
   }
   // Viewing a Game Top-up picker → where that picker's own inline Back goes.
@@ -384,6 +393,29 @@ async function listBackTarget(ctx: MyContext): Promise<string> {
   return ckb.cb("menu", "main");
 }
 
+/** The empty product list's keyboard: the same Back the list itself would
+ * carry (listBackTarget — Premium's flat list goes up to the service level, a
+ * Game Top-up category to the picker really shown above it), plus Menu unless
+ * that Back already is the main menu. */
+async function emptyListKb(ctx: MyContext) {
+  return ckb.backKb(ctx.session.lang, await listBackTarget(ctx));
+}
+
+/**
+ * Back target of a pack picker / detail opened from the catalog: the search
+ * results / Popular list it came from (originBackTarget); else, when the
+ * one-product list was auto-skipped for this product (a region or edition
+ * holding exactly one product, enterGameRegion), the screen above that list
+ * (listBackTarget: region picker, edition picker or category level) so Back
+ * never shows a list the buyer never saw; else the product list.
+ */
+async function productBackTarget(ctx: MyContext, productId: number): Promise<string> {
+  const origin = originBackTarget(ctx);
+  if (origin) return origin;
+  if (sc(ctx).skippedListProductId === productId) return listBackTarget(ctx);
+  return ckb.cb("browse", "prods");
+}
+
 /** Back target of the region picker: the edition picker when one was really
  * shown for this scope, else the category level. Matches the regionBackTarget
  * the forward paths give gameRegionPickerKb. */
@@ -446,6 +478,8 @@ export async function backToRegionPicker(ctx: MyContext, categoryId: number): Pr
     else await navigateBack(ctx, await listBackTarget(ctx));
     return;
   }
+  // Reached from a product photo too (a one-product region's detail): a text picker.
+  await dropProductPhoto(ctx);
   const gameVariant = sc(ctx).resolvedGameVariant ?? null;
   const [regions, regionlessCount, regionBack] = await Promise.all([
     listCategoryGameRegions(prisma, categoryId, gameVariant),
@@ -516,8 +550,9 @@ export async function startCommand(ctx: MyContext): Promise<void> {
 /** `/menu` (and /cancel's fallback) — straight to the Home dashboard. */
 export async function menuCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
-  // A deep-linked product was not opened from search/Popular.
+  // A deep-linked product was not opened from search/Popular, nor from a skipped list.
   delete sc(ctx).browseOrigin;
+  delete sc(ctx).skippedListProductId;
 
   // Deep-link: prod_<id> → open a denomination detail bubble directly.
   const denomId = deepLinkDenomId(ctx);
@@ -557,6 +592,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
  */
 export async function browseGroups(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
+  await dropProductPhoto(ctx);
   delete sc(ctx).categoryId;
   delete sc(ctx).group;
   delete sc(ctx).productId;
@@ -573,6 +609,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).gameRegionDimensionSkipped;
   delete sc(ctx).shownPickers;
   delete sc(ctx).browseOrigin;
+  delete sc(ctx).skippedListProductId;
   // Finding I2 (final-review): this screen renders without going through
   // browseProductsFlat/the variant-picker-render/the region-picker-render —
   // none of which run here — so a leftover "gameVariant"/"gameRegion" from a
@@ -608,6 +645,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
     await browseGroups(ctx);
     return;
   }
+  await dropProductPhoto(ctx);
   delete sc(ctx).categoryId;
   delete sc(ctx).productId;
   // Finding I5-followup (final-review): mirrors browseGroups — a stale tap on
@@ -625,6 +663,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).gameRegionDimensionSkipped;
   delete sc(ctx).shownPickers;
   delete sc(ctx).browseOrigin;
+  delete sc(ctx).skippedListProductId;
   // Finding I2 (final-review): same reasoning as browseGroups' own reset
   // above — this screen (both its empty-state and its normal category-list
   // render below) never goes through browseProductsFlat/a picker render, so
@@ -678,8 +717,11 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
  * the numbered reply keyboard is then resent only when it lacks digits.
  */
 export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string, opts: { back?: boolean } = {}): Promise<void> {
+  // A Back from a product photo lands on a text picker: drop the photo first.
+  await dropProductPhoto(ctx);
   sc(ctx).categoryId = categoryId;
   delete sc(ctx).browseOrigin;
+  delete sc(ctx).skippedListProductId;
   // A new category scope: no product picker/detail is open any more, so a
   // typed Back must not resolve against a leftover one.
   delete sc(ctx).productId;
@@ -845,6 +887,7 @@ async function enterGameVariant(
   sc(ctx).shownPickers = { categoryId, variant: opts.variantShown, region: false };
   delete sc(ctx).productId;
   delete sc(ctx).variantId;
+  delete sc(ctx).skippedListProductId;
   sc(ctx).resolvedGameVariant = gameVariant;
   // Every path here (browseCategoryEntry's pure-category tail, pickGameVariant
   // on a real picker tap) is by definition NOT the mixed-skip path — clear the
@@ -935,6 +978,9 @@ async function enterGameRegion(
   sc(ctx).categoryId = categoryId;
   const products = await listCatalogProducts(prisma, "bot", categoryId, { gameVariant, gameRegion });
   if (products.length === 1) {
+    // The one-line list is skipped, so the product's Back must skip it too
+    // (productBackTarget → the picker the buyer really came from).
+    sc(ctx).skippedListProductId = products[0]!.id;
     await browseProduct(ctx, products[0]!.id);
     return;
   }
@@ -965,10 +1011,14 @@ export async function browseResume(ctx: MyContext): Promise<void> {
  * product photo. Never touches an order's transaction bubble; a failed delete
  * is ignored. */
 async function dropTappedPhotoBubble(ctx: MyContext): Promise<void> {
+  // At most once per update: a Back render can pass through several screens'
+  // entry points (category entry → product list) that each call this.
+  if (photoDropped.has(ctx)) return;
   const chatId = ctx.chat?.id;
   const cqMsg = ctx.callbackQuery?.message;
   if (chatId !== undefined && cqMsg && "photo" in cqMsg && cqMsg.photo
     && !(await ownsTransactionMessageAt(prisma, chatId, cqMsg.message_id))) {
+    photoDropped.add(ctx);
     try {
       await ctx.api.deleteMessage(chatId, cqMsg.message_id);
     } catch {
@@ -976,6 +1026,15 @@ async function dropTappedPhotoBubble(ctx: MyContext): Promise<void> {
     }
     ctx.session.menuMsgId = undefined;
   }
+}
+const photoDropped = new WeakSet<MyContext>();
+
+/** dropTappedPhotoBubble for the picker screens (service / category / edition /
+ * region pickers), only when the tap came from a product screen — a product
+ * photo is obsolete once Back leaves it. Other photo bubbles (the banner) are
+ * left to the screen's own render, as before. */
+async function dropProductPhoto(ctx: MyContext): Promise<void> {
+  if (sc(ctx).productId != null || sc(ctx).variantId != null) await dropTappedPhotoBubble(ctx);
 }
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
@@ -986,8 +1045,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // Telegram can't strip a photo via editMessageCaption (the stale photo
   // would stay stuck behind the "Product List" caption forever).
   await dropTappedPhotoBubble(ctx);
-  // A catalog list: whatever product opens from here was not opened from search/Popular.
+  // A catalog list: whatever product opens from here was not opened from
+  // search/Popular, and this list is not skipped.
   delete sc(ctx).browseOrigin;
+  delete sc(ctx).skippedListProductId;
 
   // Flat list of mid-tier Products (each with ≥1 active denomination), scoped
   // to the active Category (set by browseCategoryEntry) — no more mixing
@@ -1045,11 +1106,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     delete sc(ctx).variantId;
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
-    const emptyKeyboard =
-      categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
-        ? ckb.categoryPickerKb([], lang, await upToServicesTarget())
-        : ckb.backToMain(lang);
-    await smartEdit(ctx, t(ctx, "browse.no_products"), emptyKeyboard);
+    await smartEdit(ctx, t(ctx, "browse.no_products"), await emptyListKb(ctx));
     return;
   }
 
@@ -1305,11 +1362,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   }
 
   if (!entries.length) {
-    const emptyKeyboard =
-      sc(ctx).categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
-        ? ckb.categoryPickerKb([], lang, await upToServicesTarget())
-        : ckb.backToMain(lang);
-    await smartEdit(ctx, t(ctx, "browse.no_products"), emptyKeyboard);
+    await smartEdit(ctx, t(ctx, "browse.no_products"), await emptyListKb(ctx));
     return;
   }
 
@@ -1358,8 +1411,9 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   }
   sc(ctx).productId = productId;
   delete sc(ctx).variantId;
-  // Back to the search results / Popular list the product came from, else the list.
-  const pickerBack = originBackTarget(ctx) ?? ckb.cb("browse", "prods");
+  // Back to the search results / Popular list the product came from, else the
+  // list (or the picker above a skipped one-product list).
+  const pickerBack = await productBackTarget(ctx, productId);
   const rateContext = await getCanonicalRateContext(prisma);
   const prices = ctxPriceFormatter(ctx, rateContext.rate ? new Decimal(rateContext.rate) : null);
   const sold = await soldCountForProduct(prisma, productId);
@@ -1593,8 +1647,9 @@ export async function browseDenomination(
   // would immediately re-collapse to this same detail.
   const parentProductId = sc(ctx).productId ?? null;
   const parentPage = parentProductId != null ? (sc(ctx).productPage ?? 0) : 0;
-  // No parent picker: Back to the search results / Popular list it came from, else the list.
-  const fallbackBack = originBackTarget(ctx) ?? ckb.cb("browse", "prods");
+  // No parent picker: Back to the search results / Popular list it came from,
+  // else the list (or the picker above a skipped one-product list).
+  const fallbackBack = parentProductId != null ? ckb.cb("browse", "prods") : await productBackTarget(ctx, d.product.id);
   const photoArg = productPhotoArg(d.product);
   if (photoArg) {
     await renderMenu(
@@ -1957,7 +2012,7 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
     idr: formatIdrFor(idrBalance, lang),
     usdt: formatUsdtBalance(usdtBalance),
   });
-  await smartEdit(ctx, text, ckb.walletKb(lang));
+  await smartEdit(ctx, text, ckb.walletViewKb(lang));
 }
 
 export async function viewReferral(ctx: MyContext): Promise<void> {
@@ -1978,11 +2033,24 @@ export async function viewReferral(ctx: MyContext): Promise<void> {
     count: agg._count.id ?? 0,
     earned: price(new Decimal(agg._sum.commission ?? 0)),
   });
-  await smartEdit(ctx, text, ckb.backToMain(lang));
+  // Referral sits under the Help Center.
+  await smartEdit(ctx, text, ckb.backKb(lang, ckb.cb("help", "open")));
+}
+
+/**
+ * Back target of the Language / Currency settings: the Help Center, but only
+ * for a customer who has finished onboarding — a stored display currency and
+ * no /start onboarding in progress. During onboarding (or with no currency
+ * yet) the pickers show no Back at all, so the first-run flow can only end by
+ * choosing a currency (requireCurrency would block the Back tap anyway; the
+ * button is simply never offered).
+ */
+function settingsBackTarget(ctx: MyContext): string | undefined {
+  return ctx.session.onboarding == null && ctx.session.dbUser?.preferredCurrency ? ckb.cb("help", "open") : undefined;
 }
 
 export async function showLanguageMenu(ctx: MyContext): Promise<void> {
-  await smartEdit(ctx, t(ctx, "language.choose"), ckb.languageKb());
+  await smartEdit(ctx, t(ctx, "language.choose"), ckb.languageKb(ctx.session.lang, settingsBackTarget(ctx)));
 }
 
 /**
@@ -2033,7 +2101,7 @@ export async function openLanguageMenu(ctx: MyContext): Promise<void> {
 }
 
 export async function showCurrencyMenu(ctx: MyContext): Promise<void> {
-  await smartEdit(ctx, t(ctx, "currency.choose"), ckb.currencyKb(ctx.session.lang));
+  await smartEdit(ctx, t(ctx, "currency.choose"), ckb.currencyKb(ctx.session.lang, settingsBackTarget(ctx)));
 }
 
 /**
@@ -2271,17 +2339,24 @@ export async function searchPage(ctx: MyContext, page: number): Promise<void> {
   await renderGameSearchPage(ctx, page);
 }
 
+/** Back of the search prompt: the results page it was opened from while that
+ * page still exists in the snapshot (`[← Back, 🏠 Menu]`), else the main menu
+ * (a single Back). Same rule as a product opened from the results. */
+function searchPromptKb(ctx: MyContext) {
+  const origin = sc(ctx).browseOrigin?.kind === "search" ? originBackTarget(ctx) : undefined;
+  return ckb.backKb(ctx.session.lang, origin ?? ckb.cb("menu", "main"));
+}
+
 /** `search:again` — turn the bubble into the search prompt and arm the next typed text as the query. */
 export async function searchAgain(ctx: MyContext): Promise<void> {
-  await smartEdit(ctx, t(ctx, "hint.search"), ckb.backToMain(ctx.session.lang));
+  await smartEdit(ctx, t(ctx, "hint.search"), searchPromptKb(ctx));
   sc(ctx).searchAwaiting = true;
 }
 
 export async function searchCommand(ctx: MyContext): Promise<void> {
-  const lang = ctx.session.lang;
   const query = (typeof ctx.match === "string" ? ctx.match : "").trim();
   if (!query) {
-    await menuAnchor(ctx, `${t(ctx, "search.no_query")}\n${t(ctx, "hint.search")}`, ckb.backToMain(lang));
+    await menuAnchor(ctx, `${t(ctx, "search.no_query")}\n${t(ctx, "hint.search")}`, searchPromptKb(ctx));
     sc(ctx).searchAwaiting = true;
     return;
   }

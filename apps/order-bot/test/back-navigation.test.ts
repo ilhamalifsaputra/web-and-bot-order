@@ -2,14 +2,16 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, createCatalogProduct, createCategory, createDenomination, createOrderDirect, setSetting, upsertUser } from "@app/db";
+import { prisma, createCatalogProduct, createCategory, createDenomination, createOrderDirect, createTicket, setSetting, upsertUser } from "@app/db";
+import { t as coreT } from "@app/core/i18n";
 import { CategoryGroup, OrderStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, lastMarkup, type FakeCtx, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { routeCallback } from "../src/handlers/callbacks";
 import * as customer from "../src/handlers/customer";
-import { persistentLabel } from "../src/keyboards/customer";
+import { backRow, backToMain, editInfoCancelKb, notificationKb, paymentSuccessKb, persistentLabel, proofCancelKb, qrisWaitingKb, qtyInputCancelKb, ticketClosedKb, ticketDuplicateKb, topupAmountCancelKb, voucherCancelKb } from "../src/keyboards/customer";
+import { settledPaymentKb } from "../src/util/delivery";
 import { t } from "../src/util/i18n";
 
 // Back navigation is computed from state (which screens were really shown),
@@ -453,5 +455,361 @@ describe("product list Back follows the pickers that were really shown", () => {
 
     const back = await typedBack(entry.ctx);
     expect(sentIncludes(back.sink, "What are you shopping for")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Back on every remaining menu section (plan step 5) and the auto-skipped
+// one-product list (B1 follow-up).
+// ---------------------------------------------------------------------------
+
+const BACK = persistentLabel("back", "en");
+const MENU = persistentLabel("main", "en");
+const rowsOf = (sink: SentCall[]) =>
+  ((lastMarkup(sink) as Markup | undefined)?.inline_keyboard ?? []).map((row) => row.map((b) => [b.text, b.callback_data]));
+const BACK_TO_MENU = [[BACK, "v1:menu:main"]];
+const backAndMenu = (target: string) => [[BACK, target], [MENU, "v1:menu:main"]];
+
+/** A customer who finished onboarding (display currency chosen). */
+function settledCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
+  const c = customerCtx(opts);
+  c.ctx.session.dbUser!.preferredCurrency = "IDR";
+  c.ctx.session.onboarding = null;
+  return c;
+}
+
+async function deliveredSale() {
+  await prisma.$transaction((tx) =>
+    createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+  );
+  await prisma.order.updateMany({ data: { status: OrderStatus.DELIVERED } });
+}
+
+describe("top-level sections: one Back to the main menu replaces the duplicate Menu button", () => {
+  const onlyBack = (sink: SentCall[]) => {
+    expect(rowsOf(sink).at(-1)).toEqual(BACK_TO_MENU);
+    expect(inlineButtons(sink).some((b) => b.text === MENU)).toBe(false);
+  };
+
+  it("service picker", async () => {
+    const { ctx, sink } = settledCtx({ callbackData: "v1:browse:grps" });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+    onlyBack(sink);
+  });
+
+  it("Wallet keeps Top Up, then Back", async () => {
+    const { ctx, sink } = settledCtx({ callbackData: "v1:wallet:view" });
+    await routeCallback(ctx);
+    expect(rowsOf(sink)).toEqual([[[t(ctx, "wallet.topup_btn"), "v1:topup:open"]], BACK_TO_MENU]);
+  });
+
+  it("My Orders: pay row, All history, then Back on its own row", async () => {
+    const created = await prisma.$transaction((tx) =>
+      createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+    );
+    const order = created!;
+    const { ctx, sink } = settledCtx({ callbackData: "v1:order:list" });
+    await routeCallback(ctx);
+    expect(rowsOf(sink)).toEqual([
+      [[t(ctx, "order.pay_btn", { code: order.orderCode }), `v1:order:view:${order.id}`]],
+      [[t(ctx, "order.all_history_btn"), "v1:order:allhistory"]],
+      BACK_TO_MENU,
+    ]);
+  });
+
+  it("Help Center", async () => {
+    const { ctx, sink } = settledCtx({ callbackData: "v1:help:open" });
+    await routeCallback(ctx);
+    expect(rowsOf(sink).at(-2)).toEqual([[t(ctx, "help.tickets_btn"), "v1:ticket:list"]]);
+    onlyBack(sink);
+  });
+
+  it("Popular", async () => {
+    await deliveredSale();
+    const { ctx, sink } = settledCtx({ callbackData: "v1:browse:popular" });
+    await routeCallback(ctx);
+    expect(rowsOf(sink).at(0)?.[0]?.[1]).toBe(`v1:browse:pick:${sample.parentProduct.id}`);
+    onlyBack(sink);
+  });
+
+  it("search results, the no-results screen and the bare /search prompt", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    await product(games.id, "Zqx Solo");
+    const results = await search("Zqx");
+    expect(rowsOf(results.sink).at(-2)).toEqual([[t(results.ctx, "search.again_btn"), "v1:search:again"]]);
+    onlyBack(results.sink);
+
+    const none = await search("Nothingmatcheshere");
+    expect(rowsOf(none.sink)).toEqual([[[t(none.ctx, "search.again_btn"), "v1:search:again"]], BACK_TO_MENU]);
+
+    const bare = await search("");
+    expect(rowsOf(bare.sink)).toEqual([BACK_TO_MENU]);
+  });
+
+  it("Back from a top-level section behaves exactly like the old Menu button: Home, one new bubble carrying the menu keyboard", async () => {
+    const wallet = settledCtx({ callbackData: "v1:wallet:view" });
+    await routeCallback(wallet.ctx);
+    const back = await tap(wallet.ctx, tapTarget(wallet.sink, BACK));
+    expect(isHome(back.sink)).toBe(true);
+    // A reply keyboard can only ride on a fresh send; the old bubble's keyboard is retired, nothing deleted.
+    expect(counts(back.sink)).toEqual(ONE_SEND);
+  });
+});
+
+describe("deeper sections: [Back, Menu] where Back is the screen really above", () => {
+  for (const [name, data] of [["FAQ", "v1:page:faq"], ["Terms", "v1:page:terms"], ["How to pay", "v1:page:howtopay"], ["Referral", "v1:ref:view"]] as const) {
+    it(`${name} goes Back to the Help Center`, async () => {
+      const { ctx, sink } = settledCtx({ callbackData: data });
+      await routeCallback(ctx);
+      expect(rowsOf(sink)).toEqual([backAndMenu("v1:help:open")]);
+    });
+  }
+
+  it("My Tickets goes Back to the Help Center", async () => {
+    await createTicket(prisma, sample.user.id, "My order has not arrived yet, please check.");
+    const { ctx, sink } = settledCtx({ callbackData: "v1:ticket:list" });
+    await routeCallback(ctx);
+    expect(rowsOf(sink).at(-1)).toEqual(backAndMenu("v1:help:open"));
+  });
+
+  it("the duplicate-ticket notice goes Back to My Tickets", () => {
+    const rows = (ticketDuplicateKb(7, "en").inline_keyboard as Button[][]).map((row) => row.map((b) => [b.text, b.callback_data]));
+    expect(rows).toEqual([[[coreT("support.duplicate_open_ticket_view_btn", "en"), "v1:ticket:view:7"]], backAndMenu("v1:ticket:list")]);
+  });
+
+  it("Language and Currency settings go Back to the Help Center once onboarding is done", async () => {
+    const lang = settledCtx({ callbackData: "v1:lang:menu" });
+    await routeCallback(lang.ctx);
+    expect(rowsOf(lang.sink).at(-1)).toEqual(backAndMenu("v1:help:open"));
+
+    const cur = settledCtx({ callbackData: "v1:cur:menu" });
+    await routeCallback(cur.ctx);
+    expect(rowsOf(cur.sink).at(-1)).toEqual(backAndMenu("v1:help:open"));
+  });
+
+  it("the Game Top-up empty list goes Back to the category picker it came from", async () => {
+    const empty = await createCategory(prisma, { name: "Empty Game", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Other Game", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = settledCtx({ callbackData: `v1:browse:cat:${empty.id}` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "No products available at the moment")).toBe(true);
+    expect(rowsOf(sink)).toEqual([backAndMenu(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`)]);
+  });
+});
+
+describe("onboarding never offers Back (the currency gate cannot be skipped)", () => {
+  const noBack = (sink: SentCall[]) => {
+    expect(inlineButtons(sink).length).toBeGreaterThan(0);
+    expect(inlineButtons(sink).some((b) => b.text === BACK || b.callback_data === "v1:help:open")).toBe(false);
+  };
+
+  it("/start language step and the currency step that follows have no Back", async () => {
+    const start = customerCtx();
+    await customer.startCommand(start.ctx);
+    expect(sentIncludes(start.sink, t(start.ctx, "language.choose"))).toBe(true);
+    noBack(start.sink);
+
+    const pick = await tap(start.ctx, "v1:lang:set:en");
+    expect(sentIncludes(pick.sink, t(pick.ctx, "currency.choose"))).toBe(true);
+    noBack(pick.sink);
+  });
+
+  it("a user with no currency yet sees no Back on Language or Currency, even outside /start", async () => {
+    const lang = customerCtx({ callbackData: "v1:lang:menu" });
+    await routeCallback(lang.ctx);
+    noBack(lang.sink);
+    const cur = customerCtx({ callbackData: "v1:cur:menu" });
+    await routeCallback(cur.ctx);
+    noBack(cur.sink);
+  });
+
+  it("an unfinished onboarding hides Back on the currency step even when a currency is stored", async () => {
+    const cur = settledCtx({ callbackData: "v1:cur:menu" });
+    cur.ctx.session.onboarding = "currency";
+    await routeCallback(cur.ctx);
+    noBack(cur.sink);
+  });
+});
+
+describe("Back chains edit the bubble in place", () => {
+  it("Help → FAQ → Back → Help → Back → main menu; a double tap and a deleted bubble add nothing extra", async () => {
+    const help = settledCtx({ callbackData: "v1:help:open" });
+    await routeCallback(help.ctx);
+    const faq = await tap(help.ctx, "v1:page:faq");
+    expect(counts(faq.sink)).toEqual(ONE_EDIT);
+
+    const toHelp = await tap(faq.ctx, tapTarget(faq.sink, BACK));
+    expect(sentIncludes(toHelp.sink, "What do you need help with?")).toBe(true);
+    expect(counts(toHelp.sink)).toEqual(ONE_EDIT);
+
+    const again = await tap(toHelp.ctx, "v1:help:open", { editThrowsNotModified: true });
+    expect(counts(again.sink)).toEqual(NOTHING);
+
+    const goneId = again.ctx.session.menuMsgId!;
+    const gone = await tap(again.ctx, "v1:help:open", { deletedMessageIds: [goneId] });
+    expect(counts(gone.sink)).toEqual(ONE_SEND);
+    expect(gone.ctx.session.menuMsgId).not.toBe(goneId);
+
+    const toMenu = await tap(gone.ctx, tapTarget(gone.sink, BACK));
+    expect(isHome(toMenu.sink)).toBe(true);
+  });
+
+  it("My Tickets → Back → Help Center is one edit", async () => {
+    await createTicket(prisma, sample.user.id, "My order has not arrived yet, please check.");
+    const tickets = settledCtx({ callbackData: "v1:ticket:list" });
+    await routeCallback(tickets.ctx);
+    const back = await tap(tickets.ctx, tapTarget(tickets.sink, BACK));
+    expect(sentIncludes(back.sink, "What do you need help with?")).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+  });
+
+  it("Wallet and My Orders go Back to Home", async () => {
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, { channel: "bot", user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+    );
+    for (const data of ["v1:wallet:view", "v1:order:list"]) {
+      const screen = settledCtx({ callbackData: data });
+      await routeCallback(screen.ctx);
+      const back = await tap(screen.ctx, tapTarget(screen.sink, BACK));
+      expect(isHome(back.sink)).toBe(true);
+    }
+  });
+
+  it("Popular → product → Back → Popular → Back → Home", async () => {
+    await deliveredSale();
+    const popular = settledCtx({ callbackData: "v1:browse:popular" });
+    await routeCallback(popular.ctx);
+    const detail = await tap(popular.ctx, `v1:browse:pick:${sample.parentProduct.id}`);
+    const back = await tap(detail.ctx, tapTarget(detail.sink, BACK));
+    expect(sentIncludes(back.sink, t(back.ctx, "browse.popular_title"))).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+    const home = await tap(back.ctx, tapTarget(back.sink, BACK));
+    expect(isHome(home.sink)).toBe(true);
+  });
+
+  it("Search → product → Back → results; Search again → Back → the same results page", async () => {
+    const games = await createCategory(prisma, { name: "Games", group: CategoryGroup.GAME_TOPUP });
+    await product(games.id, "Zqx Solo");
+    const results = await search("Zqx");
+    const detail = await tap(results.ctx, resultTarget(results.sink, "Zqx Solo"));
+    const back = await tap(detail.ctx, tapTarget(detail.sink, BACK));
+    expect(sentIncludes(back.sink, "Zqx Solo")).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+
+    const prompt = await tap(back.ctx, "v1:search:again");
+    expect(rowsOf(prompt.sink)).toEqual([backAndMenu("v1:search:page:0")]);
+    const toResults = await tap(prompt.ctx, "v1:search:page:0");
+    expect(sentIncludes(toResults.sink, "Zqx Solo")).toBe(true);
+    expect(counts(toResults.sink)).toEqual(ONE_EDIT);
+  });
+
+  it("Search again without valid results goes Back to the main menu only", async () => {
+    const prompt = settledCtx({ callbackData: "v1:search:again" });
+    await routeCallback(prompt.ctx);
+    expect(rowsOf(prompt.sink)).toEqual([BACK_TO_MENU]);
+  });
+});
+
+describe("a region (or edition) holding one product skips its one-line list, and so does Back", () => {
+  it("one-pack product: the detail's Back re-renders the region picker the buyer came from, in place", async () => {
+    const cat = await genshin();
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const edition = await tap(entry.ctx, tapTarget(entry.sink, "Standard"));
+    const detail = await tap(edition.ctx, tapTarget(edition.sink, "Europe"));
+    expect(sentIncludes(detail.sink, "GI Europe")).toBe(true);
+    expect(backData(detail.sink)).toBe(`v1:browse:gregs:${cat.id}`);
+
+    const back = await tap(detail.ctx, `v1:browse:gregs:${cat.id}`);
+    expect(sees.regionPicker(back)).toBe(true);
+    expect(sentIncludes(back.sink, "GI Europe")).toBe(false);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+
+    // A typed Back from the same detail lands on the same picker.
+    const detail2 = await tap(back.ctx, tapTarget(back.sink, "Europe"));
+    const typed = await typedBack(detail2.ctx);
+    expect(sees.regionPicker(typed)).toBe(true);
+    expect(sentIncludes(typed.sink, "GI Europe")).toBe(false);
+  });
+
+  it("multi-pack product: the pack picker's Back goes to the region picker, and a pack's Back still goes to the pack picker", async () => {
+    const cat = await genshin();
+    const europe = await prisma.product.findFirstOrThrow({ where: { name: "GI Europe" } });
+    await createDenomination(prisma, { productId: europe.id, name: "200", type: "SHARED", durationLabel: "200", price: "29000" });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const edition = await tap(entry.ctx, tapTarget(entry.sink, "Standard"));
+    const picker = await tap(edition.ctx, tapTarget(edition.sink, "Europe"));
+    expect(backData(picker.sink)).toBe(`v1:browse:gregs:${cat.id}`);
+    const pack = inlineButtons(picker.sink).find((b) => b.callback_data?.startsWith("v1:browse:denom:"))!.callback_data!;
+    const detail = await tap(picker.ctx, pack);
+    expect(backData(detail.sink)).toBe(`v1:browse:pick:${europe.id}`);
+  });
+
+  it("an edition with one product and no region goes Back to the edition picker", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Impact", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Honkai Star Rail", group: CategoryGroup.GAME_TOPUP });
+    await product(cat.id, "GI Standard 1", { gameVariant: "Standard" });
+    await product(cat.id, "GI Standard 2", { gameVariant: "Standard" });
+    await product(cat.id, "GI Deluxe Only", { gameVariant: "Deluxe" });
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const detail = await tap(entry.ctx, tapTarget(entry.sink, "Deluxe"));
+    expect(sentIncludes(detail.sink, "GI Deluxe Only")).toBe(true);
+    expect(backData(detail.sink)).toBe(`v1:browse:gvars:${cat.id}`);
+    const back = await tap(detail.ctx, `v1:browse:gvars:${cat.id}`);
+    expect(sees.variantPicker(back)).toBe(true);
+    expect(counts(back.sink)).toEqual(ONE_EDIT);
+  });
+
+  it("Back from the product photo deletes that obsolete photo and sends the picker once", async () => {
+    const cat = await genshin();
+    const entry = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(entry.ctx);
+    const edition = await tap(entry.ctx, tapTarget(entry.sink, "Standard"));
+    const detail = await tap(edition.ctx, tapTarget(edition.sink, "Europe"));
+    const photoId = detail.ctx.session.menuMsgId!;
+    const back = await tap(detail.ctx, `v1:browse:gregs:${cat.id}`, {
+      cbMessage: { message_id: photoId, chat: { id: 42, type: "private" }, date: 0, photo: [{ file_id: "p" }] },
+    });
+    expect(sees.regionPicker(back)).toBe(true);
+    expect(counts(back.sink)).toEqual({ ...ONE_SEND, deleteMessage: 1 });
+  });
+
+  it("a product listed with others still goes Back to its list", async () => {
+    const cat = await genshin();
+    const list = await openAsiaList(cat);
+    const detail = next(list.ctx, { text: "1" });
+    await customer.handleProductNumber(detail.ctx);
+    expect(backData(detail.sink)).toBe("v1:browse:prods");
+  });
+});
+
+describe("backRow", () => {
+  it("is [← Back, 🏠 Menu], a single Back when its target already is the main menu, and Back alone on request", () => {
+    expect(backRow("en", "v1:help:open")).toEqual([{ text: BACK, data: "v1:help:open" }, { text: MENU, data: "v1:menu:main" }]);
+    expect(backRow("en", "v1:menu:main")).toEqual([{ text: BACK, data: "v1:menu:main" }]);
+    expect(backRow("en", "v1:browse:grps", false)).toEqual([{ text: BACK, data: "v1:browse:grps" }]);
+    expect(backRow("id", "v1:help:open").map((b) => b.text)).toEqual([persistentLabel("back", "id"), persistentLabel("main", "id")]);
+  });
+});
+
+describe("screens excluded from Back keep their keyboards exactly", () => {
+  const shape = (kb: { inline_keyboard: unknown[][] }) =>
+    (kb.inline_keyboard as Button[][]).map((row) => row.map((b) => [b.text, b.callback_data ?? "copy"]));
+  it("receipts, notifications, payment waits, wizard prompts and error screens", () => {
+    const L = (k: string) => coreT(k, "en");
+    expect(shape(settledPaymentKb("WALLET_TOPUP", "en"))).toEqual([[[L("wallet.topup_btn"), "v1:topup:open"]], [[MENU, "v1:menu:main"]]]);
+    expect(shape(paymentSuccessKb("en"))).toEqual([[[L("checkout.buy_again_btn"), "v1:browse:prods"]], [[L("order.all_history_btn"), "v1:order:list"]], [[MENU, "v1:menu:main"]]]);
+    expect(shape(notificationKb("en"))).toEqual([[[L("menu.my_orders"), "v1:order:list"], [MENU, "v1:menu:main"]]]);
+    expect(shape(ticketClosedKb("en"))).toEqual([[[L("menu.my_tickets"), "v1:ticket:list"], [MENU, "v1:menu:main"]]]);
+    expect(shape(qrisWaitingKb(5, "en"))).toEqual([[[L("checkout.refresh_status_btn"), "v1:checkout:refresh:5"]], [[L("checkout.cancel_order"), "v1:checkout:cancel:5"]], [[MENU, "v1:menu:main"]]]);
+    expect(shape(proofCancelKb(5, "en"))).toEqual([[[L("checkout.cancel_order"), "v1:checkout:cancel:5"]], [[MENU, "v1:menu:main"]]]);
+    expect(shape(backToMain("en"))).toEqual([[[MENU, "v1:menu:main"]]]);
+    expect(shape(topupAmountCancelKb("en"))).toEqual([[[L("checkout.cancel_btn"), "v1:topup:open"]]]);
+    expect(shape(voucherCancelKb(3, 2, "en"))).toEqual([[[L("checkout.cancel_btn"), "v1:buy:3:2"]]]);
+    expect(shape(qtyInputCancelKb(3, "en"))).toEqual([[[L("browse.qty_input_cancel"), "v1:qty:cancel:3"]]]);
+    expect(shape(editInfoCancelKb(4, "en"))).toEqual([[[L("checkout.cancel_btn"), "v1:order:view:4"]]]);
   });
 });

@@ -277,32 +277,62 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     await browseProductsFlat(ctx, sc(ctx).page ?? 0);
     return;
   }
-  // Viewing a category-scoped product list (nothing deeper in scope) → back to
-  // that category's group's category picker, or the group picker itself when
-  // the group wasn't recorded (shouldn't normally happen — defensive only).
-  if (sc(ctx).categoryId != null) {
-    if (sc(ctx).group) {
-      // Recomputed fresh, not trusted from a stored "was it skipped" flag
-      // (mirrors enterGameRegion's own products.length===1 recheck) — stays
-      // correct even if an admin adds/removes a category between screens.
-      const categories = await listActiveCategoriesByGroup(prisma, sc(ctx).group!, "bot");
-      if (categories.length <= 1) {
-        await browseGroups(ctx);
-      } else {
-        await browseCategoriesInGroup(ctx, sc(ctx).group!);
-      }
-    } else {
-      await browseGroups(ctx);
-    }
-    return;
+  // Viewing a product list (category-scoped, or Premium Apps' flat group
+  // list) → the same target the list's own Back key carries.
+  await navigateBack(ctx, await listBackTarget(ctx));
+}
+
+/** The customer services enabled for the bot, in registry order. */
+async function enabledCustomerServices() {
+  const enabledGroups = await activeServiceGroups(prisma, "bot");
+  return CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
+}
+
+/**
+ * Back target of a screen whose parent is the service picker. The single home
+ * of the lone-service rule: with only one service enabled, browseGroups
+ * auto-skips its picker straight back into that service, so a Back aimed at
+ * the picker would bounce into the very screen it left. Back goes to the main
+ * menu instead. Recomputed fresh on every call (an admin can toggle a
+ * service between screens).
+ */
+async function upToServicesTarget(): Promise<string> {
+  return (await enabledCustomerServices()).length === 1 ? ckb.cb("menu", "main") : ckb.cb("browse", "grps");
+}
+
+/**
+ * Back target of a screen whose parent is the category picker. Only Game
+ * Top-up with 2+ active categories shows that picker; a single category is
+ * auto-skipped, Premium Apps never shows categories, and an unknown group has
+ * none, so those step over it to the service level (upToServicesTarget).
+ * Recomputed fresh, not trusted from a stored "was it skipped" flag.
+ */
+async function categoryLevelBackTarget(group: string | undefined): Promise<string> {
+  if (group === CategoryGroup.GAME_TOPUP) {
+    const categories = await listActiveCategoriesByGroup(prisma, group, "bot");
+    if (categories.length > 1) return ckb.cb("browse", "grp", group);
   }
-  // Premium Apps deliberately skips the category screen. Its flat group list
-  // therefore has a group scope but no category scope; Back returns to the
-  // service picker instead of treating it as an unscoped Home screen.
-  if (sc(ctx).group) {
-    await browseGroups(ctx);
-    return;
-  }
+  return upToServicesTarget();
+}
+
+/**
+ * Back target of the product list (Game Top-up and Premium Apps) — the single
+ * source of truth for the list's Back key (reply keyboard and the multi-page
+ * inline row) and for handleBackButton. A category-scoped list goes up to its
+ * category level; Premium Apps' flat group list (no category) goes up to the
+ * service level; an unscoped list goes to the main menu.
+ */
+async function listBackTarget(ctx: MyContext): Promise<string> {
+  if (sc(ctx).categoryId != null) return categoryLevelBackTarget(sc(ctx).group);
+  if (sc(ctx).group) return upToServicesTarget();
+  return ckb.cb("menu", "main");
+}
+
+/** Render a Back target (callback data as carried by an inline Back button) for a typed Back. */
+async function navigateBack(ctx: MyContext, target: string): Promise<void> {
+  const [, domain, action, arg] = target.split(":");
+  if (domain === "browse" && action === "grps") return browseGroups(ctx);
+  if (domain === "browse" && action === "grp" && arg) return browseCategoriesInGroup(ctx, arg);
   await backToHome(ctx);
 }
 
@@ -414,8 +444,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   // on this screen would resolve against an emptied picker snapshot instead
   // of falling through to the product-list default.
   delete sc(ctx).activeNumberedScreen;
-  const enabledGroups = await activeServiceGroups(prisma, "bot");
-  const enabledServices = CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
+  const enabledServices = await enabledCustomerServices();
   if (enabledServices.length === 1) {
     // Mirrors browseCategoriesInGroup's own single-category skip: a lone
     // enabled service is no real choice, so don't make the customer tap it.
@@ -475,19 +504,21 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
 
   const categories = await listActiveCategoriesByGroup(prisma, group, "bot");
   const groupLabel = t(ctx, service.translationKey);
+  const upTarget = await upToServicesTarget();
   if (!categories.length) {
-    await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang));
+    await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang, upTarget));
     return;
   }
   if (categories.length === 1) {
     // Mirrors browseCategoryEntry's variant/region skip: a single active
     // category is no real choice, so skip this picker entirely. Back target
-    // is the group picker (`grps`), not this now-never-shown screen.
-    await browseCategoryEntry(ctx, categories[0]!.id, ckb.cb("browse", "grps"));
+    // is the service level (the group picker, or the main menu for a lone
+    // service), not this now-never-shown screen.
+    await browseCategoryEntry(ctx, categories[0]!.id, upTarget);
     return;
   }
   const gameListHint = group === CategoryGroup.GAME_TOPUP ? `\n${t(ctx, "hint.game_list")}` : "";
-  await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }) + gameListHint, ckb.categoryPickerKb(categories, ctx.session.lang));
+  await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }) + gameListHint, ckb.categoryPickerKb(categories, ctx.session.lang, upTarget));
 }
 
 /**
@@ -550,11 +581,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   // group's category picker would itself be skipped today (mirrors
   // handleBackButton's own Task-3 fix above): don't trust which path
   // originally got us here, recheck reality.
-  let effectiveBackTarget = backTarget;
-  if (effectiveBackTarget == null) {
-    const groupCategories = await listActiveCategoriesByGroup(prisma, group, "bot");
-    effectiveBackTarget = groupCategories.length <= 1 ? ckb.cb("browse", "grps") : ckb.cb("browse", "grp", group);
-  }
+  const effectiveBackTarget = backTarget ?? (await categoryLevelBackTarget(group));
   const [variants, unvariantedCount] = await Promise.all([
     listCategoryGameVariants(prisma, categoryId),
     countCategoryProductsWithoutGameVariant(prisma, categoryId),
@@ -853,7 +880,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     delete sc(ctx).gameRegionEntries;
     const emptyKeyboard =
       categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
-        ? ckb.categoryPickerKb([], lang)
+        ? ckb.categoryPickerKb([], lang, await upToServicesTarget())
         : ckb.backToMain(lang);
     await smartEdit(ctx, t(ctx, "browse.no_products"), emptyKeyboard);
     return;
@@ -1107,7 +1134,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   if (!entries.length) {
     const emptyKeyboard =
       sc(ctx).categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
-        ? ckb.categoryPickerKb([], lang)
+        ? ckb.categoryPickerKb([], lang, await upToServicesTarget())
         : ckb.backToMain(lang);
     await smartEdit(ctx, t(ctx, "browse.no_products"), emptyKeyboard);
     return;

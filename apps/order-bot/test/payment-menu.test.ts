@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Decimal } from "@app/core/money";
+import { t as coreT } from "@app/core/i18n";
 import { orderConfirmKb, usdtMethodsKb } from "../src/keyboards/customer";
 
 interface FlatBtn {
@@ -110,6 +111,14 @@ describe("payment method menu", () => {
     const longest = Math.max(...all.map((d) => Buffer.byteLength(d, "utf8")));
     expect(longest).toBe(Buffer.byteLength(`v1:walletpay:${pid}:${qty}:${nonce}`, "utf8"));
     expect(longest).toBeLessThanOrEqual(64);
+  });
+
+  it("a fully wallet-covered order offers Complete Order and a Back row to the pack, never a stranded screen", () => {
+    const kb = orderConfirmKb(7, 2, "en", "", true, true, true, true, true, true, new Decimal(1), null, { currency: "IDR", amount: "1" }, true, NO_NONCE);
+    expect(kb.inline_keyboard.map((row) => row.map((b) => ({ text: b.text, data: (b as FlatBtn).callback_data })))).toEqual([
+      [{ text: coreT("checkout.complete_order_btn", "en"), data: `v1:walletpay:7:2:${NO_NONCE}` }],
+      [{ text: coreT("menu.back", "en"), data: "v1:browse:denom:7" }],
+    ]);
   });
 
   it("USDT submenu lists Binance + Bybit + NOWPayments together when all three are enabled", () => {

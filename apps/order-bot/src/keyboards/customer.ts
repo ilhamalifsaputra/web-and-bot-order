@@ -455,8 +455,13 @@ interface CategoryLike {
  * renders the trailing Back/Menu row, even for an empty `categories` array,
  * so an empty group never leaves the customer on a dead-end screen (the
  * message body carries the "no categories yet" copy in that case).
+ *
+ * `backTarget` is computed by the caller (the service picker, or the main
+ * menu when only one service is enabled and its picker is auto-skipped —
+ * handlers/customer.ts `upToServicesTarget`). When Back already leads to the
+ * main menu, the duplicate Menu button is dropped.
  */
-export function categoryPickerKb(categories: CategoryLike[], lang: string): InlineKeyboard {
+export function categoryPickerKb(categories: CategoryLike[], lang: string, backTarget: string = cb("browse", "grps")): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < categories.length; i += 2) {
     rows.push(
@@ -466,10 +471,15 @@ export function categoryPickerKb(categories: CategoryLike[], lang: string): Inli
       })),
     );
   }
-  rows.push([
-    { text: coreT("menu.back", lang), data: cb("browse", "grps") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  const mainMenu = cb("menu", "main");
+  rows.push(
+    backTarget === mainMenu
+      ? [{ text: coreT("menu.back", lang), data: mainMenu }]
+      : [
+          { text: coreT("menu.back", lang), data: backTarget },
+          { text: coreT("menu.main", lang), data: mainMenu },
+        ],
+  );
   return ik(rows);
 }
 
@@ -733,10 +743,12 @@ export function orderConfirmKb(
     // button here would mean charging Rp0/​$0 through TokoPay/PayDisini/USDT,
     // which is meaningless. Voucher and wallet-toggle rows are equally moot at a
     // zero total, so the screen collapses to the one action that applies:
-    // Complete Order. The persistent menu keyboard stays the escape hatch.
+    // Complete Order, plus a Back row to the pack (the same target the
+    // non-covered screen's Cancel uses) so the customer is never stranded.
     rows.push([
       { text: coreT("checkout.complete_order_btn", lang), data: pay("walletpay") },
     ]);
+    rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "denom", productId) }]);
     return ik(rows);
   }
   if (voucherCode) {

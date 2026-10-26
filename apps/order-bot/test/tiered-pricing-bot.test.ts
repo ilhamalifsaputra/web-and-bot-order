@@ -315,6 +315,70 @@ describe("caption limit", () => {
     expect(caption).not.toContain("Buy <b>5+");
   });
 
+  it("a typed quantity on a TEXT anchor gets the full detail even when the product has a photo", async () => {
+    await setGroup(CategoryGroup.GAME_TOPUP);
+    await giveTiers();
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { webImageUrl: "PHOTO_FILE_ID", description: "Terms ".repeat(400) } });
+    const { ctx, sink } = makeCtx({ session: { ...session(), menuMsgId: 500, awaitingQtyDenomId: sample.product.id }, text: "3" });
+    await customer.handleProductNumber(ctx);
+    expect(budget(sink)).toEqual({ ...NONE, editMessageText: 1, deleteMessage: 1 });
+    const body = renderedBody(sink);
+    expect(body.length).toBeGreaterThan(1024);
+    // Nothing gave way: the next-tier hint and the whole description stay.
+    expect(body).toContain("Buy <b>5+");
+    expect(body).toContain("Terms ".repeat(399).trim());
+  });
+
+  it("a typed quantity on a PHOTO anchor is fitted to the caption limit even when the product has no photo", async () => {
+    await setGroup(CategoryGroup.GAME_TOPUP);
+    await giveTiers();
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { webImageUrl: null, description: "Terms ".repeat(400) } });
+    const { ctx, sink } = makeCtx({
+      session: { ...session(), menuMsgId: 501, awaitingQtyDenomId: sample.product.id },
+      text: "3",
+      photoMessageIds: [501],
+    });
+    await customer.handleProductNumber(ctx);
+    // One caption edit of the photo anchor and the typed input deleted — the
+    // photo is neither deleted nor replaced by a new text bubble.
+    expect(budget(sink)).toEqual({ ...NONE, editMessageCaption: 1, deleteMessage: 1 });
+    expect(calls(sink, "deleteMessage")[0]!.args[1]).toBe(ctx.message!.message_id);
+    const caption = renderedBody(sink);
+    expect(caption.length).toBeLessThanOrEqual(1024);
+    expect(caption).toContain("Total: <b>Rp24,000</b>");
+  });
+
+  it("a confirmation notice on a photo bubble shrinks to its short form so the caption fits", async () => {
+    const { ctx, sink } = makeCtx({ session: session(), callbackData: `v1:buy:${sample.product.id}:1`, cbMessage: PHOTO_BUBBLE });
+    await checkout.renderOrderConfirmation(ctx, sample.product.id, 1, { notice: `LONG ${"N".repeat(1100)}`, shortNotice: "SHORT NOTICE" });
+    expect(budget(sink)).toEqual({ ...NONE, editMessageCaption: 1 });
+    const caption = renderedBody(sink);
+    expect(caption.length).toBeLessThanOrEqual(1024);
+    expect(caption.startsWith("SHORT NOTICE\n\n")).toBe(true);
+    expect(caption).not.toContain("NNNN");
+    expect(caption).toContain("Confirm Order");
+    expect(caption).toContain("Total:");
+  });
+
+  it("a notice whose short form still does not fit is dropped; the summary is never cut", async () => {
+    const { ctx, sink } = makeCtx({ session: session(), callbackData: `v1:buy:${sample.product.id}:1`, cbMessage: PHOTO_BUBBLE });
+    await checkout.renderOrderConfirmation(ctx, sample.product.id, 1, { notice: "N".repeat(1100), shortNotice: "S".repeat(1100) });
+    expect(budget(sink)).toEqual({ ...NONE, editMessageCaption: 1 });
+    const caption = renderedBody(sink);
+    expect(caption.length).toBeLessThanOrEqual(1024);
+    expect(caption.startsWith("<b>Confirm Order</b>")).toBe(true);
+  });
+
+  it("the real price-changed notice on a photo bubble edits only the caption", async () => {
+    const { ctx, sink } = makeCtx({ session: session(), callbackData: `v1:buy:${sample.product.id}:1`, cbMessage: PHOTO_BUBBLE });
+    await checkout.renderOrderConfirmation(ctx, sample.product.id, 1, {
+      notice: "The price changed",
+      shortNotice: "short",
+    });
+    expect(budget(sink)).toEqual({ ...NONE, editMessageCaption: 1 });
+    expect(renderedBody(sink).startsWith("The price changed\n\n")).toBe(true);
+  });
+
   it("fitSections drops in rank order and keeps unranked sections", () => {
     const text = fitSections(
       [

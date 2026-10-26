@@ -1354,8 +1354,9 @@ export async function browseDenomination(
   // (smartEdit then edits its caption, which Telegram also caps).
   const tapped = ctx.callbackQuery?.message;
   const onPhoto = photoArg !== undefined || (tapped !== undefined && "photo" in tapped && !!tapped.photo);
-  const limit = onPhoto ? MAX_CAPTION_LEN - prefix.length - suffix.length : Number.POSITIVE_INFINITY;
-  const text = prefix + fitSections(sections, limit) + suffix;
+  const captionText = prefix + fitSections(sections, MAX_CAPTION_LEN - prefix.length - suffix.length) + suffix;
+  const fullText = prefix + fitSections(sections, Number.POSITIVE_INFINITY) + suffix;
+  const text = onPhoto ? captionText : fullText;
 
   // Parent product for Back navigation: the picker we came from, or null when no
   // picker was shown (collapse / deep-link) so Back falls through to the flat
@@ -1368,7 +1369,10 @@ export async function browseDenomination(
     // Typed quantity: the prompt was drawn into the tracked bubble (photo or
     // text), so the priced detail goes back into that same bubble — an edit,
     // never a new message (menuAnchor/editAnchor edit a photo's caption).
-    await menuAnchor(ctx, text, keyboard);
+    // Whether that bubble is a photo is decided by the bubble itself, not by
+    // whether the product has a photo: a text anchor gets the full detail, a
+    // photo anchor the caption-sized one.
+    await menuAnchor(ctx, fullText, keyboard, { captionText });
   } else if (photoArg) {
     await renderMenu(
       ctx,

@@ -1394,6 +1394,7 @@
   "admin.bulk_status_off": "⚪ Off",
   "admin.bulk_tiers_web_only": "This product's volume tiers are managed in the web admin.",
   "checkout.quote_changed": "⚠️ <b>The price changed</b> since this summary was shown. Nothing was charged. Check the new total below and tap a payment option again to confirm.",
+  "checkout.quote_changed_short": "⚠️ <b>The price changed.</b> Nothing was charged; confirm the new total.",
   "admin.ticket_not_found": "⚠️ Ticket not found.",
   "admin.ticket_reply_prompt": "📩 <b>Replying to ticket #{id}</b>{photos}\n\n<b>User message:</b>\n{message}\n\nType your reply and send it:",
   "admin.ticket_reply_sent": "✅ Reply sent for ticket #{id}.\n\n<i>{reply}</i>",

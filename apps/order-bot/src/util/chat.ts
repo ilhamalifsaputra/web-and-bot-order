@@ -84,8 +84,19 @@ export async function consumeInput(ctx: MyContext): Promise<void> {
   }
 }
 
+/**
+ * Options for a render that may land on a photo bubble. `captionText` is the
+ * caption-sized form of the screen (fitted to MAX_CAPTION_LEN by the caller,
+ * which knows what may give way); it is used whenever the bubble actually
+ * being edited turns out to be a photo, so the decision follows that bubble's
+ * type rather than a guess made before the edit.
+ */
+export interface RenderOptions {
+  captionText?: string;
+}
+
 /** Render the next customer screen (edit on tap, send on typed input). */
-export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
+export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup, opts?: RenderOptions): Promise<void> {
   // Clear qty-input / wallet-topup-amount-input mode on any navigation so
   // neither leaks into a later typed message on an unrelated screen.
   ctx.session.awaitingQtyDenomId = undefined;
@@ -105,7 +116,8 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
       // A photo+caption bubble (e.g. the QR payment screen) can't take an
       // editMessageText — edit its caption in place, like adminEdit does.
       if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
-        await ctx.editMessageCaption({ caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+        const caption = opts?.captionText !== undefined ? truncateText(opts.captionText) : body;
+        await ctx.editMessageCaption({ caption, parse_mode: "HTML", reply_markup: replyMarkup });
       } else {
         await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
       }
@@ -248,8 +260,10 @@ async function editAnchor(
   anchorId: number | undefined,
   text: string,
   replyMarkup?: Markup,
+  opts?: RenderOptions,
 ): Promise<number | undefined> {
   const body = truncateText(text);
+  const captionBody = opts?.captionText !== undefined ? truncateText(opts.captionText) : body;
   const chatId = ctx.chat?.id;
   let anchorGone = false;
   if (chatId !== undefined && anchorId !== undefined && !(await isTransactionBubble(ctx, anchorId)) && (replyMarkup === undefined || isInline(replyMarkup))) {
@@ -263,9 +277,9 @@ async function editAnchor(
         // product-detail photo): its caption is the editable part. Without
         // this, every typed step fell through to a fresh send — one new
         // bubble per step instead of one wizard bubble.
-        if (body.length <= MAX_CAPTION_LEN) {
+        if (captionBody.length <= MAX_CAPTION_LEN) {
           try {
-            await ctx.api.editMessageCaption(chatId, anchorId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+            await ctx.api.editMessageCaption(chatId, anchorId, { caption: captionBody, parse_mode: "HTML", reply_markup: replyMarkup });
             return anchorId;
           } catch (captionErr) {
             if (isNotModified(captionErr)) return anchorId;
@@ -293,11 +307,11 @@ async function editAnchor(
 }
 
 /** Render a customer wizard step into the anchor bubble (edit-in-place). */
-export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
-  if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
+export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup, opts?: RenderOptions): Promise<void> {
+  if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup, opts);
   ctx.session.awaitingQtyDenomId = undefined;
   ctx.session.awaitingTopupCurrency = undefined;
-  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup);
+  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup, opts);
 }
 
 /** Render an admin wizard step into the anchor bubble (edit-in-place). */

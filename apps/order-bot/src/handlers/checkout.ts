@@ -95,7 +95,8 @@ import { pollOnce as bybitBscPoll, triggerImmediatePoll as bybitBscImmediatePoll
 import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payments/bybitBscConfirmationTracker";
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
-import { smartEdit, menuAnchor } from "../util/chat";
+import { smartEdit, menuAnchor, MAX_CAPTION_LEN } from "../util/chat";
+import { fitSections } from "../util/tierDisplay";
 import { anchorPaymentMessage, checkoutScreenOf, menuBubbleKind, qrScreenKind } from "../util/paymentAnchor";
 import { sendAccountFile } from "../util/delivery";
 import { flipSettledOrderBubble } from "../jobs";
@@ -606,7 +607,7 @@ async function showQuoteChanged(ctx: MyContext, productId: number, quantity: num
     { productId, quantity, quoted: err.expectedTotal, current: err.currentTotal },
     `A bot payment tap was refused because the order total changed after the confirmation was shown; the buyer is shown the new total and must confirm again, and nothing was charged.`,
   );
-  await renderOrderConfirmation(ctx, productId, quantity, { notice: t(ctx, "checkout.quote_changed") });
+  await renderOrderConfirmation(ctx, productId, quantity, { notice: t(ctx, "checkout.quote_changed"), shortNotice: t(ctx, "checkout.quote_changed_short") });
 }
 
 /**
@@ -622,7 +623,7 @@ async function refuseUnquotedWalletTap(ctx: MyContext, productId: number, quanti
     { productId, quantity },
     `A bot wallet payment tap was refused because no confirmed total was remembered for this product and quantity; nothing was charged, and the buyer is shown the current total to confirm again.`,
   );
-  await renderOrderConfirmation(ctx, productId, quantity, { notice: t(ctx, "checkout.quote_changed") });
+  await renderOrderConfirmation(ctx, productId, quantity, { notice: t(ctx, "checkout.quote_changed"), shortNotice: t(ctx, "checkout.quote_changed_short") });
   return true;
 }
 
@@ -801,7 +802,8 @@ export async function renderOrderConfirmation(
   ctx: MyContext,
   productId: number,
   quantity: number,
-  opts?: { notice?: string },
+  /** `shortNotice`: what `notice` shrinks to when the screen must fit a photo caption. */
+  opts?: { notice?: string; shortNotice?: string },
 ): Promise<void> {
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
@@ -816,10 +818,27 @@ export async function renderOrderConfirmation(
     ctx.session.scratch.checkoutIntentId = randomUUID();
   }
   const rails = await offerableRails(r.subtotal, rate);
+  const body = confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate));
+  const notice = opts?.notice;
+  // On a photo anchor the whole screen is a caption (MAX_CAPTION_LEN). The
+  // summary itself never gives way; the notice shrinks to its short form, and
+  // is dropped only when even that does not fit.
+  const captionText = notice
+    ? fitSections(
+        [
+          {
+            text: notice,
+            dropRank: 1,
+            shrink: (budget) => (opts?.shortNotice && opts.shortNotice.length <= budget ? opts.shortNotice : null),
+          },
+          { text: body },
+        ],
+        MAX_CAPTION_LEN,
+      )
+    : undefined;
   await menuAnchor(
     ctx,
-    (opts?.notice ? opts.notice + "\n\n" : "") +
-      confirmOrderText(ctx, r, quantity, closingLineFor(ctx, r, rails), ctxPriceFormatter(ctx, rate)),
+    (notice ? notice + "\n\n" : "") + body,
     ckb.orderConfirmKb(
       productId,
       quantity,
@@ -836,6 +855,7 @@ export async function renderOrderConfirmation(
       r.walletDeduction,
       r.fullyCovered,
     ),
+    { captionText },
   );
 }
 

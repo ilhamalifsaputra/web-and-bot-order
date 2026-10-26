@@ -1394,6 +1394,7 @@
   "admin.bulk_status_off": "⚪ Mati",
   "admin.bulk_tiers_web_only": "Tingkat harga produk ini dikelola di admin web.",
   "checkout.quote_changed": "⚠️ <b>Harga berubah</b> sejak ringkasan ini ditampilkan. Belum ada yang ditagih. Cek total baru di bawah lalu ketuk metode pembayaran lagi untuk konfirmasi.",
+  "checkout.quote_changed_short": "⚠️ <b>Harga berubah.</b> Belum ada yang ditagih; konfirmasi total baru.",
   "admin.ticket_not_found": "⚠️ Tiket tidak ditemukan.",
   "admin.ticket_reply_prompt": "📩 <b>Membalas tiket #{id}</b>{photos}\n\n<b>Pesan pengguna:</b>\n{message}\n\nKetik balasanmu lalu kirim:",
   "admin.ticket_reply_sent": "✅ Balasan terkirim untuk tiket #{id}.\n\n<i>{reply}</i>",

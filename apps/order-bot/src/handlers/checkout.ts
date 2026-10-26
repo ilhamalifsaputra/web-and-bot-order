@@ -721,9 +721,16 @@ async function quoteForTap(
       { userId: ctx.session.dbUser?.id, productId, quantity },
       "Refused a bot pay tap because the denomination's account input settings changed after the buyer entered their details; the details are cleared and asked for again.",
     );
-  } else if (bound) {
-    return { currency: OrderCurrency.IDR, amount: raw };
+    // Cleared here, not left to a re-render: the USDT submenu re-render keeps
+    // the data (it has no owner check), so it would mint a new nonce over the
+    // same stale details and every next pay tap would be refused again. The
+    // confirmation entry then asks for the details on every rail alike.
+    clearAccountInput(ctx);
+    await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
+    await showOrderConfirmation(ctx, productId, quantity);
+    return null;
   }
+  if (bound) return { currency: OrderCurrency.IDR, amount: raw };
   await answerCallbackOnce(ctx, { text: t(ctx, "error.stale_screen") });
   await renderPayScreen(ctx, productId, quantity, screen);
   return null;
@@ -735,8 +742,8 @@ async function quoteForTap(
  * there is none. `createOrderDirect` re-validates the data against the current
  * fields, which catches an added, removed or tightened field, but not a remap
  * or a relabel under the same keys: that would store the old answers under the
- * new meaning. A mismatch is a stale screen, and the re-render
- * (`showOrderConfirmation`'s owner check) clears the data and asks again.
+ * new meaning. A mismatch clears the data (`quoteForTap`) and asks for it
+ * again through `showOrderConfirmation`, whichever screen the tap came from.
  */
 async function accountInputStillCurrent(ctx: MyContext, productId: number, quantity: number): Promise<boolean> {
   const scratch = ctx.session.scratch;
@@ -819,6 +826,12 @@ function clearAccountInput(ctx: MyContext): void {
     delete ctx.session.scratch[key];
   }
   clearQuote(ctx);
+}
+
+/** The product asks for account data before payment (the info wizard's
+ *  condition in showOrderConfirmation) and the session holds none. */
+function accountInputMissing(ctx: MyContext, product: CheckoutDenomination): boolean {
+  return (product.deliveryType === DeliveryType.MANUAL_WITH_INFO || !!product.additionalFields) && !ctx.session.scratch.customerData;
 }
 
 /** The account data in the session belongs to this Game Top-up product and
@@ -1072,7 +1085,7 @@ export async function showOrderConfirmation(
   // this branch doesn't fire again for the same checkout attempt. A buyer who
   // backs out of quantity/product and re-taps Buy re-triggers this gate,
   // which is correct (customerData was never set for the abandoned attempt).
-  if ((product.deliveryType === DeliveryType.MANUAL_WITH_INFO || product.additionalFields) && !ctx.session.scratch.customerData) {
+  if (accountInputMissing(ctx, product)) {
     ctx.session.scratch.pendingInfoProductId = productId;
     ctx.session.scratch.pendingInfoQuantity = quantity;
     await ctx.conversation.enter("customerInfo");
@@ -1216,8 +1229,17 @@ export async function showUsdtMethods(
   opts: PayScreenOptions = {},
 ): Promise<void> {
   const lang = ctx.session.lang;
+  const product = await availableCheckoutDenomination(ctx, productId);
+  if (!product) return;
+  if (accountInputMissing(ctx, product)) {
+    // No account data for a product that needs it (cleared after a refused
+    // tap, or never typed): the confirmation entry asks for it, so the USDT
+    // rails never draw pay buttons over an order with no account.
+    await showOrderConfirmation(ctx, productId, quantity, opts);
+    return;
+  }
   const rate = await currentUsdtRate();
-  const r = await quoteConfirmation(ctx, productId, quantity, rate);
+  const r = await quoteConfirmation(ctx, productId, quantity, rate, product);
   if (!r) return;
 
   const rails = await offerableRails(r.subtotal, rate);

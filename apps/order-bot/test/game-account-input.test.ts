@@ -36,6 +36,9 @@ import {
   BINANCE_UID_KEY,
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
+  BYBIT_UID_KEY,
+  BYBIT_API_KEY_KEY,
+  BYBIT_API_SECRET_KEY,
 } from "@app/db";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { parseAccountMessage, MAX_GAME_ACCOUNT_UNITS } from "@app/core/accountInput";
@@ -1212,6 +1215,72 @@ describe("a pay tap after an admin changed the account input settings", () => {
       const orders = await prisma.order.findMany();
       expect(orders).toHaveLength(1);
       expect(orders[0]!.customerData).toBe(JSON.stringify(DATA));
+    });
+  });
+
+  // The USDT submenu used to re-render itself over the same stale data with a
+  // fresh nonce, so every next Binance/Bybit tap was refused again (Premium),
+  // or a Game Top-up landed on the review's "try again" dead end. The details
+  // are now cleared and asked for again, as on the confirmation screen.
+  const USDT_RAILS = [
+    {
+      name: "Binance",
+      callback: "v1:payx",
+      setup: async () => {
+        await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+        await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+        await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+      },
+      pay: (c: MyContext, p: number, n: string) => checkout.buyNowInternal(c, p, 1, n),
+    },
+    {
+      name: "Bybit",
+      callback: "v1:payb",
+      setup: async () => {
+        await setSetting(prisma, BYBIT_UID_KEY, "BYUID1");
+        await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+        await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+      },
+      pay: (c: MyContext, p: number, n: string) => checkout.buyNowBybit(c, p, 1, n),
+    },
+  ];
+  const FAMILIES = [
+    { name: "Game Top-up", group: undefined, review: "GAME_TOPUP" as const },
+    { name: "Premium (null-group default category)", group: null, review: "PREMIUM_APPS" as const },
+  ];
+
+  describe.each(USDT_RAILS)("USDT submenu: $name", (rail) => {
+    beforeEach(async () => {
+      await rail.setup();
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      invalidateRateCache();
+    });
+
+    it.each(FAMILIES)("$name: no order, the data is cleared and asked for again, and a second tap does not loop", async (family) => {
+      const denom = await makeDenom([USER_ID, ZONE_ID], { group: family.group });
+      const { session } = await paymentScreen(denom.id, family.review);
+      const usdtSink: SentCall[] = [];
+      await checkout.showUsdtMethods(tapCtx({ sink: usdtSink, session }, `v1:usdt:${denom.id}:1`), denom.id, 1);
+      const nonce = session.scratch.quoteNonce as string;
+      expect(buttonData(usdtSink)).toContain(`${rail.callback}:${denom.id}:1:${nonce}`);
+      await CHANGES[0]!.apply(denom.id);
+
+      for (const attempt of [1, 2]) {
+        const sink: SentCall[] = [];
+        const ctx = tapCtx({ sink, session }, `${rail.callback}:${denom.id}:1:${nonce}`);
+        await rail.pay(ctx, denom.id, nonce);
+
+        expect(await prisma.order.count(), `attempt ${attempt}`).toBe(0);
+        for (const key of ["customerData", "customerInputOwner", "reviewShownFor", "quotedTotalIdr", "quoteNonce", "quoteFor", "checkoutIntentId"]) {
+          expect(session.scratch[key], `${key} after attempt ${attempt}`).toBeUndefined();
+        }
+        // Asked for again on each tap: the info conversation edits this
+        // bubble into its prompt itself, so nothing else reaches the screen.
+        expect(calls(sink, "conversation.enter").map((c) => c.args[0]), `attempt ${attempt}`).toEqual(["customerInfo"]);
+        expect(session.scratch.pendingInfoProductId).toBe(denom.id);
+        expect(screenCalls(sink), `attempt ${attempt}`).toEqual([]);
+        expect(calls(sink, "answerCallbackQuery").map((c) => c.args[0]), `attempt ${attempt}`).toEqual([{ text: t(ctx, "error.stale_screen") }]);
+      }
     });
   });
 });

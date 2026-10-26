@@ -35,6 +35,16 @@ tag git yang sungguhan sampai dokumen ini ditulis.
     pembayaran sudah terdeteksi. Rollback: setel `PAYMENT_REMINDER_LEAD_MINUTES=0`
     untuk mematikan pengingat saja; setelah rollback kode, baris outbox bertipe
     ini yang tertinggal menjadi `FAILED` (lihat `docs/ROLLBACK.md`).
+  - Pilih dengan tombol inline, tanpa sistem angka, untuk Game Top-up (dan
+    setiap layanan baru): daftar produk bertombol per produk + Prev/Next +
+    Kembali, picker edisi/region tanpa pesan pendamping "Gunakan angka di bawah
+    untuk memilih:" dan tanpa keyboard bawah angka, sehingga pesan tidak lagi
+    menumpuk saat bolak-balik region; jalur ketik "Produk" menjadi satu pesan;
+    angka yang diketik di layar Game dijawab satu pesan "pilih lewat tombol".
+    Premium Apps tetap bernomor. Gaya pilih diatur sekali per layanan
+    (`listSelection` di `packages/core/src/services.ts`). Tidak ada perubahan
+    skema. Rollback: revert kode; keyboard angka kembali muncul pada kunjungan
+    Game berikutnya, tanpa data yang perlu dibalik.
   - Notifikasi kedaluwarsa (`ORDER_EXPIRED_DM`): pesan pembayaran diedit
     menjadi "dibatalkan", dan hanya bila pembatalan itu tidak menambah pesan
     baru di chat, pembeli menerima tepat satu push. Rollback: seperti baris di

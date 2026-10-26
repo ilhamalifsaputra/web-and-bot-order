@@ -297,6 +297,17 @@ berubah, kecuali level Region yang dilewati pada scope campuran (lihat "Guard sc
 tidak terpengaruh. Premium Apps tidak pernah terpengaruh: tidak ada `From`,
 hint, atau perubahan lain pada daftar, picker, dan layar SKU-nya.
 
+**Cara memilih: tombol inline, bukan angka (kecuali Premium Apps).** Gaya pilih
+tiap layanan diatur di satu tempat, `listSelection` pada entri registri
+`packages/core/src/services.ts` (`"numbered"` hanya untuk Premium Apps; layanan
+tanpa isian ini, termasuk layanan baru, mendapat `"inline"`), dibaca lewat
+`usesNumberedSelection(group)`. Game Top-up: daftar produk berupa tombol inline
+per produk + Prev/Next + ← Kembali, picker edisi/region juga inline, tanpa pesan
+pendamping "Gunakan angka..." dan tanpa keyboard bawah angka; angka yang
+diketik di layar Game dijawab satu pesan `browse.use_buttons`. Premium Apps
+tetap bernomor. Cara menambah layanan baru (mis. Steam Wallet): lihat
+`.claude/skills/bot-ux-grammy/SKILL.md`, bagian "How to add a new service".
+
 **Struktur level katalog Game Top-up.** Tidak ada level Server terpisah: pada data
 Digiflazz region = server (satu level: Global, Malaysia, Indonesia, Brazil, ...).
 Hirarkinya Edisi (`Product.gameVariant`) → Region (`Product.gameRegion`) → paket.
@@ -440,6 +451,15 @@ Daftar cek:
   picker. Dengan fixture kecil (tanpa `--bulk`): kategori, game, region (bila
   ada), paket; game tanpa region langsung ke paket; kategori campuran
   menampilkan semua produk.
+- [ ] Tanpa sistem angka di Game Top-up: picker edisi, picker region, dan daftar
+  produk **tidak** mengirim pesan "Gunakan angka di bawah untuk memilih:" dan
+  tidak memasang keyboard bawah 1-2-3. Daftar produk memakai tombol inline per
+  produk (nama lengkap tetap di teks), Prev/Next, dan ← Kembali (juga pada
+  daftar satu halaman). Ulangi region -> ← Kembali -> region lain beberapa
+  kali: jumlah pesan di chat tidak bertambah. Ketik "Produk" dengan satu layanan
+  dan satu game: tepat satu pesan. Ketik angka di layar Game: satu balasan
+  "Pilih dengan menekan tombol pada daftar." dengan ← Kembali ke layar itu,
+  tanpa membuka produk apa pun.
 - [ ] Satu baris hint di tiap layar (daftar game, edisi, region, paket, search),
   dan label `mulai <harga>` pada daftar produk Game Top-up.
 - [ ] `/search` menemukan produk Game Top-up saja (tidak ada Premium Apps).
@@ -457,7 +477,9 @@ Daftar cek:
 - [ ] Pengingat sekitar 5 menit sebelum jendela habis: tepat satu DM.
 - [ ] Saat kedaluwarsa: pesan pembayaran diedit menjadi dibatalkan, dan hanya
   satu push pemberitahuan.
-- [ ] Kontrol: Premium Apps tidak menampilkan `mulai`, hint, atau layar review.
+- [ ] Kontrol: Premium Apps tidak menampilkan `mulai`, hint, atau layar review,
+  dan daftarnya tetap bernomor seperti sebelumnya (pesan "Gunakan angka...",
+  keyboard bawah angka, ketik angka membuka produk).
 - [ ] Bersihkan: `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove`,
   lalu hentikan bot dan `docker compose -f docker-compose.postgres.yml -p gtr down`.
   `--remove` hanya menghapus id yang ada di manifest (baris toko asli tidak

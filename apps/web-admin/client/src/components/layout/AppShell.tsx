@@ -48,8 +48,8 @@ export function AppShell(): React.JSX.Element {
             menuRef={menuRef}
             sidebarOpen={sidebarOpen}
           />
-          <main className="flex flex-1 flex-col overflow-y-auto bg-paper">
-            <div className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-4 sm:px-5 sm:py-6 lg:px-6 xl:px-8">
+          <main className="flex min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden bg-paper">
+            <div className="mx-auto w-full min-w-0 max-w-[1440px] flex-1 px-4 py-4 sm:px-5 sm:py-6 lg:px-6 xl:px-8">
               <PageTransition>
                 <ErrorBoundary key={location.pathname}>
                   <Outlet />

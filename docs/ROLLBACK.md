@@ -5,9 +5,10 @@
 ```bash
 git log --oneline -10                 # cari commit terakhir yang baik
 git checkout <commit-lama>            # atau: git revert <commit-buruk> untuk rollback non-destructive
-docker compose build                  # jika Docker
-docker compose restart server
-# non-Docker: pnpm install && pm2 restart bot-order
+# Docker: bangun ulang image dari kode yang sudah di-revert dan buat ulang container
+# (restart saja tidak menjalankan image baru)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
+# non-Docker: pnpm install && pnpm -r build && pm2 restart bot-order
 ```
 
 Pilih `git revert` (membuat commit baru yang membalikkan perubahan) bukan
@@ -58,6 +59,60 @@ idempotent dan tidak punya mode undo**. Rollback satu-satunya: `restore.sh` ke b
 **sebelum** skrip dijalankan (lihat instruksi wajib-backup di header skrip
 itu sendiri dan di [UPDATE_GUIDE.md](UPDATE_GUIDE.md)).
 
+## Rollback refactor Game Top-up
+
+Refactor ini tidak punya migrasi (lihat [MIGRATIONS.md](MIGRATIONS.md)), jadi
+rollback-nya hanya kode dan `.env`; DB tidak perlu di-restore.
+
+1. **Kode:** di checkout utama (`master`), `git revert -m 1 <merge-commit>`
+   (SHA merge belum diketahui: `<merge-commit>` diisi saat merge), lalu build
+   dan restart order-bot dan web (Docker: `docker compose -f docker-compose.yml
+   -f docker-compose.postgres.prod.yml up -d --build`, bentuk yang sama dengan
+   [deploy/README.md](../deploy/README.md); non-Docker: `pnpm install && pnpm
+   -r build && pm2 restart bot-order`).
+2. **`.env`:** bila operator mengubah jendela bayar, kembalikan kelima kunci
+   ke default KODE LAMA (`git show master:packages/core/src/config.ts`
+   sebelum merge refactor). Nilai eksplisit di `.env` selalu menang atas default,
+   jadi kunci yang tidak pernah diubah operator tidak perlu disentuh, tetapi
+   defaultnya kembali ke nilai lama setelah revert:
+
+   | Kunci | Default lama (rollback) | Default baru (refactor) |
+   |---|---|---|
+   | `PAYMENT_WINDOW_MINUTES` | `30` | `10` |
+   | `INTERNAL_PAYMENT_WINDOW_MINUTES` | `15` | `10` |
+   | `BYBIT_PAYMENT_WINDOW_MINUTES` | `30` | `10` |
+   | `BYBIT_BSC_PAYMENT_WINDOW_MINUTES` | `15` | `30` |
+   | `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` | `30` |
+
+3. **Hanya pengingat bayar yang bermasalah?** Cukup `PAYMENT_REMINDER_LEAD_MINUTES=0`
+   di `.env` lalu restart order-bot; tidak perlu rollback kode.
+
+**Efek pada data yang sudah ada:**
+
+- `Product.gameRegion` yang terisi oleh import atau backfill tetap terisi dan
+  tidak berbahaya bagi kode lama (kolom sudah ada di `master`).
+- Order yang dibuat selama jendela 10 menit mempertahankan `expiresAt`-nya;
+  tidak ada yang di-restamp.
+- Bubble pembayaran yang terbuka saat rollback membawa nonce di `callback_data`
+  yang tidak dikenal kode lama: pembeli perlu satu ketukan tambahan (membuka
+  ulang layar pembayaran). Tidak ada uang yang terpengaruh. (Perilaku ketukan
+  ini disimpulkan dari desain, bukan diuji terhadap kode lama.)
+- Klaim pembayaran `matched` yang macet kembali dipulihkan setelah 10 menit
+  (bukan 120 detik) oleh kode lama; pada rail berjendela 10 menit crash
+  di tengah pengiriman tidak bisa dipulihkan sebelum order dibatalkan.
+- **Baris outbox `PAYMENT_REMINDER_DM` / `ORDER_EXPIRED_DM` yang masih
+  `PENDING` saat rollback:** dispatcher lama tidak punya template untuk dua
+  event itu (`render` mengembalikan teks kosong), sehingga barisnya dicatat
+  `FAILED` dengan `lastError` `no template for event ...` pada percobaan
+  pertama (`failRow(row, ..., 1)`). Tidak ada loop dan tidak ada pesan
+  terkirim; pembeli hanya tidak menerima pengingat/pemberitahuan itu. Aman
+  dibiarkan. Cek dengan `SELECT id, event, status, last_error FROM
+  notification_outbox WHERE event IN ('PAYMENT_REMINDER_DM','ORDER_EXPIRED_DM')
+  AND status IN ('PENDING','FAILED');`. Jangan menekan **Retry** di panel
+  `/outbox` untuk baris ini: ia akan gagal lagi. (Disimpulkan dari
+  pembacaan `master:packages/outbox-dispatcher/src/dispatcher.ts`; tidak
+  dijalankan terhadap kode lama.)
+
 ## Restore dari backup (ringkasan — detail penuh di BACKUP_AND_RESTORE.md)
 
 ```bash
@@ -79,6 +134,8 @@ smoke-test `/healthz`. Detail penuh:
 | Container tidak `healthy` setelah `docker compose up -d` | `docker compose logs --tail=100 server` | Biasanya `P2022`/`P2021` (lupa `db push`) atau `.env` salah — lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | App crash loop pasca-update | Cek log crash handler (`registerCrashHandlers` — exit code 1 = crash, bukan stop bersih) | Rollback kode ke commit sebelumnya (lihat di atas), investigasi root cause sebelum coba lagi |
 | Migrasi data setengah jalan (skrip non-idempotent terhenti) | Cek apakah baris yang sudah diproses skrip masih konsisten | **Jangan jalankan ulang skrip** — restore dari backup pra-skrip, baru ulangi dengan fix |
+| Pembeli mengeluh pesanan Game Top-up dibatalkan terlalu cepat setelah deploy refactor | Cek `PAYMENT_WINDOW_MINUTES` dan empat kunci jendela lain di `.env`; bandingkan `expires_at` order dengan `created_at` | Jendela bayar kini 10 menit di TokoPay/PayDisini/Binance/Bybit UID. Setel nilai eksplisit di `.env` bila perlu, atau rollback kode (bagian "Rollback refactor Game Top-up") |
+| Pembeli menerima pengingat bayar yang mengganggu / salah | Cek log order-bot dan `notification_outbox` event `PAYMENT_REMINDER_DM` | `PAYMENT_REMINDER_LEAD_MINUTES=0` lalu restart order-bot; tanpa rollback kode |
 | 502 dari nginx pasca-deploy | Lihat "502 runbook" di `deploy/README.md` | `docker compose restart server`, verifikasi `/healthz` lokal dulu sebelum lewat nginx |
 
 ## Verifikasi pasca-rollback

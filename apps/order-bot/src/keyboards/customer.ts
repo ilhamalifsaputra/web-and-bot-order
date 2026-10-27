@@ -16,7 +16,7 @@ import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtBalance, formatIdrFor, truncLabel } from "../util/format";
 import { formatDenominationLabel } from "../util/denominationLabel";
-import { LIST_LABEL_MAX_CHARS } from "@app/core/buttonLimits";
+import { LIST_LABEL_MAX_CHARS, MAX_LABEL_BYTES, MAX_LABEL_WIDTH, visualWidth } from "@app/core/buttonLimits";
 import type { CatalogButton } from "../util/canonicalPresenter";
 
 export const CB_PREFIX = "v1";
@@ -26,7 +26,7 @@ export function cb(...parts: Array<string | number>): string {
   return [CB_PREFIX, ...parts.map(String)].join(":");
 }
 
-interface Btn {
+export interface Btn {
   text: string;
   data?: string;
   /** When set, builds a native "copy to clipboard" button instead of a callback button. */
@@ -117,7 +117,9 @@ export function mainPersistentKb(lang: string): Keyboard {
 }
 
 /**
- * Reply keyboard shown while browsing the product list: digits 1..count
+ * Reply keyboard shown while browsing a NUMBERED product list (Premium Apps
+ * only — `usesNumberedSelection`, @app/core/services; every other service and
+ * the Game Top-up edition/region pickers are inline-only): digits 1..count
  * (rows of 5) so a customer can tap a number instead of typing it, plus a
  * Menu button back to `mainPersistentKb`. `count` is the number of products
  * on the entry page (always page 0 — see `browseProductsFlat`), so a small
@@ -129,8 +131,18 @@ export function mainPersistentKb(lang: string): Keyboard {
  * `productsNavKb` (edits in place) and never resend it, so a later page with
  * a different count won't resize this keyboard — an out-of-range tap there
  * already resolves to "browse.invalid_number" in `handleProductNumber`.
+ *
+ * The last row is `[← Back, 🏠 Menu]`: Back is matched by
+ * `handleProductNumber` → `handleBackButton`, which computes the target from
+ * the screens really shown (handlers/customer.ts `listBackTarget`), so the list
+ * gets its Back without any extra companion message.
  */
 export function productsPersistentKb(count: number, lang: string): Keyboard {
+  return numberedPersistentKb(count, lang);
+}
+
+/** Digits 1..count in rows of 5, then `[← Back, 🏠 Menu]`. */
+function numberedPersistentKb(count: number, lang: string): Keyboard {
   const kb = new Keyboard();
   let inRow = 0;
   for (let n = 1; n <= count; n++) {
@@ -141,50 +153,44 @@ export function productsPersistentKb(count: number, lang: string): Keyboard {
     }
   }
   if (inRow > 0) kb.row();
-  kb.text(persistentLabel("main", lang));
+  kb.text(persistentLabel("back", lang)).text(persistentLabel("main", lang));
   return kb.resized();
 }
+
+/** Menu-only footer for error and terminal screens (no screen to go back to). */
+export function backToMain(lang: string): InlineKeyboard {
+  return ik([[{ text: coreT("menu.main", lang), data: MENU_MAIN }]]);
+}
+
+const MENU_MAIN = cb("menu", "main");
 
 /**
- * Reply keyboard shown while a Game Top Up variant/region picker is the
- * active numbered screen: digits 1..count (rows of 5) so a customer can tap
- * or type the same number the picker's own inline buttons carry, plus a Menu
- * button back to `mainPersistentKb`. Identical shape to
- * `productsPersistentKb`, just sized to the picker's own option count
- * instead of the product-list page size — see `BrowseScratch.activeNumberedScreen`
- * in `handlers/customer.ts` for why entering a picker needs its own fresh
- * send of this (a reply keyboard can't ride on the picker's own
- * inline-keyboard edit; only a fresh `sendMessage` can replace the bottom
- * bar). Shared by both the variant and region picker renders since their
- * reply keyboard need is identical — only the option count differs.
+ * The one Back row every navigation screen ends with: `← Back` to `target`
+ * (the screen really above, computed by the caller), then `🏠 Menu` when
+ * `withMenu`. A screen whose parent is the main menu itself passes
+ * `cb("menu", "main")` and gets the single Back (a Menu button beside it would
+ * be a duplicate), so Menu is never added next to a Back that already goes
+ * there. Labels come only from the locale (`menu.back` / `menu.main`).
  */
-export function gamePickerPersistentKb(count: number, lang: string): Keyboard {
-  const kb = new Keyboard();
-  let inRow = 0;
-  for (let n = 1; n <= count; n++) {
-    kb.text(String(n));
-    if (++inRow === 5) {
-      kb.row();
-      inRow = 0;
-    }
-  }
-  if (inRow > 0) kb.row();
-  kb.text(persistentLabel("main", lang));
-  return kb.resized();
+export function backRow(lang: string, target: string, withMenu = true): Btn[] {
+  const row: Btn[] = [{ text: coreT("menu.back", lang), data: target }];
+  if (withMenu && target !== MENU_MAIN) row.push({ text: coreT("menu.main", lang), data: MENU_MAIN });
+  return row;
 }
 
-export function backToMain(lang: string): InlineKeyboard {
-  return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
+/** A screen whose only navigation is the Back row (see {@link backRow}). */
+export function backKb(lang: string, target: string, withMenu = true): InlineKeyboard {
+  return ik([backRow(lang, target, withMenu)]);
+}
+
+/** A single Back button to the pack (denomination) screen. */
+export function backToPackKb(productId: number, lang: string): InlineKeyboard {
+  return ik([backRow(lang, cb("browse", "denom", productId), false)]);
 }
 
 /** Confirmation footer after a restock subscription: back to the denomination + menu. */
 export function restockSubscribedKb(denominationId: number, lang: string): InlineKeyboard {
-  return ik([
-    [
-      { text: coreT("menu.back", lang), data: cb("browse", "denom", denominationId) },
-      { text: coreT("menu.main", lang), data: cb("menu", "main") },
-    ],
-  ]);
+  return ik([backRow(lang, cb("browse", "denom", denominationId))]);
 }
 
 /** Confirmation footer after a user closes their own ticket. */
@@ -298,6 +304,10 @@ export function denominationDetailKb(
   parentProductId: number | null = null,
   /** Picker page (0-based) the detail was opened from; Back returns to it. */
   parentPage = 0,
+  /** Back target when no parent picker was shown (collapse / deep link):
+   * the product list by default, or the search results / Popular list the
+   * product was opened from (handlers/customer.ts `originBackTarget`). */
+  fallbackBack: string = cb("browse", "prods"),
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   // Stock rows only ever exist for local-inventory SKUs
@@ -345,14 +355,11 @@ export function denominationDetailKb(
   rows.push([
     { text: coreT("browse.refresh_btn", lang), data: cb("browse", "refresh", denom.id, qty) },
   ]);
-  const back: Btn =
+  const backTarget =
     parentProductId != null
-      ? {
-          text: coreT("menu.back", lang),
-          data: parentPage > 0 ? cb("browse", "pick", parentProductId, parentPage) : cb("browse", "pick", parentProductId),
-        }
-      : { text: coreT("menu.back", lang), data: cb("browse", "prods") };
-  rows.push([back]);
+      ? parentPage > 0 ? cb("browse", "pick", parentProductId, parentPage) : cb("browse", "pick", parentProductId)
+      : fallbackBack;
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -365,8 +372,10 @@ interface DenominationLike {
   buttonLabel?: string;
 }
 
-/** Catalog presenter owns labels and adaptive rows; callbacks stay compatible. */
-export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], productId: number, lang: string, page: number, pageCount: number): InlineKeyboard {
+/** Catalog presenter owns labels and adaptive rows; callbacks stay compatible.
+ * `backTarget`: the product list by default, or the search results / Popular
+ * list the product was opened from. */
+export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], productId: number, lang: string, page: number, pageCount: number, backTarget: string = cb("browse", "prods")): InlineKeyboard {
   // grammY's add() appends to the LAST existing row, so each group of buttons
   // below is built as its own explicit row. Product rows are copied so the
   // presenter's page.rows are never aliased/mutated by the keyboard.
@@ -380,7 +389,7 @@ export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], pro
     if (arrows.length > 0) rows.push(arrows);
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), callback_data: cb("browse", "pick", productId, page) }]);
-  rows.push([{ text: coreT("menu.back", lang), callback_data: cb("browse", "prods") }]);
+  rows.push([{ text: coreT("menu.back", lang), callback_data: backTarget }]);
   return new InlineKeyboard(rows);
 }
 
@@ -394,13 +403,15 @@ export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], pro
  * price); when every button does, `browseProduct` drops the per-plan
  * price/stock lines and the body shows game info instead. A
  * `Perbarui`/Refresh row re-renders the picker (re-reads stock + the "updated"
- * timestamp) and a Back row returns to the flat product list.
+ * timestamp) and a Back row returns to the flat product list — or to the
+ * search results / Popular list the product was opened from (`backTarget`).
  */
 export function denominationPickerKb(
   denominations: DenominationLike[],
   productId: number,
   productName: string,
   lang: string,
+  backTarget: string = cb("browse", "prods"),
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < denominations.length; i += 2) {
@@ -412,7 +423,7 @@ export function denominationPickerKb(
     );
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), data: cb("browse", "pick", productId) }]);
-  rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -434,7 +445,8 @@ export function groupPickerKb(
         text: coreT(service.translationKey, lang),
         data: cb("browse", "grp", service.group),
       }))] : []),
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    // Its parent is the main menu: one Back, no duplicate Menu button.
+    backRow(lang, MENU_MAIN),
   ]);
 }
 
@@ -450,8 +462,13 @@ interface CategoryLike {
  * renders the trailing Back/Menu row, even for an empty `categories` array,
  * so an empty group never leaves the customer on a dead-end screen (the
  * message body carries the "no categories yet" copy in that case).
+ *
+ * `backTarget` is computed by the caller (the service picker, or the main
+ * menu when only one service is enabled and its picker is auto-skipped —
+ * handlers/customer.ts `upToServicesTarget`). When Back already leads to the
+ * main menu, the duplicate Menu button is dropped.
  */
-export function categoryPickerKb(categories: CategoryLike[], lang: string): InlineKeyboard {
+export function categoryPickerKb(categories: CategoryLike[], lang: string, backTarget: string = cb("browse", "grps")): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < categories.length; i += 2) {
     rows.push(
@@ -461,10 +478,7 @@ export function categoryPickerKb(categories: CategoryLike[], lang: string): Inli
       })),
     );
   }
-  rows.push([
-    { text: coreT("menu.back", lang), data: cb("browse", "grps") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push(backRow(lang, backTarget));
   return ik(rows);
 }
 
@@ -497,7 +511,7 @@ export function gameVariantPickerKb(
       })),
     );
   }
-  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
@@ -531,8 +545,21 @@ export function gameRegionPickerKb(
       })),
     );
   }
-  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
+}
+
+/** Cut `text` to at most `maxCells` terminal cells (emoji/CJK = 2), ending in
+ * "…" when it had to shorten. Used for a search-result name so that name plus
+ * its service tag fits MAX_LABEL_WIDTH; a name that already fits is never cut. */
+function clipToCells(text: string, maxCells: number): string {
+  if (visualWidth(text) <= maxCells) return text;
+  let out = "";
+  for (const ch of Array.from(text)) {
+    if (visualWidth(`${out}${ch}…`) > maxCells) break;
+    out += ch;
+  }
+  return `${out}…`;
 }
 
 export function qtyInputCancelKb(denominationId: number, lang: string): InlineKeyboard {
@@ -542,37 +569,128 @@ export function qtyInputCancelKb(denominationId: number, lang: string): InlineKe
 }
 
 /**
- * Slim pagination keyboard for the Product List (§3). The list itself is now
- * driven by typed numbers (handleProductNumber resolves the caption's numbered
- * lines), so the per-product tap buttons and the Menu row were dropped — the
- * persistent reply keyboard carries navigation. Only a Prev/Next row remains,
- * and only when the catalog spans more than one page; a single page renders no
- * inline keyboard at all (returns undefined).
+ * Slim pagination keyboard for a NUMBERED Product List (§3) — Premium Apps
+ * only (`usesNumberedSelection`, @app/core/services). That list is driven by
+ * typed numbers (handleProductNumber resolves the caption's numbered lines),
+ * so it carries no per-product tap buttons and no Menu row — the numbered
+ * reply keyboard carries the digits and Menu. A Prev/Next row only when the
+ * catalog spans more than one page, then a Back row carrying `backTarget`
+ * (the caller's `listBackTarget`) on every page — a single page too, so Back
+ * is one edit of this bubble rather than a typed reply-keyboard key. No
+ * `backTarget` and a single page → undefined (no inline keyboard). Every other
+ * service's list uses {@link productListKb} instead.
  */
-export function productsNavKb(page: number, totalPages: number, lang: string): InlineKeyboard | undefined {
-  if (totalPages <= 1) return undefined;
+export function productsNavKb(page: number, totalPages: number, lang: string, backTarget?: string): InlineKeyboard | undefined {
   const nav: Btn[] = [];
   if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
   if (page < totalPages - 1)
     nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
-  return nav.length ? ik([nav]) : undefined;
+  const rows: Btn[][] = nav.length ? [nav] : [];
+  if (backTarget) rows.push(backRow(lang, backTarget, false));
+  return rows.length ? ik(rows) : undefined;
 }
 
-/** Inline keyboard for /search results — each mid-tier Product opens its picker. */
-export function searchResultsKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
-  const rows: Btn[][] = products.map((p) => [
-    { text: truncLabel(p.name, LIST_LABEL_MAX_CHARS), data: cb("browse", "pick", p.id) },
-  ]);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+/** `text` + `suffix` within the phone budget: at most MAX_LABEL_WIDTH cells and
+ * MAX_LABEL_BYTES UTF-8 bytes, `text` cut by whole code points (never a
+ * split emoji) and ending in "…" when it had to shorten; `suffix` is kept. */
+function fitLabel(text: string, suffix = ""): string {
+  let out = clipToCells(text, MAX_LABEL_WIDTH - visualWidth(suffix));
+  while (Buffer.byteLength(`${out}${suffix}`, "utf8") > MAX_LABEL_BYTES) {
+    const chars = Array.from(out.endsWith("…") ? out.slice(0, -1) : out);
+    chars.pop();
+    out = `${chars.join("")}…`;
+  }
+  return `${out}${suffix}`;
+}
+
+/** At most `max` code points (never a split surrogate pair), ending in "…" when cut. */
+function cutChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
+}
+
+/**
+ * The INLINE product list (every service except a numbered one —
+ * `usesNumberedSelection`, @app/core/services): one button per product on the
+ * page (`browse:pick:<id>`, one per row), then Prev/Next when the list spans
+ * more than one page, then the Back row to `backTarget` (the caller's
+ * `listBackTarget`) on every page, a single page too. The label is the product
+ * name, cut at LIST_LABEL_MAX_CHARS characters like the popular-product
+ * buttons (but by whole code points, never splitting an emoji) and then to
+ * the phone budget (MAX_LABEL_WIDTH cells, MAX_LABEL_BYTES bytes); the list
+ * body shows every full name, so a shortened label stays explained. Two names
+ * that would read the same get " (2)", " (3)"… in list order.
+ */
+export function productListKb(
+  products: Array<{ id: number; name: string }>,
+  page: number,
+  totalPages: number,
+  lang: string,
+  backTarget: string,
+): InlineKeyboard {
+  const seen = new Map<string, number>();
+  const rows: Btn[][] = products.map((p) => {
+    let text = fitLabel(cutChars(p.name.replace(/\s+/g, " ").trim(), LIST_LABEL_MAX_CHARS));
+    const count = (seen.get(text) ?? 0) + 1;
+    seen.set(text, count);
+    if (count > 1) text = fitLabel(text, ` (${count})`);
+    return [{ text, data: cb("browse", "pick", p.id) }];
+  });
+  const nav: Btn[] = [];
+  if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
+  if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
+  if (nav.length) rows.push(nav);
+  rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
-/** Inline keyboard for the Produk Populer list — one `browse:pick` button per product + Menu row. */
+/** One /search hit as stored in the session snapshot: `serviceKey` is the service's locale key (its short tag). */
+export interface SearchHit {
+  id: number;
+  name: string;
+  serviceKey: string;
+}
+
+/**
+ * Game Top Up search results: `<name> · <service tag>` per hit, the
+ * name cut so the whole label stays within MAX_LABEL_WIDTH, then Prev/Next
+ * (`search:page:<n>`), Search again and Back, each on its own row. `hits` is the
+ * current page's slice of the snapshot. The results are a top-level screen, so
+ * Back goes to the main menu (no duplicate Menu button).
+ */
+export function gameSearchResultsKb(hits: SearchHit[], page: number, totalPages: number, lang: string): InlineKeyboard {
+  const rows: Btn[][] = hits.map((h) => {
+    const tag = coreT(h.serviceKey, lang);
+    const suffix = ` · ${tag}`;
+    return [{ text: `${clipToCells(h.name, MAX_LABEL_WIDTH - visualWidth(suffix))}${suffix}`, data: cb("browse", "pick", h.id) }];
+  });
+  if (totalPages > 1) {
+    const nav: Btn[] = [];
+    if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("search", "page", page - 1) });
+    if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: cb("search", "page", page + 1) });
+    rows.push(nav);
+  }
+  rows.push([{ text: coreT("search.again_btn", lang), data: cb("search", "again") }]);
+  rows.push(backRow(lang, MENU_MAIN));
+  return ik(rows);
+}
+
+/** No-results screen: Search again (re-arms the prompt) and Back to the main
+ * menu (the empty search keeps no results page to return to). */
+export function gameSearchEmptyKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("search.again_btn", lang), data: cb("search", "again") }],
+    backRow(lang, MENU_MAIN),
+  ]);
+}
+
+/** Inline keyboard for the Produk Populer list — one `browse:pick` button per
+ * product, then Back to the main menu (its parent; no duplicate Menu). */
 export function popularKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
     { text: truncLabel(p.name, LIST_LABEL_MAX_CHARS), data: cb("browse", "pick", p.id) },
   ]);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  rows.push(backRow(lang, MENU_MAIN));
   return ik(rows);
 }
 
@@ -593,10 +711,9 @@ export function ordersListKb(orders: OrderLike[], lang: string): InlineKeyboard 
       ]);
     }
   }
-  rows.push([
-    { text: coreT("order.all_history_btn", lang), data: cb("order", "allhistory") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push([{ text: coreT("order.all_history_btn", lang), data: cb("order", "allhistory") }]);
+  // My Orders hangs off the main menu: one Back on its own row, no duplicate Menu.
+  rows.push(backRow(lang, MENU_MAIN));
   return ik(rows);
 }
 
@@ -630,10 +747,7 @@ export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
     }
   }
   rows.push([{ text: coreT("help.support_btn", lang), data: cb("support", "open", order.id) }]);
-  rows.push([
-    { text: coreT("menu.back", lang), data: cb("order", "list") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push(backRow(lang, cb("order", "list")));
   return ik(rows);
 }
 
@@ -651,6 +765,17 @@ export function editInfoCancelKb(orderId: number, lang: string): InlineKeyboard 
 // Checkout
 // ---------------------------------------------------------------------------
 
+/**
+ * A pay button's callback: `v1:<domain>:<pid>:<qty>:<quoteNonce>`. The nonce is
+ * the one the render stored with its quote (`quoteConfirmation`,
+ * handlers/checkout.ts); a pay handler charges only a tap whose nonce is the
+ * stored one, so a button from an older render, or one built without a nonce,
+ * re-renders the screen instead of paying.
+ */
+function payCb(domain: string, productId: number, qty: number, quoteNonce: string): string {
+  return cb(domain, productId, qty, quoteNonce);
+}
+
 export function orderConfirmKb(
   productId: number,
   qty: number,
@@ -666,17 +791,21 @@ export function orderConfirmKb(
   usdtBalance: Decimal | null = null,
   walletDeduction: { currency: "IDR" | "USDT"; amount: string } | null = null,
   fullyCovered = false,
+  quoteNonce: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
+  const pay = (domain: string) => payCb(domain, productId, qty, quoteNonce);
   if (fullyCovered) {
     // The active wallet credit already brings the total to zero — a gateway
     // button here would mean charging Rp0/​$0 through TokoPay/PayDisini/USDT,
     // which is meaningless. Voucher and wallet-toggle rows are equally moot at a
     // zero total, so the screen collapses to the one action that applies:
-    // Complete Order. The persistent menu keyboard stays the escape hatch.
+    // Complete Order, plus a Back row to the pack (the same target the
+    // non-covered screen's Cancel uses) so the customer is never stranded.
     rows.push([
-      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
+      { text: coreT("checkout.complete_order_btn", lang), data: pay("walletpay") },
     ]);
+    rows.push(backRow(lang, cb("browse", "denom", productId), false));
     return ik(rows);
   }
   if (voucherCode) {
@@ -703,8 +832,8 @@ export function orderConfirmKb(
     ]);
   }
   const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
-  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
-  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
+  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: pay("payq") }]);
+  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: pay("payd") }]);
   if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "denom", productId) },
@@ -726,13 +855,15 @@ export function usdtMethodsKb(
   bybitEnabled = false,
   nowpaymentsEnabled = false,
   bybitBscEnabled = false,
+  quoteNonce: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
-  if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
-  if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
-  if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("paybc", productId, qty) }]);
-  if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("payn", productId, qty) }]);
-  rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
+  const pay = (domain: string) => payCb(domain, productId, qty, quoteNonce);
+  if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: pay("payx") }]);
+  if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: pay("payb") }]);
+  if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: pay("paybc") }]);
+  if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: pay("payn") }]);
+  rows.push(backRow(lang, cb("buy", productId, qty), false));
   return ik(rows);
 }
 
@@ -779,7 +910,7 @@ export function walletCreditKb(
           },
     ]);
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("walletm", "back", productId, qty) }]);
+  rows.push(backRow(lang, cb("walletm", "back", productId, qty), false));
   return ik(rows);
 }
 
@@ -815,6 +946,27 @@ export function nicknameNotFoundKb(productId: number, qty: number, lang: string)
     [{ text: coreT("checkout.nickname_retry_btn", lang), data: cb("nick", "retry") }],
     [{ text: coreT("checkout.nickname_continue_btn", lang), data: cb("nick", "continue") }],
     [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
+  ]);
+}
+
+/** Game Top-up review screen (checkout.ts renderAccountReview). Continue
+ * renders the payment screen; Change details asks for the account data again;
+ * Back returns to the pack. It carries no pay button: only the payment screen
+ * does, bound to its own quote. */
+export function accountReviewKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.review_continue_btn", lang), data: cb("rev", "go", productId, qty) }],
+    [{ text: coreT("checkout.review_change_btn", lang), data: cb("rev", "chg", productId, qty) }],
+    backRow(lang, cb("browse", "denom", productId), false),
+  ]);
+}
+
+/** The review screen when the review is too large to show: Change details and
+ * Back only, never a Continue next to account data the buyer could not see. */
+export function accountReviewTooLargeKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.review_change_btn", lang), data: cb("rev", "chg", productId, qty) }],
+    backRow(lang, cb("browse", "denom", productId), false),
   ]);
 }
 
@@ -883,11 +1035,20 @@ export function bybitBscTrackingKb(order: { id: number; status: string }, lang: 
 // Wallet top-up
 // ---------------------------------------------------------------------------
 
-/** Wallet screen footer: a Top Up entry point + the usual Menu escape. */
+/** Top-up receipt footer (settledPaymentKb): another Top Up + the Menu escape.
+ * A receipt is a terminal screen, so it keeps Menu instead of a Back. */
 export function walletKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("wallet.topup_btn", lang), data: cb("topup", "open") }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    [{ text: coreT("menu.main", lang), data: MENU_MAIN }],
+  ]);
+}
+
+/** The Wallet screen (a main-menu section): Top Up, then one Back to the main menu. */
+export function walletViewKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("wallet.topup_btn", lang), data: cb("topup", "open") }],
+    backRow(lang, MENU_MAIN),
   ]);
 }
 
@@ -898,7 +1059,7 @@ export function topupCurrencyKb(lang: string): InlineKeyboard {
       { text: coreT("wallet.topup_currency_idr_btn", lang), data: cb("topup", "currency", "idr") },
       { text: coreT("wallet.topup_currency_usdt_btn", lang), data: cb("topup", "currency", "usdt") },
     ],
-    [{ text: coreT("menu.back", lang), data: cb("wallet", "view") }],
+    backRow(lang, cb("wallet", "view"), false),
   ]);
 }
 
@@ -937,7 +1098,7 @@ export function topupMethodsKb(
     if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("topup", "pay", "bybitbsc") }]);
     if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("topup", "pay", "nowpayments") }]);
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("topup", "currency", currency.toLowerCase()) }]);
+  rows.push(backRow(lang, cb("topup", "currency", currency.toLowerCase()), false));
   return ik(rows);
 }
 
@@ -963,7 +1124,7 @@ const TICKET_ICONS: Record<string, string> = {
   [TicketStatus.CLOSED]: "⚫",
 };
 
-/** User's ticket list with status icons. */
+/** User's ticket list with status icons; Back to the Help Center it is opened from. */
 export function myTicketsKb(tickets: TicketLike[], lang: string, page = 1, total = tickets.length): InlineKeyboard {
   const rows: Btn[][] = tickets.map((tk) => {
     const icon = TICKET_ICONS[tk.status] ?? "⚪";
@@ -974,7 +1135,7 @@ export function myTicketsKb(tickets: TicketLike[], lang: string, page = 1, total
   if (page > 1) navigation.push({ text: coreT("helpdesk.previous", lang), data: cb("ticket", "list", page - 1) });
   if (page * 6 < total) navigation.push({ text: coreT("helpdesk.next", lang), data: cb("ticket", "list", page + 1) });
   if (navigation.length) rows.push(navigation);
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  rows.push(backRow(lang, cb("help", "open")));
   return ik(rows);
 }
 
@@ -989,10 +1150,7 @@ export function ticketViewKb(ticketId: number, statusValue: string, lang: string
   } else if (reopenable) {
     rows.push([{ text: coreT("ticket.btn_reopen", lang), data: cb("ticket", "reopen", ticketId) }]);
   }
-  rows.push([
-    { text: coreT("menu.back", lang), data: cb("ticket", "list") },
-    { text: coreT("menu.main", lang), data: cb("menu", "main") },
-  ]);
+  rows.push(backRow(lang, cb("ticket", "list")));
   return ik(rows);
 }
 
@@ -1019,11 +1177,11 @@ export function orderPickerKb(orders: OrderPickerLike[], lang: string): InlineKe
 
 /** Shown when a customer tries to link a new ticket to an order that
  * already has one open — "view the existing ticket" instead of filing a
- * duplicate. */
+ * duplicate. Back goes to My Tickets (the support wizard has ended). */
 export function ticketDuplicateKb(ticketId: number, lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("support.duplicate_open_ticket_view_btn", lang), data: cb("ticket", "view", ticketId) }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    backRow(lang, cb("ticket", "list")),
   ]);
 }
 
@@ -1040,12 +1198,16 @@ export function supportPhotoPromptKb(photoCount: number, lang = "en"): InlineKey
 // Language
 // ---------------------------------------------------------------------------
 
-export function languageKb(): InlineKeyboard {
+/** Language picker. `backTarget` adds the `[← Back, 🏠 Menu]` row; the caller
+ * omits it during onboarding (handlers/customer.ts settingsBackTarget), so the
+ * first-run flow never offers a way around the currency choice. */
+export function languageKb(lang = "en", backTarget?: string): InlineKeyboard {
   return ik([
     [
       { text: "🇬🇧 English", data: cb("lang", "set", "en") },
       { text: "🇮🇩 Indonesia", data: cb("lang", "set", "id") },
     ],
+    ...(backTarget ? [backRow(lang, backTarget)] : []),
   ]);
 }
 
@@ -1053,12 +1215,14 @@ export function languageKb(): InlineKeyboard {
 // Display currency (/start onboarding, after language)
 // ---------------------------------------------------------------------------
 
-export function currencyKb(lang = "en"): InlineKeyboard {
+/** Display-currency picker; `backTarget` as for {@link languageKb}. */
+export function currencyKb(lang = "en", backTarget?: string): InlineKeyboard {
   return ik([
     [
       { text: `🇺🇸 ${coreT("currency.usd", lang)}`, data: cb("cur", "set", "USD") },
       { text: `🇮🇩 ${coreT("currency.idr", lang)}`, data: cb("cur", "set", "IDR") },
     ],
+    ...(backTarget ? [backRow(lang, backTarget)] : []),
   ]);
 }
 
@@ -1066,7 +1230,8 @@ export function currencyKb(lang = "en"): InlineKeyboard {
 // Help Center hub
 // ---------------------------------------------------------------------------
 
-/** Help Center hub keyboard — one feature button per row + a Menu back row. */
+/** Help Center hub keyboard — one feature button per row, then one Back to the
+ * main menu (its parent; no duplicate Menu button). */
 export function helpCenterKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("help.referral_btn", lang), data: cb("ref", "view") }],
@@ -1076,7 +1241,7 @@ export function helpCenterKb(lang: string): InlineKeyboard {
     [{ text: coreT("help.terms_btn", lang), data: cb("page", "terms") }],
     [{ text: coreT("help.support_btn", lang), data: cb("support", "open") }],
     [{ text: coreT("help.tickets_btn", lang), data: cb("ticket", "list") }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+    backRow(lang, MENU_MAIN),
   ]);
 }
 

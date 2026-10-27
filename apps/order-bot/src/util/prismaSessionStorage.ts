@@ -58,10 +58,11 @@ export const NAV_TTL_MS = 24 * 3_600_000;
 
 /**
  * Longest payment window across every rail this bot settles, in minutes.
- * `PAYMENT_WINDOW_MINUTES` (QRIS/TokoPay/PayDisini's shared default, 30) is
- * the usual ceiling, but a deployment can raise any single rail's own
- * window above it, so all of them are considered rather than assuming which
- * one is largest.
+ * With the current defaults that is 30 (Bybit BSC and NOWPayments; TokoPay,
+ * PayDisini, Binance Pay and Bybit UID default to 10), so `CHECKOUT_TTL_MS`
+ * below stays 35 minutes. A deployment can raise any single rail's own
+ * window above the others, so all of them are considered rather than
+ * assuming which one is largest.
  */
 const LONGEST_PAYMENT_WINDOW_MINUTES = Math.max(
   config.PAYMENT_WINDOW_MINUTES,
@@ -84,7 +85,7 @@ const LONGEST_PAYMENT_WINDOW_MINUTES = Math.max(
  * rail's window absurdly high — checkout state must never outlive nav
  * state, or the TTL split's whole point (bound the riskier, statefuller
  * bucket tighter) is defeated. A fixed 15-minute value here previously sat
- * UNDER `PAYMENT_WINDOW_MINUTES`'s 30-minute default, so a buyer idle
+ * UNDER `PAYMENT_WINDOW_MINUTES`'s then 30-minute default, so a buyer idle
  * mid-payment (the single most likely reason to be idle mid-checkout) lost
  * the session row while their payment was still valid: `qrMsgId` gone means
  * `handlers/checkout.ts`'s stale-QR cleanup can never fire (the photo stays

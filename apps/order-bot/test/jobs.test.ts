@@ -9,6 +9,8 @@ import {
   finalizeOrderPayment,
   setOrderPaymentMessage,
   clearOrderPaymentMessage,
+  cancelOrder,
+  createWalletTopupOrder,
   createBroadcast,
   createTicket,
   getSetting,
@@ -46,6 +48,11 @@ const dbMockState = vi.hoisted(() => ({
   runDetectionForCatalog: null as null | (() => Promise<unknown>),
   // When true, runDigiflazzCatalogSync answers as if another sync held the lease.
   catalogSyncBusy: false,
+  // sendPaymentReminders: the order whose reminder enqueue throws.
+  paymentReminderFailOrderId: null as number | null,
+  // autoCancelExpiredOrders: a stale list the sweep acts on, as if the order
+  // changed between the sweep's read and its cancel. null => the real query.
+  expiredSnapshot: null as null | unknown[],
 }));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
@@ -71,11 +78,18 @@ vi.mock("@app/db", async () => {
       dbMockState.runDetectionForCatalog
         ? dbMockState.runDetectionForCatalog()
         : actual.runDetectionForCatalog(...args),
+    enqueuePaymentReminderDm: async (...args: Parameters<typeof actual.enqueuePaymentReminderDm>) => {
+      if (args[1].orderId === dbMockState.paymentReminderFailOrderId) throw new Error("simulated outbox write failure");
+      return actual.enqueuePaymentReminderDm(...args);
+    },
+    listExpiredPendingOrders: async (...args: Parameters<typeof actual.listExpiredPendingOrders>) =>
+      (dbMockState.expiredSnapshot as Awaited<ReturnType<typeof actual.listExpiredPendingOrders>> | null)
+        ?? actual.listExpiredPendingOrders(...args),
   };
 });
 
 import { GrammyError, InlineKeyboard, type Api } from "grammy";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, TicketStatus } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockActorType, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
@@ -87,6 +101,7 @@ import {
 import {
   autoCancelExpiredOrders,
   autoCloseStaleTickets,
+  sendPaymentReminders,
   editPaymentBubble,
   sweepPaidOrderBubbles,
   flushSettledOrderBubble,
@@ -106,8 +121,9 @@ import {
   TOKOPAY_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
-import { NotificationEvent } from "@app/core/enums";
+import { langCode, NotificationEvent } from "@app/core/enums";
 import { invalidateRateCache } from "../src/util/rate";
+import { coreT } from "../src/util/i18n";
 
 let sample: SampleData;
 
@@ -116,6 +132,8 @@ beforeEach(async () => {
   dbMockState.resyncDigiflazzCatalog = null;
   dbMockState.runDetectionForCatalog = null;
   dbMockState.catalogSyncBusy = false;
+  dbMockState.paymentReminderFailOrderId = null;
+  dbMockState.expiredSnapshot = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -253,6 +271,232 @@ describe("autoCancelExpiredOrders", () => {
     // The DM goes to the buyer's telegram id, not to the dead bubble's chat.
     expect((api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(Number(sample.user.telegramId));
     expect((await prisma.order.findUnique({ where: { id: order.id } }))?.status).toBe(OrderStatus.CANCELLED);
+  });
+});
+
+/**
+ * The expiry push (ORDER_EXPIRED_DM, Phase 4 owner decision): the buyer gets
+ * exactly ONE notification when the sweep cancels their order. Telegram makes
+ * no sound for an edited message, so the push is queued only when the
+ * cancellation itself sent nothing new — and every case pins the exact number
+ * of Telegram calls next to the number of queued pushes.
+ */
+describe("autoCancelExpiredOrders — expiry push without double notification", () => {
+  const pushes = (orderId: number) =>
+    prisma.notificationOutbox.findMany({ where: { orderId, event: NotificationEvent.ORDER_EXPIRED_DM } });
+  const telegramCalls = (api: Api) => {
+    const a = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    return {
+      editMessageText: a.editMessageText!.mock.calls.length,
+      editMessageCaption: a.editMessageCaption!.mock.calls.length,
+      deleteMessage: a.deleteMessage!.mock.calls.length,
+      sendMessage: a.sendMessage!.mock.calls.length,
+      sendPhoto: a.sendPhoto!.mock.calls.length,
+    };
+  };
+  const none = { editMessageText: 0, editMessageCaption: 0, deleteMessage: 0, sendMessage: 0, sendPhoto: 0 };
+
+  it("coordinator owns a text message: the worker edits it silently, so one push is queued", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 555n, messageId: 777, messageKind: "text", state: "WAITING" } });
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual(none);
+    const rows = await pushes(order.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({
+      chat_id: Number(sample.user.telegramId), order_code: order.orderCode, buyer_language: (sample.user.language ?? "EN").toLowerCase(), is_wallet_topup: false,
+    });
+  });
+
+  it("coordinator owns a QR photo: retiring it already sends a new message, so no push", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.fulfillmentMessage.create({ data: { orderId: order.id, chatId: 555n, messageId: 777, messageKind: "photo", state: "WAITING" } });
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual(none);
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("anchored text bubble edited in place: the edit makes no sound, so one push is queued", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+  });
+
+  it("anchored QR photo replaced by a fresh message: that message is the notification, so no push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1, deleteMessage: 1, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("dead anchored bubble answered by the fallback DM: that DM is the notification, so no push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")) });
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("dead anchored bubble whose fallback DM also failed: nothing reached the buyer, so the push is queued to retry", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")),
+      sendMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 5")),
+    });
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+  });
+
+  it("no anchor: the existing DM is the only notification", async () => {
+    const order = await makeExpiredOrder();
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, sendMessage: 1 });
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("no anchor and the DM failed: nothing reached the buyer, so one push is queued and the failure is logged", async () => {
+    const order = await makeExpiredOrder();
+    const api = fakeApi({ sendMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 5")) });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await autoCancelExpiredOrders(api);
+      expect(telegramCalls(api)).toEqual({ ...none, sendMessage: 1 });
+      expect(await pushes(order.id)).toHaveLength(1);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+      const messages = error.mock.calls.map((c) => String(c[1] ?? c[0]));
+      expect(messages).toEqual([
+        `Could not send the auto-cancel notice for order ${order.orderCode} directly; the order stays cancelled, and any expiry push queued for it will still reach the buyer through the outbox.`,
+      ]);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("concurrent and repeated ticks (or two bot instances) still make one edit and one push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    // Both ticks read the order while it is still pending; only the one whose
+    // cancel actually lands tells the buyer.
+    await Promise.all([autoCancelExpiredOrders(api), autoCancelExpiredOrders(api)]);
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+  });
+
+  it("a buyer without a Telegram id (web or guest checkout) gets nothing at all", async () => {
+    const guest = await prisma.user.create({ data: { telegramId: null, referralCode: `guest-${Math.random()}`, isGuest: true } });
+    const order = await prisma.order.create({
+      data: { userId: guest.id, orderCode: "ORD-GUEST-EXPIRED", subtotalAmount: 50_000, totalAmount: 50_000, status: OrderStatus.PENDING_PAYMENT, expiresAt: new Date(Date.now() - 60_000) },
+    });
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+    expect(telegramCalls(api)).toEqual(none);
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("an order the buyer cancelled after the sweep read it is not treated as expired: no notice, no push", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    dbMockState.expiredSnapshot = await prisma.order.findMany({ where: { id: order.id }, include: { user: true } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "user_cancelled", { type: StockActorType.CUSTOMER, customerId: sample.user.id }));
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual(none);
+    expect(await pushes(order.id)).toHaveLength(0);
+  });
+
+  it("covers a wallet top-up too, with the top-up wording", async () => {
+    const topup = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "100000", currency: "IDR", method: PaymentMethod.TOKOPAY }));
+    await prisma.fulfillmentMessage.deleteMany({ where: { orderId: topup.id } });
+    await prisma.order.update({ where: { id: topup.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await setOrderPaymentMessage(prisma, topup.id, 555, 778);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    // The edited bubble uses the top-up wording: a top-up reserved no stock.
+    const edited = String((api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]![2]);
+    const lang = langCode(sample.user.language);
+    expect(edited).toBe(coreT("order.auto_cancelled_topup", lang, { code: topup.orderCode }));
+    expect(edited.toLowerCase()).not.toMatch(/stock|stok/);
+    const rows = await pushes(topup.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ order_code: topup.orderCode, is_wallet_topup: true });
+  });
+
+  it("keeps the product wording, with its stock line, for a product order", async () => {
+    const order = await makeExpiredOrder();
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    const edited = String((api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]![2]);
+    expect(edited).toBe(coreT("order.auto_cancelled", langCode(sample.user.language), { code: order.orderCode }));
+  });
+
+  // Follow-up item 1: a payment the provider has already seen (NOWPayments
+  // still confirming) is not cancelled while it is inside the grace window
+  // after expiresAt — the poller keeps checking it, so the payment can still
+  // settle. Nothing is sent, edited or queued for the buyer.
+  it("an order whose payment is still confirming inside the grace window is left alone: no cancel, no notice, no push", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { paymentState: "PAYMENT_DETECTED", paymentMethod: PaymentMethod.NOWPAYMENTS } });
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    // Listed before the observation landed (the read-to-lock race): the lock
+    // re-check holds it too.
+    dbMockState.expiredSnapshot = await prisma.order.findMany({ where: { id: order.id }, include: { user: true } });
+    // Rows the order's creation already queued (buyer/owner facts) are not the sweep's.
+    const outboxBefore = await prisma.notificationOutbox.count({ where: { orderId: order.id } });
+    const info = vi.spyOn(logger, "info");
+    try {
+      const api = fakeApi();
+      await autoCancelExpiredOrders(api);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+      expect(telegramCalls(api)).toEqual(none);
+      expect(await pushes(order.id)).toHaveLength(0);
+      expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(outboxBefore);
+      const messages = info.mock.calls.map((c) => String(c[c.length - 1]));
+      expect(messages).toContain(
+        `Order ${order.orderCode} passed its payment window, but the payment provider already reported a payment that is still confirming, so the expiry sweep is keeping it open for up to 30 more minutes instead of cancelling it.`,
+      );
+      expect(messages.some((m) => m.includes("no longer awaiting payment"))).toBe(false);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  // Past the grace window it is cancelled as before. The buyer still gets the
+  // one push (the one who most needs "if you already paid, contact support"),
+  // and every admin is told once that the payment never finished confirming.
+  it("an order whose payment is still confirming past the grace window is cancelled, gets its one push, and alerts each admin once", async () => {
+    const order = await makeExpiredOrder();
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentState: "VERIFYING", paymentMethod: PaymentMethod.NOWPAYMENTS, expiresAt: new Date(Date.now() - 31 * 60_000) },
+    });
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const api = fakeApi();
+    await autoCancelExpiredOrders(api);
+    await autoCancelExpiredOrders(api);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+    expect(telegramCalls(api)).toEqual({ ...none, editMessageText: 1 });
+    expect(await pushes(order.id)).toHaveLength(1);
+    const alerts = await prisma.notificationOutbox.findMany({ where: { orderId: order.id, event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT } });
+    expect(alerts.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b)).toEqual([999, 1000]);
+    expect(JSON.parse(alerts[0]!.payloadJson)).toMatchObject({ order_code: order.orderCode, gateway: "NOWPayments", reason: "still_confirming" });
   });
 });
 
@@ -1661,10 +1905,143 @@ describe("announceStartedFlashSales", () => {
   });
 });
 
+/**
+ * Phase 4 owner decision: one reminder push when about five minutes of the
+ * payment window are left. The job only enqueues (the outbox dispatcher sends
+ * and re-checks at send time); these pin which orders it queues for.
+ */
+describe("sendPaymentReminders", () => {
+  const MIN = 60_000;
+  const reminders = (orderId?: number) =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.PAYMENT_REMINDER_DM, ...(orderId ? { orderId } : {}) } });
+
+  async function pendingOrder(now: Date, opts: { windowMs: number; leftMs: number; userId?: number; data?: Record<string, unknown> }) {
+    const expiresAt = new Date(now.getTime() + opts.leftMs);
+    return prisma.order.create({
+      data: {
+        orderCode: `ORD-JOB-REMIND-${Math.random().toString(36).slice(2, 10)}`,
+        userId: opts.userId ?? sample.user.id,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: OrderStatus.PENDING_PAYMENT,
+        createdAt: new Date(expiresAt.getTime() - opts.windowMs),
+        expiresAt,
+        ...opts.data,
+      },
+    });
+  }
+
+  it("queues one reminder for a due order and none on later ticks, without sending anything itself", async () => {
+    const now = new Date();
+    const order = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN + 30_000 });
+    const api = fakeApi();
+    await sendPaymentReminders(api, { now, leadMinutes: 5 });
+    await sendPaymentReminders(api, { now: new Date(now.getTime() + MIN), leadMinutes: 5 });
+    await Promise.all([sendPaymentReminders(api, { now, leadMinutes: 5 }), sendPaymentReminders(api, { now, leadMinutes: 5 })]);
+    const rows = await reminders(order.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ chat_id: Number(sample.user.telegramId), order_code: order.orderCode, minutes_left: 4, is_wallet_topup: false });
+    // The deadline the buyer reads is the order's own `expiresAt` as it was
+    // when queued; it is stamped once, at order creation, and never moved.
+    expect(JSON.parse(rows[0]!.payloadJson).expires_at).toBe(order.expiresAt!.toISOString());
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // T5b: a payment the provider already saw keeps the order PENDING_PAYMENT
+  // (recordProviderPaymentObservation); reminding that buyer invites a second
+  // payment, so only "nothing observed yet" orders are queued.
+  it("queues nothing for an order whose payment was already detected, is verifying, carries a paid-at stamp or awaits wallet review", async () => {
+    const now = new Date();
+    const detected = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "PAYMENT_DETECTED" } });
+    const verifying = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "VERIFYING" } });
+    const paidAt = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paidAt: now } });
+    const review = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { walletCreditState: "NEEDS_REVIEW" } });
+    const waiting = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "WAITING_PAYMENT" } });
+    const untouched = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 });
+    const queued = (await reminders()).map((r) => r.orderId).sort((a, b) => a! - b!);
+    expect(queued).toEqual([waiting.id, untouched.id].sort((a, b) => a - b));
+    for (const skipped of [detected, verifying, paidAt, review]) expect(queued).not.toContain(skipped.id);
+  });
+
+  it("does nothing when the lead is 0 (reminder switched off)", async () => {
+    const now = new Date();
+    await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 0 });
+    expect(await reminders()).toHaveLength(0);
+  });
+
+  it("skips orders that are not due: not yet in the lead window, opened inside it, paid, without a Telegram buyer, or about to close", async () => {
+    const now = new Date();
+    const guest = await prisma.user.create({ data: { telegramId: null, referralCode: `guest-${Math.random()}`, isGuest: true } });
+    const notYet = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 8 * MIN });
+    const shortWindow = await pendingOrder(now, { windowMs: 4 * MIN, leftMs: 3 * MIN });
+    const paid = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { paymentState: "PAID" } });
+    const web = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, userId: guest.id });
+    const closing = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 40_000 });
+    const due = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 });
+    const queued = (await reminders()).map((r) => r.orderId);
+    expect(queued).toEqual([due.id]);
+    for (const skipped of [notYet, shortWindow, paid, web, closing]) expect(queued).not.toContain(skipped.id);
+  });
+
+  it("includes a wallet top-up awaiting payment", async () => {
+    const now = new Date();
+    const topup = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN, data: { kind: OrderKind.WALLET_TOPUP, orderCode: `TOPUP-${Date.now()}` } });
+    await sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 });
+    const rows = await reminders(topup.id);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson).order_code).toBe(topup.orderCode);
+  });
+
+  it("keeps going past one order whose enqueue fails, and logs it as a full sentence", async () => {
+    const now = new Date();
+    const broken = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 3 * MIN });
+    const healthy = await pendingOrder(now, { windowMs: 10 * MIN, leftMs: 4 * MIN });
+    dbMockState.paymentReminderFailOrderId = broken.id;
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    try {
+      await expect(sendPaymentReminders(fakeApi(), { now, leadMinutes: 5 })).resolves.toBeUndefined();
+      expect((await reminders()).map((r) => r.orderId)).toEqual([healthy.id]);
+      const messages = errorSpy.mock.calls.map((c) => String(c[1] ?? c[0]));
+      expect(messages.some((m) => m.includes(broken.orderCode) && /will be retried on the next run/.test(m))).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 // Bot-5 (security audit, 2026-06-23): a slow tick (or a restart racing the
 // next scheduled fire) must not overlap with itself and re-process the same
 // expired-orders/stale-tickets set, sending duplicate DMs.
 describe("scheduleJobs cron registration (Bot-5 fix)", () => {
+  // The env schema never fails the boot over PAYMENT_REMINDER_LEAD_MINUTES; a
+  // mistyped value switches the reminder off, and this warning is how an
+  // operator finds out.
+  it.each([
+    ["abc", true],
+    ["-5", true],
+    ["NaN", true],
+    ["0", false],
+    ["5", false],
+  ] as const)("warns once at startup when PAYMENT_REMINDER_LEAD_MINUTES is %s only if it is unusable", (raw, warns) => {
+    const previous = process.env.PAYMENT_REMINDER_LEAD_MINUTES;
+    process.env.PAYMENT_REMINDER_LEAD_MINUTES = raw;
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    const crons = scheduleJobs(fakeApi());
+    try {
+      const reminderWarnings = warn.mock.calls.map((c) => String(c[1] ?? c[0])).filter((m) => m.includes("PAYMENT_REMINDER_LEAD_MINUTES"));
+      expect(reminderWarnings).toHaveLength(warns ? 1 : 0);
+      if (warns) expect(reminderWarnings[0]).toMatch(/switched off/);
+    } finally {
+      for (const c of crons) c.stop();
+      warn.mockRestore();
+      if (previous === undefined) delete process.env.PAYMENT_REMINDER_LEAD_MINUTES;
+      else process.env.PAYMENT_REMINDER_LEAD_MINUTES = previous;
+    }
+  });
+
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
@@ -1749,6 +2126,12 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // minutes on second 52, protected so two runs never race one order.
       expect(crons[16]!.getPattern()).toBe("52 */10 * * * *");
       expect(crons[16]!.options.protect).toBe(true);
+      // sendPaymentReminders (Phase 4) — every minute on second 47, clear of
+      // every other second here and of the five-second outbox/Digiflazz jobs
+      // registered outside this list; protected so two ticks never overlap.
+      expect(crons[17]!.getPattern()).toBe("47 * * * * *");
+      expect(crons[17]!.options.protect).toBe(true);
+      expect(crons).toHaveLength(18);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second
@@ -1918,12 +2301,13 @@ describe("binancePollWatchdog admin DM wording (Important #1 regression guard)",
 // until now nothing read them, so a rail whose webhook callback was never
 // reachable AND whose reconcile poller had also died left orders piling up
 // PENDING_PAYMENT with no one paged (docs/TROUBLESHOOTING.md's "webhook
-// gateway tidak pernah sampai" scenario). These pollers make up to 50
-// sequential gateway calls per cycle, so their own cycleTimeoutMs (~780s for
-// all three, TokoPay/PayDisini/NOWPayments alike) is already well past the
-// crypto rails' 5-minute staleness default — a legitimately slow (not
-// hung) cycle must not trip a watchdog sized for the crypto rails' much
-// lighter cadence.
+// gateway tidak pernah sampai" scenario). These pollers make many
+// sequential gateway calls per cycle, so their own cycleTimeoutMs (derived
+// from each rail's payment window — 720s on the 30-minute window this test
+// environment configures, see packages/core/src/payments/
+// reconcileCycleBudget.ts) is well past the crypto rails' 5-minute staleness
+// default — a legitimately slow (not hung) cycle must not trip a watchdog
+// sized for the crypto rails' much lighter cadence.
 describe("tokopayPollWatchdog (Task 12)", () => {
   async function setTokopayCreds() {
     await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
@@ -1971,9 +2355,10 @@ describe("tokopayPollWatchdog (Task 12)", () => {
   });
 
   it("does not page for a cycle older than 5 minutes but still within TokoPay's own wider staleness window", async () => {
-    // TokoPay's cycleTimeoutMs is ~780s (~13m) because one cycle can make
-    // up to 50 sequential gateway calls — a cycle that finishes at, say, 10
-    // minutes is unremarkable, not a hang. Using the crypto rails' flat
+    // TokoPay's cycleTimeoutMs is 720s (12m) on the 30-minute
+    // PAYMENT_WINDOW_MINUTES apps/order-bot/test/setup-db.ts pins, because
+    // one cycle can make up to 46 sequential gateway calls — a cycle that
+    // finishes at, say, 10 minutes is unremarkable, not a hang. Using the crypto rails' flat
     // 5-minute threshold here would page admins on ordinary slowness.
     await setTokopayCreds();
     await stampTokopayHealth(10 * 60_000);

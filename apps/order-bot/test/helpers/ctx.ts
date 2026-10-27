@@ -65,6 +65,12 @@ export interface MakeCtxOptions {
    * editAnchor's caption fallback. Opt-in; no effect when unset. */
   photoMessageIds?: number[];
   from?: { id: number; username?: string; first_name?: string; last_name?: string };
+  /** Opt-in: record every edit Telegram rejected (deleted bubble, text edit
+   * on a photo) as a `failed:<method>` entry (no args) in the sink, so a test
+   * can pin that a render never wasted a call on a bubble it knew was gone.
+   * "message is not modified" is a no-op render, not a failure, and is not
+   * recorded. Off by default: existing call-count assertions are unchanged. */
+  recordFailedCalls?: boolean;
   /** Sets ctx.callbackQuery with this data. */
   callbackData?: string;
   /** callbackQuery.message (defaults to a plain text message bubble). */
@@ -139,6 +145,10 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   const sanitize = (args: unknown[]): unknown[] =>
     args.map((a) => (a instanceof InputFile ? { __inputFile: true, filename: a.filename } : a));
 
+  const failed = (method: string) => {
+    if (opts.recordFailedCalls) sink.push({ method: `failed:${method}`, args: [] });
+  };
+
   const rec =
     (method: string) =>
     (...args: unknown[]) => {
@@ -164,6 +174,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     (...args: unknown[]) => {
       const cqMsgId = (callbackQuery?.message as { message_id?: number } | undefined)?.message_id;
       if (cqMsgId !== undefined && deletedIds.has(cqMsgId)) {
+        failed(method);
         return Promise.reject(new Error("message to edit not found"));
       }
       if (opts.editThrowsNotModified) {
@@ -185,9 +196,11 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     (...args: unknown[]) => {
       const messageId = args[1];
       if (typeof messageId === "number" && deletedIds.has(messageId)) {
+        failed(method);
         return Promise.reject(new Error("message to edit not found"));
       }
       if (method === "editMessageText" && typeof messageId === "number" && photoIds.has(messageId)) {
+        failed(method);
         return Promise.reject(telegramError(400, "Bad Request: there is no text in the message to edit", method));
       }
       sink.push({ method, args: sanitize(args) });

@@ -41,6 +41,7 @@ import { DeliveryType, OrderStatus } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, FakeConversation, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
+import { primeQuote, quoteNonce } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
@@ -577,7 +578,7 @@ describe("single-bubble checkout wizard — exact Telegram call counts", () => {
       cbMessage: { message_id: run.session.menuMsgId!, chat: { id: 42, type: "private" }, date: 0 },
       replyWithPhotoResult: { photo: [{ file_id: "qr" }] },
     }).ctx;
-    await checkout.buyNowTokopay(railTap, denom.id, 1);
+    await checkout.buyNowTokopay(railTap, denom.id, 1, quoteNonce(railTap));
 
     expect(screenCalls(run.sink, before)).toEqual(["replyWithPhoto", "deleteMessage"]);
     expect(calls(run.sink.slice(before), "deleteMessage")[0]!.args[1]).toBe(WIZARD_BUBBLE);
@@ -625,10 +626,11 @@ describe("product QR send: a failed cleanup after the photo never renders a seco
       cbMessage: { message_id: WIZARD_BUBBLE, chat: { id: 42, type: "private" }, date: 0 },
       replyWithPhotoResult: { photo: [{ file_id: "qr" }] },
     }).ctx;
+    await primeQuote(ctx, sample.product.id, 1);
     const restore = failFirstOwnershipReadOf(WIZARD_BUBBLE);
     try {
-      if (rail === "TokoPay") await checkout.buyNowTokopay(ctx, sample.product.id, 1);
-      else await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+      if (rail === "TokoPay") await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
+      else await checkout.buyNowPaydisini(ctx, sample.product.id, 1, quoteNonce(ctx));
     } finally {
       restore();
     }
@@ -679,13 +681,13 @@ describe("checkoutIntentId on the wizard path", () => {
     const staleScratch = { ...run.session.scratch };
 
     const first = makeCtx({ sharedSession: run.session, callbackData: `v1:payq:${denom.id}:1` }).ctx;
-    await checkout.buyNowTokopay(first, denom.id, 1);
+    await checkout.buyNowTokopay(first, denom.id, 1, quoteNonce(first));
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders).toHaveLength(1);
     expect(orders[0]!.checkoutIntentId).toBe(intent);
 
     const { ctx: second, sink } = customerCtx({ callbackData: `v1:payx:${denom.id}:1`, session: { ...userSession(), scratch: staleScratch } });
-    await checkout.buyNowInternal(second, denom.id, 1);
+    await checkout.buyNowInternal(second, denom.id, 1, quoteNonce(second));
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     expect(sentIncludes(sink, t(second, "checkout.duplicate_pending"))).toBe(true);
   });
@@ -706,8 +708,13 @@ describe("buyNowTokopay — customerData threading", () => {
     const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
     const customerData = JSON.stringify([{ game_id: "GID-999" }]);
     const { ctx } = customerCtx({ session: { ...userSession(), scratch: { customerData } } });
+    // The data was typed for this denomination's current input settings, as
+    // the info conversation records it next to customerData.
+    const current = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    ctx.session.scratch.customerInputOwner = JSON.stringify([denom.id, 1, current.additionalFields, current.providerInputMapping, current.nicknameCheckGameCode]);
+    await primeQuote(ctx, denom.id, 1);
 
-    await checkout.buyNowTokopay(ctx, denom.id, 1);
+    await checkout.buyNowTokopay(ctx, denom.id, 1, quoteNonce(ctx));
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
@@ -721,7 +728,8 @@ describe("buyNowTokopay — customerData threading", () => {
     await setSetting(prisma, "tokopay_secret", "S1");
     // sample.product is AUTO — the ordinary path, no gate ever fires.
     const { ctx } = customerCtx();
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);

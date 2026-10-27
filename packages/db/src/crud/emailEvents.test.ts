@@ -71,10 +71,14 @@ describe("real authoritative lifecycle producers", () => {
   it("new web order fans out once, true payment and registered completion are durable, repeated receipt dedups", async () => {
     const created = await order();
     expect((await events()).filter((r) => r.event.startsWith("order.received"))).toHaveLength(2);
+    for (const r of (await events()).filter((e) => e.event.startsWith("order.received")))
+      expect(JSON.parse(r.payloadJson)).not.toHaveProperty("payment_method");
     expect((await events()).some((r) => r.event === "payment.confirmed.customer")).toBe(false);
     await attachPaymentProof(db, created.id, { fileId: "fake-fixture-proof", txid: "trusted-admin-evidence" });
     await db.$transaction((tx) => settlePaidOrder(tx, created.id, { adminId: sample.user.id }));
-    expect((await events()).filter((r) => r.event === "payment.confirmed.customer")).toHaveLength(1);
+    const confirmed = (await events()).filter((r) => r.event === "payment.confirmed.customer");
+    expect(confirmed).toHaveLength(1);
+    expect(JSON.parse(confirmed[0]!.payloadJson)).toHaveProperty("payment_method");
     const completed = (await getOrder(db, created.id))!;
     await enqueueBuyerOrderReadyEmailIfGuest(db, completed);
     const receipts = (await events()).filter((r) => r.event === "BUYER_EMAIL_ORDER_READY");

@@ -676,10 +676,11 @@ let boundApi: Api | undefined;
 //   PER_DELIVERY_WORST_CASE_MS (15s) + CYCLE_TIMEOUT_MARGIN_MS (30s)
 //   = 10_000 + 10 * 15_000 + 30_000 = 190_000ms (190s, ~3m10s).
 //
-// Sanity check: BYBIT_BSC_PAYMENT_WINDOW_MINUTES defaults to 15 (900s) — the
-// SHORTEST payment window of any rail in this codebase, since it's the only
-// one with a real on-chain confirmation floor baked into checkout. 190s is
-// ~21% of that, still comfortably under half despite the tighter window.
+// Sanity check (pinned in poll-loop-wiring.test.ts):
+// BYBIT_BSC_PAYMENT_WINDOW_MINUTES defaults to 30 (1800s) since the
+// payment-TTL change — one of the two longest windows, because the buyer
+// usually sends from another wallet or exchange and the deposit still needs
+// its on-chain confirmation floor. 190s is ~11% of that.
 const FETCH_TIMEOUT_MS = HTTP_TIMEOUT_MS.gatewayRead;
 const WORST_CASE_CONCURRENT_DELIVERIES = 10;
 const PER_DELIVERY_WORST_CASE_MS = TELEGRAM_DOCUMENT_TIMEOUT_MS + TELEGRAM_MESSAGE_TIMEOUT_MS;

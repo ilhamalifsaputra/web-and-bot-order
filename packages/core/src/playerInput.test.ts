@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseAdditionalFields, validateCustomerData, zAdditionalFields } from "./deliveryFields";
-import { buildPlayerNicknameRequest, buildPlayerTarget, parseInputFields, inputConfigSnapshot, orderInputConfig, orderGameTargets } from "./playerInput";
+import { buildPlayerNicknameRequest, buildPlayerTarget, parseInputFields, inputConfigSnapshot, orderInputConfig, orderGameTargets, orderGameTargetLabels } from "./playerInput";
 
 const fields = parseAdditionalFields(JSON.stringify([
   { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "number", required: true, minLength: 4, maxLength: 20 },
@@ -73,5 +73,32 @@ describe("orderGameTargets", () => {
   });
   it("throws on a malformed snapshot so the caller can leave the details out", () => {
     expect(() => orderGameTargets({ additionalFields: mlbb }, "{bad", "[]")).toThrow();
+  });
+});
+
+describe("orderGameTargetLabels", () => {
+  const f = (key: string, id: string, en: string) => ({ key, label: { id, en }, type: "text", required: true });
+  const cfg = (...fs: unknown[]) => ({ additionalFields: JSON.stringify(fs) });
+  it("returns the configured label per role in the buyer's language, falling back to English", () => {
+    const denom = cfg(f("uid", "ID Pemain", "Player ID"), f("zone", "Zona", "Zone"), f("server_id", "Server", "Server name"));
+    expect(orderGameTargetLabels(denom, null, "id")).toEqual({ game_id: "ID Pemain", zone_id: "Zona", server_id: "Server" });
+    expect(orderGameTargetLabels(denom, null, "en")).toEqual({ game_id: "Player ID", zone_id: "Zone", server_id: "Server name" });
+    expect(orderGameTargetLabels(denom, null, "xx").game_id).toBe("Player ID");
+  });
+  it("leaves a role undefined when the field is missing or its label is blank", () => {
+    const labels = orderGameTargetLabels(cfg(f("uid", "   ", " ")), null, "en");
+    expect(labels).toEqual({ game_id: undefined, zone_id: undefined, server_id: undefined });
+  });
+  it("trims and caps very long labels", () => {
+    const labels = orderGameTargetLabels(cfg(f("uid", " x ", ` ${"L".repeat(80)} `)), null, "en");
+    expect(labels.game_id!.length).toBe(40);
+    expect(labels.game_id!.endsWith("…")).toBe(true);
+    expect(orderGameTargetLabels(cfg(f("uid", " x ", " y ")), null, "id").game_id).toBe("x");
+  });
+  it("resolves through the order snapshot and the explicit nickname mapping, and throws on a bad snapshot", () => {
+    const abc = cfg(f("a", "A", "A-en"), f("b", "B", "B-en"), f("c", "C", "C-en"));
+    const denom = { ...abc, providerInputMapping: JSON.stringify({ nickname: { targetKey: "c", zoneKey: "a" } }) };
+    expect(orderGameTargetLabels({ additionalFields: "[]" }, inputConfigSnapshot(denom), "en")).toEqual({ game_id: "C-en", zone_id: "A-en", server_id: undefined });
+    expect(() => orderGameTargetLabels(abc, "{bad", "en")).toThrow();
   });
 });

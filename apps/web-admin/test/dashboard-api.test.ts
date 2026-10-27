@@ -668,8 +668,9 @@ describe("GET /api/dashboard/health", () => {
   // evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled }) with no
   // `staleMs`, so it applied the crypto rails' 5-minute default to TokoPay
   // too — even though tokopayPollWatchdog (apps/order-bot/src/jobs/index.ts)
-  // uses a much wider ~820s threshold (TOKOPAY_POLL_STALE_MS) because one
-  // TokoPay reconcile cycle can legitimately make up to 50 sequential,
+  // uses a much wider threshold (TOKOPAY_POLL_STALE_MS, ~760s on the
+  // 30-minute PAYMENT_WINDOW_MINUTES test/setup-env.ts pins) because one
+  // TokoPay reconcile cycle can legitimately make up to 46 sequential,
   // individually-timed-out gateway calls. A webhook outage plus a slow
   // gateway can make a genuinely healthy cycle take 8 minutes — past the
   // 5-minute default, comfortably inside TokoPay's real threshold. Before

@@ -100,3 +100,27 @@ export function orderGameTargets(
   }
   return targets;
 }
+
+const MAX_TARGET_LABEL = 40;
+
+/** The admin-configured label of the field behind each Game ID / Zone / Server
+ * role, resolved exactly like `orderGameTargets` (the order's snapshot first,
+ * then the nickname mapping). A role is undefined when its field is missing or
+ * its label is blank, so the caller falls back to its fixed wording. Labels
+ * are trimmed and capped. Throws ValidationError on a malformed configuration. */
+export function orderGameTargetLabels(
+  denom: { additionalFields: string | null; providerInputMapping?: string | null },
+  snapshot: string | null | undefined,
+  lang: string,
+): Record<keyof GameTarget, string | undefined> {
+  const config = orderInputConfig(denom, snapshot);
+  const fields = parseAdditionalFields(config.additionalFields);
+  const keys: { targetKey: string; zoneKey?: string; serverKey?: string } = nicknameInputKeys(fields, config.providerInputMapping);
+  const labelOf = (key: string | undefined): string | undefined => {
+    const field = key ? fields.find((f) => f.key === key) : undefined;
+    const text = (lang === "id" ? field?.label.id.trim() || field?.label.en.trim() : field?.label.en.trim());
+    if (!text) return undefined;
+    return text.length > MAX_TARGET_LABEL ? `${text.slice(0, MAX_TARGET_LABEL - 1).trimEnd()}…` : text;
+  };
+  return { game_id: labelOf(keys.targetKey), zone_id: labelOf(keys.zoneKey), server_id: labelOf(keys.serverKey) };
+}

@@ -12,15 +12,20 @@ import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus, ReconciliationFindingType, StockActorType } from "@app/core/enums";
+import { langCode, OrderKind, OrderStatus, ReconciliationFindingType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { config, unusablePaymentReminderLeadWarning } from "@app/core/config";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
   prisma,
   getSettledBubbleOrder,
   listExpiredPendingOrders,
+  listExpiringPendingPayments,
+  isPaymentReminderCandidate,
+  enqueuePaymentReminderDm,
   sweepAgedUnderpaidAndFailedOrders,
-  cancelOrder,
+  cancelExpiredPendingOrder,
+  enqueueOrderExpiredDm,
   listStaleRepliedTickets,
   closeTicket,
   getUser,
@@ -65,6 +70,7 @@ import {
   pruneProcessedTelegramUpdates,
   pruneExpiredBotSessions,
 } from "@app/db";
+import { OBSERVED_PAYMENT_GRACE_MS } from "@app/core";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
@@ -446,28 +452,66 @@ export async function flushSettledOrderBubble(api: Api, orderId: number): Promis
   }
 }
 
+type AutoCancelledOrder = {
+  id: number;
+  tgId: bigint | null;
+  lang: string;
+  code: string;
+  kind: string;
+  paymentMsgChatId: bigint | null;
+  paymentMsgId: number | null;
+};
+
 /**
- * Turn the anchored payment-instructions bubble (if any) into the
- * auto-cancelled notice, and only send a fresh DM when no anchor exists or the
- * bubble is gone — so the stale Refresh/Cancel buttons never survive next to a
- * brand-new message. `editPaymentBubble` decides how: a text bubble is edited
- * in place, a QR photo bubble is deleted and replaced (the QR is worthless for
- * an order that just expired, and leaving the image sitting above a
- * "cancelled" caption is what that used to look like). Always passes
- * `onPhoto: "replace"` (Task E2: unlike the settlement flips below, this is a
- * CANCELLATION notice — the buyer has received no other message about it, so
- * the replacement is the only way they find out at all, whatever the order's
- * kind).
+ * Queue the expiry push (ORDER_EXPIRED_DM) after this process's own Telegram
+ * call left the buyer without a new message. Never throws: the order is
+ * already cancelled, and a lost push must not turn into a "could not notify"
+ * error for a notice that may have been edited in fine.
  */
-async function notifyAutoCancelled(
-  api: Api,
-  o: { id: number; tgId: bigint | null; lang: string; code: string; paymentMsgChatId: bigint | null; paymentMsgId: number | null },
-): Promise<void> {
-  if (await ownsTransactionMessage(prisma, o.id)) {
+async function queueExpiryPush(o: AutoCancelledOrder): Promise<void> {
+  try {
+    await enqueueOrderExpiredDm(prisma, { orderId: o.id, orderCode: o.code, telegramId: o.tgId, language: o.lang, kind: o.kind });
+  } catch (err) {
+    logger.error(
+      { err, orderId: o.id },
+      `Could not queue the expiry notice for auto-cancelled order ${o.code}, so its buyer gets no push about the cancellation; the payment message itself was already updated where possible.`,
+    );
+  }
+}
+
+/**
+ * Tell the buyer their expired order was cancelled — exactly once (Phase 4
+ * owner decision: edit the payment message AND push one cancel message, but
+ * never two messages for the same cancellation). Telegram notifies for a NEW
+ * message only, never for an edit, so the ORDER_EXPIRED_DM push is queued
+ * exactly when nothing new reached the buyer's chat, decided from what
+ * actually happened rather than assumed:
+ *
+ *  - tracked progress message (`tracked`, the coordinator owns it): its
+ *    FulfillmentMessageWorker renders the cancellation, and the push was
+ *    already decided inside the cancel transaction
+ *    (`cancelExpiredPendingOrder`: a text message is edited silently → push;
+ *    a QR photo is retired by a new message → no push). Only the wake here.
+ *  - anchored bubble: `editPaymentBubble` turns it into the notice. A text
+ *    bubble is edited in place (silent → push); a QR photo bubble is deleted
+ *    and replaced by a fresh message, or a dead bubble answered by the
+ *    fallback DM (both notify → no push); when even the fallback DM failed,
+ *    nothing reached the buyer, so the push is queued for the outbox's retry.
+ *    Always `onPhoto: "replace"` (Task E2: this is a CANCELLATION notice — the
+ *    replacement is how a photo bubble's buyer finds out at all).
+ *  - no anchor: the notice is sent as a DM, which notifies → no push; if that
+ *    send fails, the push is queued instead. A buyer without a Telegram id
+ *    (web or guest checkout) gets nothing.
+ */
+async function notifyAutoCancelled(api: Api, o: AutoCancelledOrder, tracked: boolean): Promise<void> {
+  if (tracked) {
     await wakeFulfillmentMessage(prisma, o.id);
     return;
   }
-  const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
+  if (o.tgId == null) return;
+  // A wallet top-up reserved no stock, so its notice has no "stock released"
+  // line (and says a late payment still lands in the balance).
+  const text = coreT(o.kind === OrderKind.WALLET_TOPUP ? "order.auto_cancelled_topup" : "order.auto_cancelled", o.lang, { code: o.code });
   const markup = notificationKb(o.lang);
   if (o.paymentMsgChatId != null && o.paymentMsgId != null) {
     const result = await editPaymentBubble(api, {
@@ -478,6 +522,9 @@ async function notifyAutoCancelled(
       onPhoto: "replace",
       fallbackDm: { telegramId: Number(o.tgId) },
     });
+    // "replaced" and "dm_sent" put a new message in the chat; "edited" did
+    // not, and "not_edited" means nothing reached the buyer at all.
+    if (result.status === "edited" || result.status === "not_edited") await queueExpiryPush(o);
     // "error" only appears once a fallback DM was actually attempted (never
     // for the sweeper's fallbackDm: null mode) — re-throwing it here
     // reproduces the pre-refactor behavior exactly: a failed fallback send
@@ -487,32 +534,118 @@ async function notifyAutoCancelled(
     if (result.status === "not_edited" && "error" in result) throw result.error;
     return;
   }
-  await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
+  try {
+    await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
+  } catch (err) {
+    await queueExpiryPush(o);
+    throw err;
+  }
 }
 
 export async function autoCancelExpiredOrders(api: Api): Promise<void> {
   const now = new Date();
   const expired = await listExpiredPendingOrders(prisma, now);
-  const orderData = expired.map((o) => ({
+  const orderData: AutoCancelledOrder[] = expired.map((o) => ({
     id: o.id,
     code: o.orderCode,
     tgId: o.user.telegramId,
     lang: langCode(o.user.language),
+    kind: o.kind,
     paymentMsgChatId: o.paymentMsgChatId,
     paymentMsgId: o.paymentMsgId,
   }));
 
   for (const o of orderData) {
     try {
-      await prisma.$transaction((tx) => cancelOrder(tx, o.id, "expired", { type: StockActorType.SYSTEM }));
+      const result = await prisma.$transaction((tx) => cancelExpiredPendingOrder(tx, o.id, now));
+      if (!result.cancelled && "reason" in result) {
+        // The provider already reported this payment and it is still
+        // confirming: the order stays open for the grace window
+        // (OBSERVED_PAYMENT_GRACE_MS) and the buyer is told nothing yet.
+        logger.info(
+          { orderId: o.id },
+          `Order ${o.code} passed its payment window, but the payment provider already reported a payment that is still confirming, so the expiry sweep is keeping it open for up to ${OBSERVED_PAYMENT_GRACE_MS / 60_000} more minutes instead of cancelling it.`,
+        );
+        continue;
+      }
+      if (!result.cancelled) {
+        // Someone else (the buyer, an admin, a payment, or another sweep
+        // instance) moved the order on between this sweep's read and its
+        // cancel, so this sweep has nothing to tell the buyer.
+        logger.info(`Order ${o.code} was no longer awaiting payment when the expiry sweep reached it, so the sweep left it alone and sent its buyer no expiry notice`);
+        continue;
+      }
       logger.info(`Order ${o.code} auto-cancelled after its payment window expired`);
       try {
-        await notifyAutoCancelled(api, o);
+        await notifyAutoCancelled(api, o, result.tracked);
       } catch (err) {
-        logger.error({ err }, `Failed to notify the customer that order ${o.id} was auto-cancelled — order is cancelled, but they won't see it until they reopen the bot`);
+        logger.error(
+          { err, orderId: o.id },
+          `Could not send the auto-cancel notice for order ${o.code} directly; the order stays cancelled, and any expiry push queued for it will still reach the buyer through the outbox.`,
+        );
       }
     } catch (err) {
       logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);
+    }
+  }
+}
+
+/**
+ * How many expiring orders one reminder tick looks at. Far above what one
+ * minute of a real shop's lead window holds; an order beyond it is not lost,
+ * since it is seen again on every tick until its window closes.
+ */
+const PAYMENT_REMINDER_BATCH_LIMIT = 500;
+
+/**
+ * Queue the one-time "your payment window is about to close" push
+ * (PAYMENT_REMINDER_DM, Phase 4 owner decision) for every unpaid order of a
+ * Telegram buyer whose deadline falls within the next
+ * `PAYMENT_REMINDER_LEAD_MINUTES` — product orders of every service and wallet
+ * top-ups alike. `config.PAYMENT_REMINDER_LEAD_MINUTES` of 0 switches it off.
+ *
+ * Enqueue only — it never sends to Telegram itself. The outbox dispatcher
+ * delivers the row, and re-reads the order right before sending, so a buyer
+ * who pays between this tick and the send gets nothing. Ticks overlap the same
+ * order for the whole lead window (and a second bot instance may run this
+ * too); the per-order dedupe key in `enqueuePaymentReminderDm` turns every
+ * repeat into a no-op, so no "already reminded" bookkeeping is needed here.
+ *
+ * `opts` exists for tests (a fixed clock, a chosen lead); the scheduler passes
+ * nothing. One order's failed enqueue is logged and the loop moves on, so a
+ * single bad row can never stop the others' reminders.
+ */
+export async function sendPaymentReminders(_api: Api, opts: { now?: Date; leadMinutes?: number } = {}): Promise<void> {
+  const leadMinutes = opts.leadMinutes ?? config.PAYMENT_REMINDER_LEAD_MINUTES;
+  if (!(leadMinutes > 0)) return;
+  const now = opts.now ?? new Date();
+  const leadMs = leadMinutes * 60_000;
+  const expiring = await listExpiringPendingPayments(prisma, now, new Date(now.getTime() + leadMs), PAYMENT_REMINDER_BATCH_LIMIT);
+  for (const order of expiring) {
+    // The listing is the expiry job's and still returns orders whose payment
+    // a provider already saw; the candidate check turns those away.
+    if (!isPaymentReminderCandidate(order, now, leadMs)) continue;
+    try {
+      // `expiresAt` is stamped once, when the order is created (the initial
+      // PAYMENT_WINDOW_MINUTES stamp, then `finalizeOrderPayment`'s or
+      // `finalizeWalletTopupPayment`'s rail window, every caller of which runs
+      // inside the order's creation transaction) and never moved later,
+      // so the deadline queued here is the one the dispatcher's send-time
+      // re-check compares against.
+      await enqueuePaymentReminderDm(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        telegramId: order.user.telegramId,
+        language: order.user.language,
+        expiresAt: order.expiresAt!,
+        kind: order.kind,
+        now,
+      });
+    } catch (err) {
+      logger.error(
+        { err, orderId: order.id },
+        `Could not queue the payment reminder for order ${order.orderCode}, so its buyer has not been reminded yet — it will be retried on the next run while the order still has more than a minute left to pay.`,
+      );
     }
   }
 }
@@ -1784,6 +1917,10 @@ export function scheduleOutboxDispatcherWatchdog(api: Api): Cron {
 }
 
 export function scheduleJobs(api: Api): Cron[] {
+  // The env schema switches the reminder off for an unusable lead instead of
+  // failing the boot; say so once here, where the reminder job is scheduled.
+  const reminderLeadWarning = unusablePaymentReminderLeadWarning(process.env.PAYMENT_REMINDER_LEAD_MINUTES);
+  if (reminderLeadWarning) logger.warn(reminderLeadWarning);
   const wrap = (name: string, fn: (api: Api) => Promise<void>) => () =>
     fn(api).catch((err) => logger.error({ err }, `Scheduled job "${name}" threw an uncaught error — this run was skipped, will retry on its next tick`));
   return [
@@ -1868,5 +2005,13 @@ export function scheduleJobs(api: Api): Cron[] {
     // already used above, and not a multiple of 5, so it also never meets the
     // five-second outbox job registered outside this list.
     new Cron("52 */10 * * * *", { protect: true }, wrap("resolveAgedUnderpaidAndFailedOrders", resolveAgedUnderpaidAndFailedOrders)),
+    // Payment reminder (Phase 4): every minute on second 47 — clear of every
+    // second above (0, 5/20/35/50, 10, 15/17/19, 21, 25, 30, 40, 45, 52) and,
+    // not being a multiple of 5, of the five-second Digiflazz dispatch
+    // registered outside this list. It writes at most one outbox row per due
+    // order. Protected so a slow tick never overlaps the next one (the dedupe
+    // key would absorb the overlap anyway, but there is no reason to pay for
+    // it).
+    new Cron("47 * * * * *", { protect: true }, wrap("sendPaymentReminders", sendPaymentReminders)),
   ];
 }

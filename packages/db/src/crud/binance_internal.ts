@@ -160,9 +160,11 @@ export async function createInternalOrder(
      * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
      * contract this enforces. */
     checkoutIntentId?: string | null;
-    /** The IDR total the buyer was shown (A6) — forwarded to createOrderDirect,
-     * which refuses with QuoteMismatchError before anything is written when the
-     * server's price no longer matches it. Absent: no quote check, as before. */
+    /** The total the buyer was quoted (A6), forwarded to createOrderDirect via
+     * the same spread and checked there before anything is written. The bot
+     * quotes it in IDR (the figure before this rail's USDT conversion), which
+     * leaves a moved rate to finalizeOrderPayment's FX freshness guard. Absent:
+     * no quote check, as before. */
     expectedTotal?: ExpectedTotal | null;
   },
 ) {
@@ -293,8 +295,9 @@ export async function clearPaymentMessageAnchorsAt(
  * the buyer pays to nowhere. A lost tracking screen is recoverable; a
  * destroyed deposit address is money. Nothing in the bot blocks two parallel
  * checkouts in one chat, so this is a reachable path, not a theoretical one —
- * handlers/checkout/timers.ts used to carry a map that looked like such a
- * guard but was never read; see its header.
+ * handlers/checkout/timers.ts (since deleted) used to carry an in-memory
+ * chat-to-order map that looked like such a guard but was never read, so it
+ * never guarded anything.
  */
 export async function setOrderPaymentMessage(db: Db, orderId: number, chatId: number | bigint, messageId: number) {
   await db.order.update({

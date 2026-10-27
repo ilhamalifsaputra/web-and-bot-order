@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { EMAIL_EVENT_REGISTRY, type EmailEventKey } from "@app/core/email";
 import { config } from "@app/core/config";
+import { awaitingPaymentNothingObserved } from "@app/core";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 import { NotificationStatus, OrderStatus } from "@app/core/enums";
 import type { Db } from "./_types";
@@ -59,7 +60,10 @@ export async function enqueueOrderEmailFact(db: Db, orderId: number, keys: Email
   for (const key of keys) await enqueueEmailEvent(db, {
     key, orderId, userId: order.userId, aggregateId: orderId, occurrence,
     ...(key.endsWith("customer") ? { to: emailRecipientFor(order.user) } : {}),
-    payload: { order_code: order.orderCode, status: order.status, payment_method: order.paymentMethod,
+    // order.received is enqueued before finalizeOrderPayment stamps the real
+    // method, so the column still holds the schema default (BINANCE_PAY) then.
+    payload: { order_code: order.orderCode, status: order.status,
+      ...(key.startsWith("order.received") ? {} : { payment_method: order.paymentMethod }),
       order_url: key.endsWith("admin")
         ? (config.ADMIN_PUBLIC_URL ? `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}/orders/${orderId}` : null)
         : (config.SHOP_PUBLIC_URL ? `${config.SHOP_PUBLIC_URL.replace(/\/+$/, "")}/account/orders` : null),
@@ -75,8 +79,7 @@ export async function enqueueOrderTransitionEmails(db: Db, orderId: number, to: 
     await enqueueOrderEmailFact(db, orderId, ["payment.underpaid.customer", "payment.underpaid.admin"]);
   if (to === OrderStatus.CANCELLED && meta === "expired" && from === OrderStatus.PENDING_PAYMENT) {
     const invoice = await db.order.findUnique({ where: { id: orderId }, select: { expiresAt: true, paidAt: true, paymentState: true, walletCreditState: true } });
-    if (invoice?.expiresAt && invoice.expiresAt <= new Date() && !invoice.paidAt &&
-      (!invoice.paymentState || invoice.paymentState === "WAITING_PAYMENT") && invoice.walletCreditState !== "NEEDS_REVIEW")
+    if (invoice?.expiresAt && invoice.expiresAt <= new Date() && awaitingPaymentNothingObserved(invoice))
       await enqueueOrderEmailFact(db, orderId, ["payment.expired.customer"]);
   }
 }

@@ -34,12 +34,14 @@ import {
   getCategoryBySlug,
   getCatalogProductBySlugWithDenominations,
   listCategoryGameVariants,
+  countCategoryProductsWithoutGameRegion,
   countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
   listNewestCatalogProducts,
   listFlashSaleProducts,
   hasActiveFlashSale,
   searchCatalog,
+  expandSearchTerms,
   searchDenominations,
   lowStockDenominations,
   setFlashSale,
@@ -754,6 +756,47 @@ describe("countCategoryProductsWithoutGameVariant", () => {
   });
 });
 
+describe("countCategoryProductsWithoutGameRegion", () => {
+  async function eligible(categoryId: number, name: string, data: { gameVariant?: string | null; gameRegion?: string | null } = {}) {
+    const p = await makeProduct(categoryId, name);
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: data.gameVariant ?? null, gameRegion: data.gameRegion ?? null } });
+    return p;
+  }
+
+  it("counts eligible region-less products and ignores labelled ones", async () => {
+    const cat = await makeCategory();
+    await eligible(cat.id, "No Region A");
+    await eligible(cat.id, "No Region B");
+    await eligible(cat.id, "With Region", { gameRegion: "Indonesia" });
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, null)).toBe(2);
+  });
+
+  it("matches the exact gameVariant, including null", async () => {
+    const cat = await makeCategory();
+    await eligible(cat.id, "Null Variant", {});
+    await eligible(cat.id, "Edition Variant", { gameVariant: "Max" });
+    await eligible(cat.id, "Other Variant", { gameVariant: "Lite" });
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, null)).toBe(1);
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, "Max")).toBe(1);
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, "Nope")).toBe(0);
+  });
+
+  it("excludes inactive, archived and unpriced products and other categories", async () => {
+    const cat = await makeCategory();
+    const sibling = await makeCategory();
+    const inactive = await eligible(cat.id, "Inactive");
+    await prisma.product.update({ where: { id: inactive.id }, data: { isActive: false } });
+    const archived = await eligible(cat.id, "Archived");
+    await setCatalogProductArchived(prisma, archived.id, true);
+    const noDenom = await makeProduct(cat.id, "Zero priced");
+    const d = await makeDenom(noDenom.id, "1 Month", "10");
+    await prisma.denomination.update({ where: { id: d.id }, data: { price: "0" } });
+    await eligible(sibling.id, "Sibling");
+    expect(await countCategoryProductsWithoutGameRegion(prisma, cat.id, null)).toBe(0);
+  });
+});
+
 describe("listCategoryGameRegions", () => {
   it("returns [] when gameVariant is set but no product has gameRegion", async () => {
     const cat = await makeCategory();
@@ -801,6 +844,141 @@ describe("searchCatalog", () => {
     // a query that only matches the denomination name should NOT surface the product
     expect((await searchCatalog(prisma, "Basic Plan", "bot", 24)).some((x) => x.id === p.id)).toBe(false);
     expect(await searchCatalog(prisma, "   ", "bot", 24)).toEqual([]);
+  });
+});
+
+describe("searchCatalog options (Game Top-up search)", () => {
+  // Later tests count active categories per group, so park what these create.
+  const created: number[] = [];
+  afterEach(async () => {
+    await prisma.category.updateMany({ where: { id: { in: created.splice(0) } }, data: { isActive: false } });
+  });
+  async function groupCategory(name: string, group: "GAME_TOPUP" | "PREMIUM_APPS") {
+    const cat = await createCategory(prisma, { name, group });
+    created.push(cat.id);
+    return cat;
+  }
+
+  async function gameProduct(cat: { id: number }, name: string) {
+    const p = await makeProduct(cat.id, name);
+    await makeDenom(p.id, "Pack", "10");
+    return p;
+  }
+
+  it("restricts to the given groups and counts a null group as Premium Apps", async () => {
+    const tag = `Grp${Math.random().toString(36).slice(2, 8)}`;
+    const game = await groupCategory(`${tag} G`, "GAME_TOPUP");
+    const premium = await groupCategory(`${tag} P`, "PREMIUM_APPS");
+    const legacy = await makeCategory(`${tag} L`);
+    created.push(legacy.id);
+    const g = await gameProduct(game, `${tag} Game`);
+    const p = await gameProduct(premium, `${tag} App`);
+    const l = await gameProduct(legacy, `${tag} Legacy`);
+
+    const gameOnly = await searchCatalog(prisma, tag, "bot", 24, { groups: ["GAME_TOPUP"] });
+    expect(gameOnly.map((x) => x.id)).toEqual([g.id]);
+    const premiumOnly = await searchCatalog(prisma, tag, "bot", 24, { groups: ["PREMIUM_APPS"] });
+    expect(premiumOnly.map((x) => x.id).sort()).toEqual([p.id, l.id].sort());
+    // No options: unchanged behavior (every active group, name order).
+    expect((await searchCatalog(prisma, tag, "bot", 24)).map((x) => x.id).sort()).toEqual([g.id, p.id, l.id].sort());
+  });
+
+  it("intersects the requested groups with the channel's active services", async () => {
+    const tag = `Off${Math.random().toString(36).slice(2, 8)}`;
+    const game = await groupCategory(`${tag} G`, "GAME_TOPUP");
+    await gameProduct(game, `${tag} Game`);
+    await setSetting(prisma, "service_game_topup_enabled_bot", "false");
+    try {
+      expect(await searchCatalog(prisma, tag, "bot", 24, { groups: ["GAME_TOPUP"] })).toEqual([]);
+    } finally {
+      await prisma.setting.deleteMany({ where: { key: "service_game_topup_enabled_bot" } });
+    }
+  });
+
+  it("ranks exact name, then prefix, then substring, then description-only; ties by name", async () => {
+    const tag = `Rank${Math.random().toString(36).slice(2, 8)}`;
+    const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
+    const sub = await gameProduct(cat, `A ${tag} Sub`);
+    const prefixB = await gameProduct(cat, `${tag} Bravo`);
+    const prefixA = await gameProduct(cat, `${tag} Alpha`);
+    const exact = await gameProduct(cat, tag.toUpperCase());
+    const descOnly = await gameProduct(cat, "Zeta Unrelated");
+    await prisma.product.update({ where: { id: descOnly.id }, data: { description: `about ${tag}` } });
+
+    const hits = await searchCatalog(prisma, `  ${tag.toLowerCase()}  `, "bot", 24, { groups: ["GAME_TOPUP"] });
+    expect(hits.map((x) => x.id)).toEqual([exact.id, prefixA.id, prefixB.id, sub.id, descOnly.id]);
+  });
+
+  it("ranks exact and prefix matches ahead of name-order filler", async () => {
+    const tag = `zzq${Math.random().toString(36).slice(2, 8)}`;
+    const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
+    // 12 name-substring matches (more than the limit of 5) that sort before the exact/prefix matches in plain name order.
+    for (let i = 0; i < 12; i += 1) {
+      await gameProduct(cat, `Aa ${tag} ${String(i).padStart(3, "0")}`);
+    }
+    const prefix = await gameProduct(cat, `${tag} Zulu`);
+    const exact = await gameProduct(cat, tag.toUpperCase());
+
+    const hits = await searchCatalog(prisma, tag, "bot", 5, { groups: ["GAME_TOPUP"] });
+    expect(hits.map((x) => x.id).slice(0, 2)).toEqual([exact.id, prefix.id]);
+    expect(hits).toHaveLength(5);
+    // The no-options path is unchanged: plain name order, so the exact match is cut off.
+    const plain = await searchCatalog(prisma, tag, "bot", 5);
+    expect(plain.map((x) => x.id)).not.toContain(exact.id);
+  });
+
+  it("collapses inner whitespace in the query", async () => {
+    const tag = `Ws${Math.random().toString(36).slice(2, 8)}`;
+    const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
+    const p = await gameProduct(cat, `${tag} Mobile Legends`);
+    const hits = await searchCatalog(prisma, `${tag}   mobile 	 legends`, "bot", 24, { groups: ["GAME_TOPUP"] });
+    expect(hits.map((x) => x.id)).toEqual([p.id]);
+  });
+
+  it("also finds a product through an alias counterpart from the injected knowledge base", async () => {
+    const tag = `Als${Math.random().toString(36).slice(2, 8)}`;
+    const cat = await groupCategory(`${tag} C`, "GAME_TOPUP");
+    const p = await gameProduct(cat, `${tag} Mobile Legends`);
+    const kb = { tokens: [], aliases: [{ alias: `${tag}ml`, expandsTo: `${tag} Mobile Legends`, reason: "t" }], overrides: [] } as never;
+    expect(await searchCatalog(prisma, `${tag}ml`, "bot", 24, { groups: ["GAME_TOPUP"] })).toEqual([]);
+    const hits = await searchCatalog(prisma, `${tag.toUpperCase()}ML`, "bot", 24, { groups: ["GAME_TOPUP"], aliases: kb });
+    expect(hits.map((x) => x.id)).toEqual([p.id]);
+  });
+});
+
+describe("expandSearchTerms", () => {
+  const kb = (aliases: Array<{ alias: string; expandsTo: string }>) =>
+    ({ tokens: [], aliases: aliases.map((a) => ({ ...a, reason: "t" })), overrides: [] }) as never;
+
+  it("returns just the collapsed query when no alias matches or no knowledge is given", () => {
+    expect(expandSearchTerms("  mobile   legends ", undefined)).toEqual(["mobile legends"]);
+    expect(expandSearchTerms("ff", kb([]))).toEqual(["ff"]);
+    expect(expandSearchTerms("   ", kb([{ alias: "ff", expandsTo: "Free Fire" }]))).toEqual([]);
+  });
+
+  it("adds the counterpart in both directions, matching on the detection normalization", () => {
+    const k = kb([{ alias: "ML", expandsTo: "Mobile Legends" }]);
+    expect(expandSearchTerms("ml", k)).toEqual(["ml", "Mobile Legends"]);
+    expect(expandSearchTerms("  mobile   LEGENDS ", k)).toEqual(["mobile LEGENDS", "ML"]);
+    expect(expandSearchTerms("mobile", k)).toEqual(["mobile"]);
+  });
+
+  it("dedupes terms", () => {
+    const k = kb([{ alias: "ff", expandsTo: "ff" }]);
+    expect(expandSearchTerms("ff", k)).toEqual(["ff"]);
+  });
+
+  it("dedupes counterparts case-insensitively across entries", () => {
+    const k = kb([
+      { alias: "ml", expandsTo: "Mobile Legends" },
+      { alias: "ML", expandsTo: "mobile legends" },
+    ]);
+    expect(expandSearchTerms("ml", k)).toEqual(["ml", "Mobile Legends"]);
+  });
+
+  it("caps the terms at four, keeping the query first and entries in order", () => {
+    const k = kb(["a", "b", "c", "d", "e"].map((x) => ({ alias: "ml", expandsTo: `Game ${x}` })));
+    expect(expandSearchTerms("ml", k)).toEqual(["ml", "Game a", "Game b", "Game c"]);
   });
 });
 

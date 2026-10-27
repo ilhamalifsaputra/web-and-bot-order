@@ -5,7 +5,7 @@ import { customerProgressPhase, fulfillmentProviderFor } from "@app/core/orderFu
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatUsdt } from "@app/core/formatters";
 import { t } from "@app/core/i18n";
-import { orderGameTargets } from "@app/core/playerInput";
+import { orderGameTargets, orderGameTargetLabels } from "@app/core/playerInput";
 import { decryptDeliveredContent } from "@app/core/credentialCrypto";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -53,9 +53,10 @@ function gameReceiptDetails(order: MessageRow["order"], lang: string): string[] 
   if (first) {
     try {
       const targets = orderGameTargets(first.product, order.inputConfigSnapshot, order.customerData);
+      const labels = orderGameTargetLabels(first.product, order.inputConfigSnapshot, lang);
       for (const [label, name] of [["transaction.game_id", "game_id"], ["transaction.zone_id", "zone_id"], ["transaction.server_id", "server_id"]] as const) {
         const found = [...new Set(targets.map(target => target[name]).filter((v): v is string => !!v))];
-        if (found.length) lines.push(`${escape(t(label, lang))}: <code>${escape(found.join(", "))}</code>`);
+        if (found.length) lines.push(`${escape(labels[name] ?? t(label, lang))}: <code>${escape(found.join(", "))}</code>`);
       }
     } catch (error) {
       logger.warn({ orderCode: order.orderCode, errorName: error instanceof Error ? error.name : typeof error },

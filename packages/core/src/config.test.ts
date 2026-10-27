@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Env } from "./config";
+import { Env, unusablePaymentReminderLeadWarning } from "./config";
 
 // DATABASE_URL_PRISMA has no default (it's required — see config.ts) so every
 // parse() call below needs a value; these tests are exercising unrelated
@@ -35,5 +35,67 @@ describe("config schema", () => {
   it("treats empty/whitespace BOT_USERNAME as undefined", () => {
     expect(Env.parse({ ...baseEnv, BOT_USERNAME: "" }).BOT_USERNAME).toBeUndefined();
     expect(Env.parse({ ...baseEnv, BOT_USERNAME: "  " }).BOT_USERNAME).toBeUndefined();
+  });
+
+  // Owner decision (Game Top-up refactor, Phase 4): the per-rail payment
+  // windows. Parsed from an env with none of the window keys set, so this
+  // pins the schema defaults themselves — the test harnesses and a local
+  // `.env` may still set explicit values, and an explicit value always wins.
+  it("defaults each rail's payment window to the owner-approved minutes", () => {
+    const parsed = Env.parse(baseEnv);
+    expect(parsed.PAYMENT_WINDOW_MINUTES).toBe(10); // TokoPay QRIS, PayDisini, initial stamp
+    expect(parsed.INTERNAL_PAYMENT_WINDOW_MINUTES).toBe(10); // Binance Pay
+    expect(parsed.BYBIT_PAYMENT_WINDOW_MINUTES).toBe(10); // Bybit UID
+    expect(parsed.BYBIT_BSC_PAYMENT_WINDOW_MINUTES).toBe(30); // Bybit BSC on-chain
+    expect(parsed.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES).toBe(30); // NOWPayments hosted invoice
+  });
+
+  // Owner decision (Phase 4): one reminder push ~5 minutes before the window
+  // closes; 0 switches it off. A value that is not a usable positive number
+  // must never turn into something surprising (a negative lead, NaN
+  // arithmetic in the job) — it switches the reminder off instead.
+  it("defaults the payment reminder lead to 5 minutes, also for a blank line", () => {
+    expect(Env.parse(baseEnv).PAYMENT_REMINDER_LEAD_MINUTES).toBe(5);
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(5);
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "  " }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(5);
+  });
+
+  it("reads an explicit payment reminder lead, and 0 disables it", () => {
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "3" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(3);
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "0" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(0);
+  });
+
+  it.each(["-5", "abc", "NaN", "Infinity", "0.5"])(
+    "treats an unusable payment reminder lead (%s) as disabled instead of failing the boot",
+    (raw) => {
+      expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: raw }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(0);
+    },
+  );
+
+  // The boot never fails over this value, so an admin who mistyped it would
+  // otherwise only find out when buyers stop getting reminders.
+  it.each(["-5", "abc", "NaN", "Infinity", "0.5"])(
+    "describes an unusable payment reminder lead (%s) in a full sentence for a boot-time warning",
+    (raw) => {
+      const warning = unusablePaymentReminderLeadWarning(raw);
+      expect(warning).toContain("PAYMENT_REMINDER_LEAD_MINUTES");
+      expect(warning).toContain(JSON.stringify(raw));
+      expect(warning).toMatch(/switched off/);
+      expect(warning).toMatch(/\.$/);
+    },
+  );
+
+  it.each([undefined, "", "  ", "0", "5", "4.9"])("has no warning for a usable or deliberately-off payment reminder lead (%s)", (raw) => {
+    expect(unusablePaymentReminderLeadWarning(raw)).toBeNull();
+  });
+
+  it("rounds a fractional payment reminder lead down to whole minutes", () => {
+    expect(Env.parse({ ...baseEnv, PAYMENT_REMINDER_LEAD_MINUTES: "4.9" }).PAYMENT_REMINDER_LEAD_MINUTES).toBe(4);
+  });
+
+  it("lets an explicit env value override a payment window default", () => {
+    const parsed = Env.parse({ ...baseEnv, PAYMENT_WINDOW_MINUTES: "30", BYBIT_BSC_PAYMENT_WINDOW_MINUTES: "15" });
+    expect(parsed.PAYMENT_WINDOW_MINUTES).toBe(30);
+    expect(parsed.BYBIT_BSC_PAYMENT_WINDOW_MINUTES).toBe(15);
   });
 });

@@ -799,6 +799,33 @@ export const NotificationEvent = {
   // `chat_id` plus ticket_id and buyer_language, NOT order-scoped
   // (orderId: null).
   TICKET_CLOSED_DM: "TICKET_CLOSED_DM",
+  // Buyer DM (not a channel post): the one push a Telegram buyer gets when
+  // about `PAYMENT_REMINDER_LEAD_MINUTES` (default 5) of an unpaid order's
+  // payment window are left — product orders of every service and wallet
+  // top-ups alike (Phase 4 owner decision). Enqueued only by the order-bot's
+  // `sendPaymentReminders` job, through `enqueuePaymentReminderDm`, with the
+  // dedupe key `payment_reminder:<orderId>`, so it is queued at most once per
+  // order however many ticks or instances try. The dispatcher re-reads the
+  // order right before sending and SKIPS (keeping the key) unless it still
+  // awaits payment with more than a minute left. payload carries `chat_id`
+  // plus order_code, expires_at (ISO), minutes_left and buyer_language —
+  // never credentials or amounts.
+  PAYMENT_REMINDER_DM: "PAYMENT_REMINDER_DM",
+  // Buyer DM (not a channel post): the one push a Telegram buyer gets when
+  // the expiry sweep (`autoCancelExpiredOrders`) cancels their unpaid order —
+  // product orders and wallet top-ups alike (Phase 4 owner decision). Queued
+  // ONLY when the cancellation itself put no new message in the buyer's chat:
+  // a payment message edited in place makes no sound on Telegram, while a
+  // replacement message or a fallback DM already did, and a second message
+  // then would be a double notification. Never queued for a cancellation by
+  // the buyer or an admin. Dedupe key `order_expired:<orderId>`; the
+  // dispatcher re-reads the order right before sending and SKIPS (keeping the
+  // key) unless it is still CANCELLED with no payment seen — a late wallet
+  // top-up payment can re-open and credit a cancelled top-up. payload carries
+  // `chat_id` plus order_code, buyer_language and is_wallet_topup (a top-up
+  // reserved no stock, so its text has no "stock released" line) — never
+  // credentials or amounts.
+  ORDER_EXPIRED_DM: "ORDER_EXPIRED_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

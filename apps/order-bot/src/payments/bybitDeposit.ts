@@ -570,9 +570,9 @@ let boundApi: Api | undefined;
 //     assumption, the same style bybitBscConfirmationTracker.ts's own
 //     MAX_ORDERS_PER_CYCLE=8 uses (see its derivation comment) — NOT the raw
 //     `limit: "50"` fetchRecentDeposits asks Bybit for. Multiplying by 50
-//     would produce a ~790s deadline that blows past HALF of Bybit BSC's own
-//     15-minute payment window (see bybitBscDeposit.ts's identical
-//     derivation) for no real safety benefit: `pollLoop.ts`'s own abandon
+//     would produce a ~790s deadline that blows past HALF of this rail's own
+//     10-minute payment window (and of the 15-minute BSC window it was
+//     first sized against) for no real safety benefit: `pollLoop.ts`'s own abandon
 //     deadline doesn't stop a cycle's real work — an abandoned cycle "may
 //     still complete in the background" (see its module doc-comment) — it
 //     only decides how fast a genuine hang gets NOTICED. A smaller, still-
@@ -583,8 +583,11 @@ let boundApi: Api | undefined;
 //   = 10_000 + 10 * 15_000 + 30_000 = 190_000ms (190s, ~3m10s).
 //
 // Sanity check (poll-loop-wiring.test.ts pins this the same way it does for
-// the QRIS rails): BYBIT_PAYMENT_WINDOW_MINUTES defaults to 30 (1800s); 190s
-// is ~11% of that, comfortably under half.
+// the QRIS rails, against both the live config and the schema default):
+// BYBIT_PAYMENT_WINDOW_MINUTES defaults to 10 (600s) since the payment-TTL
+// change; 190s is ~32% of that, still under half. A window under ~6.4
+// minutes would break the check — shrink WORST_CASE_CONCURRENT_DELIVERIES
+// before configuring one.
 const FETCH_TIMEOUT_MS = HTTP_TIMEOUT_MS.gatewayRead;
 const WORST_CASE_CONCURRENT_DELIVERIES = 10;
 const PER_DELIVERY_WORST_CASE_MS = TELEGRAM_DOCUMENT_TIMEOUT_MS + TELEGRAM_MESSAGE_TIMEOUT_MS;

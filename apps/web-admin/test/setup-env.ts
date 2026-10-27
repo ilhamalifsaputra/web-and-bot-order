@@ -22,6 +22,11 @@ process.env.BOT_USERNAME = "TestBot";
 process.env.BINANCE_PAY_ID = "111222333";
 process.env.USE_UNIQUE_CENTS = "0";
 process.env.DEFAULT_LANGUAGE = "en";
+// Pinned like apps/order-bot/test/setup-db.ts does, so the dashboard's
+// QRIS staleness tests (whose reconcile budget scales with this window —
+// packages/core/src/payments/reconcileCycleBudget.ts) do not change meaning
+// when a developer's `.env` moves to the 10-minute default.
+process.env.PAYMENT_WINDOW_MINUTES = "30";
 
 const schemaEnv = await provisionPgTestSchema("webadmin");
 export const DB_URL = schemaEnv.url;

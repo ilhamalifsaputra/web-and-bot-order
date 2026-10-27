@@ -146,6 +146,77 @@ ditemukan saat menyusun dokumentasi ini — schema-drift DB, lihat bagian
 (jika stok ada), atau `creditOrderToBalance` (kredit ke saldo pembeli jika
 tidak bisa di-deliver). Jangan abaikan alert ini — dana pembeli sudah masuk.
 
+### Pembayaran tercatat `matched` di ledger, tapi order `CANCELLED` dan tidak terkirim
+
+**Diagnosis:** proses mati (restart, OOM, koneksi DB putus) tepat di antara
+klaim ledger (`processed_*_tx`, outcome `matched`, di-commit sendiri) dan
+transaksi delivery. Order tetap `PENDING_PAYMENT`, lalu poller/webhook
+memulihkannya otomatis setelah klaim berumur 2 menit
+(`STALE_MATCHED_CLAIM_MS`, `packages/db/src/crud/_staleClaim.ts`). Kalau
+`expiresAt` keburu lewat (crash di menit-menit terakhir jendela 10 menit),
+`autoCancelExpiredOrders` membatalkan order dan pemulihan tidak mungkin lagi:
+`reclaimStaleMatchedClaim` (`_staleClaim.ts`) menolak order produk yang bukan `PENDING_PAYMENT`, retry
+berikutnya hanya log `already_processed` (bukan `stale`), dan tombol kredit
+(`canCreditCancelled`, `packages/db/src/crud/orders.ts`) tidak muncul karena
+`orderHasIncomingLedgerPayment` (`packages/db/src/crud/reports.ts`) hanya
+menghitung `delivery_failed`/`unmatched`.
+
+**Alert:** sejak follow-up item 2, `cancelOrder` mengirim DM ke setiap admin
+(`ADMIN_STALE_PAYMENT`, teks "payment ... was claimed, but the order was
+cancelled before it was delivered" / "pembayaran ... sudah tercatat, tapi
+pesanan dibatalkan sebelum dikirim"), satu kali per admin per order, saat
+order produk `PENDING_PAYMENT` tanpa `paid_at` dibatalkan (auto-cancel,
+pembeli, atau admin) padahal ada baris `matched` untuknya
+(`orderMatchedLedgerClaim`, `reports.ts`). Alert itu tidak mengkredit apa pun
+dan tidak mengubah baris ledger.
+
+**Fix (manual; jalur kredit otomatis masih keputusan pemilik) — HANYA order
+produk:** dari alert (atau dengan mencari baris ledger `matched` yang
+`order_id`-nya menunjuk order produk `CANCELLED` dengan `paid_at` kosong),
+cocokkan dengan dashboard gateway, lalu selesaikan dana pembeli secara manual
+(kredit saldo lewat penyesuaian admin atau refund). Top-up dompet tidak
+menerima alert ini, karena alasan di bawah.
+
+**JANGAN lakukan ini untuk top-up dompet (`kind = WALLET_TOPUP`).** Top-up yang
+`CANCELLED` dengan klaim `matched` tetap bisa diklaim ulang dan dikreditkan
+otomatis saat webhook/poller berikutnya (`isLateSettleableWalletTopup`,
+`packages/db/src/crud/wallet_topup.ts`). Kredit manual di atasnya membuat
+saldo terkredit dua kali, karena status order tetap `CANCELLED` dan
+penyelesaian otomatis masih lolos. Biarkan top-up menyelesaikan dirinya; kalau
+tidak ada retry yang akan datang, keluarkan dulu baris ledger dari `matched`
+(atau blokir klaim ulangnya) sebelum mengkredit manual.
+
+**Masih keputusan pemilik:** jalur kredit untuk kasus ini belum dibangun
+(alert-nya sudah) — lihat `docs/game-topup-refactor-phase1-design.md` §9.1.
+
+### Order NOWPayments lewat `expiresAt` tapi belum dibatalkan, atau alert "still confirming"
+
+**Diagnosis:** NOWPayments sudah melaporkan pembayaran (`payment_state`
+`PAYMENT_DETECTED`/`VERIFYING`) tapi belum selesai dikonfirmasi saat jendela
+bayar habis. Order produk seperti ini sengaja **tidak** dibatalkan selama
+30 menit setelah `expiresAt` (`OBSERVED_PAYMENT_GRACE_MS`,
+`packages/core/src/paymentReminder.ts`): auto-cancel melewatinya (log info
+"... keeping it open for up to 30 more minutes ...") dan poller NOWPayments
+tetap memeriksanya, jadi pembayaran yang selesai dalam masa itu tetap
+terkirim normal. Lewat masa itu order dibatalkan seperti biasa dan setiap
+admin menerima satu DM `ADMIN_UNCONFIRMABLE_PAYMENT` ("... never completed,
+so the order has been cancelled" / "... tidak pernah selesai, jadi pesanan
+sudah dibatalkan"). Alert yang sama juga muncul bila NOWPayments kemudian
+menandai pembayarannya `failed`/`expired` (status itu tidak mengembalikan
+`payment_state`), jadi periksa dashboard sebelum refund. Top-up dompet tidak
+ditahan (pembayaran yang terlambat tetap menyelesaikannya otomatis).
+
+Dua bentuk alert admin `ADMIN_STALE_PAYMENT` — `claim_cancelled`
+(`enqueueAdminClaimCancelledPayment`: pembayaran sudah tercatat tapi pesanan
+dibatalkan) dan alert webhook terlambat untuk order yang sudah basi
+(`enqueueAdminStalePayment`) — bisa merujuk ke **pembayaran yang sama**, jadi
+jangan selesaikan (refund atau kredit saldo) pembayaran itu dua kali.
+
+**Fix:** dalam masa tenggang, tidak perlu tindakan. Setelah alert, periksa
+pembayaran di dashboard NOWPayments; bila dananya masuk, selesaikan manual
+(refund atau kredit saldo) — tidak ada pengiriman otomatis untuk order yang
+sudah dibatalkan.
+
 ### Webhook gateway tidak pernah sampai (order menumpuk PENDING lalu auto-cancel)
 
 **Diagnosis:** Callback URL belum didaftarkan di dashboard merchant
@@ -162,22 +233,27 @@ cuma webhook-nya) — bukan lagi silent sampai order menumpuk lalu
 auto-cancel. Ketiga rail QRIS/IDR (TokoPay, PayDisini, NOWPayments) sekarang
 punya watchdog sendiri (`tokopayPollWatchdog`/`paydisiniPollWatchdog`/
 `nowpaymentsPollWatchdog` di `apps/order-bot/src/jobs/index.ts`): begitu satu
-siklus tidak selesai dalam jendela stale rail tersebut (~13,7 menit untuk
-ketiga rail — TokoPay, PayDisini, dan NOWPayments — lebih lebar dari 5 menit
-milik rail crypto, karena satu siklus QRIS bisa sampai 50 panggilan gateway
-berurutan), admin di-DM Telegram sekali per insiden dan rail-nya tampil merah
-di kartu Business Health panel admin. Angka ~13,7 menit itu berlaku untuk
+siklus tidak selesai dalam jendela stale rail tersebut, admin di-DM
+Telegram sekali per insiden dan rail-nya tampil merah di kartu Business
+Health panel admin. Jendela stale = cycle-timeout rail + `POLL_INTERVAL_SECONDS`
++ 30 detik, dan cycle-timeout itu diturunkan dari jendela bayar rail
+(`reconcileBudgetForWindow`, `packages/core/src/payments/reconcileCycleBudget.ts`,
+maksimal 40% jendela bayar): dengan default sekarang ~4,7 menit untuk TokoPay
+dan PayDisini (jendela bayar 10 menit, 14 panggilan gateway per siklus,
+cycle-timeout 240 detik) dan ~12,7 menit untuk NOWPayments (jendela 30 menit,
+46 panggilan per siklus, cycle-timeout 720 detik). Angka itu berlaku untuk
 poller yang benar-benar berhenti (proses mati atau loop-nya sudah tidak
 jalan sama sekali, jadi heartbeat memang tidak pernah ditulis) — kalau
 poller-nya masih hidup tapi tiap siklus hang lalu ditinggalkan (abandoned)
 berulang-ulang, staleness check ini justru TIDAK pernah kepicu, karena
 `onCycleTimeout` di tiap rail menulis heartbeat baru (me-refresh `lastRun`)
-persis di titik cycle-timeout rail itu sendiri (~780 detik untuk ketiga rail
-— TokoPay, PayDisini, dan NOWPayments) — selalu lebih cepat dari jendela
-stale-nya sendiri. Untuk kasus hang-berulang ini, yang memicu alert adalah
-rule lain: 3 siklus gagal beruntun (`FAILURE_STREAK_ALERT_THRESHOLD`),
-sekitar 39 menit untuk ketiga rail QRIS/IDR — sudah melewati jendela bayar
-30 menit default, jadi order yang baru dibuat di awal rentang itu bisa keburu
+persis di titik cycle-timeout rail itu sendiri (240 detik untuk TokoPay
+dan PayDisini, 720 detik untuk NOWPayments, dengan default sekarang) — selalu
+lebih cepat dari jendela stale-nya sendiri. Untuk kasus hang-berulang ini,
+yang memicu alert adalah rule lain: 3 siklus gagal beruntun
+(`FAILURE_STREAK_ALERT_THRESHOLD`), sekitar 12 menit untuk TokoPay/PayDisini
+dan 36 menit untuk NOWPayments — tetap sedikit melewati jendela bayar rail
+itu sendiri, jadi order yang baru dibuat di awal rentang itu bisa keburu
 expired sebelum admin sempat di-DM. Watchdog hanya aktif kalau kredensial
 rail terkait sudah diisi di Settings — rail yang memang belum dipakai toko
 tidak akan pernah memicu alert.

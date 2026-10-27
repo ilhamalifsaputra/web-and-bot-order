@@ -15,6 +15,67 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 | `ADMIN_IDS` | CSV angka, default kosong | Telegram ID admin. **Union** dengan Setting `admin_ids` (bukan saling timpa) — hapus dari satu sisi saja tidak mencabut akses. |
 | `SUPPORT_GROUP_ID` | opsional, number | Grup Telegram untuk mirror notifikasi support. |
 
+## Payment — jendela bayar per rail
+
+Berapa lama pembeli boleh membayar sebelum pesanan dibatalkan otomatis
+(`autoCancelExpiredOrders`). Berlaku untuk bot **dan** storefront, termasuk
+top-up saldo wallet (memakai config yang sama).
+
+| Rail | Variabel | Default |
+|---|---|---|
+| TokoPay QRIS, PayDisini (juga stempel awal setiap pesanan) | `PAYMENT_WINDOW_MINUTES` | `10` |
+| Binance Pay (Internal Transfer) | `INTERNAL_PAYMENT_WINDOW_MINUTES` | `10` |
+| Bybit UID (Internal Transfer) | `BYBIT_PAYMENT_WINDOW_MINUTES` | `10` |
+| Bybit BSC (on-chain BEP20) | `BYBIT_BSC_PAYMENT_WINDOW_MINUTES` | `30` |
+| NOWPayments (hosted invoice) | `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` |
+
+- **Nilai eksplisit di `.env` selalu menang atas default.** `.env` lama yang
+  masih berisi `30/15/30/15/30` tetap memakai jendela lama — saat deploy,
+  **edit atau hapus kelima baris itu di `.env`** agar default baru berlaku.
+- Pesanan yang sudah dibuat tetap memakai `expiresAt` tersimpannya; nilai baru
+  hanya berlaku untuk pesanan baru.
+- Rail deposit (Binance, Bybit UID, Bybit BSC) tetap ketat: deposit yang masuk
+  setelah `expiresAt` tidak dicocokkan. Ini juga berlaku untuk deposit yang
+  dikirim **sebelum** `expiresAt` tetapi baru terlihat oleh poller sesudahnya
+  (backoff poll sampai 30 s, jeda laporan exchange): poller hanya mencocokkan
+  pesanan yang `expiresAt`-nya masih di depan, jadi deposit itu tercatat
+  `unmatched` dan masuk antrean manual-match di Payments ledger.
+- Rail webhook (TokoPay, PayDisini, NOWPayments): pembayaran yang datang
+  setelah pesanan dibatalkan otomatis tetap masuk alur "pembayaran basi →
+  alert admin" yang sudah ada (tanpa grace tambahan, tanpa kredit wallet
+  otomatis).
+- Anggaran siklus poller rekonsiliasi TokoPay/PayDisini/NOWPayments diturunkan
+  dari jendela ini (`packages/core/src/payments/reconcileCycleBudget.ts`):
+  satu siklus maksimal 40% jendela (10 menit → 14 pesanan/siklus, 240 s;
+  30 menit → 46 pesanan/siklus, 720 s).
+
+### Pengingat pembayaran
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `PAYMENT_REMINDER_LEAD_MINUTES` | `5` | Berapa menit sebelum `expiresAt` pembeli Telegram menerima **satu** pengingat bayar (`PAYMENT_REMINDER_DM`). `0` mematikan pengingat; nilai negatif, bukan angka, atau di bawah 1 juga dianggap mati (boot tidak gagal, order-bot menulis satu peringatan di log saat start). Baris kosong = default. |
+
+- Berlaku untuk semua service dan semua rail, termasuk top-up saldo wallet;
+  hanya pesanan `PENDING_PAYMENT` yang belum dibayar, pembelinya punya
+  Telegram ID (pesanan web/guest tanpa Telegram tidak dikirimi), dan jendela
+  bayarnya **lebih panjang** dari nilai ini.
+- Job `sendPaymentReminders` (order-bot, tiap menit di detik 47) hanya
+  meng-enqueue ke `notification_outbox` dengan dedupe key
+  `payment_reminder:<orderId>` — paling banyak satu pengingat per pesanan,
+  walau job berjalan berkali-kali atau di dua instance.
+- Dispatcher membaca ulang pesanan tepat sebelum mengirim dan melewati
+  (status `SKIPPED`, dedupe key tetap) bila pesanan sudah dibayar, dibatalkan,
+  atau sisa waktunya tinggal kurang dari 1 menit. Sisa waktu di pesan dihitung
+  saat dikirim, deadline ditampilkan `yyyy-LL-dd HH:mm WIB`.
+- Hanya pesanan yang **belum terlihat pembayarannya** yang diingatkan:
+  `paymentState` kosong atau `WAITING_PAYMENT`, tanpa `paidAt`, dan
+  `walletCreditState` bukan `NEEDS_REVIEW`. State `PAYMENT_DETECTED`,
+  `VERIFYING`, `PAID`, `UNDERPAID`, `FAILED`, `EXPIRED`, `REFUNDED` (dan state
+  baru apa pun) menekan pengingat, baik saat enqueue maupun saat kirim
+  (`SKIPPED` dengan alasan `PAYMENT_IN_PROGRESS` atau
+  `PAYMENT_ALREADY_RECEIVED`) — agar pembeli yang transfernya sudah terdeteksi
+  tidak membayar dua kali.
+
 ## Payment — Binance Pay (manual, legacy fallback)
 
 | Variabel | Default | Keterangan |
@@ -22,7 +83,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 | `BINANCE_PAY_ID` | `""` (kosong = nonaktif) | ID Binance Pay untuk jalur manual (upload bukti + approve admin). Hanya tampil jika TIDAK ada metode auto-confirm aktif. |
 | `BINANCE_QR_PATH` | opsional | Path gambar QR statis untuk Binance Pay manual. |
 | `CURRENCY` | `"USDT"` | Mata uang tampilan default (legacy). |
-| `PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar untuk Binance Pay manual. |
+| `PAYMENT_WINDOW_MINUTES` | `10` | Jendela bayar TokoPay QRIS dan PayDisini, sekaligus stempel `expiresAt` awal setiap pesanan sebelum rail terpilih menimpanya. Lihat "jendela bayar per rail" di atas. |
 | `USE_UNIQUE_CENTS` | `true` (looseBool) | Tambah desimal unik ke total agar matching by-amount (Bybit/Binance fallback) tidak ambigu. **Jangan matikan** jika pakai Bybit Internal Transfer. |
 
 ## Payment — Binance Internal Transfer (UID, auto-confirm)
@@ -33,7 +94,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | opsional | **Wajib READ-ONLY** (tanpa izin trading/withdraw). Hanya untuk baca riwayat transfer masuk. |
 | `BINANCE_API_BASE` | `https://api.binance.com` | Base URL API. |
 | `POLL_INTERVAL_SECONDS` | `10` | Interval poll Binance (HANYA Binance — Bybit punya interval sendiri). |
-| `INTERNAL_PAYMENT_WINDOW_MINUTES` | `15` | Jendela bayar untuk metode ini. |
+| `INTERNAL_PAYMENT_WINDOW_MINUTES` | `10` | Jendela bayar untuk metode ini. |
 | `USDT_IDR_RATE` | opsional, number | Override manual kurs (jarang dipakai — biasanya dari Setting `usd_idr_rate`, auto-update). |
 
 ## Payment — Bybit Internal Transfer (UID, off-chain instant)
@@ -43,15 +104,22 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 | `BYBIT_UID` | opsional | UID Bybit penerima. Bisa/biasanya diatur di Settings (menang atas env). |
 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | opsional | **Wajib Wallet READ-ONLY** (tanpa Withdraw). Tes dengan `pnpm bybit-probe`. |
 | `BYBIT_API_BASE` | `https://api.bybit.com` | Base URL API. |
-| `BYBIT_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar. |
+| `BYBIT_PAYMENT_WINDOW_MINUTES` | `10` | Jendela bayar. |
 | `BYBIT_POLL_INTERVAL_SECONDS` | `5` | Interval poll Bybit — independen dari `POLL_INTERVAL_SECONDS` (Binance). |
 | `BYBIT_DEPOSIT_ADDRESS` / `BYBIT_DEPOSIT_CHAIN` | opsional / `"BSC"` | **Deprecated** — sisa dari skema on-chain BEP20 lama; tidak dibaca lagi (digantikan `BYBIT_UID`), dipertahankan agar `.env` lama tidak gagal parse. |
+
+## Payment — Bybit BSC (on-chain BEP20)
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `BYBIT_BSC_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar — lebih lebar karena pembeli biasanya mengirim dari wallet/exchange lain dan deposit masih perlu konfirmasi on-chain. Deposit setelah `expiresAt` tidak dicocokkan. |
+| `BYBIT_BSC_POLL_INTERVAL_SECONDS` | `5` | Interval poll deposit BSC — independen dari interval Bybit Internal Transfer. |
 
 ## Payment — NOWPayments (hosted invoice, USDT)
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar — lebih lebar karena pembeli membuka wallet app di luar Telegram/browser. Kredensial (`nowpayments_api_key`, `nowpayments_ipn_secret`, `nowpayments_pay_currency`) **hanya** di Settings, tidak ada di `.env`. |
+| `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES` | `30` | Jendela bayar — lebih lebar karena pembeli membuka wallet app di luar Telegram/browser. Order produk yang pembayarannya sudah terlihat (`PAYMENT_DETECTED`/`VERIFYING`) baru dibatalkan 30 menit setelah jendela ini habis (konstanta `OBSERVED_PAYMENT_GRACE_MS`, bukan env), lalu admin diberi alert. Kredensial (`nowpayments_api_key`, `nowpayments_ipn_secret`, `nowpayments_pay_currency`) **hanya** di Settings, tidak ada di `.env`. |
 
 ## Finance — CoinGecko (market rate source)
 

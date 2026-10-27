@@ -16,6 +16,7 @@ import {
   recentOrders,
   reconcileFinances,
   orderHasIncomingLedgerPayment,
+  orderMatchedLedgerClaim,
   consumeIncomingLedgerPayment,
   USDT_ROUNDING_CEIL_SINCE_KEY,
 } from "./reports";
@@ -177,6 +178,40 @@ describe("orderHasIncomingLedgerPayment", () => {
       await prisma.processedPaydisiniTx.create({ data: { trxId: `PD-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
       await prisma.processedNowpaymentsTx.create({ data: { trxId: `NP-${outcome}-${id}`, orderId: id, amount: "5", outcome } });
       expect(await orderHasIncomingLedgerPayment(prisma, id), outcome).toBe(false);
+    }
+  });
+});
+
+describe("orderMatchedLedgerClaim", () => {
+  async function makeOrder(paymentMethod: string) {
+    return prisma.order.create({
+      data: { orderCode: `ORD-${Math.random()}`, userId, subtotalAmount: "5", totalAmount: "5", status: "PENDING_PAYMENT", paymentMethod },
+    });
+  }
+
+  it("returns null when no matched row is linked to the order", async () => {
+    const order = await makeOrder("TOKOPAY");
+    const other = await makeOrder("TOKOPAY");
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-other-m", orderId: other.id, amount: "5", outcome: "matched" } });
+    for (const outcome of ["unmatched", "delivery_failed", "stale", "dismissed", "credited_to_balance", "underpaid"]) {
+      await prisma.processedTokopayTx.create({ data: { trxId: `TP-${outcome}-m`, orderId: order.id, amount: "5", outcome } });
+    }
+    expect(await orderMatchedLedgerClaim(prisma, order)).toBeNull();
+  });
+
+  it("finds a matched row in each ledger table and labels it by the order's payment method", async () => {
+    const cases: Array<[string, string, (orderId: number, txId: string) => Promise<unknown>]> = [
+      ["BINANCE_INTERNAL", "Binance", (orderId, txId) => prisma.processedBinanceTx.create({ data: { binanceTxId: txId, orderId, amount: "5", outcome: "matched" } })],
+      ["BYBIT", "Bybit", (orderId, txId) => prisma.processedBybitTx.create({ data: { bybitTxId: txId, orderId, amount: "5", outcome: "matched" } })],
+      ["BYBIT_BSC", "Bybit BSC", (orderId, txId) => prisma.processedBybitTx.create({ data: { bybitTxId: txId, orderId, amount: "5", outcome: "matched" } })],
+      ["TOKOPAY", "TokoPay", (orderId, txId) => prisma.processedTokopayTx.create({ data: { trxId: txId, orderId, amount: "5", outcome: "matched" } })],
+      ["PAYDISINI", "PayDisini", (orderId, txId) => prisma.processedPaydisiniTx.create({ data: { trxId: txId, orderId, amount: "5", outcome: "matched" } })],
+      ["NOWPAYMENTS", "NOWPayments", (orderId, txId) => prisma.processedNowpaymentsTx.create({ data: { trxId: txId, orderId, amount: "5", outcome: "matched" } })],
+    ];
+    for (const [method, label, link] of cases) {
+      const order = await makeOrder(method);
+      await link(order.id, `TX-${method}-${order.id}`);
+      expect(await orderMatchedLedgerClaim(prisma, order), method).toEqual({ gateway: label, txId: `TX-${method}-${order.id}` });
     }
   });
 });

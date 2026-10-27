@@ -20,7 +20,8 @@
  *   - it is being reclaimed for the same order it was claimed for (a stuck
  *     claim is that order's payment; never hand it to a different one);
  *   - `updatedAt` is older than STALE_MATCHED_CLAIM_MS, so a delivery still in
- *     flight is never raced (a delivery transaction finishes in seconds);
+ *     flight is never raced (a delivery transaction commits or rolls back
+ *     within ~20 s — see the constant for the derivation);
  *   - its order is still payable (PENDING_PAYMENT, or a cancelled wallet
  *     top-up, which the rails settle late on purpose).
  * The reclaim itself is a compare-and-swap on `updatedAt` (which Prisma bumps
@@ -33,8 +34,30 @@ import { logger } from "@app/core/logger";
 import type { Db } from "./_types";
 import { isLateSettleableWalletTopup } from "./wallet_topup";
 
-/** A "matched" claim untouched for longer than this is no longer in flight. */
-export const STALE_MATCHED_CLAIM_MS = 10 * 60_000;
+/**
+ * A "matched" claim untouched for longer than this is no longer in flight.
+ *
+ * Lower bound (never race a live delivery): on every rail the claim commits,
+ * then — with no other await in between — the delivery `$transaction` starts
+ * with `{ timeout: 15000 }` on top of the client's `maxWait: 5000`
+ * (packages/db/src/client.ts). The query engine rolls back any transaction
+ * that outlives its timeout, so a delivery can commit no later than ~20 s
+ * after its claim; it never touches the claim row's `updatedAt` before that
+ * commit. Two minutes is six times that, so a reclaim can only ever see a
+ * delivery that has already committed (order no longer PENDING_PAYMENT → not
+ * reclaimable) or rolled back. Even inside that margin the order status
+ * transition and `settleWalletTopup` are guarded single-row claims, so a race
+ * still could not settle twice; the margin keeps the ledger row clean too.
+ *
+ * Upper bound (INVARIANT): this must stay well below HALF of the shortest
+ * default payment window (10 minutes: TokoPay, PayDisini, Binance Pay, Bybit
+ * UID — packages/core/src/config.ts). A crash-stuck claim leaves its order
+ * PENDING_PAYMENT, autoCancelExpiredOrders cancels it at expiresAt, and a
+ * cancelled product order is never reclaimable; at the old 10-minute value no
+ * crash on a 10-minute rail could ever be recovered. Pinned by
+ * stale_matched_claim.test.ts against the Env schema's defaults.
+ */
+export const STALE_MATCHED_CLAIM_MS = 2 * 60_000;
 
 /** The compare-and-swap guard a rail adds to its own `updateMany` where-clause. */
 export type StaleClaimGuard = { outcome: "matched"; orderId: number; updatedAt: Date };

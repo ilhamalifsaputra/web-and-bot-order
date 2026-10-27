@@ -171,9 +171,11 @@ export async function createBybitBscOrder(
      * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
      * contract this enforces. */
     checkoutIntentId?: string | null;
-    /** The IDR total the buyer was shown (A6) — forwarded to createOrderDirect,
-     * which refuses with QuoteMismatchError before anything is written when the
-     * server's price no longer matches it. Absent: no quote check, as before. */
+    /** The total the buyer was quoted (A6), forwarded to createOrderDirect via
+     * the same spread and checked there before anything is written. The bot
+     * quotes it in IDR (the figure before this rail's USDT conversion), which
+     * leaves a moved rate to finalizeOrderPayment's FX freshness guard. Absent:
+     * no quote check, as before. */
     expectedTotal?: ExpectedTotal | null;
   },
 ) {

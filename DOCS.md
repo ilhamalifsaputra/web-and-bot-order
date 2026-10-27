@@ -285,6 +285,225 @@ di-stamp ke `@app/core/runtime`):
 > sendiri. Setting yang "perlu restart" hanya menempel di proses yang dibaca
 > ulang; di deploy multi-proses, restart **proses yang relevan**, bukan hanya web.
 
+### Alur katalog Game Top-up (selalu aktif)
+
+Untuk Game Top-up saja (dipilih lewat `category.group`, bukan nama produk), bot
+selalu menampilkan akhiran harga huruf kecil pada daftar produk (`from <harga>` di bahasa Inggris, `mulai <harga>` di bahasa Indonesia; kunci `browse.product_from_price`), satu baris hint
+`hint.*` per layar (daftar game, edisi, region, paket, search), dan `/search`
+(berperingkat, label layanan, halaman, "Search again"; alias dari tabel
+`detection_aliases` yang bawaannya **kosong**). `/search` hanya mengembalikan
+produk Game Top-up. Urutan langkah navigasi (edisi, region, daftar produk) tidak
+berubah, kecuali level Region yang dilewati pada scope campuran (lihat "Guard scope campuran di bot" di bawah). Tidak ada saklar di Settings dan tidak ada perubahan skema. Storefront
+tidak terpengaruh. Premium Apps tidak pernah terpengaruh: tidak ada `From`,
+hint, atau perubahan lain pada daftar, picker, dan layar SKU-nya.
+
+**Cara memilih: tombol inline, bukan angka (kecuali Premium Apps).** Gaya pilih
+tiap layanan diatur di satu tempat, `listSelection` pada entri registri
+`packages/core/src/services.ts` (`"numbered"` hanya untuk Premium Apps; layanan
+tanpa isian ini, termasuk layanan baru, mendapat `"inline"`), dibaca lewat
+`usesNumberedSelection(group)`. Game Top-up: daftar produk berupa tombol inline
+per produk + Prev/Next + ← Kembali, picker edisi/region juga inline, tanpa pesan
+pendamping "Gunakan angka..." dan tanpa keyboard bawah angka; angka yang
+diketik di layar katalog Game tidak menambah pesan: layar yang sama diedit di
+tempat (tombolnya tetap) dengan baris `browse.use_buttons` di atasnya, dan angka
+yang diketik dihapus; di luar katalog (Home, Pesanan, Dompet) angka tetap
+berjalan seperti sebelumnya. Premium Apps = grup `PREMIUM_APPS` atau grup
+kosong/tidak terdaftar (`serviceForCategoryGroup`); layanan terdaftar lain
+memakai `listSelection` registrinya (default inline). Premium Apps
+tetap bernomor. Cara menambah layanan baru (mis. Steam Wallet): lihat
+`.claude/skills/bot-ux-grammy/SKILL.md`, bagian "How to add a new service".
+
+**Struktur level katalog Game Top-up.** Tidak ada level Server terpisah: pada data
+Digiflazz region = server (satu level: Global, Malaysia, Indonesia, Brazil, ...).
+Hirarkinya Edisi (`Product.gameVariant`) → Region (`Product.gameRegion`) → paket.
+Edisi dipisah dari `type` Digiflazz (mis. Arena Breakout vs Arena Breakout
+Infinite). Dua game bernama sama tetapi berbeda akhiran publisher/distribusi
+tetap dua `Product` terpisah dan **tidak pernah digabung**.
+
+**Isi region otomatis saat import Digiflazz.** Saat admin mengimpor brand
+(Settings → Digiflazz sync → apply), `Product.gameRegion` diisi dari akhiran
+region grup di price list lewat `gameRegionLabel`, dengan syarat:
+
+- **Hanya saat Product dibuat (create-only).** Product yang sudah ada tidak
+  disentuh; nilai yang diisi/diubah admin selalu menang.
+- **Hanya kategori Game Top-up** (`category.group = GAME_TOPUP`). Premium Apps dan
+  kategori tanpa grup tidak pernah dapat region dari import.
+- **Hanya akhiran yang ada di tabel putih** `packages/core/src/regionLabel.ts`
+  (Indonesia, Malaysia, Singapore, Filipina, Russia, Brazil, Global; label berisi
+  emoji bendera). Tabel ini **DRAFT** untuk dikoreksi pemilik; singkatan
+  `id`/`sg`/`my` adalah asumsi. **Menambah negara = menambah satu baris** di tabel
+  itu (token + label; label harus muat satu tombol sempit). Kata publisher
+  (mis. Garena, Activision) tidak pernah menjadi label: region dibiarkan kosong
+  untuk diisi admin.
+
+Respons `/sync/apply` memuat `regions[]` (sejajar dengan `brands`): `written`
+(true hanya bila import ini yang membuat Product dengan region itu), `label`,
+`suffix`, dan `skippedReason` bila tidak ditulis: `product_exists`, `no_suffix`,
+`unrecognized_suffix`, `no_matching_group`, `no_price_list` (tanpa kredensial,
+price list gagal dimuat, atau rc 83) atau `not_game_topup_category`. Toast sukses
+di halaman Digiflazz Sync menambah satu kalimat (bahasa Inggris, seperti string
+di sekitarnya) mis. "2 of 3 brands got an automatic region; 1 skipped
+(unrecognised suffix: Garena)." Yang **dilaporkan**: `unrecognized_suffix`
+(maks. 3 nama lalu "..."), `no_price_list` dan `no_matching_group`. Yang
+**senyap** (bukan tindakan admin): `product_exists`, `no_suffix`,
+`not_game_topup_category`; bila tidak ada yang layak dilaporkan, toast tidak
+menambah kalimat apa pun.
+
+**Guard scope campuran di bot.** Untuk satu scope (kategori + edisi), bila ada
+produk layak tampil (aktif, tidak diarsipkan, punya paket aktif berharga) yang
+`gameRegion`-nya kosong, level Region **dilewati** dan semua produk scope itu
+ditampilkan dalam satu daftar (halaman, refresh, dan Back konsisten). Tidak ada
+produk yang menghilang gara-gara sebagian saudaranya diberi region. Picker Region
+baru muncul bila semua produk di scope punya region.
+
+**Backfill produk lama (sekali jalan).** Produk yang diimpor sebelum auto-isi
+region tidak berubah sendiri. Skrip operator:
+
+```
+pnpm exec tsx scripts/fill-game-regions.ts                      # dry run (default), tidak menulis apa pun
+pnpm exec tsx scripts/fill-game-regions.ts --apply              # tulis scope yang memenuhi syarat
+pnpm exec tsx scripts/fill-game-regions.ts --category-ids=1,2   # batasi ke kategori tertentu
+```
+
+- Menolak jalan bila `DATABASE_URL_PRISMA` menunjuk host selain
+  localhost/127.0.0.1/::1, kecuali diberi `--i-know-this-is-not-local`. Ambil backup
+  segar sebelum `--apply` di database bersama.
+- **Pemilik sebaiknya menjalankan dry run dulu dan membaca laporannya sebelum
+  `--apply`.** Dry run tidak menulis apa pun (tanpa audit, tanpa bump revisi).
+- **Semua-atau-tidak-sama-sekali per scope** = (kategori GAME_TOPUP, `gameVariant`;
+  null adalah scope sendiri; produk tidak diarsipkan, aktif atau tidak). Scope
+  ditulis hanya bila setiap anggota bisa diberi label dan ada >= 2 label berbeda.
+  Alasan dilewati: `mixed` (sebagian anggota tanpa akhiran), `no_suffix`,
+  `admin_set_region_present` (ada nilai `gameRegion` apa pun, termasuk kosong/spasi;
+  tidak pernah ditimpa), `already_filled` (semua sudah persis berlabel itu),
+  `unknown_suffix` (akhiran di luar tabel; daftar akhiran ikut dilaporkan),
+  `single_region_scope` (butuh >= 2 label berbeda; satu region tidak berguna dan
+  menyembunyikan saudara yang diimpor kemudian), `possible_doubled_suffix` (nama
+  dasar sudah memuat kata region itu, mis. "Game Malaysia (Malaysia)"),
+  `changed_concurrently` (anggota scope berubah antara baca dan tulis), dan
+  `failed` (galat tak terduga).
+- Penulisan: satu transaksi pendek per scope, compare-and-set (`gameRegion` masih
+  null), satu baris audit per produk (`game_region_backfill`), lalu
+  `bumpCatalogRevision` sekali bila ada yang tertulis. Galat tak terduga
+  menghentikan run di scope itu (`stoppedEarly`); scope sebelumnya tetap, yang
+  sesudahnya tidak dicoba. Pesan galat dibersihkan dari URL `postgres(ql)://`.
+- Kode keluar: `0` sukses; `1` bila ada scope `changed_concurrently`/`failed` atau
+  bump revisi gagal; `2` untuk opsi salah atau penolakan host non-lokal.
+- **Risiko sisa:** transaksi berjalan pada READ COMMITTED, jadi saudara yang
+  di-commit sesi lain di antara hitung ulang dalam transaksi dan COMMIT tidak
+  terlihat. Jalankan saat tidak ada Digiflazz sync/import berjalan. Produk itu
+  hanya tanpa region dan tetap tampil di bot lewat guard scope campuran.
+- **Satu produk nonaktif yang usang dengan brand sampah memblokir seluruh
+  scope-nya** (`unknown_suffix`/`mixed`): arsipkan atau perbaiki produk itu lalu
+  jalankan ulang.
+
+**Deploy.** Tidak ada perubahan skema dibanding `master` (skema `Product`
+identik), jadi tidak ada migrasi untuk cabang ini dan tidak ada langkah restart
+khusus selain deploy kode biasa. Tabel label region masih draft: koreksi dulu
+sebelum menjalankan backfill dengan `--apply`.
+
+**Daftar cek smoke manual (`@testtoko_bot`, hanya di database worktree).**
+Tes otomatis memakai transport Telegram palsu dan stub gateway; yang di bawah
+ini adalah uji tangan opsional di Telegram sungguhan.
+
+Prasyarat (di worktree `game-topup-refactor`, bukan di checkout utama):
+
+1. Postgres milik worktree: `docker compose -f docker-compose.postgres.yml -p gtr up -d`
+   (hanya satu worktree boleh menjalankannya; port dan nama DB dari `POSTGRES_PORT`
+   dan `POSTGRES_DB=bot_order_gtr` di `.env` worktree). `DATABASE_URL_PRISMA`
+   harus menunjuk `bot_order_gtr` di localhost.
+2. `pnpm prisma:generate`, `pnpm -r build`, lalu `pnpm exec prisma db push --skip-generate`
+   (tanpa `--accept-data-loss`) pada database worktree itu.
+3. `WEB_PORT` dan `STOREFRONT_PORT` di `.env` worktree dibuat berbeda dari
+   worktree lain.
+4. Seed fixture (nama tampak seperti toko sungguhan, tanpa penanda terlihat dan
+   tanpa kredensial provider):
+   `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db`
+   (dry run, hanya hitungan), lalu
+   `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply`
+   (tambah `--bulk` untuk katalog besar **sebagai pengganti** fixture kecil, bukan
+   tambahan: `--bulk` membuat satu kategori Game Top-up per game, sekitar 32 game,
+   game mobile dulu lalu game PC (dibedakan lewat emoji 🎮/🖥️ dan urutan saja,
+   karena skema tidak punya subkategori), plus 8 produk Premium Apps; tanpa
+   `--bulk` yang dibuat hanya fixture kecil "Game Top Up" dan "Mixed Games").
+   Bila manifest masih berisi tata letak bulk lama (Game Top Up / Regional Games /
+   Game Editions / Mixed Games), `--bulk` menghapus baris manifest lama itu dahulu
+   dan berhenti dengan pesan, tanpa mengubah apa pun, bila ada order yang masih
+   merujuknya. Skrip menolak jalan kecuali host lokal,
+   DB `bot_order_gtr`, dan flag konfirmasi. Kepemilikan baris dicatat di
+   **manifest tak terlihat**: id kategori, produk, denominasi, dan pembeli yang
+   dibuat atau diadopsi disimpan sebagai JSON di satu baris setting
+   `seed_game_topup_manifest` (hanya di DB target, tanpa rahasia). Baris yang
+   namanya sama tetapi tidak ada di manifest (baris toko asli) **ditolak**, tidak
+   diambil alih, dan namanya dilaporkan. `--apply` juga mengganti nama di tempat
+   (id dan order tetap) baris lama yang masih berakhiran ` [SEED-GTR]` lalu
+   memasukkannya ke manifest; bila nama bersih bentrok dengan baris asli,
+   skrip berhenti dengan pesan jelas dan tidak mengubah apa pun. Ia juga
+   menyalakan layanan Game Top-up (bot dan web) dan menyetel minimum order 0
+   (setting bersama; `--remove` tidak mengembalikannya).
+5. Token bot dibaca dari setting DB `bot_token` (bukan `.env`); salin dari DB dev
+   sesuai [CATALOG_BUTTONS.md](docs/CATALOG_BUTTONS.md) bagian 9. **Hanya satu
+   worktree yang boleh menjalankan order-bot** pada token yang sama (dua poller
+   memicu error 409). Jalankan `pnpm dev:bot`.
+
+Daftar cek:
+
+- [ ] Penelusuran dengan katalog `--bulk`: Game Top-up -> Mobile Legends (satu
+  kategori per game) -> pilih region (Indonesia/Malaysia/Philippines/Global) ->
+  daftar denominasi hanya untuk region itu. Jalur edisi: Game Top-up -> Arena
+  Breakout -> pilih edisi (Standard/Infinite) -> pilih region -> denominasi.
+  Game satu region atau tanpa region (mis. Roblox) langsung ke paket tanpa
+  picker. Dengan fixture kecil (tanpa `--bulk`): kategori, game, region (bila
+  ada), paket; game tanpa region langsung ke paket; kategori campuran
+  menampilkan semua produk.
+- [ ] Tanpa sistem angka di Game Top-up: picker edisi, picker region, dan daftar
+  produk **tidak** mengirim pesan "Gunakan angka di bawah untuk memilih:" dan
+  tidak memasang keyboard bawah 1-2-3. Daftar produk memakai tombol inline per
+  produk (nama lengkap tetap di teks), Prev/Next, dan ← Kembali (juga pada
+  daftar satu halaman). Ulangi region -> ← Kembali -> region lain beberapa
+  kali: jumlah pesan di chat tidak bertambah. Ketik "Produk" dengan satu layanan
+  dan satu game: tepat satu pesan. Ketik angka (tiga kali) di layar Game: layar
+  itu diedit di tempat dengan baris "Pilih dengan menekan tombol pada daftar."
+  di atasnya, tombolnya tetap, angkanya terhapus, tanpa pesan baru dan tanpa
+  membuka produk apa pun. Ketik angka di Home setelah membuka Game: baris itu
+  tidak muncul.
+- [ ] Satu baris hint di tiap layar (daftar game, edisi, region, paket, search),
+  dan label `mulai <harga>` pada daftar produk Game Top-up.
+- [ ] `/search` menemukan produk Game Top-up saja (tidak ada Premium Apps).
+- [ ] Beli produk bergaya ML: ketik ID dan Zone dalam satu pesan, mis. `123456789 1234`;
+  layar review menampilkan field terpisah dengan label.
+- [ ] Ubah harga denominasi di admin setelah layar review tampil, lalu ketuk
+  bayar: tidak ada order baru, layar dirender ulang dengan "Harga berubah
+  menjadi ...", dan ketukan tombol lama tidak membayar.
+- [ ] Setting yang disalin dari DB dev bisa berisi kredensial TokoPay sungguhan:
+  mengetuk tombol bayar QRIS membuat invoice merchant sungguhan (uang tidak
+  bergerak kecuali dibayar). Untuk smoke test pakai setting TokoPay kosong/stub,
+  kecuali pemilik sengaja meminta invoice sandbox.
+- [ ] Faktur QRIS: **hanya di sandbox yang aman. Jangan membayar uang sungguhan.**
+  Di tes otomatis TokoPay di-stub. Lewati item ini bila tidak ada sandbox.
+- [ ] Pengingat sekitar 5 menit sebelum jendela habis: tepat satu DM.
+- [ ] Saat kedaluwarsa: pesan pembayaran diedit menjadi dibatalkan, dan hanya
+  satu push pemberitahuan.
+- [ ] Kontrol: Premium Apps tidak menampilkan `mulai`, hint, atau layar review,
+  dan daftarnya tetap bernomor seperti sebelumnya (pesan "Gunakan angka...",
+  keyboard bawah angka, ketik angka membuka produk).
+- [ ] Bersihkan: `pnpm exec tsx scripts/seed-game-topup-fixtures.ts --confirm-worktree-db --apply --remove`,
+  lalu hentikan bot dan `docker compose -f docker-compose.postgres.yml -p gtr down`.
+  `--remove` hanya menghapus id yang ada di manifest (baris toko asli tidak
+  pernah disentuh) dan menghapus baris manifest hanya bila tidak ada yang
+  dilewati; tanpa `--apply` hanya mencetak hitungan dari manifest. Baris seed
+  yang masih dirujuk order milik penguji (atau riwayat dompet) **dilewati dan
+  dilaporkan**, bukan dihapus: biarkan saja, atau hapus order tes itu secara
+  manual hanya di DB worktree. Penghapusan denominasi seed ikut menghapus
+  (cascade) item keranjang dan ulasan penguji pada denominasi itu.
+
+**Tidak dibuktikan oleh tes otomatis:** format kawat live TokoPay, Digiflazz,
+dan KokinPay (stub saja); perilaku Telegram sungguhan (edit pesan, suara
+notifikasi, rate limit); apakah invoice TokoPay/PayDisini/NOWPayments ikut
+kedaluwarsa bersama jendela bayar kita (panggilan create tidak mengirim waktu
+kedaluwarsa); latensi gateway terhadap siklus rekonsiliasi; sinkronisasi jam
+host.
+
 Key rahasia (`tokopay_secret`, `bot_token`, `notif_bot_token`, `bybit_api_key`,
 `bybit_api_secret`, `web_cookie_secret`) ditangani **write-only**: tak di-echo,
 `(hidden)` di tabel, audit `key=(updated)` tanpa nilai.

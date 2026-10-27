@@ -32,7 +32,7 @@ import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, requireCurrency, rateLimit, adminOnly, joinGate, commerceGate } from "./middleware";
 import { prismaSessionStorage } from "./util/prismaSessionStorage";
 import { htmlDefaultsTransformer } from "./util/apiDefaults";
-import { CONVERSATIONS } from "./conversations";
+import { CONVERSATIONS, enterConversation } from "./conversations";
 import { coreT } from "./util/i18n";
 import { newErrorRef } from "./util/errors";
 import * as customer from "./handlers/customer";
@@ -115,7 +115,7 @@ export function buildBot(token?: string): Bot<MyContext> {
 
   // --- Conversation entry triggers (only fire when no conversation active) -
   for (const spec of CONVERSATIONS) {
-    const enter = (ctx: MyContext) => ctx.conversation.enter(spec.name);
+    const enter = (ctx: MyContext) => enterConversation(ctx, spec.name);
     if (spec.callback) bot.callbackQuery(spec.callback, enter);
     if (spec.command) bot.command(spec.command, enter);
     if (spec.hears) bot.hears(spec.hears, enter);
@@ -209,7 +209,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
     { command: "listproduk", description: "View product list" },
     { command: "language", description: "Change language" },
     { command: "currency", description: "Change currency" },
-    { command: "search", description: "Search for a product" },
+    { command: "search", description: "Search games" },
     { command: "faq", description: "Frequently asked questions" },
     { command: "howtopay", description: "How to pay" },
     { command: "terms", description: "Terms of service" },
@@ -221,7 +221,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
     { command: "listproduk", description: "Lihat daftar produk" },
     { command: "language", description: "Ganti bahasa" },
     { command: "currency", description: "Ganti mata uang" },
-    { command: "search", description: "Cari produk" },
+    { command: "search", description: "Cari game" },
     { command: "faq", description: "Pertanyaan umum" },
     { command: "howtopay", description: "Cara pembayaran" },
     { command: "terms", description: "Ketentuan layanan" },

@@ -15,7 +15,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { CategoryGroup, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
+import { CategoryGroup, type CategoryGroup as CategoryGroupType, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
@@ -30,6 +30,8 @@ import { logAdminAction } from "./audit";
 import { deleteBulkPricingAdapter, legacyBulkRuleView, upsertBulkPricingAdapter } from "./bulkTiers";
 import { activeServiceGroups, isServiceActive } from "./serviceAvailability";
 import type { ServiceChannel } from "@app/core/services";
+import { normalize as normalizeDetection, type KnowledgeBase } from "@app/core/detection";
+import { loadKnowledgeBase } from "./detectionKnowledge";
 
 // ---- Slugs ----
 
@@ -800,6 +802,31 @@ export async function countCategoryProductsWithoutGameVariant(db: Db, categoryId
 }
 
 /**
+ * Count of catalog-eligible products (same eligibility as
+ * listCategoryGameRegions) in one category + exact gameVariant scope (`null`
+ * for "no variant") that have NO gameRegion. When this is > 0 while the scope
+ * also has labelled regions, the scope is "mixed": a picked or silently
+ * applied region would hide these products, so the bot lists the whole scope
+ * instead. The region twin of countCategoryProductsWithoutGameVariant.
+ */
+export async function countCategoryProductsWithoutGameRegion(
+  db: Db,
+  categoryId: number,
+  gameVariant: string | null,
+): Promise<number> {
+  return db.product.count({
+    where: {
+      categoryId,
+      gameVariant,
+      isActive: true,
+      isArchived: false,
+      gameRegion: null,
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+  });
+}
+
+/**
  * Distinct gameRegion values among a category's catalog-eligible products,
  * scoped to one gameVariant (pass `null` for "no variant dimension" — e.g. a
  * category with no variant picker but still a region picker). Same
@@ -841,15 +868,65 @@ export async function listNewestCatalogProducts(db: Db, channel: ServiceChannel,
   return products.sort((a, b) => recency(b) - recency(a)).slice(0, limit);
 }
 
+/** Options for the Game Top-up search; a plain call keeps the original behavior. */
+export interface SearchCatalogOptions {
+  /** Only these category groups (intersected with the channel's active services; a null group counts as PREMIUM_APPS). */
+  groups?: CategoryGroupType[];
+  /** Expand the query through detection aliases: `true` loads them from the DB, or pass a ready knowledge base. */
+  aliases?: boolean | KnowledgeBase;
+}
+
+const MAX_SEARCH_TERMS = 4;
+
+function collapseSearchText(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * The terms a search looks for: the query (trimmed, inner whitespace collapsed)
+ * plus, when its detection-normalized form equals an alias or its expansion, the
+ * counterpart. Pure — the knowledge base is a parameter.
+ */
+export function expandSearchTerms(query: string, kb: KnowledgeBase | undefined): string[] {
+  const primary = collapseSearchText(query);
+  if (!primary) return [];
+  const terms = [primary];
+  if (kb) {
+    const key = normalizeDetection(primary);
+    for (const entry of kb.aliases) {
+      const counterpart =
+        normalizeDetection(entry.alias) === key
+          ? entry.expandsTo
+          : normalizeDetection(entry.expandsTo) === key
+            ? entry.alias
+            : null;
+      const term = counterpart === null ? "" : collapseSearchText(counterpart);
+      if (term && !terms.some((x) => x.toLowerCase() === term.toLowerCase())) terms.push(term);
+    }
+  }
+  return terms.slice(0, MAX_SEARCH_TERMS);
+}
+
 /**
  * Search products by name/description (products only — variants are chosen in
  * product detail). Returns active products with ≥1 active denomination, each
- * with its active denominations price-asc. Sorted by name, capped at `limit`.
+ * with its active denominations price-asc, capped at `limit`. A plain call sorts
+ * by name; with `options` the result is restricted to `options.groups`, matches
+ * detection aliases, and is ranked exact name, name prefix, name substring, then
+ * description-only (ties by name) from at most four bounded queries.
  */
-export async function searchCatalog(db: Db, query: string, channel: ServiceChannel, limit = 24): Promise<CatalogProduct[]> {
-  const q = query.trim();
+export async function searchCatalog(
+  db: Db,
+  query: string,
+  channel: ServiceChannel,
+  limit = 24,
+  options?: SearchCatalogOptions,
+): Promise<CatalogProduct[]> {
+  const q = options ? collapseSearchText(query) : query.trim();
   if (!q) return [];
-  const groups = await activeServiceGroups(db, channel);
+  const active = await activeServiceGroups(db, channel);
+  const wanted = options?.groups;
+  const groups = wanted ? new Set([...active].filter((g) => wanted.includes(g as CategoryGroupType))) : active;
   if (groups.size === 0) return [];
   const categoryWhere: Prisma.CategoryWhereInput = {
     OR: [
@@ -857,21 +934,45 @@ export async function searchCatalog(db: Db, query: string, channel: ServiceChann
       ...(groups.has(CategoryGroup.PREMIUM_APPS) ? [{ group: null }] : []),
     ],
   };
-  return db.product.findMany({
-    where: {
-      isActive: true,
-      isArchived: false,
-      category: { is: categoryWhere },
-      denominations: { some: { isActive: true, price: { gt: 0 } } },
-      OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
-    },
-    include: {
-      category: true,
-      denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
-    },
-    orderBy: { name: "asc" },
-    take: limit,
-  });
+  const aliasKb = options?.aliases === true ? await loadKnowledgeBase(db) : options?.aliases || undefined;
+  const terms = options ? expandSearchTerms(q, aliasKb) : [q];
+  const baseWhere: Prisma.ProductWhereInput = {
+    isActive: true,
+    isArchived: false,
+    category: { is: categoryWhere },
+    denominations: { some: { isActive: true, price: { gt: 0 } } },
+  };
+  const nameOrDescription = terms.flatMap((term) => [
+    { name: { contains: term, mode: "insensitive" as const } },
+    { description: { contains: term, mode: "insensitive" as const } },
+  ]);
+  const include = {
+    category: true,
+    denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }] },
+  };
+  if (!options) {
+    return db.product.findMany({ where: { ...baseWhere, OR: nameOrDescription }, include, orderBy: { name: "asc" }, take: limit });
+  }
+  // One bounded query per rank tier (at most four, whatever the alias count),
+  // each ordered by name, so a best match is never lost behind a name-ordered window.
+  const tiers: Prisma.ProductWhereInput[] = [
+    { OR: terms.map((term) => ({ name: { equals: term, mode: "insensitive" as const } })) },
+    { OR: terms.map((term) => ({ name: { startsWith: term, mode: "insensitive" as const } })) },
+    { OR: terms.map((term) => ({ name: { contains: term, mode: "insensitive" as const } })) },
+    { OR: nameOrDescription },
+  ];
+  const found: Awaited<ReturnType<typeof db.product.findMany<{ include: typeof include }>>> = [];
+  for (const tier of tiers) {
+    if (found.length >= limit) break;
+    const rows = await db.product.findMany({
+      where: { ...baseWhere, AND: [tier, { id: { notIn: found.map((row) => row.id) } }] },
+      include,
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      take: limit - found.length,
+    });
+    found.push(...rows);
+  }
+  return found;
 }
 
 /**

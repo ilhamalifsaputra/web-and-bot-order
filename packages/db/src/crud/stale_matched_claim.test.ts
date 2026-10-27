@@ -13,7 +13,7 @@
  * transaction). A fresh claim, a claim whose order was delivered, and a
  * claim for a different order all stay untouched.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -29,6 +29,7 @@ import {
 } from "@app/db";
 import { OrderStatus, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { Env } from "@app/core/config";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -175,5 +176,84 @@ describe.each(rails)("$name: a crash-stuck 'matched' claim (Task B2)", (rail) =>
     expect(result.status).toBe("already_processed");
     expect((await prisma.order.findUnique({ where: { id: otherOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await rail.read(txId))?.orderId).toBe(stuckOrder.id);
+  });
+});
+
+/**
+ * P4-T4b: the payment windows were shortened to 10 minutes on TokoPay,
+ * PayDisini, Binance Pay and Bybit UID. A crash-stuck claim leaves its order
+ * PENDING_PAYMENT, so autoCancelExpiredOrders cancels it at expiresAt, after
+ * which no recovery path for a product order exists. The reclaim threshold must
+ * therefore sit well inside the shortest window, or a crash-stuck claim on a
+ * 10-minute rail can never be recovered before the order is cancelled.
+ */
+describe("STALE_MATCHED_CLAIM_MS against the payment windows (P4-T4b)", () => {
+  it("is below half of the shortest default payment window", () => {
+    // Parse the schema with NO window key set, so this pins the shipped
+    // defaults (the same technique as packages/core/src/config.test.ts), not
+    // whatever the test environment's .env happens to carry.
+    const parsed = Env.parse({ DATABASE_URL_PRISMA: "postgresql://user:pass@localhost:5432/db" });
+    const shortestWindowMs =
+      Math.min(
+        parsed.PAYMENT_WINDOW_MINUTES,
+        parsed.INTERNAL_PAYMENT_WINDOW_MINUTES,
+        parsed.BYBIT_PAYMENT_WINDOW_MINUTES,
+        parsed.BYBIT_BSC_PAYMENT_WINDOW_MINUTES,
+        parsed.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES,
+      ) * 60_000;
+    expect(STALE_MATCHED_CLAIM_MS).toBeLessThan(shortestWindowMs / 2);
+  });
+
+  it("still exceeds the longest a live delivery can hold its claim (maxWait 5 s + timeout 15 s) by a wide margin", () => {
+    expect(STALE_MATCHED_CLAIM_MS).toBeGreaterThanOrEqual(5 * (5_000 + 15_000));
+  });
+});
+
+const boundaryRails = rails.filter((r) => r.name === "TokoPay" || r.name === "Binance internal" || r.name === "Bybit internal");
+
+describe.each(boundaryRails)("$name: the stale-claim threshold boundary (P4-T4b)", (rail) => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("recovers a claim crashed 3 minutes ago, well inside a 10-minute window", async () => {
+    const order = await pendingOrder(rail.method);
+    const txId = `three-min-${rail.method}`;
+    await rail.seed(order.id, txId, new Decimal(order.totalAmount), new Date(Date.now() - 3 * 60_000));
+
+    const result = await rail.deliver(order.id, txId, order.totalAmount);
+
+    expect(result.status).toBe("delivered");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+  });
+
+  it("does NOT recover a claim 1 ms younger than the threshold — the double-processing guard still holds", async () => {
+    // Freeze only Date, so the claim's age is exact; timers stay real.
+    const now = new Date();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    const order = await pendingOrder(rail.method);
+    const txId = `just-under-${rail.method}`;
+    await rail.seed(order.id, txId, new Decimal(order.totalAmount), new Date(now.getTime() - STALE_MATCHED_CLAIM_MS + 1));
+
+    const result = await rail.deliver(order.id, txId, order.totalAmount);
+
+    expect(result.status).toBe("already_processed");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await rail.read(txId))?.outcome).toBe("matched");
+  });
+
+  it("recovers a claim 1 ms older than the threshold", async () => {
+    const now = new Date();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    const order = await pendingOrder(rail.method);
+    const txId = `just-over-${rail.method}`;
+    await rail.seed(order.id, txId, new Decimal(order.totalAmount), new Date(now.getTime() - STALE_MATCHED_CLAIM_MS - 1));
+
+    const result = await rail.deliver(order.id, txId, order.totalAmount);
+
+    expect(result.status).toBe("delivered");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
   });
 });

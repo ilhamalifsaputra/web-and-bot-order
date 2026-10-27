@@ -24,6 +24,7 @@ import { resetBotIdentity } from "@app/core/runtime";
 import * as customer from "../src/handlers/customer";
 import { routeCallback } from "../src/handlers/callbacks";
 import { fitSections } from "../src/util/tierDisplay";
+import { quoteNonce } from "./helpers/quote";
 
 let sample: SampleData;
 
@@ -539,22 +540,26 @@ describe("the payment tap is bound to the total the confirmation showed", () => 
       { adminId: null },
     );
 
-    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3`, cbMessage: BUBBLE });
-    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 3);
+    // The pay button carries the nonce of the render the buyer saw (price lock).
+    const nonce = quoteNonce(confirm.ctx)!;
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3:${nonce}`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 3, nonce);
     expect(await prisma.order.count()).toBe(0);
     expect(budget(tap.sink)).toEqual({ ...NONE, editMessageText: 1 });
     const redrawn = renderedBody(tap.sink);
-    expect(redrawn).toContain("The price changed");
+    // The price lock's "price changed" line (checkout.price_changed), which names the new total.
+    expect(redrawn).toContain("The price has changed to Rp21,000");
     expect(redrawn).toContain("Rp21,000");
     expect(redrawn).not.toContain("Rp24,000");
 
-    // Confirming again charges the new, now-shown figure.
-    const again = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3`, cbMessage: BUBBLE });
-    await checkout.buyNowTokopay(again.ctx, sample.product.id, 3);
+    // Confirming again, from the redrawn screen, charges the new, now-shown figure.
+    const again = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3:${quoteNonce(tap.ctx)}`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(again.ctx, sample.product.id, 3, quoteNonce(tap.ctx));
     const orders = await prisma.order.findMany();
     expect(orders).toHaveLength(1);
     expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("21000");
-    expect(shared.scratch.shownQuotes).toBeUndefined();
+    // The quote is spent with the order.
+    expect(shared.scratch.quotedTotalIdr).toBeUndefined();
   });
 
   it("an unchanged price goes straight through to the order", async () => {
@@ -563,23 +568,39 @@ describe("the payment tap is bound to the total the confirmation showed", () => 
     const shared = { lang: "en", ...session() } as SessionData;
     const confirm = makeCtx({ sharedSession: shared, callbackData: `v1:buy:${sample.product.id}:3`, cbMessage: BUBBLE });
     await checkout.showOrderConfirmation(confirm.ctx, sample.product.id, 3);
-    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3`, cbMessage: BUBBLE });
-    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 3);
+    const nonce = quoteNonce(confirm.ctx)!;
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:3:${nonce}`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 3, nonce);
     const orders = await prisma.order.findMany();
     expect(orders).toHaveLength(1);
     expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("24000");
-    expect(JSON.stringify(tap.sink)).not.toContain("The price changed");
+    expect(JSON.stringify(tap.sink)).not.toContain("The price has changed");
   });
 
-  it("a quote shown for another quantity does not bind this tap", async () => {
+  // Merge decision (2026-10-27, owner chose option a): the bot's single price
+  // lock is fail-closed. Master's version let a tap for a quantity no screen
+  // quoted go through unbound; the lock instead refuses it as a stale screen,
+  // charges nothing, and redraws that quantity's own (untiered) total, which
+  // the next tap from that screen pays.
+  it("a quote shown for another quantity does not bind this tap: it is refused and the tapped quantity is redrawn", async () => {
     await enableTokopay();
     await giveTiers();
     const shared = { lang: "en", ...session() } as SessionData;
     const confirm = makeCtx({ sharedSession: shared, callbackData: `v1:buy:${sample.product.id}:3`, cbMessage: BUBBLE });
     await checkout.showOrderConfirmation(confirm.ctx, sample.product.id, 3);
-    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:2`, cbMessage: BUBBLE });
-    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 2);
-    expect(await prisma.order.count()).toBe(1);
+    const nonce3 = quoteNonce(confirm.ctx)!;
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:2:${nonce3}`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(tap.ctx, sample.product.id, 2, nonce3);
+    expect(await prisma.order.count()).toBe(0);
+    expect(budget(tap.sink)).toEqual({ ...NONE, editMessageText: 1 });
+    // 2 units are below the 3+ tier: Rp20,000, never the 3-unit quote.
+    expect(renderedBody(tap.sink)).toContain("Rp20,000");
+
+    const again = makeCtx({ sharedSession: shared, callbackData: `v1:payq:${sample.product.id}:2:${quoteNonce(tap.ctx)}`, cbMessage: BUBBLE });
+    await checkout.buyNowTokopay(again.ctx, sample.product.id, 2, quoteNonce(tap.ctx));
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("20000");
   });
 });
 
@@ -600,10 +621,17 @@ describe("a wallet payment tap never runs unbound", () => {
     return c;
   }
 
-  it("a stale bubble X tapped after opening Y is bound to X's own shown total: a moved price redraws X and charges nothing", async () => {
+  // Merge decision (2026-10-27, owner chose option a): only the screen the
+  // buyer sees last can pay (one quote, a fresh nonce per render — this is what
+  // stops a queued second tap from paying a price its sender never saw). Master's
+  // version let an older bubble X keep paying at its own total after Y was
+  // opened; the lock refuses X's tap as a stale screen and redraws X at the
+  // current price, and only a tap from that redrawn screen pays.
+  it("a stale bubble X tapped after opening Y is refused: a moved price redraws X at the new total and charges nothing", async () => {
     await giveTiers();
     const shared = await walletSession();
-    await confirm(shared, 3, BUBBLE_X); // X: 3 × Rp8,000 = Rp24,000
+    const x = await confirm(shared, 3, BUBBLE_X); // X: 3 × Rp8,000 = Rp24,000
+    const xNonce = quoteNonce(x.ctx)!;
     await confirm(shared, 2, BUBBLE_Y); // Y: 2 × Rp10,000
 
     await replaceTiers(
@@ -616,44 +644,68 @@ describe("a wallet payment tap never runs unbound", () => {
       { adminId: null },
     );
 
-    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3`, cbMessage: BUBBLE_X });
-    await checkout.completeOrderWithWallet(tap.ctx, sample.product.id, 3);
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3:${xNonce}`, cbMessage: BUBBLE_X });
+    await checkout.completeOrderWithWallet(tap.ctx, sample.product.id, 3, xNonce);
     expect(await prisma.order.count()).toBe(0);
     expect(budget(tap.sink)).toEqual({ ...NONE, editMessageText: 1 });
+    // A stale screen: the buyer is told so (toast), and X is redrawn at the new tier price.
+    expect(JSON.stringify(calls(tap.sink, "answerCallbackQuery"))).toContain("outdated");
     const redrawn = renderedBody(tap.sink);
-    expect(redrawn).toContain("The price changed");
     expect(redrawn).toContain("Rp21,000");
+    expect(redrawn).not.toContain("Rp24,000");
     expect((await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString()).toBe("1000000");
+
+    // A tap from the redrawn X pays the new, now-shown figure.
+    const again = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3:${quoteNonce(tap.ctx)}`, cbMessage: BUBBLE_X });
+    await checkout.completeOrderWithWallet(again.ctx, sample.product.id, 3, quoteNonce(tap.ctx));
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("21000");
   });
 
-  it("an unchanged stale bubble X still pays X's quantity at X's total after Y was opened", async () => {
+  // Merge decision (2026-10-27, option a), see above: an unchanged older bubble
+  // X does not pay after Y was opened either; it is redrawn, and a tap from the
+  // redrawn X pays X's quantity at X's tiered total.
+  it("an unchanged stale bubble X is refused after Y was opened; the redrawn X pays X's quantity at X's total", async () => {
     await giveTiers();
     const shared = await walletSession();
-    await confirm(shared, 3, BUBBLE_X);
+    const x = await confirm(shared, 3, BUBBLE_X);
+    const xNonce = quoteNonce(x.ctx)!;
     await confirm(shared, 2, BUBBLE_Y);
-    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3`, cbMessage: BUBBLE_X });
-    await checkout.completeOrderWithWallet(tap.ctx, sample.product.id, 3);
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3:${xNonce}`, cbMessage: BUBBLE_X });
+    await checkout.completeOrderWithWallet(tap.ctx, sample.product.id, 3, xNonce);
+    expect(await prisma.order.count()).toBe(0);
+    expect(budget(tap.sink)).toEqual({ ...NONE, editMessageText: 1 });
+    expect(renderedBody(tap.sink)).toContain("Rp24,000");
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString()).toBe("1000000");
+
+    const again = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3:${quoteNonce(tap.ctx)}`, cbMessage: BUBBLE_X });
+    await checkout.completeOrderWithWallet(again.ctx, sample.product.id, 3, quoteNonce(tap.ctx));
     const orders = await prisma.order.findMany();
     expect(orders).toHaveLength(1);
     expect(new Decimal(orders[0]!.subtotalAmount).minus(orders[0]!.bulkDiscountAmount).toString()).toBe("24000");
-    // Y's confirmation is still bound.
-    expect(shared.scratch.shownQuotes).toEqual({ [`${sample.product.id}:2`]: "20000" });
+    // The quote is spent with the order.
+    expect(shared.scratch.quotedTotalIdr).toBeUndefined();
   });
 
   it("with no remembered total (cleared scratch) the wallet rail refuses, redraws once and charges nothing; the next tap pays the shown figure", async () => {
     await giveTiers();
     const shared = await walletSession();
-    await confirm(shared, 3, BUBBLE_X);
-    delete shared.scratch.shownQuotes;
+    const x = await confirm(shared, 3, BUBBLE_X);
+    const xNonce = quoteNonce(x.ctx)!;
+    // A lost quote (session reset): the lock's scratch keys are gone.
+    delete shared.scratch.quotedTotalIdr;
+    delete shared.scratch.quoteNonce;
+    delete shared.scratch.quoteFor;
 
-    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3`, cbMessage: BUBBLE_X });
-    await checkout.completeOrderWithWallet(tap.ctx, sample.product.id, 3);
+    const tap = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3:${xNonce}`, cbMessage: BUBBLE_X });
+    await checkout.completeOrderWithWallet(tap.ctx, sample.product.id, 3, xNonce);
     expect(await prisma.order.count()).toBe(0);
     expect(budget(tap.sink)).toEqual({ ...NONE, editMessageText: 1 });
     expect(renderedBody(tap.sink)).toContain("Rp24,000");
 
-    const again = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3`, cbMessage: BUBBLE_X });
-    await checkout.completeOrderWithWallet(again.ctx, sample.product.id, 3);
+    const again = makeCtx({ sharedSession: shared, callbackData: `v1:walletpay:${sample.product.id}:3:${quoteNonce(tap.ctx)}`, cbMessage: BUBBLE_X });
+    await checkout.completeOrderWithWallet(again.ctx, sample.product.id, 3, quoteNonce(tap.ctx));
     expect(await prisma.order.count()).toBe(1);
   });
 

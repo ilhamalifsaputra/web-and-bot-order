@@ -9,7 +9,7 @@
  */
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { CategoryGroup } from "@app/core/enums";
+import { CUSTOMER_SERVICES } from "@app/core/services";
 import { logger } from "@app/core/logger";
 import {
   prisma,
@@ -64,7 +64,10 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   // variant picker then an optional region picker in front of the
   // category-scoped product list (browseCategoryEntry itself decides whether
   // to show either step). `gvars:<categoryId>` re-enters browseCategoryEntry
-  // — it's the region picker's Back target, re-rendering the variant picker.
+  // — it's the region picker's (and the product list's) Back target,
+  // re-rendering the variant picker. `gregs:<categoryId>` is the product
+  // list's Back to the region picker that was shown for that scope
+  // (customer.backToRegionPicker).
   // `gvar`/`greg:<categoryId>:<idx>` resolve a tapped index against the
   // snapshot browseCategoryEntry/pickGameVariant stashed in scratch.
   const action = parts[2];
@@ -78,13 +81,16 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   else if (action === "grps") await customer.browseGroups(ctx);
   else if (action === "grp") {
     const group = parts[3];
-    if (group && (Object.values(CategoryGroup) as string[]).includes(group)) {
+    // Any service in the registry (@app/core/services), so a service added
+    // there later opens without touching this router.
+    if (group && CUSTOMER_SERVICES.some((service) => service.group === group)) {
       await customer.browseCategoriesInGroup(ctx, group);
     } else {
       await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     }
   } else if (action === "cat") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
   else if (action === "gvars") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
+  else if (action === "gregs") await customer.backToRegionPicker(ctx, parseInt(parts[3]!, 10));
   else if (action === "gvar") await customer.pickGameVariant(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else if (action === "greg") await customer.pickGameRegion(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else {
@@ -110,34 +116,38 @@ const dispatchUsdt: DomainDispatcher = async (ctx, parts) => {
   await checkout.showUsdtMethods(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
+// The pay domains below carry the quote nonce of the render that drew the
+// button as their last segment (keyboards/customer.ts payCb). The handler pays
+// only when it matches the session's; a missing or older nonce re-renders the
+// payment screen with the stale-screen toast (checkout.ts quoteForTap).
 const dispatchPayInternal: DomainDispatcher = async (ctx, parts) => {
-  // v1:payx:<pid>:<qty> → Binance Internal Transfer (auto-confirmed)
-  await checkout.buyNowInternal(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payx:<pid>:<qty>:<quoteNonce> → Binance Internal Transfer (auto-confirmed)
+  await checkout.buyNowInternal(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayBybit: DomainDispatcher = async (ctx, parts) => {
-  // v1:payb:<pid>:<qty> → Bybit Internal Transfer deposit (auto-confirmed)
-  await checkout.buyNowBybit(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payb:<pid>:<qty>:<quoteNonce> → Bybit Internal Transfer deposit (auto-confirmed)
+  await checkout.buyNowBybit(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayBybitBsc: DomainDispatcher = async (ctx, parts) => {
-  // v1:paybc:<pid>:<qty> → Bybit BSC on-chain deposit (auto-confirmed)
-  await checkout.buyNowBybitBsc(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:paybc:<pid>:<qty>:<quoteNonce> → Bybit BSC on-chain deposit (auto-confirmed)
+  await checkout.buyNowBybitBsc(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayTokopay: DomainDispatcher = async (ctx, parts) => {
-  // v1:payq:<pid>:<qty> → QRIS (TokoPay) order (auto-confirmed by webhook)
-  await checkout.buyNowTokopay(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payq:<pid>:<qty>:<quoteNonce> → QRIS (TokoPay) order (auto-confirmed by webhook)
+  await checkout.buyNowTokopay(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayPaydisini: DomainDispatcher = async (ctx, parts) => {
-  // v1:payd:<pid>:<qty> → PayDisini (QRIS / e-wallet) order (auto-confirmed)
-  await checkout.buyNowPaydisini(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payd:<pid>:<qty>:<quoteNonce> → PayDisini (QRIS / e-wallet) order (auto-confirmed)
+  await checkout.buyNowPaydisini(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchPayNowpayments: DomainDispatcher = async (ctx, parts) => {
-  // v1:payn:<pid>:<qty> → NOWPayments hosted USDT invoice (auto-confirmed)
-  await checkout.buyNowNowpayments(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  // v1:payn:<pid>:<qty>:<quoteNonce> → NOWPayments hosted USDT invoice (auto-confirmed)
+  await checkout.buyNowNowpayments(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
@@ -146,6 +156,23 @@ const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
     delete ctx.session.scratch.appliedVoucherCode;
     await checkout.showOrderConfirmation(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   }
+};
+
+const dispatchReview: DomainDispatcher = async (ctx, parts) => {
+  // v1:rev:go|chg:<pid>:<qty> — the Game Top-up review screen. Each handler
+  // answers a tap whose account data is gone or belongs to another quantity
+  // with the stale-screen toast.
+  // Ids are plain decimal digits only: "1e3", "0x10", "12.0" or "-1" are a
+  // malformed (stale or forged) button, not another product.
+  const action = parts[2];
+  const decimal = (s: string | undefined) => (s !== undefined && /^\d+$/.test(s) ? parseInt(s, 10) : NaN);
+  const productId = decimal(parts[3]);
+  const qty = decimal(parts[4]);
+  if (!Number.isSafeInteger(productId) || !Number.isSafeInteger(qty) || qty < 1) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+  } else if (action === "go") await checkout.reviewContinue(ctx, productId, qty);
+  else if (action === "chg") await checkout.reviewChangeDetails(ctx, productId, qty);
+  else await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
 };
 
 const dispatchCheckout: DomainDispatcher = async (ctx, parts) => {
@@ -196,9 +223,9 @@ const dispatchWalletMenu: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchWalletPay: DomainDispatcher = async (ctx, parts) => {
-  // v1:walletpay:<pid>:<qty> — the order's active wallet credit already
+  // v1:walletpay:<pid>:<qty>:<quoteNonce> — the order's active wallet credit already
   // covers the total; complete it with no gateway.
-  await checkout.completeOrderWithWallet(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+  await checkout.completeOrderWithWallet(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]);
 };
 
 const dispatchTopup: DomainDispatcher = async (ctx, parts) => {
@@ -258,6 +285,13 @@ const dispatchRestock: DomainDispatcher = async (ctx, parts) => {
   if (parts[2] === "sub") await customer.subscribeRestock(ctx, parseInt(parts[3]!, 10));
 };
 
+const dispatchSearch: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "page") await customer.searchPage(ctx, Number(parts[3]));
+  else if (action === "again") await customer.searchAgain(ctx);
+  else await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+};
+
 const dispatchPage: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "faq") await staticPages.showFaq(ctx);
@@ -295,6 +329,8 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   qty: dispatchQty,
   ref: dispatchRef,
   restock: dispatchRestock,
+  rev: dispatchReview,
+  search: dispatchSearch,
   ticket: dispatchTicket,
   topup: dispatchTopup,
   voucher: dispatchVoucher,
@@ -338,6 +374,11 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
   // amount on an unrelated screen.
   if (!(domain === "topup" && parts[2] === "currency")) {
     ctx.session.awaitingTopupCurrency = undefined;
+  }
+  // And for the Game Top Up search prompt: only "Search again" arms it (it sets
+  // the flag itself after rendering), so any other tap ends the mode.
+  if (!(domain === "search" && parts[2] === "again")) {
+    delete ctx.session.scratch.searchAwaiting;
   }
 
   const dispatcher = DOMAIN_ROUTES[domain!];

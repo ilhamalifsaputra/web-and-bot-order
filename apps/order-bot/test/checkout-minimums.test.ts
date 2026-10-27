@@ -17,6 +17,7 @@ import {
 import { OrderStatus, PaymentMethod, VoucherType } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, lastMarkup, sentIncludes, calls, type SentCall } from "./helpers/ctx";
+import { primeQuote, quoteNonce } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
@@ -101,8 +102,11 @@ describe("completeOrderWithWallet — an order a discount alone reduced to Rp0",
       callbackData: `v1:walletpay:${sample.product.id}:1`,
       cbMessage: { message_id: 777, chat: { id: 42, type: "private" }, date: 0 },
     });
+    // The Complete Order screen the buyer tapped quoted IDR 0.
+    await primeQuote(ctx, sample.product.id, 1);
+    expect(ctx.session.scratch.quotedTotalIdr).toBe("0");
 
-    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
     const full = (await getOrder(prisma, order.id))!;
@@ -142,7 +146,7 @@ describe("completeOrderWithWallet — an order a discount alone reduced to Rp0",
       callbackData: `v1:walletpay:${sample.product.id}:1`,
     });
 
-    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
     const alert = calls(sink, "answerCallbackQuery").find(

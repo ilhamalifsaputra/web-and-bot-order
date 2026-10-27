@@ -257,6 +257,26 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/tidak lagi menunggu pembayaran/i); // Indonesian line
   });
 
+  it("renders ADMIN_STALE_PAYMENT's claim_cancelled variant as a claimed-but-cancelled alert with a manual settlement hint, escaped", () => {
+    const out = render("ADMIN_STALE_PAYMENT", {
+      order_code: "ORD-CLAIMC-1",
+      gateway: "TokoPay",
+      trx_id: "TRX-CLAIMC-1",
+      reason: "claim_cancelled",
+    });
+    expect(out).toContain("<code>ORD-CLAIMC-1</code>");
+    expect(out).toContain("<code>TRX-CLAIMC-1</code>");
+    expect(out).toMatch(/cancelled before it was delivered/i);
+    expect(out).toMatch(/dibatalkan sebelum dikirim/i);
+    expect(out).toMatch(/refund or a balance credit/i);
+    expect(out).not.toMatch(/no longer pending/i);
+    expect(out).not.toMatch(/deliver manually/i);
+    const escaped = render("ADMIN_STALE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", trx_id: "<i>t</i>", reason: "claim_cancelled" });
+    expect(escaped).not.toContain("<script>");
+    expect(escaped).not.toContain("<b>X</b>");
+    expect(escaped).not.toContain("<i>t</i>");
+  });
+
   it("renders ADMIN_UNCONFIRMABLE_PAYMENT's unverified_amount variant as a paid-without-amount alert, escaped", () => {
     const out = render("ADMIN_UNCONFIRMABLE_PAYMENT", {
       order_code: "ORD-UNV-1",
@@ -271,6 +291,31 @@ describe("notifier templates.render", () => {
     const plain = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "ORD-X", gateway: "NOWPayments" });
     expect(plain).toMatch(/no transaction id/i); // original case unchanged
     const escaped = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", reason: "unverified_amount" });
+    expect(escaped).not.toContain("<script>");
+    expect(escaped).not.toContain("<b>X</b>");
+  });
+
+  it("renders ADMIN_UNCONFIRMABLE_PAYMENT's still_confirming variant as a detected-but-never-completed alert, escaped", () => {
+    const out = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "ORD-SC-1", gateway: "NOWPayments", reason: "still_confirming" });
+    expect(out).toContain("<code>ORD-SC-1</code>");
+    expect(out).toContain("NOWPayments");
+    // A terminal failed/expired payment ends here too, so the alert must not
+    // claim the payment is still confirming.
+    expect(out).toMatch(/detected or confirming/i);
+    expect(out).toMatch(/never completed/i);
+    expect(out).toMatch(/check the payment in the NOWPayments dashboard before refunding/i);
+    expect(out).not.toMatch(/was still confirming/i);
+    expect(out).toMatch(/30 minutes/i);
+    expect(out).toMatch(/has been cancelled/i);
+    expect(out).toMatch(/terdeteksi atau sedang dikonfirmasi/i);
+    expect(out).toMatch(/tidak pernah selesai/i);
+    expect(out).toMatch(/sebelum melakukan refund/i);
+    expect(out).not.toMatch(/masih dikonfirmasi, jadi/i);
+    expect(out).toMatch(/30 menit/i);
+    expect(out).toMatch(/sudah dibatalkan/i);
+    expect(out).not.toMatch(/no transaction id/i);
+    expect(out).not.toMatch(/amount could not be verified/i);
+    const escaped = render("ADMIN_UNCONFIRMABLE_PAYMENT", { order_code: "<b>X</b>", gateway: "<script>", reason: "still_confirming" });
     expect(escaped).not.toContain("<script>");
     expect(escaped).not.toContain("<b>X</b>");
   });
@@ -738,5 +783,179 @@ describe("notifier templates.render", () => {
   it("falls back to English for an unrecognized TICKET_CLOSED_DM buyer_language", () => {
     const out = render("TICKET_CLOSED_DM", { buyer_language: "fr" });
     expect(out).toContain("Your ticket has been closed");
+  });
+});
+
+/**
+ * PAYMENT_REMINDER_DM (Phase 4 owner decision): the one push a buyer gets when
+ * about five minutes of their payment window are left. The remaining time is
+ * worked out from the stored deadline at SEND time, so a row the dispatcher
+ * delivers late (backoff, flood control, a restart) still states the truth.
+ */
+describe("PAYMENT_REMINDER_DM", () => {
+  const expiresAt = "2026-10-24T07:05:00.000Z"; // 14:05 in Asia/Jakarta (WIB)
+  const base = { order_code: "ORD-20261024-ABCD", expires_at: expiresAt, minutes_left: 5, buyer_language: "en" };
+  const sentAt = (iso: string) => new Date(iso);
+
+  it("states the full order number, the time left, the WIB deadline and the automatic cancellation, in both languages", () => {
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("<code>ORD-20261024-ABCD</code>");
+    expect(out).toContain("2026-10-24 14:05 WIB");
+    expect(out).toContain("4 minutes");
+    expect(out).toContain("4 menit");
+    expect(out).toContain("cancelled automatically");
+    expect(out).toContain("dibatalkan otomatis");
+    expect(out).toContain("Already paid? Wait for automatic confirmation.");
+    expect(out).toContain("Sudah bayar? Tunggu konfirmasi otomatis.");
+  });
+
+  it("computes the minutes left when it is sent, not when it was queued", () => {
+    // Queued with 5 minutes left, delivered 2.5 minutes later by a retry.
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:02:30.000Z"));
+    expect(out).toContain("2 minutes");
+    expect(out).not.toContain("5 minutes");
+  });
+
+  it("uses the singular for one minute", () => {
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:03:30.000Z"));
+    expect(out).toContain("1 minute left");
+    expect(out).not.toContain("1 minutes");
+  });
+
+  it("puts the buyer's own language first", () => {
+    const now = sentAt("2026-10-24T07:00:30.000Z");
+    const en = render("PAYMENT_REMINDER_DM", base, now);
+    const id = render("PAYMENT_REMINDER_DM", { ...base, buyer_language: "id" }, now);
+    expect(en.indexOf("Payment reminder")).toBeLessThan(en.indexOf("Pengingat pembayaran"));
+    expect(id.indexOf("Pengingat pembayaran")).toBeLessThan(id.indexOf("Payment reminder"));
+    // Same content either way — only the order changes.
+    expect(id.length).toBe(en.length);
+  });
+
+  it("HTML-escapes the order code", () => {
+    const out = render("PAYMENT_REMINDER_DM", { ...base, order_code: `<b>"x"&'y'</b>` }, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("&lt;b&gt;&quot;x&quot;&amp;&#x27;y&#x27;&lt;/b&gt;");
+    expect(out).not.toContain(`<b>"x"`);
+  });
+
+  it("falls back to the queued minutes when the stored deadline is unreadable", () => {
+    const out = render("PAYMENT_REMINDER_DM", { ...base, expires_at: "not a date", minutes_left: 3 }, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("3 minutes");
+    expect(out).not.toContain("WIB");
+  });
+
+  it("refuses to render a reminder with no timing at all, rather than send a vague one", () => {
+    expect(() => render("PAYMENT_REMINDER_DM", { order_code: "ORD-X" }, sentAt("2026-10-24T07:00:30.000Z"))).toThrow();
+  });
+
+  it("keeps the product wording byte-identical when the order is not a top-up", () => {
+    const now = sentAt("2026-10-24T07:00:30.000Z");
+    const product = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: false }, now);
+    expect(product).toBe(render("PAYMENT_REMINDER_DM", base, now));
+    expect(product).toBe(
+      "⏰ <b>Payment reminder — order <code>ORD-20261024-ABCD</code></b>\n" +
+        "4 minutes left to pay.\nPay before: <b>2026-10-24 14:05 WIB</b>\n" +
+        "After the deadline, the order is cancelled automatically.\nAlready paid? Wait for automatic confirmation." +
+        "\n\n" +
+        "⏰ <b>Pengingat pembayaran — pesanan <code>ORD-20261024-ABCD</code></b>\n" +
+        "Sisa waktu bayar 4 menit.\nBayar sebelum: <b>2026-10-24 14:05 WIB</b>\n" +
+        "Setelah batas waktu lewat, pesanan dibatalkan otomatis.\nSudah bayar? Tunggu konfirmasi otomatis.",
+    );
+  });
+
+  it("words a wallet top-up reminder as a payment window, not an order cancellation, in both languages", () => {
+    const now = sentAt("2026-10-24T07:00:30.000Z");
+    const out = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: true }, now);
+    expect(out).toContain("<code>ORD-20261024-ABCD</code>");
+    expect(out).toContain("2026-10-24 14:05 WIB");
+    expect(out).toContain("4 minutes left to pay.");
+    expect(out).toContain("Sisa waktu bayar 4 menit.");
+    expect(out).toContain("The top-up payment window ends at that time.");
+    expect(out).toContain("Already paid? Your balance is credited automatically.");
+    expect(out).toContain("Jendela pembayaran top-up berakhir pada waktu tersebut.");
+    expect(out).toContain("Sudah bayar? Saldo akan masuk otomatis.");
+    expect(out).not.toContain("cancelled automatically");
+    expect(out).not.toContain("dibatalkan otomatis");
+    const id = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: true, buyer_language: "id" }, now);
+    expect(id.indexOf("Pengingat pembayaran")).toBeLessThan(id.indexOf("Payment reminder"));
+    expect(id.length).toBe(out.length);
+  });
+
+  it("HTML-escapes the order code in the top-up wording too", () => {
+    const out = render("PAYMENT_REMINDER_DM", { ...base, is_wallet_topup: true, order_code: `<b>"x"&'y'</b>` }, sentAt("2026-10-24T07:00:30.000Z"));
+    expect(out).toContain("&lt;b&gt;&quot;x&quot;&amp;&#x27;y&#x27;&lt;/b&gt;");
+    expect(out).not.toContain(`<b>"x"`);
+  });
+
+  it("says nothing about stock or credentials, so it reads right for a wallet top-up too", () => {
+    const out = render("PAYMENT_REMINDER_DM", base, sentAt("2026-10-24T07:00:30.000Z")).toLowerCase();
+    for (const word of ["stock", "stok", "password", "credential", "akun"]) expect(out).not.toContain(word);
+  });
+});
+
+/**
+ * ORDER_EXPIRED_DM (Phase 4 owner decision): the one push a buyer gets when
+ * the expiry sweep cancels their unpaid order, sent only when the cancellation
+ * itself put no new message in their chat.
+ */
+describe("ORDER_EXPIRED_DM", () => {
+  const base = { order_code: "ORD-20261024-ABCD", buyer_language: "en", is_wallet_topup: false };
+
+  it("states the full order number, the expired window and what to do if already paid, in both languages", () => {
+    const out = render("ORDER_EXPIRED_DM", base);
+    expect(out).toContain("<code>ORD-20261024-ABCD</code>");
+    expect(out).toContain("was cancelled — the payment window expired.");
+    expect(out).toContain("If you already paid, contact support.");
+    expect(out).toContain("dibatalkan — waktu pembayaran habis.");
+    expect(out).toContain("Jika sudah bayar, hubungi Bantuan.");
+  });
+
+  it("tells a product buyer the reserved stock was released", () => {
+    const out = render("ORDER_EXPIRED_DM", base);
+    expect(out).toContain("The reserved stock has been released.");
+    expect(out).toContain("Stok yang dipesan sudah dilepas.");
+  });
+
+  it("says nothing about stock for a wallet top-up, which reserved none", () => {
+    const out = render("ORDER_EXPIRED_DM", { ...base, is_wallet_topup: true }).toLowerCase();
+    expect(out).not.toContain("stock");
+    expect(out).not.toContain("stok");
+    expect(out).toContain("payment window expired");
+  });
+
+  // A late payment still settles a cancelled top-up (isLateSettleableWalletTopup),
+  // so "contact support" alone would be wrong: support is only for a balance
+  // that did not arrive.
+  it("tells a top-up buyer a late payment is credited automatically, and when to contact support", () => {
+    const out = render("ORDER_EXPIRED_DM", { ...base, is_wallet_topup: true });
+    expect(out).toContain("If you already paid, your balance is credited automatically. If it is not updated, contact support.");
+    expect(out).toContain("Jika sudah bayar, saldo akan masuk otomatis. Jika saldo belum bertambah, hubungi Bantuan.");
+    expect(out).not.toContain("If you already paid, contact support.");
+    expect(out).not.toContain("Jika sudah bayar, hubungi Bantuan.");
+  });
+
+  it("keeps the product wording for a product order", () => {
+    const out = render("ORDER_EXPIRED_DM", base);
+    expect(out).not.toContain("credited automatically");
+    expect(out).not.toContain("saldo");
+  });
+
+  it("puts the buyer's own language first", () => {
+    const en = render("ORDER_EXPIRED_DM", base);
+    const id = render("ORDER_EXPIRED_DM", { ...base, buyer_language: "id" });
+    expect(en.indexOf("was cancelled")).toBeLessThan(en.indexOf("dibatalkan"));
+    expect(id.indexOf("dibatalkan")).toBeLessThan(id.indexOf("was cancelled"));
+    expect(id.length).toBe(en.length);
+  });
+
+  it("HTML-escapes the order code", () => {
+    const out = render("ORDER_EXPIRED_DM", { ...base, order_code: `<b>"x"&'y'</b>` });
+    expect(out).toContain("&lt;b&gt;&quot;x&quot;&amp;&#x27;y&#x27;&lt;/b&gt;");
+    expect(out).not.toContain(`<b>"x"`);
+  });
+
+  it("carries no credentials or amounts", () => {
+    const out = render("ORDER_EXPIRED_DM", base).toLowerCase();
+    for (const word of ["password", "credential", "akun", "rp"]) expect(out).not.toContain(word);
   });
 });

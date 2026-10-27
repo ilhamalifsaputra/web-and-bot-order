@@ -1061,8 +1061,8 @@ describe("a QR photo is retired to one status text once payment is no longer pen
 
 describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID and full SN", () => {
   const fields = JSON.stringify([
-    { key: "uid", label: { id: "UID", en: "UID" }, type: "text", required: true },
-    { key: "zone", label: { id: "Zone", en: "Zone" }, type: "text", required: true },
+    { key: "uid", label: { id: " ", en: " " }, type: "text", required: true },
+    { key: "zone", label: { id: " ", en: " " }, type: "text", required: true },
     { key: "password", label: { id: "Password", en: "Password" }, type: "text", required: false },
   ]);
   async function gameOrder(opts: { fields?: string; mapping?: string; customerData?: unknown; sn?: string | null; provider?: string; group?: string; language?: string } = {}) {
@@ -1106,8 +1106,8 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
   it("follows the denomination's provider input mapping for the Game ID, Zone and Server", async () => {
     const tg = await finish(await gameOrder({
       fields: JSON.stringify([
-        { key: "a", label: { id: "A", en: "A" }, type: "text", required: true }, { key: "b", label: { id: "B", en: "B" }, type: "text", required: true },
-        { key: "c", label: { id: "C", en: "C" }, type: "text", required: true },
+        { key: "a", label: { id: " ", en: " " }, type: "text", required: true }, { key: "b", label: { id: " ", en: " " }, type: "text", required: true },
+        { key: "c", label: { id: " ", en: " " }, type: "text", required: true },
       ]),
       mapping: JSON.stringify({ nickname: { targetKey: "c", zoneKey: "a", serverKey: "b" } }),
       customerData: [{ a: "Z9", b: "S7", c: "G1" }],
@@ -1119,7 +1119,7 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
   });
 
   it("omits the zone line when the denomination has no zone field", async () => {
-    const tg = await finish(await gameOrder({ fields: JSON.stringify([{ key: "uid", label: { id: "UID", en: "UID" }, type: "text", required: true }]), customerData: [{ uid: "777", zone: "9999" }] }));
+    const tg = await finish(await gameOrder({ fields: JSON.stringify([{ key: "uid", label: { id: " ", en: " " }, type: "text", required: true }]), customerData: [{ uid: "777", zone: "9999" }] }));
     expect(tg.edits[0]!.text).toContain("Game ID: <code>777</code>");
     expect(tg.edits[0]!.text).not.toMatch(/Zone ID|Server ID|9999/);
   });
@@ -1128,6 +1128,50 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     const tg = await finish(await gameOrder({ customerData: [{ uid: "<b>1</b>", zone: "a&b" }] }));
     expect(tg.edits[0]!.text).toContain("<code>&lt;b&gt;1&lt;/b&gt;</code>");
     expect(tg.edits[0]!.text).toContain("<code>a&amp;b</code>");
+  });
+
+  const labelled = (uid: string, zone: string) => JSON.stringify([
+    { key: "uid", label: { id: uid, en: uid }, type: "text", required: true },
+    { key: "zone", label: { id: zone, en: zone }, type: "text", required: true },
+  ]);
+
+  it("uses the admin-configured field labels instead of the fixed wording", async () => {
+    const tg = await finish(await gameOrder({ fields: labelled("Player ID", "Realm") }));
+    const text = tg.edits[0]!.text;
+    expect(text).toContain("Player ID: <code>12345678</code>");
+    expect(text).toContain("Realm: <code>2201</code>");
+    expect(text).not.toMatch(/Game ID|Zone ID/);
+  });
+
+  it("falls back to the fixed wording for a blank label, per role", async () => {
+    const tg = await finish(await gameOrder({ fields: labelled("Player ID", "   ") }));
+    const text = tg.edits[0]!.text;
+    expect(text).toContain("Player ID: <code>12345678</code>");
+    expect(text).toContain("Zone ID: <code>2201</code>");
+  });
+
+  it("falls back to the fixed wording when the field label is missing from the snapshot", async () => {
+    const order = await gameOrder({ fields: labelled("Player ID", "Realm") });
+    // A snapshot whose fields still validate but carry no usable labels for the mapped keys.
+    await db.order.update({ where: { id: order.id }, data: { inputConfigSnapshot: JSON.stringify({ fields: JSON.parse(labelled(" ", " ")), providerInputMapping: null }) } });
+    const tg = await finish(order);
+    expect(tg.edits[0]!.text).toContain("Game ID: <code>12345678</code>");
+    expect(tg.edits[0]!.text).toContain("Zone ID: <code>2201</code>");
+  });
+
+  it("leaves the target lines out, without failing, when the saved snapshot is malformed", async () => {
+    const order = await gameOrder();
+    await db.order.update({ where: { id: order.id }, data: { inputConfigSnapshot: "{bad" } });
+    const tg = await finish(order);
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    expect(tg.edits[0]!.text).not.toMatch(/Game ID|12345678/);
+    expect(tg.edits[0]!.text).toContain("SN: <code>SN-OK-123</code>");
+  });
+
+  it("escapes HTML in a configured label", async () => {
+    const tg = await finish(await gameOrder({ fields: labelled("<i>ID</i> & co", "Zone") }));
+    expect(tg.edits[0]!.text).toContain("&lt;i&gt;ID&lt;/i&gt; &amp; co: <code>12345678</code>");
+    expect(tg.edits[0]!.text).not.toContain("<i>");
   });
 
   it("leaves the SN line out, without failing, when the delivered content cannot be decrypted", async () => {

@@ -27,6 +27,16 @@ import {
 
 export type ConvFn = (conversation: MyConversation, ctx: MyContext) => Promise<void>;
 
+/**
+ * The one place a registered trigger enters a conversation. It also ends Game
+ * Top Up search mode: these triggers run before routeCallback (which normally
+ * ends the mode), so without this the next free text would still be a query.
+ */
+export async function enterConversation(ctx: MyContext, name: string): Promise<void> {
+  delete ctx.session.scratch.searchAwaiting;
+  await ctx.conversation.enter(name);
+}
+
 export interface ConvSpec {
   name: string;
   fn: ConvFn;

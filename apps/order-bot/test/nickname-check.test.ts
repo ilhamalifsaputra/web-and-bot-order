@@ -40,6 +40,7 @@ import {
   assertNoFunctionProps,
   type SentCall,
 } from "./helpers/ctx";
+import { primeQuote, quoteNonce } from "./helpers/quote";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
@@ -516,8 +517,13 @@ describe("buyNowTokopay — nickname customerData threading", () => {
     const { denom } = await makeConfiguredDenom({ withCreds: true });
     const customerData = JSON.stringify([{ target: "GID-999", nickname: "ThreadedPlayer" }]);
     const { ctx } = customerCtx({ session: { ...userSession(), scratch: { customerData } } });
+    // The data was typed for this denomination's current input settings, as
+    // the info conversation records it next to customerData.
+    const current = await prisma.denomination.findUniqueOrThrow({ where: { id: denom.id } });
+    ctx.session.scratch.customerInputOwner = JSON.stringify([denom.id, 1, current.additionalFields, current.providerInputMapping, current.nicknameCheckGameCode]);
+    await primeQuote(ctx, denom.id, 1);
 
-    await checkout.buyNowTokopay(ctx, denom.id, 1);
+    await checkout.buyNowTokopay(ctx, denom.id, 1, quoteNonce(ctx));
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);

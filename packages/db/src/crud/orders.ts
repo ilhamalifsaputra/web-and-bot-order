@@ -41,6 +41,13 @@ import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { resolveTieredPrice, tiersFromLegacyRule } from "@app/core/bulk";
 import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
+import {
+  awaitingPaymentNothingObserved,
+  observedPaymentGraceCutoff,
+  paymentObservedInFlight,
+  paymentReminderHasTimeLeft,
+  OBSERVED_PAYMENT_GRACE_MS,
+} from "@app/core";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
@@ -69,7 +76,13 @@ import {
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
-import { ACTIONABLE_LEDGER_OUTCOMES, cancelledOrderIdsWithMoneyReturned, consumeIncomingLedgerPayment } from "./reports";
+import {
+  ACTIONABLE_LEDGER_OUTCOMES,
+  cancelledOrderIdsWithMoneyReturned,
+  consumeIncomingLedgerPayment,
+  orderMatchedLedgerClaim,
+  paymentGatewayLabel,
+} from "./reports";
 import { clearCart, getCart, lockCartForCheckout, cartCompositionLineOfCartItem } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
@@ -86,9 +99,12 @@ import {
   enqueueOwnerOrderPaidEmail,
   enqueueOwnerManualQueueEmail,
   enqueueBuyerOrderReadyEmail,
+  enqueueOrderExpiredDm,
+  enqueueAdminClaimCancelledPayment,
+  enqueueAdminUnconfirmablePayment,
 } from "./notifications";
 import { logAdminAction } from "./audit";
-import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage } from "./fulfillmentMessages";
+import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage, transactionMessageCancelNotice } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueNotificationSafely } from "./notificationIsolation";
 
@@ -1534,13 +1550,55 @@ const customerPaymentOutstanding: Prisma.OrderWhereInput = {
   ],
 };
 
+const OBSERVED_IN_FLIGHT_PAYMENT_STATES = ["PAYMENT_DETECTED", "VERIFYING"];
+
+/**
+ * A PRODUCT order whose payment a provider already reported as in flight
+ * (`paymentObservedInFlight`) and whose `expiresAt` is still inside the
+ * observed-payment grace window at `now` (`OBSERVED_PAYMENT_GRACE_MS`, see
+ * @app/core paymentReminder.ts). The expiry sweep leaves these alone and the
+ * NOWPayments poller keeps checking them. Wallet top-ups are excluded: a late
+ * payment still settles a cancelled top-up (`isLateSettleableWalletTopup`), so
+ * they keep today's cancel-at-expiry behaviour.
+ */
+export function observedPaymentInGraceWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    kind: OrderKind.PRODUCT,
+    paymentState: { in: OBSERVED_IN_FLIGHT_PAYMENT_STATES },
+    expiresAt: { gt: observedPaymentGraceCutoff(now) },
+  };
+}
+
+/** The negation of `observedPaymentInGraceWhere`, spelled out as an OR so a
+ *  NULL `paymentState` (legacy orders) still matches: a plain `NOT` over
+ *  `payment_state IN (...)` is NULL for those rows, and Postgres would drop
+ *  them from the expiry sweep. */
+function notObservedPaymentInGraceWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    OR: [
+      { kind: { not: OrderKind.PRODUCT } },
+      { paymentState: null },
+      { paymentState: { notIn: OBSERVED_IN_FLIGHT_PAYMENT_STATES } },
+      { expiresAt: { lte: observedPaymentGraceCutoff(now) } },
+    ],
+  };
+}
+
+/** The expiry sweep's set: PENDING_PAYMENT, window lapsed, payment still
+ *  outstanding, and not an observed payment still inside its grace window.
+ *  `customerPaymentOutstanding` itself is left alone — the payment reminder's
+ *  `listExpiringPendingPayments` uses it too. */
+function expiredPendingWhere(now: Date): Prisma.OrderWhereInput {
+  return {
+    status: OrderStatus.PENDING_PAYMENT,
+    expiresAt: { not: null, lt: now },
+    AND: [customerPaymentOutstanding, notObservedPaymentInGraceWhere(now)],
+  };
+}
+
 export function listExpiredPendingOrders(db: Db, now: Date) {
   return db.order.findMany({
-    where: {
-      status: OrderStatus.PENDING_PAYMENT,
-      expiresAt: { not: null, lt: now },
-      ...customerPaymentOutstanding,
-    },
+    where: expiredPendingWhere(now),
     include: { user: true },
   });
 }
@@ -1667,7 +1725,7 @@ export function countCancelled(db: Db): Promise<number> {
 
 /** PENDING_PAYMENT orders whose window has already lapsed — the count form of `listExpiredPendingOrders`. */
 export function countExpiredPending(db: Db, now: Date): Promise<number> {
-  return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now }, ...customerPaymentOutstanding } });
+  return db.order.count({ where: expiredPendingWhere(now) });
 }
 
 // ---- SLA widgets (web-admin dashboard) ------------------------------------
@@ -1694,6 +1752,78 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
     take: limit,
     include: { user: true },
   });
+}
+
+/**
+ * Enqueue-time half of the payment reminder rule (PAYMENT_REMINDER_DM, Phase
+ * 4 owner decision), applied to a row `listExpiringPendingPayments` already
+ * returned — so it is already PENDING_PAYMENT and not PAID by
+ * `customerPaymentOutstanding`. That listing is shared with the expiry job
+ * and is deliberately looser than what a reminder needs: it still returns an
+ * order whose payment the provider has already seen (PAYMENT_DETECTED /
+ * VERIFYING while the status stays PENDING_PAYMENT), and telling that buyer
+ * "N minutes left to pay" invites a second payment. So the order must also
+ * pass `awaitingPaymentNothingObserved` (@app/core) — the same predicate the
+ * send-time half uses. On top of that it needs a Telegram buyer (web and guest
+ * checkouts have nowhere to push to), a whole window LONGER than the lead (an
+ * order opened inside the reminder window already shows its full deadline on
+ * the payment screen, so a push straight after would only repeat it), and at
+ * least `PAYMENT_REMINDER_MIN_REMAINING_MS` still left
+ * (`paymentReminderHasTimeLeft`, the send half's comparator too). The
+ * dispatcher re-checks the order at send time (`paymentReminderSkipReason`),
+ * so this is not the last word.
+ */
+export function isPaymentReminderCandidate(
+  order: {
+    expiresAt: Date | null;
+    createdAt: Date;
+    paymentState: string | null;
+    paidAt: Date | null;
+    walletCreditState: string | null;
+    user: { telegramId: bigint | null };
+  },
+  now: Date,
+  leadMs: number,
+): boolean {
+  if (order.expiresAt == null || order.user.telegramId == null) return false;
+  if (!awaitingPaymentNothingObserved(order)) return false;
+  if (order.expiresAt.getTime() - order.createdAt.getTime() <= leadMs) return false;
+  return paymentReminderHasTimeLeft(order.expiresAt, now);
+}
+
+/** Why a queued payment reminder must not be sent any more. */
+export type PaymentReminderSkipReason =
+  | "ORDER_NOT_FOUND"
+  | "ORDER_NOT_AWAITING_PAYMENT"
+  | "PAYMENT_ALREADY_RECEIVED"
+  | "PAYMENT_IN_PROGRESS"
+  | "PAYMENT_WINDOW_CLOSING";
+
+/**
+ * Send-time half of the payment reminder rule: the outbox dispatcher calls
+ * this right before delivering a PAYMENT_REMINDER_DM, because the row may have
+ * waited (a backoff, flood control, a restart) while the buyer paid, a
+ * provider saw the payment, or the order was cancelled. Returns null when the
+ * reminder is still due — the order is PENDING_PAYMENT, no payment has been
+ * observed (`awaitingPaymentNothingObserved`, the enqueue half's predicate),
+ * and at least `PAYMENT_REMINDER_MIN_REMAINING_MS` is left
+ * (`paymentReminderHasTimeLeft`, the enqueue half's comparator) — and
+ * otherwise the reason, which the dispatcher records on the SKIPPED row:
+ * PAYMENT_ALREADY_RECEIVED for PAID, a paid-at stamp or a wallet credit
+ * awaiting review; PAYMENT_IN_PROGRESS for any other payment state the
+ * provider has reported (detected, verifying, underpaid, failed...).
+ */
+export async function paymentReminderSkipReason(db: Db, orderId: number, now: Date): Promise<PaymentReminderSkipReason | null> {
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { status: true, expiresAt: true, paymentState: true, paidAt: true, walletCreditState: true },
+  });
+  if (!order) return "ORDER_NOT_FOUND";
+  if (order.status !== OrderStatus.PENDING_PAYMENT) return "ORDER_NOT_AWAITING_PAYMENT";
+  if (order.expiresAt == null || !paymentReminderHasTimeLeft(order.expiresAt, now)) return "PAYMENT_WINDOW_CLOSING";
+  if (awaitingPaymentNothingObserved(order)) return null;
+  if (order.paymentState === "PAID" || order.paidAt || order.walletCreditState === "NEEDS_REVIEW") return "PAYMENT_ALREADY_RECEIVED";
+  return "PAYMENT_IN_PROGRESS";
 }
 
 /**
@@ -1885,10 +2015,158 @@ export async function cancelOrder(db: Db, orderId: number, reason: string, actor
   });
   await transitionOrderStatus(db, { orderId, from: order.status, to: OrderStatus.CANCELLED, meta: reason });
   logger.info(`Cancelled order ${order.orderCode} — reason: ${reason}`);
+  await alertIfMatchedClaimCancelled(db, order);
   // Raw on purpose, like the read above: callers only need the code and the
   // buyer, and a decrypt here would roll the whole cancel back over one
   // unreadable row the cancel never needed.
   return getOrderRaw(db, orderId);
+}
+
+/**
+ * After `cancelOrder` voided an unpaid product order, tell every admin when a
+ * gateway had already claimed a payment for it (a `matched` ledger row): the
+ * claim commits before the delivery transaction, so a crash in between leaves
+ * the order PENDING_PAYMENT, and once it is CANCELLED nothing retries — the
+ * stale-claim reclaim needs PENDING_PAYMENT, a retry only logs
+ * `already_processed`, and the CANCELLED-order credit does not count `matched`.
+ * The buyer paid and got nothing, so a human must settle it (refund or balance
+ * credit). Alert only: no credit, and the row stays `matched`.
+ *
+ * Guards: the order was PENDING_PAYMENT (an order in any other state reached
+ * its own review path), it is a PRODUCT order (a WALLET_TOPUP with a matched
+ * claim is late-settleable — `isLateSettleableWalletTopup` — so a manual credit
+ * prompted by an alert would credit it twice), and it is not marked paid
+ * (`paidAt` / paymentState PAID have their own credit path). Runs inside the
+ * cancel's transaction, behind a savepoint so a failed enqueue never undoes the
+ * cancel; the per-admin dedupe key makes a repeat cancel a no-op.
+ */
+async function alertIfMatchedClaimCancelled(
+  db: Db,
+  order: { id: number; orderCode: string; status: string; kind: string; paymentMethod: string; paidAt: Date | null; paymentState?: string | null },
+): Promise<void> {
+  if (order.status !== OrderStatus.PENDING_PAYMENT) return;
+  if (order.kind !== OrderKind.PRODUCT) return;
+  if (order.paidAt != null || order.paymentState === "PAID") return;
+  await enqueueNotificationSafely(db, { orderId: order.id, notification: "matched claim on a cancelled order alert" }, async () => {
+    const claim = await orderMatchedLedgerClaim(db, order);
+    if (claim == null) return;
+    logger.warn(
+      { orderId: order.id, gateway: claim.gateway },
+      `Order ${order.orderCode} was cancelled while ${claim.gateway} had already claimed its payment, so the buyer paid and nothing was delivered; the admins were alerted to settle it by hand.`,
+    );
+    await enqueueAdminClaimCancelledPayment(db, { orderId: order.id, orderCode: order.orderCode, gateway: claim.gateway, trxId: claim.txId });
+  });
+}
+
+/** What the expiry sweep's own cancel did. `tracked` says whether the order
+ * has a progress message row (the FulfillmentMessageWorker shows the outcome,
+ * and the push decision was already made here); when it is false the caller's
+ * own bubble/DM path tells the buyer and decides the push itself. */
+export type ExpiredOrderCancellation =
+  | { cancelled: false }
+  /** Held, not cancelled: a provider already reported the payment and it is
+   *  still confirming inside the grace window after expiresAt. */
+  | { cancelled: false; reason: "payment_in_flight" }
+  | { cancelled: true; tracked: boolean };
+
+/**
+ * The expiry sweep's cancel (`autoCancelExpiredOrders`): void an order whose
+ * payment window lapsed, but only while it is STILL PENDING_PAYMENT under the
+ * row lock. The sweep reads its list before it cancels, and `cancelOrder` on
+ * an order that is already cancelled returns quietly — so without this check
+ * a buyer's or admin's cancel landing in between, or a second sweep instance,
+ * would be treated as this sweep's expiry and the buyer told it expired.
+ * Returns `{ cancelled: false }` then, and the caller tells the buyer nothing.
+ *
+ * When the order has a tracked progress message that will only be edited
+ * silently (`transactionMessageCancelNotice`), the expiry push
+ * (ORDER_EXPIRED_DM) is queued here, in the cancel's own transaction. A failed
+ * queue write is logged and rolled back to a savepoint, never undoing the
+ * cancel (`enqueueNotificationSafely`). A tracked QR photo gets no push: the
+ * worker retires it by sending a new message, which already notifies.
+ *
+ * A PRODUCT order whose payment a provider already reported as in flight
+ * (`paymentObservedInFlight`: NOWPayments still confirming) is held for
+ * `OBSERVED_PAYMENT_GRACE_MS` after its `expiresAt`, measured at `now`:
+ * inside that window this returns `{ cancelled: false, reason:
+ * "payment_in_flight" }` and changes nothing, which also covers an order the
+ * sweep listed just before the observation landed. Past the window it is
+ * cancelled as usual and every admin is told once, in this same transaction,
+ * that the payment never finished confirming (ADMIN_UNCONFIRMABLE_PAYMENT,
+ * `still_confirming`). Wallet top-ups are not held: a late payment still
+ * settles a cancelled top-up.
+ */
+export async function cancelExpiredPendingOrder(db: Db, orderId: number, now: Date = new Date()): Promise<ExpiredOrderCancellation> {
+  if ("$transaction" in db) return emailTransaction(db, (tx) => cancelExpiredPendingOrder(tx, orderId, now));
+  await db.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR NO KEY UPDATE`;
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: {
+      status: true, orderCode: true, kind: true, paymentState: true, paymentMethod: true, expiresAt: true,
+      user: { select: { telegramId: true, language: true } },
+    },
+  });
+  if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return { cancelled: false };
+  const paymentInFlight = order.kind === OrderKind.PRODUCT && paymentObservedInFlight(order.paymentState);
+  if (paymentInFlight && order.expiresAt != null && order.expiresAt.getTime() + OBSERVED_PAYMENT_GRACE_MS > now.getTime()) {
+    return { cancelled: false, reason: "payment_in_flight" };
+  }
+  await cancelOrder(db, orderId, "expired", { type: StockActorType.SYSTEM });
+  if (paymentInFlight) {
+    logger.warn(
+      { orderId },
+      `Order ${order.orderCode} was cancelled because its payment was still confirming at the provider when the grace window after its payment window ended; the admins were asked to check the payment by hand.`,
+    );
+    await enqueueNotificationSafely(db, { orderId, notification: "still-confirming payment admin alert" }, () =>
+      enqueueAdminUnconfirmablePayment(db, {
+        orderId, orderCode: order.orderCode, gateway: paymentGatewayLabel(order.paymentMethod), reason: "still_confirming",
+      }));
+  }
+  const notice = await transactionMessageCancelNotice(db, orderId);
+  if (notice === "silent") {
+    await enqueueNotificationSafely(db, { orderId, notification: "order expired push" }, () =>
+      enqueueOrderExpiredDm(db, {
+        orderId, orderCode: order.orderCode, telegramId: order.user.telegramId, language: order.user.language, kind: order.kind,
+      }));
+  }
+  return { cancelled: true, tracked: notice !== "untracked" };
+}
+
+/** Why a queued expiry push must not be sent any more. */
+export type OrderExpiredDmSkipReason = "ORDER_NOT_FOUND" | "ORDER_NOT_CANCELLED" | "PAYMENT_ALREADY_RECEIVED";
+
+/**
+ * Send-time re-check for ORDER_EXPIRED_DM: the outbox dispatcher calls this
+ * right before delivering the push, because the row may have waited (a
+ * backoff, flood control, a restart) while things changed. Returns null when
+ * the push is still true, and otherwise the reason the dispatcher records on
+ * the SKIPPED row.
+ *
+ * Deliberately the opposite polarity of the payment reminder's
+ * `awaitingPaymentNothingObserved`: a payment a provider merely observed
+ * (PAYMENT_DETECTED, VERIFYING, UNDERPAID — e.g. NOWPayments still confirming
+ * when the window lapsed) does NOT stop the push, because that buyer is the
+ * one who most needs "cancelled — if you already paid, contact support". The
+ * push is skipped only once the buyer demonstrably got their money's worth or
+ * a person is looking at it:
+ *  - the order left CANCELLED — a late payment settled a cancelled top-up
+ *    (`isLateSettleableWalletTopup` → `settleWalletTopup`, CANCELLED →
+ *    DELIVERED), or it was otherwise re-opened;
+ *  - it was paid after all (`paymentState` PAID or `paidAt` set);
+ *  - its wallet credit landed (CREDITED) or is in manual review
+ *    (NEEDS_REVIEW, `preservePaidWalletCreditFailure`).
+ */
+export async function orderExpiredDmSkipReason(db: Db, orderId: number): Promise<OrderExpiredDmSkipReason | null> {
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { status: true, paymentState: true, paidAt: true, walletCreditState: true },
+  });
+  if (!order) return "ORDER_NOT_FOUND";
+  if (order.status !== OrderStatus.CANCELLED) return "ORDER_NOT_CANCELLED";
+  if (order.paymentState === "PAID" || order.paidAt != null || order.walletCreditState === "CREDITED" || order.walletCreditState === "NEEDS_REVIEW") {
+    return "PAYMENT_ALREADY_RECEIVED";
+  }
+  return null;
 }
 
 /**

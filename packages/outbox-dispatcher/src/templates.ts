@@ -10,6 +10,8 @@
 import { NotificationEvent } from "@app/core/enums";
 import { formatUsdt } from "@app/core/formatters";
 import { formatIdrFor } from "@app/core/moneyFormat";
+import { localize } from "@app/core/datetime";
+import { paymentReminderMinutesLeft, OBSERVED_PAYMENT_GRACE_MS } from "@app/core";
 import { manualQueueMoneyLines, type ManualQueueMoneyKey, type ManualQueueMoneyPayload } from "./manualQueueMoney";
 
 /** Bilingual labels for ADMIN_MANUAL_ORDER_QUEUED's money lines. */
@@ -263,7 +265,89 @@ interface AdminFxRateStalePayload {
   ttl_minutes?: unknown;
 }
 
-/** Return the message body for an outbox event, or "" to skip. */
+interface PaymentReminderPayload {
+  expires_at?: unknown;
+  minutes_left?: unknown;
+  is_wallet_topup?: unknown;
+}
+
+/**
+ * PAYMENT_REMINDER_DM's body, in both languages with the buyer's own first.
+ * The minutes left come from `expires_at` against `now` — the moment the
+ * dispatcher actually sends — rather than the enqueue-time `minutes_left`, so
+ * a row delivered late by a retry still tells the truth; `minutes_left` is
+ * only the fallback for an unreadable deadline. Throws when neither is usable
+ * (the dispatcher then fails the row for good): a reminder that cannot say how
+ * long is left is worse than none.
+ */
+function renderPaymentReminder(payload: { order_code?: unknown; buyer_language?: unknown } & PaymentReminderPayload, now: Date): string {
+  const code = escape(String(payload.order_code ?? ""));
+  const deadline = typeof payload.expires_at === "string" ? new Date(payload.expires_at) : null;
+  const hasDeadline = deadline !== null && !Number.isNaN(deadline.getTime());
+  const queuedMinutes = Number(payload.minutes_left);
+  let minutes: number;
+  if (hasDeadline) minutes = paymentReminderMinutesLeft(deadline, now);
+  else if (Number.isFinite(queuedMinutes) && queuedMinutes >= 1) minutes = Math.floor(queuedMinutes);
+  else throw new Error("PAYMENT_REMINDER_DM payload has neither a readable expires_at nor a usable minutes_left");
+  const deadlineText = hasDeadline ? escape(`${localize(deadline, "yyyy-LL-dd HH:mm")} WIB`) : "";
+
+  const topup = payload.is_wallet_topup === true;
+  const en =
+    `⏰ <b>Payment reminder — order <code>${code}</code></b>\n` +
+    `${minutes} ${minutes === 1 ? "minute" : "minutes"} left to pay.\n` +
+    (deadlineText ? `Pay before: <b>${deadlineText}</b>\n` : "") +
+    (topup
+      ? `The top-up payment window ends at that time.\nAlready paid? Your balance is credited automatically.`
+      : `After the deadline, the order is cancelled automatically.\nAlready paid? Wait for automatic confirmation.`);
+  const id =
+    `⏰ <b>Pengingat pembayaran — pesanan <code>${code}</code></b>\n` +
+    `Sisa waktu bayar ${minutes} menit.\n` +
+    (deadlineText ? `Bayar sebelum: <b>${deadlineText}</b>\n` : "") +
+    (topup
+      ? `Jendela pembayaran top-up berakhir pada waktu tersebut.\nSudah bayar? Saldo akan masuk otomatis.`
+      : `Setelah batas waktu lewat, pesanan dibatalkan otomatis.\nSudah bayar? Tunggu konfirmasi otomatis.`);
+  return bilingual(en, id, payload.buyer_language);
+}
+
+/** Both language versions of a buyer DM, the buyer's own first (English when
+ * the stored language is missing or anything but Indonesian). */
+function bilingual(en: string, id: string, buyerLanguage: unknown): string {
+  const lang = typeof buyerLanguage === "string" ? buyerLanguage.toLowerCase() : DEFAULT_LANG;
+  return lang === "id" ? `${id}\n\n${en}` : `${en}\n\n${id}`;
+}
+
+interface OrderExpiredPayload {
+  is_wallet_topup?: unknown;
+}
+
+/**
+ * ORDER_EXPIRED_DM's body, in both languages with the buyer's own first, in
+ * the same shape as the payment reminder before it. Only a product order
+ * gets the "stock released" line: a wallet top-up reserved no stock. A
+ * top-up's closing line differs too: a late payment still settles a
+ * cancelled top-up (`isLateSettleableWalletTopup`), so its buyer is told the
+ * balance arrives on its own and support is only for a balance that did not.
+ */
+function renderOrderExpired(payload: { order_code?: unknown; buyer_language?: unknown } & OrderExpiredPayload): string {
+  const code = escape(String(payload.order_code ?? ""));
+  const product = payload.is_wallet_topup !== true;
+  const en =
+    `⌛ <b>Order <code>${code}</code> was cancelled — the payment window expired.</b>\n` +
+    (product
+      ? `The reserved stock has been released.\nIf you already paid, contact support.`
+      : `If you already paid, your balance is credited automatically. If it is not updated, contact support.`);
+  const id =
+    `⌛ <b>Pesanan <code>${code}</code> dibatalkan — waktu pembayaran habis.</b>\n` +
+    (product
+      ? `Stok yang dipesan sudah dilepas.\nJika sudah bayar, hubungi Bantuan.`
+      : `Jika sudah bayar, saldo akan masuk otomatis. Jika saldo belum bertambah, hubungi Bantuan.`);
+  return bilingual(en, id, payload.buyer_language);
+}
+
+/**
+ * Return the message body for an outbox event, or "" to skip. `now` is the
+ * send moment; only PAYMENT_REMINDER_DM reads it (its remaining time).
+ */
 export function render(
   event: string,
   payload: DeliveredPayload &
@@ -283,8 +367,22 @@ export function render(
     AdminFxRateRejectedPayload &
     AdminFxRateStalePayload &
     TicketClosedPayload &
-    RestockSubscriberPayload,
+    RestockSubscriberPayload &
+    PaymentReminderPayload &
+    OrderExpiredPayload,
+  now: Date = new Date(),
 ): string {
+  if (event === NotificationEvent.PAYMENT_REMINDER_DM) {
+    // Buyer DM, a legitimate push under the message budget (AGENTS.md): the
+    // one reminder per order, sent by the generic path below.
+    return renderPaymentReminder(payload, now);
+  }
+  if (event === NotificationEvent.ORDER_EXPIRED_DM) {
+    // Buyer DM, a legitimate push under the message budget (AGENTS.md): the
+    // one cancellation notice per order, queued only when the cancel itself
+    // sent the buyer nothing new.
+    return renderOrderExpired(payload);
+  }
   if (event === NotificationEvent.TICKET_CLOSED_DM) {
     // Buyer DM (Task 2, Phase C): rendered in the buyer's OWN stored
     // language — a single-locale pick, not the bilingual EN+ID pattern most
@@ -479,6 +577,24 @@ export function render(
     const code = escape(String(payload.order_code ?? ""));
     const gateway = escape(String(payload.gateway ?? ""));
     const trxId = escape(String(payload.trx_id ?? ""));
+    if (payload.reason === "claim_cancelled") {
+      // Follow-up item 2 (`enqueueAdminClaimCancelledPayment`): the gateway's
+      // payment WAS matched to this order and claimed, but the order was
+      // cancelled before its delivery ran (a crash between the claim and the
+      // delivery). Nothing retries a cancelled order, and the order is not
+      // deliverable any more, so the admin must settle the buyer's money by
+      // hand — never "deliver manually".
+      return (
+        `⚠️ <b>${gateway} payment for order <code>${code}</code> was claimed, but the order was cancelled before it was delivered</b>\n` +
+        `Transaction: <code>${trxId}</code>\n` +
+        `The buyer's payment arrived and nothing was delivered, and the system will not retry a cancelled order. ` +
+        `Check the payment in the ${gateway} dashboard and settle it by hand with a refund or a balance credit.\n\n` +
+        `⚠️ <b>Pembayaran ${gateway} untuk pesanan <code>${code}</code> sudah tercatat, tapi pesanan dibatalkan sebelum dikirim</b>\n` +
+        `Transaksi: <code>${trxId}</code>\n` +
+        `Pembayaran pelanggan sudah masuk dan belum ada yang dikirim, dan sistem tidak akan mencoba lagi pesanan yang sudah dibatalkan. ` +
+        `Periksa pembayaran ini di dashboard ${gateway} lalu selesaikan secara manual dengan refund atau kredit saldo.`
+      );
+    }
     return (
       `⚠️ <b>${gateway} confirmed payment for order <code>${code}</code>, but it was no longer pending</b>\n` +
       `Transaction: <code>${trxId}</code>\n` +
@@ -671,6 +787,25 @@ export function render(
     // per order and there is no second reminder.
     const code = escape(String(payload.order_code ?? ""));
     const gateway = escape(String(payload.gateway ?? ""));
+    if (payload.reason === "still_confirming") {
+      // Follow-up item 1 (`cancelExpiredPendingOrder`): the provider reported
+      // the payment, the expiry sweep held the order for the grace window
+      // (OBSERVED_PAYMENT_GRACE_MS, 30 minutes) after its payment window, and
+      // the payment still had not completed — so the order HAS been cancelled
+      // now. A payment the provider later marked failed or expired ends here
+      // too (that terminal status never resets the observed state), so the
+      // text says it never completed, not that it is still confirming. The
+      // admin must find out whether the money arrived.
+      const graceMinutes = OBSERVED_PAYMENT_GRACE_MS / 60_000;
+      return (
+        `⚠️ <b>${gateway} payment for order <code>${code}</code> never completed, so the order has been cancelled</b>\n` +
+        `${gateway} showed a payment for this order as detected or confirming, but it never completed within ${graceMinutes} minutes after the payment window ended (it may have failed or expired). ` +
+        `Check the payment in the ${gateway} dashboard before refunding. If the money did arrive, settle it by hand with a refund or a balance credit, because nothing will be delivered automatically.\n\n` +
+        `⚠️ <b>Pembayaran ${gateway} untuk pesanan <code>${code}</code> tidak pernah selesai, jadi pesanan sudah dibatalkan</b>\n` +
+        `${gateway} sempat menampilkan pembayaran untuk pesanan ini sebagai terdeteksi atau sedang dikonfirmasi, tapi pembayarannya tidak pernah selesai sampai ${graceMinutes} menit setelah jendela pembayaran berakhir (mungkin gagal atau kedaluwarsa). ` +
+        `Periksa pembayaran ini di dashboard ${gateway} sebelum melakukan refund. Kalau dananya memang masuk, selesaikan secara manual dengan refund atau kredit saldo, karena tidak ada yang akan dikirim otomatis.`
+      );
+    }
     if (payload.reason === "unverified_amount") {
       // Task B fix round: the gateway says PAID but its status carries no
       // usable amount (TokoPay/PayDisini) or no usd price to value it by

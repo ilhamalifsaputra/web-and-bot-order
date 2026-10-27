@@ -13,7 +13,9 @@ import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
+import { orderExpiredDedupeKey, paymentReminderDedupeKey, paymentReminderMinutesLeft } from "@app/core";
 import {
+  OrderKind,
   NotificationEvent,
   NotificationStatus,
   NotificationChannel,
@@ -48,13 +50,25 @@ type Db = PrismaClient | Tx;
  * payload on collision, so comparing payloads can't tell a genuine insert
  * apart from a same-payload collision.
  *
- * Two events set a key today:
+ * These events set a key today:
  *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
  *    DM per top-up order; see `enqueueWalletTopupCreditedDm`.
  *  - `ADMIN_UNCONFIRMABLE_PAYMENT`, as
- *    `unconfirmable-payment:<orderId>:<adminId>` — one per admin per order,
- *    NOT one per order, because that event fans out a row per admin; see
- *    `enqueueAdminUnconfirmablePayment`.
+ *    `unconfirmable-payment[:<reason>]:<orderId>:<adminId>` — one per admin
+ *    per order and reason, NOT one per order, because that event fans out a
+ *    row per admin; see `enqueueAdminUnconfirmablePayment`.
+ *  - `ADMIN_STALE_PAYMENT`, only in its `claim_cancelled` form, as
+ *    `claim-cancelled:<orderId>:<adminId>` — one per admin per order; see
+ *    `enqueueAdminClaimCancelledPayment`. The webhook-race form
+ *    (`enqueueAdminStalePayment`) stays unkeyed.
+ *  - `ORDER_PIPELINE_FAILED`, through `enqueueTransactionReviewAlert`, as
+ *    `order:<orderId>:<incident>:<adminId>`.
+ *  - `PAYMENT_REMINDER_DM`, as `payment_reminder:<orderId>` — one reminder
+ *    per order, however many reminder-job ticks see it; see
+ *    `enqueuePaymentReminderDm`.
+ *  - `ORDER_EXPIRED_DM`, as `order_expired:<orderId>` — one expiry push per
+ *    order, however many sweep ticks or bot instances reach it; see
+ *    `enqueueOrderExpiredDm`.
  *
  * Every other event leaves it null, and NULLs are distinct in a Postgres UNIQUE
  * index, so those rows may repeat freely. `ORDER_DELIVERED_DM` in particular
@@ -328,6 +342,40 @@ export async function enqueueAdminStalePayment(
 }
 
 /**
+ * Tell every admin that a product order with a `matched` ledger claim was
+ * cancelled before it was delivered (`cancelOrder`, follow-up item 2): the
+ * gateway's payment was claimed, the delivery transaction never ran (a crash
+ * between the two), and once the order is CANCELLED nothing retries it. Reuses
+ * ADMIN_STALE_PAYMENT with `reason: "claim_cancelled"`, which the template
+ * words as "claimed but cancelled; settle by hand" instead of the webhook-race
+ * wording. Alert only — no credit path, the ledger row stays `matched`.
+ *
+ * Deduped per (order, admin) like `enqueueAdminUnconfirmablePayment`: the
+ * event fans out one row per admin, and a later cancel attempt (a second sweep,
+ * an admin re-cancel) must not tell anyone twice.
+ */
+export async function enqueueAdminClaimCancelledPayment(
+  db: Db,
+  args: { orderId: number; orderCode: string; gateway: string; trxId: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await enqueueNotification(
+      db,
+      NotificationEvent.ADMIN_STALE_PAYMENT,
+      args.orderId,
+      {
+        chat_id: adminId,
+        order_code: args.orderCode,
+        gateway: args.gateway,
+        trx_id: args.trxId.slice(0, 300),
+        reason: "claim_cancelled",
+      },
+      `claim-cancelled:${args.orderId}:${adminId}`,
+    );
+  }
+}
+
+/**
  * Enqueue one admin DM per resolved admin alerting that the hourly Digiflazz
  * catalog resync (`resyncDigiflazzCatalog`) tripped its own blast-radius
  * circuit breaker and wrote nothing (Task 10, backend audit 2026-08-21 C-1,
@@ -555,9 +603,13 @@ export async function enqueueAdminUnconfirmablePayment(
      *  transaction id). `"unverified_amount"` (Task B fix round): the gateway
      *  says PAID but its status carries no usable amount (TokoPay/PayDisini)
      *  or no usd price to value it by (NOWPayments), so it is never delivered
-     *  on — the template words it accordingly. Each reason
-     *  has its own dedupe key, so one never swallows the other's alert. */
-    reason?: "unverified_amount";
+     *  on — the template words it accordingly. `"still_confirming"`
+     *  (follow-up item 1, `cancelExpiredPendingOrder`): the provider reported
+     *  the payment (PAYMENT_DETECTED / VERIFYING) but it was still confirming
+     *  when the grace window after expiry ran out, so the order was
+     *  cancelled. Each reason has its own dedupe key, so one never swallows
+     *  another's alert. */
+    reason?: "unverified_amount" | "still_confirming";
   },
 ): Promise<void> {
   const keyPrefix = args.reason ? `unconfirmable-payment:${args.reason}` : "unconfirmable-payment";
@@ -1386,6 +1438,80 @@ export async function enqueueOrderProcessingDm(
     order_url: shopUrl ? `${shopUrl.replace(/\/+$/, "")}/account/orders/${args.orderCode}` : null,
     buyer_language: langCode(args.language),
   });
+}
+
+/**
+ * Enqueue the buyer's one-time "your payment window is about to close" DM
+ * (PAYMENT_REMINDER_DM). Called only by the order-bot's `sendPaymentReminders`
+ * job, after `isPaymentReminderCandidate` (orders.ts) accepted the order. The
+ * dedupe key `payment_reminder:<orderId>` makes it at most one row per order:
+ * the job sees the same order on every tick of its lead window, and a second
+ * bot instance may see it too, and every one of those calls after the first
+ * writes nothing (the first row's payload stands).
+ *
+ * The payload holds what the message states and nothing else — no amounts,
+ * no credentials (the outbox is visible in the admin panel). `is_wallet_topup`
+ * decides the wording: a top-up is not "cancelled automatically" (a late
+ * payment still credits the balance). `minutes_left`
+ * is the value at enqueue time; the dispatcher recomputes the remaining time
+ * from `expires_at` when it actually sends, and re-checks that the order
+ * still awaits payment (`paymentReminderSkipReason`). No-op for buyers
+ * without a Telegram id (web and guest checkouts).
+ */
+export async function enqueuePaymentReminderDm(
+  db: Db,
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null; expiresAt: Date; kind: string; now?: Date },
+): Promise<void> {
+  if (args.telegramId == null) return;
+  await enqueueNotification(
+    db,
+    NotificationEvent.PAYMENT_REMINDER_DM,
+    args.orderId,
+    {
+      chat_id: Number(args.telegramId),
+      order_code: args.orderCode,
+      expires_at: args.expiresAt.toISOString(),
+      minutes_left: paymentReminderMinutesLeft(args.expiresAt, args.now ?? new Date()),
+      buyer_language: langCode(args.language),
+      is_wallet_topup: args.kind === OrderKind.WALLET_TOPUP,
+    },
+    paymentReminderDedupeKey(args.orderId),
+  );
+}
+
+/**
+ * Enqueue the buyer's one-time "your order was cancelled — the payment window
+ * expired" DM (ORDER_EXPIRED_DM). Called only from the expiry sweep, and only
+ * when the cancellation put no new message in the buyer's chat: by
+ * `cancelExpiredPendingOrder` (orders.ts) inside the cancel transaction for an
+ * order whose tracked progress message will be edited silently, or by the
+ * order-bot right after its own bubble edit when that edit landed in place
+ * (or nothing reached the buyer at all). The dedupe key
+ * `order_expired:<orderId>` makes it at most one row per order.
+ *
+ * The payload holds what the message states and nothing else — no amounts,
+ * no credentials. `is_wallet_topup` decides the wording: a top-up reserved no
+ * stock, so it gets no "stock released" line. The dispatcher re-checks the
+ * order at send time (`orderExpiredDmSkipReason`). No-op for buyers without a
+ * Telegram id (web and guest checkouts).
+ */
+export async function enqueueOrderExpiredDm(
+  db: Db,
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null; kind: string },
+): Promise<void> {
+  if (args.telegramId == null) return;
+  await enqueueNotification(
+    db,
+    NotificationEvent.ORDER_EXPIRED_DM,
+    args.orderId,
+    {
+      chat_id: Number(args.telegramId),
+      order_code: args.orderCode,
+      buyer_language: langCode(args.language),
+      is_wallet_topup: args.kind === OrderKind.WALLET_TOPUP,
+    },
+    orderExpiredDedupeKey(args.orderId),
+  );
 }
 
 /**

@@ -83,6 +83,7 @@ import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, telegramError, type SentCall } from "./helpers/ctx";
+import { primeQuote, quoteNonce } from "./helpers/quote";
 import {
   makeSettledAnchoredOrder as makeSettledAnchoredOrderShared,
   onlyBubbleEdit as onlyBubbleEditShared,
@@ -489,14 +490,14 @@ describe("customer handlers", () => {
     expect(await prisma.fulfillmentMessage.findUniqueOrThrow({ where: { orderId: order.id } })).toMatchObject({ messageId: 555 });
   });
 
-  it("Product List has no inline keyboard on a single page (selection is by typed number)", async () => {
+  it("Product List on a single page carries only its Back row inline (selection is by typed number)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
     await customer.browseProductsFlat(ctx, 0);
-    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined;
-    // No per-product pick buttons, no Menu row, no Prev/Next — the persistent
-    // reply keyboard navigates and the user picks by typing the listed number.
-    const flat = (markup?.inline_keyboard ?? []).flat();
-    expect(flat.length).toBe(0);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> } | undefined;
+    // No per-product pick buttons, no Menu row, no Prev/Next — the user picks by
+    // typing the listed number. The edited bubble carries its Back (an unscoped
+    // list goes to the main menu), so Back is one edit, not a typed key.
+    expect(markup?.inline_keyboard).toEqual([[{ text: persistentLabel("back", "en"), callback_data: "v1:menu:main" }]]);
   });
 
   it("browseProductsFlat sets a numbered persistent keyboard sized to the active product count on a fresh (non-callback) entry", async () => {
@@ -511,7 +512,7 @@ describe("customer handlers", () => {
       | undefined;
     expect(markup?.inline_keyboard).toBeUndefined();
     const flat = (markup?.keyboard ?? []).flat().map((b) => b.text);
-    expect(flat).toEqual(["1", persistentLabel("main", "en")]);
+    expect(flat).toEqual(["1", persistentLabel("back", "en"), persistentLabel("main", "en")]);
   });
 
   it("browseProductsFlat caps the persistent keyboard at PAGE_SIZE when the catalog spans multiple pages", async () => {
@@ -1746,13 +1747,26 @@ describe("denomination picker", () => {
     type PageScratch = { page?: number; browseEntries?: number[]; productId?: number; variantId?: number };
     const pageOf = (ctx: { session: { scratch: unknown } }) => (ctx.session.scratch as PageScratch).page;
 
-    /** Open the list on `page`, then press the digit "1" on it (a picker or a collapsed detail). */
+    /** Inline product buttons on the last screen (Game Top-up lists). */
+    const listPickButtons = (sink: SentCall[]) =>
+      (((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined)?.inline_keyboard ?? []).flat())
+        .filter((b) => b.callback_data?.startsWith("v1:browse:pick:"));
+
+    /** Open the list on `page`, then open its first item (a picker or a
+     * collapsed detail): Premium Apps by the digit "1", Game Top-up by tapping
+     * its first inline product button (a Game list has no numbers). */
     async function openFirstItemFromPage(group: CategoryGroup, cat: { id: number }, page: number) {
       const list = customerCtx({
         callbackData: `v1:browse:page:${page}`,
         session: { ...userSession(), scratch: { categoryId: cat.id, group } },
       });
       await customer.browseProductsFlat(list.ctx, page);
+      if (group === CategoryGroup.GAME_TOPUP) {
+        const first = listPickButtons(list.sink)[0]!.callback_data!;
+        const open = customerCtx({ callbackData: first, session: { ...userSession(), scratch: list.ctx.session.scratch } });
+        await routeCallback(open.ctx);
+        return open;
+      }
       const open = customerCtx({ text: "1", session: { ...userSession(), scratch: list.ctx.session.scratch } });
       await customer.handleProductNumber(open.ctx);
       return open;
@@ -1775,7 +1789,9 @@ describe("denomination picker", () => {
       const back = await pressBack(open.ctx.session.scratch);
       expect(bodyText(back.sink)).toContain("Page 3/3");
       expect(pageOf(back.ctx)).toBe(2);
-      expect((back.ctx.session.scratch as PageScratch).browseEntries).toHaveLength(5);
+      // An inline Game list: the page's five products as buttons, no numbered snapshot.
+      expect(listPickButtons(back.sink)).toHaveLength(5);
+      expect((back.ctx.session.scratch as PageScratch).browseEntries).toBeUndefined();
     });
 
     it("Back from a Premium Apps product picker opened on list page 3 re-renders page 3 too (same code path)", async () => {
@@ -1823,7 +1839,8 @@ describe("denomination picker", () => {
 
     it("Back with no recorded list page (stale session) falls back to page 1 without error", async () => {
       const { cat } = await makeListScene(CategoryGroup.GAME_TOPUP, 2, 12);
-      const back = await pressBack({ categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, productId: 123456 });
+      // catalogScreen: the picker is the screen showing (a typed Back elsewhere is Menu).
+      const back = await pressBack({ categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, productId: 123456, catalogScreen: true });
       expect(bodyText(back.sink)).toContain("Page 1/2");
       expect(pageOf(back.ctx)).toBe(0);
     });
@@ -2199,7 +2216,7 @@ describe("denomination picker", () => {
 // ===========================================================================
 
 describe("group and category pickers", () => {
-  it("groupPickerKb renders exactly the two group buttons plus a menu row", () => {
+  it("groupPickerKb renders exactly the two group buttons plus one Back row to the main menu", () => {
     const kb = groupPickerKb("en");
     const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
     expect(rows.length).toBe(2);
@@ -2207,7 +2224,8 @@ describe("group and category pickers", () => {
       `v1:browse:grp:${CategoryGroup.GAME_TOPUP}`,
       `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}`,
     ]);
-    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:menu:main"]);
+    // Its parent is the main menu: a single Back, no duplicate Menu button.
+    expect(rows[1]!).toEqual([{ text: persistentLabel("back", "en"), callback_data: "v1:menu:main" }]);
   });
 
   it("groupPickerKb omits disabled service groups", () => {
@@ -2598,9 +2616,10 @@ describe("group/category browsing handlers", () => {
     // case covered by the next test), so Back must still land there.
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
     await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
+    // catalogScreen: the list is the screen showing (a typed Back elsewhere is Menu).
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, cat.name)).toBe(true);
@@ -2615,7 +2634,7 @@ describe("group/category browsing handlers", () => {
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
@@ -2624,7 +2643,7 @@ describe("group/category browsing handlers", () => {
   it("Back from a category-scoped list with no recorded group falls back to the group picker (never Home)", async () => {
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId } },
+      session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
@@ -2633,7 +2652,7 @@ describe("group/category browsing handlers", () => {
   it("Back from the category-free Premium Apps product list returns to the group picker", async () => {
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
-      session: { ...userSession(), scratch: { group: CategoryGroup.PREMIUM_APPS } },
+      session: { ...userSession(), scratch: { group: CategoryGroup.PREMIUM_APPS, catalogScreen: true } },
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
@@ -3096,19 +3115,36 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
 });
 
 // ===========================================================================
-// Task 2: numbered shortcuts go stale on variant/region picker screens.
-// Root cause: browseEntries was only ever written by browseProductsFlat, so
-// a digit typed while a variant/region picker was on screen silently
-// resolved against whatever browseEntries last held (a different category,
-// an earlier page, or nothing) instead of the picker actually on screen.
-// activeNumberedScreen is the fix's single source of truth for "what a typed
-// digit currently means" — these tests drive a typed digit straight through
-// handleProductNumber (the real plain-text handler) while a picker is active,
-// not just the inline-callback handlers pickGameVariant/pickGameRegion.
+// Task 2 (history): numbered shortcuts went stale on variant/region picker
+// screens, because a digit typed there resolved against whatever
+// browseEntries last held. The Game Top-up pickers and lists are now
+// inline-only (@app/core/services usesNumberedSelection): a typed digit on a
+// Game screen never resolves against anything — the screen is re-rendered in
+// place with a "use the buttons" line — so no stale snapshot can ever be read. These tests drive a
+// typed digit straight through handleProductNumber (the real plain-text
+// handler) while a picker is showing.
 // ===========================================================================
 
-describe("Task 2: typed-digit shortcuts resolve correctly on variant/region picker screens", () => {
-  it("a typed digit resolves against the variant picker when it's the active numbered screen, not a stale browseEntries snapshot", async () => {
+/** What a typed digit gets on a Game Top-up catalog screen: the bot-owned
+ * bubble edited in place (same screen, "use the buttons" on top) and the
+ * digit deleted — never a new message. */
+function expectUseButtonsEdit(c: { ctx: Parameters<typeof t>[0]; sink: SentCall[] }, bubbleId: number | undefined) {
+  expect(bubbleId).toBeDefined();
+  expect(calls(c.sink, "reply")).toHaveLength(0);
+  expect(calls(c.sink, "sendMessage")).toHaveLength(0);
+  expect(calls(c.sink, "editMessageText")).toHaveLength(1);
+  expect(calls(c.sink, "deleteMessage")).toHaveLength(1);
+  const edit = calls(c.sink, "editMessageText")[0]!;
+  expect(edit.args[1]).toBe(bubbleId);
+  expect(String(edit.args[2]).startsWith(t(c.ctx, "browse.use_buttons"))).toBe(true);
+}
+
+/** A reply that carried a reply (bottom) keyboard, if any. */
+const replyKeyboardCall = (sink: SentCall[]) =>
+  calls(sink, "reply").find((c) => !!(c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined)?.reply_markup?.keyboard);
+
+describe("Task 2: a typed digit on a Game Top-up variant/region picker never resolves (inline-only pickers)", () => {
+  it("a typed digit on the variant picker re-renders it in place with the 'use the buttons' line, even with a stale browseEntries snapshot", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire Typed", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Typed Diamonds A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
@@ -3119,26 +3155,21 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
 
     const { ctx } = customerCtx();
     await customer.browseCategoryEntry(ctx, cat.id); // renders the 2-entry variant picker
-
-    // Simulate the exact root-cause scenario: a stale browseEntries from an
-    // earlier, totally unrelated browse (a different category, or an earlier
-    // page) is still sitting in scratch while the picker is on screen.
     (ctx.session.scratch as Record<string, unknown>).browseEntries = [999999];
 
-    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch } });
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch, menuMsgId: ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
 
-    // Index 0 ("Global", name-asc order) has a single matching product with
-    // no region dimension, so it collapses straight to that product's detail
-    // — mirrors the existing inline-callback test for the same fixture shape
-    // (pickGameVariant resolving v1:browse:gvar:<id>:0).
-    expect(sentIncludes(digit.sink, "FF Typed Diamonds A")).toBe(true);
+    expectUseButtonsEdit(digit, ctx.session.menuMsgId);
+    expect(sentIncludes(digit.sink, "FF Typed Diamonds A")).toBe(false);
     expect(sentIncludes(digit.sink, "FF Typed Diamonds B")).toBe(false);
-    const scratch = digit.ctx.session.scratch as { resolvedGameVariant?: string | null };
-    expect(scratch.resolvedGameVariant).toBe("Global");
+    expect((digit.ctx.session.scratch as { resolvedGameVariant?: string | null }).resolvedGameVariant).toBeUndefined();
+    // The picker the buyer was on, its own buttons kept.
+    const kept = ((lastMarkup(digit.sink) as { inline_keyboard: Array<Array<{ callback_data?: string }>> }).inline_keyboard).flat();
+    expect(kept.filter((b) => b.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`))).toHaveLength(2);
   });
 
-  it("a typed digit resolves against the region picker when it's the active numbered screen, not a stale browseEntries snapshot", async () => {
+  it("a typed digit on the region picker re-renders it in place with the 'use the buttons' line, even with a stale browseEntries snapshot", async () => {
     const cat = await createCategory(prisma, { name: "Valorant Typed", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Typed Points A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
@@ -3149,20 +3180,17 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
 
     const { ctx } = customerCtx();
     await customer.browseCategoryEntry(ctx, cat.id); // 1 variant (auto-skipped) + 2 regions -> region picker rendered
-
     (ctx.session.scratch as Record<string, unknown>).browseEntries = [999999];
 
-    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch } });
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: ctx.session.scratch, menuMsgId: ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
 
-    // Index 0 ("Asia", name-asc order) resolves to the single matching product.
-    expect(sentIncludes(digit.sink, "VP Typed Points A")).toBe(true);
-    expect(sentIncludes(digit.sink, "VP Typed Points B")).toBe(false);
-    const scratch = digit.ctx.session.scratch as { resolvedGameRegion?: string | null };
-    expect(scratch.resolvedGameRegion).toBe("Asia");
+    expectUseButtonsEdit(digit, ctx.session.menuMsgId);
+    expect(sentIncludes(digit.sink, "VP Typed Points A")).toBe(false);
+    expect((digit.ctx.session.scratch as { resolvedGameRegion?: string | null }).resolvedGameRegion).toBeUndefined();
   });
 
-  it("an out-of-range typed digit on the variant picker shows the same invalid-number message an out-of-range product-list digit gets, not a crash or the callback-only stale-screen toast", async () => {
+  it("an out-of-range typed digit on the variant picker gets the same in-place answer, never the invalid-number text or the stale-screen toast", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire OOR", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF OOR A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
@@ -3174,15 +3202,16 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     const { ctx } = customerCtx();
     await customer.browseCategoryEntry(ctx, cat.id); // 2-entry variant picker
 
-    const digit = customerCtx({ text: "9", session: { ...userSession(), scratch: ctx.session.scratch } });
+    const digit = customerCtx({ text: "9", session: { ...userSession(), scratch: ctx.session.scratch, menuMsgId: ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
 
-    expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 2 }))).toBe(true);
+    expectUseButtonsEdit(digit, ctx.session.menuMsgId);
+    expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 2 }))).toBe(false);
     expect(sentIncludes(digit.sink, t(digit.ctx, "error.stale_screen"))).toBe(false);
   });
 
-  it("browseEntries / gameVariantEntries / gameRegionEntries are mutually exclusive, matching activeNumberedScreen, at every numbered screen", async () => {
-    // The flat product list — "products" is active, the other two are cleared.
+  it("browseEntries / gameVariantEntries / gameRegionEntries are mutually exclusive, matching activeNumberedScreen, at every list screen", async () => {
+    // The unscoped flat list (no group: resolves to Premium Apps, numbered) — "products" is active, the other two are cleared.
     const { ctx: flatCtx } = customerCtx();
     await customer.browseProductsFlat(flatCtx);
     const flatScratch = flatCtx.session.scratch as {
@@ -3196,7 +3225,7 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     expect(flatScratch.gameVariantEntries).toBeUndefined();
     expect(flatScratch.gameRegionEntries).toBeUndefined();
 
-    // The variant picker.
+    // The variant picker (its snapshot serves the inline tap).
     const varCat = await createCategory(prisma, { name: "Mutex Variant Cat", group: CategoryGroup.GAME_TOPUP });
     const va = await createCatalogProduct(prisma, { categoryId: varCat.id, name: "Mutex Variant A" });
     await prisma.product.update({ where: { id: va.id }, data: { gameVariant: "Global" } });
@@ -3241,7 +3270,7 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     expect(regScratch.gameVariantEntries).toBeUndefined();
   });
 
-  it("entering the variant picker resends a persistent reply keyboard sized to the picker's own option count", async () => {
+  it("entering the variant picker sends only the picker itself: no digit reply keyboard, no companion message", async () => {
     const cat = await createCategory(prisma, { name: "Persistent Kb Variant Cat", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PKV A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
@@ -3253,28 +3282,15 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     const { ctx, sink } = customerCtx();
     await customer.browseCategoryEntry(ctx, cat.id);
 
-    const replyCalls = calls(sink, "reply");
-    const kbCall = replyCalls.find((c) => {
-      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
-      return !!opts?.reply_markup?.keyboard;
-    });
-    expect(kbCall).toBeDefined();
-    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    const flat = kb.keyboard.flat().map((b) => b.text);
-    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
-
-    // The picker's own inline keyboard render must still be the LAST
-    // screen-producing call — the persistent-keyboard resend must not
-    // clobber or reorder past the picker's real (tappable) screen.
-    const markup = lastMarkup(sink) as { inline_keyboard?: unknown[][] };
-    expect(markup?.inline_keyboard).toBeDefined();
+    expect(replyKeyboardCall(sink)).toBeUndefined();
+    expect(sentIncludes(sink, t(ctx, "browse.use_numbers"))).toBe(false);
+    // A non-callback entry: the picker is the one fresh send, inline.
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect((lastMarkup(sink) as { inline_keyboard?: unknown[][] })?.inline_keyboard).toBeDefined();
   });
 
-  // Bundled Minor (final-review ledger): the test above only ever covered the
-  // variant-picker path — the region picker resends its own persistent
-  // keyboard the exact same way (enterGameVariant's region branch), but that
-  // symmetric path had no direct test of its own until now.
-  it("entering the region picker resends a persistent reply keyboard sized to the picker's own option count", async () => {
+  it("entering the region picker sends only the picker itself: no digit reply keyboard, no companion message", async () => {
     const cat = await createCategory(prisma, { name: "Persistent Kb Region Cat", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PKR A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
@@ -3284,41 +3300,30 @@ describe("Task 2: typed-digit shortcuts resolve correctly on variant/region pick
     await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
 
     const { ctx, sink } = customerCtx();
-    // Single distinct variant ("Standard") auto-skips the variant picker, so
-    // this lands straight on the region picker (2 distinct regions).
     await customer.browseCategoryEntry(ctx, cat.id);
 
-    const replyCalls = calls(sink, "reply");
-    const kbCall = replyCalls.find((c) => {
-      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
-      return !!opts?.reply_markup?.keyboard;
-    });
-    expect(kbCall).toBeDefined();
-    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    const flat = kb.keyboard.flat().map((b) => b.text);
-    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
-
-    // Same ordering guarantee as the variant-picker test above — the
-    // region picker's own inline keyboard render must be the LAST
-    // screen-producing call.
-    const markup = lastMarkup(sink) as { inline_keyboard?: unknown[][] };
-    expect(markup?.inline_keyboard).toBeDefined();
+    expect(replyKeyboardCall(sink)).toBeUndefined();
+    expect(sentIncludes(sink, t(ctx, "browse.use_numbers"))).toBe(false);
+    expect(calls(sink, "reply")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect((lastMarkup(sink) as { inline_keyboard?: unknown[][] })?.inline_keyboard).toBeDefined();
   });
 });
 
 // ===========================================================================
-// Final-review fixes (I1/I2): the bottom persistent keyboard staying picker-
-// sized after landing on the product list, and activeNumberedScreen leaking
-// past a Back navigation off a picker.
+// Final-review fixes (I1/I2), history: the bottom persistent keyboard stayed
+// picker-sized after landing on the product list, and activeNumberedScreen
+// leaked past a Back navigation off a picker. A Game Top-up list reached from
+// a picker tap is now inline-only (no keyboard to resize, no companion); the
+// numbered companion survives only for Premium Apps, pinned below.
 // ===========================================================================
 
-describe("Finding I1 (final-review): persistent keyboard resend when a picker tap lands on the product list", () => {
-  it("a variant-picker tap that collapses/resolves straight onto the product list resends productsPersistentKb sized to the list, not the stale picker-sized nav keyboard", async () => {
-    // 3 variants (so the variant picker itself renders and is genuinely
-    // tapped, not auto-skipped) all sharing one product each, so resolving
-    // any one variant lands on a >1-product flat list scoped to it — never
-    // triggers enterGameRegion's single-product collapse, which would skip
-    // browseProductsFlat (and this fix) entirely.
+describe("Finding I1 (final-review): what a picker tap landing on the product list sends", () => {
+  /** Inline product buttons on the last screen. */
+  const listButtons = (sink: SentCall[]) =>
+    (((lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined)?.inline_keyboard ?? []).flat());
+
+  it("a variant-picker tap that resolves onto the product list edits the bubble into the inline list: no digit keyboard, no companion", async () => {
     const cat = await createCategory(prisma, { name: "I1 Variant Cat", group: CategoryGroup.GAME_TOPUP });
     const a1 = await createCatalogProduct(prisma, { categoryId: cat.id, name: "I1 Global A" });
     await prisma.product.update({ where: { id: a1.id }, data: { gameVariant: "Global" } });
@@ -3333,35 +3338,19 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     const { ctx } = customerCtx();
     await customer.browseCategoryEntry(ctx, cat.id); // renders the 2-entry variant picker
 
-    // Tap variant index 0 ("Global") via the real inline-callback handler —
-    // this is a genuine ctx.callbackQuery tap, the exact condition that used
-    // to route through productsNavKb (in-place edit) instead of resending
-    // productsPersistentKb.
     const tap = customerCtx({ callbackData: `v1:browse:gvar:${cat.id}:0`, session: { ...userSession(), scratch: ctx.session.scratch } });
     await customer.pickGameVariant(tap.ctx, cat.id, 0);
 
-    const replyCalls = calls(tap.sink, "reply");
-    const kbCall = replyCalls.find((c) => {
-      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
-      return !!opts?.reply_markup?.keyboard;
-    });
-    expect(kbCall).toBeDefined();
-    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    const flat = kb.keyboard.flat().map((b) => b.text);
-    // Sized to the 2-product list ("Global" has 2 products), not the
-    // 2-entry variant picker it came from (same count here on purpose is
-    // avoided by using a differently-countable assertion below — the real
-    // proof is that a FRESH persistent keyboard was sent at all for a
-    // callback-tap transition, which pre-fix never happened).
-    expect(flat).toEqual(["1", "2", persistentLabel("main", "en")]);
+    expect(replyKeyboardCall(tap.sink)).toBeUndefined();
+    expect(calls(tap.sink, "reply")).toHaveLength(0);
+    expect(calls(tap.sink, "sendMessage")).toHaveLength(0);
+    expect(calls(tap.sink, "editMessageText")).toHaveLength(1);
+    expect(listButtons(tap.sink).filter((x) => x.callback_data?.startsWith("v1:browse:pick:")).map((x) => x.callback_data)).toEqual([
+      `v1:browse:pick:${a1.id}`, `v1:browse:pick:${a2.id}`,
+    ]);
   });
 
-  it("a variant-picker tap that lands on a product list bigger than the picker's own option count exposes every digit on the resent keyboard", async () => {
-    // 2-entry variant picker, but the resolved variant scopes to 3 products —
-    // proves the resent keyboard is sized to the LIST, not stuck at the
-    // picker's smaller size (the exact bug: "digits beyond the picker's old
-    // count can't be tapped even though they're valid product-list
-    // positions").
+  it("a variant-picker tap that lands on a list bigger than the picker gets a button for every product", async () => {
     const cat = await createCategory(prisma, { name: "I1 Bigger List Cat", group: CategoryGroup.GAME_TOPUP });
     for (let i = 0; i < 3; i++) {
       const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `I1 Global ${i}` });
@@ -3378,28 +3367,11 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     const tap = customerCtx({ callbackData: `v1:browse:gvar:${cat.id}:0`, session: { ...userSession(), scratch: ctx.session.scratch } });
     await customer.pickGameVariant(tap.ctx, cat.id, 0);
 
-    const replyCalls = calls(tap.sink, "reply");
-    const kbCall = replyCalls.find((c) => {
-      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
-      return !!opts?.reply_markup?.keyboard;
-    });
-    expect(kbCall).toBeDefined();
-    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    const flat = kb.keyboard.flat().map((b) => b.text);
-    // 3 products -> digits 1-3 must all be present, not capped at the
-    // picker's own 2-option size.
-    expect(flat).toEqual(["1", "2", "3", persistentLabel("main", "en")]);
+    expect(replyKeyboardCall(tap.sink)).toBeUndefined();
+    expect(listButtons(tap.sink).filter((x) => x.callback_data?.startsWith("v1:browse:pick:"))).toHaveLength(3);
   });
 
-  it("Finding (final-review round 2): a variant-picker tap landing on a >10-product list still shows a Prev/Next-capable inline keyboard, not just the digit-only persistent keyboard", async () => {
-    // The I1 fix above made this exact transition (picker tap -> flat list)
-    // resend `productsPersistentKb` as the LIST's own reply_markup — but that
-    // keyboard has no Prev/Next, so an 11-product variant-scoped list (>
-    // PAGE_SIZE=10) became unreachable past page 1: "Page 1/2" shown with no
-    // way to reach page 2. Fixed by sending the resized digit keyboard as a
-    // SEPARATE companion message (mirroring the variant/region pickers' own
-    // existing pattern) while the list message itself keeps the inline
-    // `productsNavKb` — so both the digit shortcuts AND Prev/Next work.
+  it("Finding (final-review round 2): a variant-picker tap landing on a >10-product list keeps Prev/Next on the list's own inline keyboard", async () => {
     const cat = await createCategory(prisma, { name: "I1 Pagination Cat", group: CategoryGroup.GAME_TOPUP });
     for (let i = 0; i < 11; i++) {
       const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `I1 Page Global ${i}` });
@@ -3416,26 +3388,10 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     const tap = customerCtx({ callbackData: `v1:browse:gvar:${cat.id}:0`, session: { ...userSession(), scratch: ctx.session.scratch } });
     await customer.pickGameVariant(tap.ctx, cat.id, 0);
 
-    // The digit-only persistent reply keyboard is still sent as a companion
-    // message, sized to this page's 10 products (PAGE_SIZE) — the I1 fix
-    // itself must not regress.
-    const replyCalls = calls(tap.sink, "reply");
-    const kbCall = replyCalls.find((c) => {
-      const opts = c.args[1] as { reply_markup?: { keyboard?: unknown[][] } } | undefined;
-      return !!opts?.reply_markup?.keyboard;
-    });
-    expect(kbCall).toBeDefined();
-    const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    expect(kb.keyboard.flat().map((b) => b.text)).toEqual([
-      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", persistentLabel("main", "en"),
-    ]);
-
-    // The LIST message itself (the last screen-producing send) must carry
-    // the inline productsNavKb with a working Next button — never the
-    // reply-keyboard-only, pagination-less markup.
-    const markup = lastMarkup(tap.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined;
-    expect(markup?.inline_keyboard).toBeDefined();
-    const flatButtons = (markup?.inline_keyboard ?? []).flat();
+    expect(replyKeyboardCall(tap.sink)).toBeUndefined();
+    expect(calls(tap.sink, "reply")).toHaveLength(0);
+    const flatButtons = listButtons(tap.sink);
+    expect(flatButtons.filter((b) => b.callback_data?.startsWith("v1:browse:pick:"))).toHaveLength(10);
     expect(flatButtons.some((b) => b.callback_data === "v1:browse:page:1")).toBe(true);
   });
 
@@ -3494,7 +3450,7 @@ describe("Finding I1 (final-review): persistent keyboard resend when a picker ta
     });
     expect(kbCall).toBeDefined();
     const kb = (kbCall!.args[1] as { reply_markup: { keyboard: Array<Array<{ text: string }>> } }).reply_markup;
-    expect(kb.keyboard.flat().map((b) => b.text)).toEqual(["1", persistentLabel("main", "en")]);
+    expect(kb.keyboard.flat().map((b) => b.text)).toEqual(["1", persistentLabel("back", "en"), persistentLabel("main", "en")]);
   });
 });
 
@@ -3528,11 +3484,12 @@ describe("Finding I2 (final-review): activeNumberedScreen is cleared when a pick
 
     // A stray typed "1" now must NOT hit the stale variant-picker branch
     // (which would show "Enter a number between 1 and 0" against the
-    // now-irrelevant gameVariantEntries) — it falls through to this file's
-    // existing default digit-handling instead.
-    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: back.ctx.session.scratch } });
+    // now-irrelevant gameVariantEntries) — on this Game Top-up screen the
+    // category picker is re-rendered in place with "use the buttons" instead.
+    const digit = customerCtx({ text: "1", session: { ...userSession(), scratch: back.ctx.session.scratch, menuMsgId: back.ctx.session.menuMsgId } });
     await customer.handleProductNumber(digit.ctx);
     expect(sentIncludes(digit.sink, t(digit.ctx, "browse.invalid_number", { max: 0 }))).toBe(false);
+    expectUseButtonsEdit(digit, back.ctx.session.menuMsgId);
   });
 
   it("browseGroups (a fresh Products entry) always clears a leftover activeNumberedScreen", async () => {
@@ -4330,7 +4287,8 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
     const { ctx, sink } = customerCtx();
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     const order = orders[0]!;
     expect(order.paymentMethod).toBe("TOKOPAY");
@@ -4395,7 +4353,8 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "tokopay_secret", "S1");
     vi.mocked(mockedCreateTokopayTransaction).mockRejectedValueOnce(new Error("gateway down"));
     const { ctx } = customerCtx();
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     // No orphan PENDING_PAYMENT order left behind — it was cancelled, not
     // left dangling to eat one of the 10 pending-order slots.
@@ -4437,7 +4396,8 @@ describe("checkout handlers", () => {
     // — so assert no NEW call was added, rather than "never called at all".
     const callsBefore = vi.mocked(mockedCreateTokopayTransaction).mock.calls.length;
     const { ctx } = customerCtx();
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     // The bot never called TokoPay a second time for this order.
     expect(vi.mocked(mockedCreateTokopayTransaction).mock.calls.length).toBe(callsBefore);
@@ -4460,7 +4420,8 @@ describe("checkout handlers", () => {
     const { ctx, sink } = customerCtx({
       session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
     });
-    await checkout.buyNowTokopay(ctx, sample.product.id, 2); // 10.00, SAVE10 = 10% -> 1
+    await primeQuote(ctx, sample.product.id, 2);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 2, quoteNonce(ctx)); // 10.00, SAVE10 = 10% -> 1
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     expect(new Decimal(order.discountAmount).toString()).toBe("1");
     const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
@@ -4481,7 +4442,8 @@ describe("checkout handlers", () => {
     const { ctx } = customerCtx({
       session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
     });
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
     // Voucher must still be in session — the failed attempt never used it.
@@ -4494,7 +4456,8 @@ describe("checkout handlers", () => {
     const { ctx } = customerCtx({
       session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
     });
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     expect(ctx.session.scratch.appliedVoucherCode).toBeUndefined();
@@ -4504,12 +4467,14 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
     const first = customerCtx({ callbackData: "v1:payq:1:1" });
-    await checkout.buyNowTokopay(first.ctx, sample.product.id, 1);
+    await primeQuote(first.ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(first.ctx, sample.product.id, 1, quoteNonce(first.ctx));
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
 
     // Second tap — same user, same product, same rail, immediately after.
     const second = customerCtx({ callbackData: "v1:payq:1:1" });
-    await checkout.buyNowTokopay(second.ctx, sample.product.id, 1);
+    await primeQuote(second.ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(second.ctx, sample.product.id, 1, quoteNonce(second.ctx));
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1); // still just the one order
     const alert = calls(second.sink, "answerCallbackQuery").find(
       (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
@@ -4530,7 +4495,8 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, other.id, ["other1@x.com:pw"]);
 
     const first = customerCtx({ callbackData: "v1:payq:1:1" });
-    await checkout.buyNowTokopay(first.ctx, sample.product.id, 1);
+    await primeQuote(first.ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(first.ctx, sample.product.id, 1, quoteNonce(first.ctx));
     // The shared TokoPay mock always resolves the same trxId; give the 2nd
     // order a distinct one so its paymentRef cache write doesn't collide with
     // the 1st on the orders.payment_ref unique constraint.
@@ -4538,7 +4504,8 @@ describe("checkout handlers", () => {
       trxId: "TP-TEST-2", payUrl: null, qrLink: "https://x/qr2.png", qrString: "001", totalBayar: "100",
     });
     const second = customerCtx({ callbackData: "v1:payq:2:1" });
-    await checkout.buyNowTokopay(second.ctx, other.id, 1);
+    await primeQuote(second.ctx, other.id, 1);
+    await checkout.buyNowTokopay(second.ctx, other.id, 1, quoteNonce(second.ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(2);
   });
@@ -4553,7 +4520,7 @@ describe("checkout handlers", () => {
     for (let i = 0; i < 10; i++) await makeOrder();
     const before = await prisma.order.count();
     const { ctx } = customerCtx({ callbackData: "v1:payq:1:1" });
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
@@ -4593,7 +4560,8 @@ describe("checkout handlers", () => {
       callbackData: "v1:payq:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     // No second order — the collision was refused, not raced through.
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
@@ -4641,7 +4609,8 @@ describe("checkout handlers", () => {
       callbackData: "v1:payx:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
-    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowInternal(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     const alert = calls(sink, "answerCallbackQuery").find(
@@ -4679,7 +4648,8 @@ describe("checkout handlers", () => {
       callbackData: "v1:payb:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
-    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowBybit(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     const alert = calls(sink, "answerCallbackQuery").find(
@@ -4717,7 +4687,8 @@ describe("checkout handlers", () => {
       callbackData: "v1:paybc:1:1",
       session: { ...userSession(), scratch: { checkoutIntentId } },
     });
-    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     const alert = calls(sink, "answerCallbackQuery").find(
@@ -4762,7 +4733,8 @@ describe("checkout handlers", () => {
       callbackData: `v1:walletpay:${sample.product.id}:1`,
       session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true, checkoutIntentId } },
     });
-    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     // No second order…
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
@@ -4793,7 +4765,8 @@ describe("checkout handlers", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx, sink } = customerCtx();
-    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowInternal(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
@@ -4837,7 +4810,8 @@ describe("checkout handlers", () => {
     await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"]);
 
     const { ctx } = customerCtx();
-    await checkout.buyNowInternal(ctx, denom.id, 1);
+    await primeQuote(ctx, denom.id, 1);
+    await checkout.buyNowInternal(ctx, denom.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
@@ -4929,7 +4903,8 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
-    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowBybit(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT);
@@ -4946,7 +4921,8 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
-    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT_BSC);
@@ -4961,7 +4937,8 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
-    await checkout.buyNowNowpayments(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowNowpayments(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.NOWPAYMENTS);
@@ -4975,7 +4952,8 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
     await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
     const { ctx } = customerCtx();
-    await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowPaydisini(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.PAYDISINI);
@@ -5160,7 +5138,7 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     // Picking a credit lands on the confirmation screen (not the picker):
     // the Complete Order (walletpay) confirm button is surfaced…
     const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
-    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1:${ctx.session.scratch.quoteNonce}`)).toBe(true);
     // …and once fully covered the screen collapses to just Complete Order: the
     // credit-type toggle rows, the "Wallet Credit Applied" open row and the
     // voucher row are all dropped (nothing to decide at a zero total).
@@ -5200,6 +5178,8 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
       session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true } },
     });
 
+    // The routed tap carries the nonce of the Complete Order screen it came from.
+    ctx.callbackQuery!.data = `v1:walletpay:${sample.product.id}:1:${await primeQuote(ctx, sample.product.id, 1)}`;
     await routeCallback(ctx);
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
@@ -5258,6 +5238,8 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
       session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletUsdt: true } },
     });
 
+    // The routed tap carries the nonce of the Complete Order screen it came from.
+    ctx.callbackQuery!.data = `v1:walletpay:${sample.product.id}:1:${await primeQuote(ctx, sample.product.id, 1)}`;
     await routeCallback(ctx);
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
@@ -5316,14 +5298,14 @@ describe("gateway rail tapped with a stale wallet-credit flag", () => {
       session: { ...userSession(), scratch: { useWalletUsdt: true } },
     });
 
-    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+    await checkout.buyNowInternal(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
     expect(await usdtBalanceOf()).toBe("10");
     expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
     // The re-rendered screen is the one the credit actually produces today.
     const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
-    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1:${ctx.session.scratch.quoteNonce}`)).toBe(true);
     // The buyer's choice to pay with credit is kept for that Complete Order tap.
     expect(ctx.session.scratch.useWalletUsdt).toBe(true);
   });
@@ -5336,7 +5318,8 @@ describe("gateway rail tapped with a stale wallet-credit flag", () => {
       session: { ...userSession(), scratch: { useWalletUsdt: true } },
     });
 
-    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowInternal(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
     expect(order.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
@@ -5356,7 +5339,8 @@ describe("gateway rail tapped with a stale wallet-credit flag", () => {
       session: { ...userSession(), scratch: { useWalletIdr: true } },
     });
 
-    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id } });
     expect(order.paymentMethod).toBe(PaymentMethod.TOKOPAY);
@@ -6941,6 +6925,13 @@ describe("checkout handlers on an order with an unreadable reserved credential",
 });
 
 describe("instant Digiflazz dispatch from the bot's own settlement paths", () => {
+  /** The owner the info conversation records next to customerData: the
+   *  denomination's current input settings, so a pay tap accepts the data. */
+  async function currentInputOwner(denomId: number, quantity: number): Promise<string> {
+    const d = await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } });
+    return JSON.stringify([denomId, quantity, d.additionalFields, d.providerInputMapping, d.nicknameCheckGameCode]);
+  }
+
   beforeEach(() => {
     vi.mocked(triggerDigiflazzDispatch).mockReset();
   });
@@ -6986,8 +6977,10 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     vi.mocked(triggerDigiflazzDispatch).mockImplementationOnce(() => {
       telegramCallsAtTrigger = sink.length;
     });
+    ctx.session.scratch.customerInputOwner = await currentInputOwner(sample.product.id, 1);
 
-    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     expect(order!.status).toBe(OrderStatus.PROCESSING);
@@ -7007,8 +7000,10 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
       cbMessage: { message_id: 888, chat: { id: 42 }, date: 0 },
       session: { ...userSession(), menuMsgId: 888, scratch: { shownQuotes: shownQuote5(), useWalletIdr: true, customerData: provider === "DIGIFLAZZ" ? DIGIFLAZZ_CUSTOMER_DATA : undefined } },
     });
+    if (provider === "DIGIFLAZZ") ctx.session.scratch.customerInputOwner = await currentInputOwner(sample.product.id, 1);
 
-    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order.status).toBe(OrderStatus.PROCESSING);
@@ -7033,7 +7028,8 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
       session: { ...userSession(), scratch: { shownQuotes: shownQuote5(), useWalletIdr: true } },
     });
 
-    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+    await primeQuote(ctx, sample.product.id, 1);
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx));
 
     const [order] = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     expect(order!.status).toBe(OrderStatus.DELIVERED);
@@ -7051,7 +7047,8 @@ describe("instant Digiflazz dispatch from the bot's own settlement paths", () =>
     // the bot's generic error reply.
     const tick = vi.spyOn(FulfillmentMessageWorker.prototype, "tick").mockRejectedValue(new Error("database unavailable"));
     try {
-      await expect(checkout.completeOrderWithWallet(ctx, sample.product.id, 1)).resolves.toBeUndefined();
+      await primeQuote(ctx, sample.product.id, 1);
+      await expect(checkout.completeOrderWithWallet(ctx, sample.product.id, 1, quoteNonce(ctx))).resolves.toBeUndefined();
       expect(tick).toHaveBeenCalledTimes(2);
     } finally {
       tick.mockRestore();

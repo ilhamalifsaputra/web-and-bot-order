@@ -8,6 +8,18 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
   getPriceList: digiflazzMock.getPriceList,
 }));
 
+// Lets one test make the credential read or the brand grouping throw; null = the real function.
+const dbFaults = vi.hoisted(() => ({ creds: null as null | (() => never), grouping: null as null | (() => never) }));
+vi.mock("@app/db", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@app/db")>();
+  return {
+    ...original,
+    getDigiflazzCreds: (...args: Parameters<typeof original.getDigiflazzCreds>) => (dbFaults.creds ? dbFaults.creds() : original.getDigiflazzCreds(...args)),
+    groupDigiflazzPriceListByBrand: (...args: Parameters<typeof original.groupDigiflazzPriceListByBrand>) =>
+      dbFaults.grouping ? dbFaults.grouping() : original.groupDigiflazzPriceListByBrand(...args),
+  };
+});
+
 import { config } from "@app/core/config";
 import { prisma, initDb, upsertUser, setSetting, createCategory, importDigiflazzBrand, claimDigiflazzCatalogSyncLease } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -16,6 +28,7 @@ import { buildApp } from "../src/server";
 import { Decimal } from "@app/core/money";
 import { DigiflazzSupplierError } from "@app/core/suppliers/digiflazz";
 import { clearDigiflazzPriceListCache } from "../src/lib/digiflazzPriceListCache";
+import { logger } from "@app/core/logger";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -44,6 +57,8 @@ beforeEach(async () => {
   csrf = data.csrf;
   await setSetting(prisma, "setup_completed", "true");
   digiflazzMock.getPriceList.mockReset();
+  dbFaults.creds = null;
+  dbFaults.grouping = null;
   // The routes share an in-process price-list cache; every test starts cold.
   clearDigiflazzPriceListCache();
 });
@@ -254,6 +269,214 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     const body = res.json();
     expect(body).toMatchObject({ ok: true, brandsImported: 1, denominationsImported: 1, atomic: false });
     expect(body.reports[0]).toMatchObject({ created: 1, conflicts: 0, errors: 0 });
+  });
+
+  describe("game region", () => {
+    const listItem = (buyerSkuCode: string, productName: string) => ({
+      buyerSkuCode, productName, category: "Game", brand: "Game B", type: "Umum", price: new Decimal(15000),
+      buyerProductStatus: true, sellerProductStatus: true, stock: null,
+    });
+    const applyBody = (categoryId: number, extra: Record<string, unknown> = {}) => ({
+      categoryId,
+      brands: [
+        { brand: "Game B (Global)", ...extra, rows: [{ buyerSkuCode: "gb-g-1", productName: "Game B 100 Coin (Global)", price: "16500", costPrice: "15000" }] },
+        { brand: "Game B (Publisher X)", ...extra, rows: [{ buyerSkuCode: "gb-x-1", productName: "Game B 100 Coin (Publisher X)", price: "16500", costPrice: "15000" }] },
+      ],
+    });
+
+    it("derives the region from the price list's group, ignores a client-sent value, and skips unknown suffixes", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([
+        listItem("gb-g-1", "Game B 100 Coin (Global)"),
+        listItem("gb-x-1", "Game B 100 Coin (Publisher X)"),
+      ]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id, { gameRegion: "Forged Region" }));
+      expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      const publisher = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Publisher X)" } });
+      expect(global.gameRegion).toBe("\u{1F310} Global");
+      expect(publisher.gameRegion).toBeNull();
+      expect(res.json().regions).toEqual([
+        { brand: "Game B (Global)", written: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global" },
+        { brand: "Game B (Publisher X)", written: false, label: null, skippedReason: "unrecognized_suffix", suffix: "Publisher X" },
+      ]);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+    });
+
+    it("logs one info sentence per import with the outcome and no secrets", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "secret-key-123");
+      digiflazzMock.getPriceList.mockResolvedValue([
+        listItem("gb-g-1", "Game B 100 Coin (Global)"),
+        listItem("gb-x-1", "Game B 100 Coin (Publisher X)"),
+      ]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const info = vi.spyOn(logger, "info");
+      try {
+        await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+        const lines = info.mock.calls.filter((c) => String(c[1]).startsWith("Digiflazz import finished"));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]![1]).toContain("1 of 2 imported brand(s)");
+        expect(JSON.stringify(lines[0])).not.toContain("secret-key-123");
+      } finally {
+        info.mockRestore();
+      }
+    });
+
+    it("reports not_game_topup_category and makes no price-list call for a Premium Apps or ungrouped category", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      const premium = await createCategory(prisma, { name: "Apps", group: "PREMIUM_APPS" });
+      const legacy = await createCategory(prisma, { name: "Legacy" });
+      for (const category of [premium, legacy]) {
+        const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+          categoryId: category.id,
+          brands: [{ brand: `Game ${category.id} (Global)`, rows: [{ buyerSkuCode: `np-${category.id}`, productName: "Game 100 Coin (Global)", price: "16500", costPrice: "15000" }] }],
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json().regions).toEqual([
+          { brand: `Game ${category.id} (Global)`, written: false, label: null, skippedReason: "not_game_topup_category", suffix: null },
+        ]);
+      }
+      expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+    });
+
+    it("reports no_suffix for a brand without a region suffix", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("gb-n-1", "Game B 100 Coin")]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+        categoryId: category.id,
+        brands: [{ brand: "Game B", rows: [{ buyerSkuCode: "gb-n-1", productName: "Game B 100 Coin", price: "16500", costPrice: "15000" }] }],
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().regions).toEqual([
+        { brand: "Game B", written: false, label: null, skippedReason: "no_suffix", suffix: null },
+      ]);
+    });
+
+    it("reports product_exists (derived but not applied) when the brand's Product already existed", async () => {
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      // First import without credentials: the Product is born with no region.
+      const first = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(first.statusCode, first.body).toBe(200);
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([
+        listItem("gb-g-1", "Game B 100 Coin (Global)"),
+        listItem("gb-x-1", "Game B 100 Coin (Publisher X)"),
+      ]);
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().regions).toEqual([
+        { brand: "Game B (Global)", written: false, label: "\u{1F310} Global", skippedReason: "product_exists", suffix: "Global" },
+        { brand: "Game B (Publisher X)", written: false, label: null, skippedReason: "unrecognized_suffix", suffix: "Publisher X" },
+      ]);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+    });
+
+    it("includes regions for the brands already committed in a 409 partial-commit answer", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("gb-g-1", "Game B 100 Coin (Global)")]);
+      const first = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const second = await createCategory(prisma, { name: "Top Up Game 2", group: "GAME_TOPUP" });
+      // The second brand's SKU is already owned by a Product in another category.
+      const seed = await postJson("/api/catalog/digiflazz/sync/apply", {
+        categoryId: first.id,
+        brands: [{ brand: "Other Brand", rows: [{ buyerSkuCode: "gb-x-1", productName: "Other 100", price: "16500", costPrice: "15000" }] }],
+      });
+      expect(seed.statusCode, seed.body).toBe(200);
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(second.id));
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json()).toMatchObject({ brandsImported: 1, atomic: false });
+      expect(res.json().regions).toEqual([
+        { brand: "Game B (Global)", written: true, label: "\u{1F310} Global", skippedReason: null, suffix: "Global" },
+      ]);
+    });
+
+    it("reports no_matching_group when the price list has no group for the brand", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("other-1", "Other Game 100 Coin")]);
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().regions.map((r: { skippedReason: string }) => r.skippedReason)).toEqual(["no_matching_group", "no_matching_group"]);
+    });
+
+    it("imports without a region when no price list is available", async () => {
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+      expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+    });
+
+    it("still imports, without a region, when the price list cannot be loaded", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockRejectedValue(new Error("HTTP 503"));
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+      expect(res.json().regions.map((r: { skippedReason: string }) => r.skippedReason)).toEqual(["no_price_list", "no_price_list"]);
+    });
+
+    it("still imports, without a region, when reading the stored credentials throws", async () => {
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      dbFaults.creds = () => {
+        throw new Error("decrypt failed with secret-key-material");
+      };
+      const warn = vi.spyOn(logger, "warn");
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![1])).toMatch(/^The .+\.$/);
+      warn.mockRestore();
+    });
+
+    it("still imports, without a region, when grouping the price list throws", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockResolvedValue([listItem("gb-g-1", "Game B 100 Coin (Global)")]);
+      dbFaults.grouping = () => {
+        throw new Error("database unavailable");
+      };
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+    });
+
+    it("still imports and reports no_price_list when a cold-cache fetch is refused with rc 83", async () => {
+      await setSetting(prisma, "digiflazz_username", "u");
+      await setSetting(prisma, "digiflazz_api_key", "k");
+      digiflazzMock.getPriceList.mockRejectedValue(rateLimitedError());
+      const category = await createCategory(prisma, { name: "Top Up Game", group: "GAME_TOPUP" });
+      const res = await postJson("/api/catalog/digiflazz/sync/apply", applyBody(category.id));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ ok: true, brandsImported: 2 });
+      expect(res.json().regions.map((r: { written: boolean; skippedReason: string }) => [r.written, r.skippedReason])).toEqual([[false, "no_price_list"], [false, "no_price_list"]]);
+      const global = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Game B (Global)" } });
+      expect(global.gameRegion).toBeNull();
+    });
   });
 
   it("rejects a non-positive price", async () => {

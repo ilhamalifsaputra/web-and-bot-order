@@ -42,16 +42,28 @@ export type WalletCheckoutResult = SettleResult;
  * A USDT quote with no rate cannot be checked, so it is refused rather than
  * skipped — the rail refuses a USDT checkout without a rate a few lines later
  * anyway.
+ *
+ * A caller may instead pass a complete {@link ExpectedTotal}, which is used as
+ * is. The bot does this: it quotes every rail in IDR, the figure its payment
+ * screen showed, so its USDT wallet track is bound to the Rupiah total and a
+ * moved rate is left to the FX freshness guard.
  */
 function walletExpectedTotal(args: {
   currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT;
   rate?: Decimal.Value;
-  expectedTotal?: Decimal.Value | null;
+  expectedTotal?: Decimal.Value | ExpectedTotal | null;
 }): ExpectedTotal | null {
   if (args.expectedTotal == null) return null;
+  if (isExpectedTotal(args.expectedTotal)) return args.expectedTotal;
   if (args.currency === OrderCurrency.IDR) return { currency: OrderCurrency.IDR, amount: args.expectedTotal };
   if (!args.rate) throw new ValidationError("error.generic");
   return { currency: OrderCurrency.USDT, amount: args.expectedTotal, rate: args.rate };
+}
+
+/** A complete quote object, as opposed to a bare amount (a Decimal, string or
+ *  number, none of which carries a `currency` field). */
+function isExpectedTotal(value: Decimal.Value | ExpectedTotal): value is ExpectedTotal {
+  return typeof value === "object" && !Decimal.isDecimal(value) && "currency" in value;
 }
 
 /**
@@ -90,9 +102,10 @@ export async function completeOrderWithWalletCredit(
      * INSERT below — before any wallet credit is spent or stock claimed — so the
      * loser's whole transaction rolls back with nothing debited or delivered. */
     checkoutIntentId?: string | null;
-    /** The total the buyer was quoted, in `currency` (A6) — see
+    /** The total the buyer was quoted (A6): a bare amount in `currency`, or a
+     * complete quote object such as the bot's IDR one — see
      * {@link walletExpectedTotal}. Absent: no quote check, as before. */
-    expectedTotal?: Decimal.Value | null;
+    expectedTotal?: Decimal.Value | ExpectedTotal | null;
   },
 ): Promise<WalletCheckoutResult> {
   const created = await createOrderDirect(db, {

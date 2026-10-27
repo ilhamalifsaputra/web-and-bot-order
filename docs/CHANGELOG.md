@@ -9,6 +9,58 @@ tag git yang sungguhan sampai dokumen ini ditulis.
 ## [Unreleased]
 
 ### Added
+- **Refactor katalog dan checkout Game Top-up (bot Telegram; Premium Apps
+  tidak berubah).** Dikerjakan bertahap di branch `worktree-game-topup-refactor`:
+  - Katalog: region = server (satu level, tanpa level Server terpisah); edisi
+    dipisah dari `type` Digiflazz; import Digiflazz mengisi `Product.gameRegion`
+    saat Product dibuat, dari akhiran region grup; skrip operator
+    `scripts/fill-game-regions.ts` (dry run bawaan) mengisi produk lama; bot
+    tidak menyembunyikan produk bila sebagian saudaranya belum punya region.
+    Rollback: kode lama mengabaikan isi `gameRegion` (kolomnya sudah ada), jadi
+    nilai yang sudah terisi aman dibiarkan; tidak ada migrasi untuk dibalik.
+  - Penelusuran: label harga `mulai <harga>` / `from <harga>`, satu baris hint
+    per layar, dan `/search` berperingkat khusus Game Top-up. Flag tahap awal
+    dihapus, fiturnya selalu aktif. Rollback: kembali ke daftar tanpa label dan
+    `/search` lama lewat revert kode; tidak ada saklar di Settings.
+  - Input akun satu pesan (mis. ID dan Zone sekaligus), layar review sebelum
+    bayar, dan kunci harga: harga yang berubah di antara review dan ketukan
+    bayar tidak membuat order, layar dirender ulang dengan keterangan harga
+    berubah. Tombol bayar membawa nonce per-render. Rollback: bot lama
+    menanyakan field satu per satu tanpa layar review; bubble pembayaran yang
+    terbuka saat rollback kehilangan segmen nonce sehingga butuh satu ketukan
+    tambahan.
+  - Pengingat bayar (`PAYMENT_REMINDER_DM`): satu push ke pembeli Telegram saat
+    sisa jendela bayar kira-kira `PAYMENT_REMINDER_LEAD_MINUTES` (bawaan 5)
+    menit, untuk order semua layanan dan top-up wallet; tidak dikirim bila
+    pembayaran sudah terdeteksi. Rollback: setel `PAYMENT_REMINDER_LEAD_MINUTES=0`
+    untuk mematikan pengingat saja; setelah rollback kode, baris outbox bertipe
+    ini yang tertinggal menjadi `FAILED` (lihat `docs/ROLLBACK.md`).
+  - Pilih dengan tombol inline, tanpa sistem angka, untuk Game Top-up (dan
+    setiap layanan baru): daftar produk bertombol per produk + Prev/Next +
+    Kembali, picker edisi/region tanpa pesan pendamping "Gunakan angka di bawah
+    untuk memilih:" dan tanpa keyboard bawah angka, sehingga pesan tidak lagi
+    menumpuk saat bolak-balik region; jalur ketik "Produk" menjadi satu pesan;
+    angka yang diketik di layar katalog Game mengedit layar itu di tempat
+    (tombol tetap, baris "pilih lewat tombol" di atasnya) dan angkanya dihapus,
+    tanpa pesan baru.
+    Premium Apps tetap bernomor. Gaya pilih diatur sekali per layanan
+    (`listSelection` di `packages/core/src/services.ts`). Tidak ada perubahan
+    skema. Rollback: revert kode; keyboard angka kembali muncul pada kunjungan
+    Game berikutnya, tanpa data yang perlu dibalik.
+  - Notifikasi kedaluwarsa (`ORDER_EXPIRED_DM`): pesan pembayaran diedit
+    menjadi "dibatalkan", dan hanya bila pembatalan itu tidak menambah pesan
+    baru di chat, pembeli menerima tepat satu push. Rollback: seperti baris di
+    atas (`docs/ROLLBACK.md`).
+- **Skrip seed fixture manual `scripts/seed-game-topup-fixtures.ts`** dan
+  pembangun fixture bersama `tests/helpers/gameTopupFixtures.ts` untuk uji
+  manual Game Top-up di `@testtoko_bot`. Skrip menolak jalan kecuali host lokal,
+  nama database `bot_order_gtr`, dan flag `--confirm-worktree-db`; bawaannya dry
+  run, `--apply` menulis, `--apply --remove` hanya menghapus id yang tercatat di
+  manifest tak terlihat (setting `seed_game_topup_manifest`); nama seed tampak
+  seperti toko sungguhan, tanpa penanda. Baris bernama sama yang tidak ada di
+  manifest ditolak, dan baris lama berakhiran ` [SEED-GTR]` diganti namanya di
+  tempat saat `--apply`. Rollback: hapus file; data seed dibersihkan dengan
+  `--remove`.
 - **Saklar layanan (Top Up Game / Premium Apps) kini dipisah per kanal: bot
   Telegram dan website.** Tiap layanan punya dua kunci setting,
   `service_<id>_enabled_bot` dan `service_<id>_enabled_web`; halaman Settings
@@ -63,6 +115,21 @@ tag git yang sungguhan sampai dokumen ini ditulis.
   via `sendPhoto` (cache `file_id` yang di-resolve) alih-alih `sendMessage`
   saat gambar terlampir — migrasi `20260706120000_broadcast_image`, commit
   `ab1411a` (2026-07-06).
+
+### Changed
+- **Jendela bayar bawaan per rail dipersingkat: TokoPay QRIS / PayDisini 10,
+  Binance Pay 10, Bybit UID 10, Bybit BSC 30, NOWPayments 30 menit** (sebelumnya
+  30/15/30/15/30 untuk `PAYMENT_WINDOW_MINUTES`, `INTERNAL_PAYMENT_WINDOW_MINUTES`,
+  `BYBIT_PAYMENT_WINDOW_MINUTES`, `BYBIT_BSC_PAYMENT_WINDOW_MINUTES`,
+  `NOWPAYMENTS_PAYMENT_WINDOW_MINUTES`). Nilai eksplisit di `.env` tetap menang
+  atas bawaan, jadi `.env` lama harus menyunting kelima baris itu agar bawaan
+  baru berlaku. Order yang sudah dibuat mempertahankan `expiresAt`-nya.
+  Rollback: kembalikan kelima kunci ke nilai lama di `.env` lalu restart
+  (nilai lama dicantumkan di `docs/ROLLBACK.md`).
+- **Klaim pembayaran `matched` yang macet kini dipulihkan setelah 120 detik**
+  (`STALE_MATCHED_CLAIM_MS`, sebelumnya 10 menit), supaya crash di tengah
+  pengiriman pada rail berjendela 10 menit masih bisa dipulihkan sebelum order
+  dibatalkan otomatis. Rollback: ikut revert kode; kode lama memakai 10 menit.
 
 ### Fixed
 - Gap schema-drift `notification_outbox.claimed_at`/`next_retry_at` ditutup

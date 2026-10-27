@@ -34,6 +34,7 @@
     "./orderFulfillment": "./src/orderFulfillment.ts",
     "./deliveryFields": "./src/deliveryFields.ts",
     "./playerInput": "./src/playerInput.ts",
+    "./accountInput": "./src/accountInput.ts",
     "./runtime": "./src/runtime.ts",
     "./fx": "./src/fx.ts",
     "./flash": "./src/flash.ts",

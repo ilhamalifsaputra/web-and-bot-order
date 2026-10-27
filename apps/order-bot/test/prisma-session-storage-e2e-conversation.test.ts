@@ -247,10 +247,11 @@ describe("end-to-end: customerInfoConversation through the REAL Prisma session a
     const dataAfterEntry = JSON.parse(rowAfterEntry!.data) as SessionData & { conversation?: unknown };
     // The conversation is genuinely suspended mid-flight, waiting at its
     // first wait() — its replay op log (including the conversation.external()
-    // result from getDenomination, a real Prisma row) is embedded in the
-    // persisted session and must have round-tripped through Postgres intact.
+    // result: the denomination's field spec and category group, as a plain
+    // object) is embedded in the persisted session and must have
+    // round-tripped through Postgres intact.
     expect(dataAfterEntry.conversation).toBeDefined();
-    expect(JSON.stringify(dataAfterEntry.conversation)).toContain("E2E Manual Info Denom");
+    expect(JSON.stringify(dataAfterEntry.conversation)).toContain(GAME_ID_FIELD.key);
     // The field prompt for the single configured field was sent — as an
     // edit of the "Buy" tap's own bubble (menuAnchor → smartEdit prefers
     // editing over a fresh send when the update carries a callbackQuery),

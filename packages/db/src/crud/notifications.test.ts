@@ -15,6 +15,7 @@ import {
   enqueueManualOrderAdminAlert,
   enqueueAdminStalePayment,
   enqueueAdminUnconfirmablePayment,
+  enqueueAdminClaimCancelledPayment,
   enqueueAdminDigiflazzResyncAborted,
   enqueueAdminDigiflazzSkusChanged,
   enqueueAdminPasswordReset,
@@ -794,6 +795,22 @@ describe("enqueueAdminUnconfirmablePayment reasons", () => {
     const all = await prisma.notificationOutbox.findMany({ where });
     expect(all).toHaveLength(8);
     expect(all.filter((r) => (JSON.parse(r.payloadJson) as { reason?: string }).reason === undefined)).toHaveLength(4);
+  });
+});
+
+// Follow-up item 2: a matched ledger claim on a cancelled product order reuses
+// ADMIN_STALE_PAYMENT, but unlike enqueueAdminStalePayment it is deduped per
+// (order, admin) — a later cancel attempt must not tell anyone twice.
+describe("enqueueAdminClaimCancelledPayment", () => {
+  it("tells each admin once per order with the claim_cancelled reason", async () => {
+    const orderId = await seedOrder();
+    const args = { orderId, orderCode: "ORD-CLAIMC", gateway: "TokoPay", trxId: "TP-CLAIMC" };
+    await enqueueAdminClaimCancelledPayment(prisma, args);
+    await enqueueAdminClaimCancelledPayment(prisma, args);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_STALE_PAYMENT, orderId } });
+    expect(rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b)).toEqual([4001, 4002, 4501, 4502]);
+    expect(rows.map((r) => r.dedupeKey).sort()).toEqual([4001, 4002, 4501, 4502].map((a) => `claim-cancelled:${orderId}:${a}`).sort());
+    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({ order_code: "ORD-CLAIMC", gateway: "TokoPay", trx_id: "TP-CLAIMC", reason: "claim_cancelled" });
   });
 });
 

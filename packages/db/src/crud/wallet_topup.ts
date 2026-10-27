@@ -500,8 +500,10 @@ export async function createWalletTopupOrder(
       // `expiresAt > now`, which null never satisfies — so no IDR top-up was
       // ever reconcilable and a missed storefront webhook meant a paid buyer
       // with nothing watching. USDT top-ups are left alone: each of their
-      // four rails gets its own, shorter auto-confirm window from
-      // finalizeWalletTopupPayment below.
+      // four rails gets its own auto-confirm window from
+      // finalizeWalletTopupPayment below (Binance Pay and Bybit UID as short
+      // as this one, Bybit BSC and NOWPayments longer — see
+      // docs/ENVIRONMENT_VARIABLES.md for the per-rail defaults).
       ...(args.currency === "IDR"
         ? { expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES) }
         : {}),

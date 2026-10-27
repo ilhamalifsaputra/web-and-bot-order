@@ -756,14 +756,15 @@ describe("ProductPage", () => {
     expect(screen.queryByText("Shared account, instant delivery.")).not.toBeInTheDocument();
   });
 
-  // The description is rendered nowhere else, so it must never be clamped
-  // (a clamped paragraph on mobile would be unreadable content loss).
-  it("does not clamp the description and keeps whitespace-pre-line", async () => {
+  // Rendered through ProductDescription: clamped to 3 lines below md only,
+  // and the toggle exists only when the text is really cut off (jsdom has no
+  // layout, so no toggle here). Never clamped from md up.
+  it("renders the description through the read-more component and keeps whitespace-pre-line", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const desc = screen.getByText("Shared account, instant delivery.");
-    expect(desc).toHaveClass("whitespace-pre-line");
-    expect(desc.className).not.toMatch(/line-clamp/);
+    expect(desc).toHaveClass("whitespace-pre-line", "line-clamp-3", "md:line-clamp-none");
+    expect(screen.queryByRole("button", { name: "Read more" })).toBeNull();
   });
 });
 

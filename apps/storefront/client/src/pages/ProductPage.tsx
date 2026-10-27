@@ -25,6 +25,7 @@ import Breadcrumb from "../components/shop/Breadcrumb";
 import DefaultThumb from "../components/shop/DefaultThumb";
 import DenominationCard from "../components/shop/DenominationCard";
 import EmptyState from "../components/shop/EmptyState";
+import ProductDescription from "../components/shop/ProductDescription";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import Skeleton from "../components/shop/Skeleton";
@@ -329,9 +330,7 @@ function ProductOverviewCard({ product }: {
               spaces it from the image card. No heading: it's a plain lead
               paragraph, same as it was under the <h1>. */}
     {product.description && (
-      <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
-        {product.description}
-      </div>
+      <ProductDescription key={product.description} text={product.description} className="mt-4" />
     )}
   </div>);
 }

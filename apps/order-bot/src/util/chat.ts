@@ -95,6 +95,25 @@ export async function consumeInput(ctx: MyContext): Promise<void> {
  */
 export interface RenderOptions {
   captionText?: string;
+  /**
+   * Anti-stacking for the catalog screens of an inline service (Game Top-up
+   * and every service that is not numbered): when this screen cannot be drawn
+   * into the bubble the buyer tapped (a text bubble becoming a photo, a photo
+   * becoming a text-only screen, an edit that failed), that tapped bubble is
+   * obsolete. It is DELETED once its one replacement has been sent, instead of
+   * only losing its keyboard — so repeated forward/Back cycles never pile up
+   * dead bubbles (1 send + 1 delete per transition). Never a transaction
+   * bubble (an order's payment/status message, the session's payment anchor);
+   * a failed delete falls back to retiring the keyboard and never blocks.
+   * Premium Apps (numbered) never passes it, so its output is unchanged.
+   */
+  replaceTapped?: boolean;
+  /**
+   * The screen is a plain-text message (the Game Top-up pack picker): a tapped
+   * photo bubble is replaced by one text message (deleted as above), never
+   * captioned; a typed navigation drops a photo anchor the same way.
+   */
+  textOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +181,40 @@ function endScreenModes(ctx: MyContext): void {
   delete ctx.session.scratch.catalogScreen;
 }
 
+/** True when the tapped bubble of this callback update is a photo+caption bubble. */
+function tappedIsPhoto(ctx: MyContext): boolean {
+  const cqMsg = ctx.callbackQuery?.message;
+  return !!cqMsg && "photo" in cqMsg && !!cqMsg.photo;
+}
+
+/**
+ * After a fresh send (`newId`) replaced the screen: with `replaceTapped` (or a
+ * text-only screen replacing a tapped photo) the tapped bubble is obsolete and
+ * is deleted — not when it is a transaction bubble or the session's payment
+ * anchor, and only once per update; a failed delete just retires its keyboard.
+ * Otherwise (and for any other previous menu bubble `prev`) the keyboard is
+ * retired, exactly as before.
+ */
+async function retireReplacedBubble(ctx: MyContext, prev: number | undefined, newId: number, opts?: RenderOptions): Promise<void> {
+  const tappedId = tappedBubbleGone.has(ctx) ? undefined : ctx.callbackQuery?.message?.message_id;
+  const deleteTapped = !!opts?.replaceTapped || (!!opts?.textOnly && tappedIsPhoto(ctx));
+  const chatId = ctx.chat?.id;
+  if (deleteTapped && tappedId !== undefined && tappedId !== newId && chatId !== undefined
+    && ctx.session.paymentAnchorMsgId !== tappedId && !(await isTransactionBubble(ctx, tappedId))) {
+    let deleted = true;
+    try {
+      await ctx.api.deleteMessage(chatId, tappedId);
+    } catch {
+      deleted = false; // too old (48 h) or already gone: retire it below instead
+    }
+    if (deleted) markTappedBubbleDeleted(ctx);
+    else await retireKeyboard(ctx, tappedId);
+    if (prev !== undefined && prev !== tappedId && prev !== newId) await retireKeyboard(ctx, prev);
+    return;
+  }
+  if (prev !== undefined && prev !== newId) await retireKeyboard(ctx, prev);
+}
+
 /** Render the next customer screen (edit on tap, send on typed input). */
 export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup, opts?: RenderOptions): Promise<void> {
   endScreenModes(ctx);
@@ -172,7 +225,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   const typedNav = typedNavigation.get(ctx);
   if (!ctx.callbackQuery && typedNav && (replyMarkup === undefined || isInline(replyMarkup))) {
     ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
-      replacePhoto: typedNav.textOnly,
+      replacePhoto: typedNav.textOnly || !!opts?.textOnly,
       captionText: opts?.captionText !== undefined ? withTypedNavigationNotice(ctx, opts.captionText) : undefined,
     });
     return;
@@ -185,9 +238,12 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // Transaction status bubbles remain owned by their coordinator. Navigating
   // opens the menu separately so another order cannot inherit this message.
   const transactionBubble = await isTransactionBubble(ctx, tappedId);
+  // A text-only screen never becomes a photo's caption: straight to the one
+  // fresh text send below, which then deletes the obsolete photo.
+  const photoReplaced = !!opts?.textOnly && tappedIsPhoto(ctx);
   // A tapped bubble deleted earlier in this update is not edited (the call
   // could only fail): straight to the fresh send below.
-  if (ctx.callbackQuery && !tappedGone && !transactionBubble && (replyMarkup === undefined || isInline(replyMarkup))) {
+  if (ctx.callbackQuery && !tappedGone && !transactionBubble && !photoReplaced && (replyMarkup === undefined || isInline(replyMarkup))) {
     const cqMsg = ctx.callbackQuery.message;
     let edited = true;
     try {
@@ -227,7 +283,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   }
   const prev = ctx.session.menuMsgId ?? tappedId;
   const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
-  if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
+  await retireReplacedBubble(ctx, prev, msg.message_id, opts);
   ctx.session.menuMsgId = msg.message_id;
 }
 
@@ -251,6 +307,8 @@ export async function renderMenu(
   replyMarkup?: Markup,
   photo?: string | InputFile,
   onPhotoSent?: (fileId: string) => void | Promise<void>,
+  /** `replaceTapped` only (see RenderOptions): a tapped text bubble replaced by this photo is deleted. */
+  opts?: Pick<RenderOptions, "replaceTapped">,
 ): Promise<void> {
   endScreenModes(ctx);
   const body = truncateText(text);
@@ -291,13 +349,13 @@ export async function renderMenu(
     }
     const prev = ctx.session.menuMsgId ?? (tappedGone ? undefined : ctx.callbackQuery?.message?.message_id);
     const msg = await ctx.replyWithPhoto(photo, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
-    if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
+    await retireReplacedBubble(ctx, prev, msg.message_id, opts);
     ctx.session.menuMsgId = msg.message_id;
     if (onPhotoSent && msg.photo?.length) await onPhotoSent(msg.photo[msg.photo.length - 1]!.file_id);
     return;
   }
 
-  await smartEdit(ctx, text, replyMarkup);
+  await smartEdit(ctx, text, replyMarkup, opts);
 }
 
 /** Render the next admin screen. Photo+caption bubbles edit the caption. */

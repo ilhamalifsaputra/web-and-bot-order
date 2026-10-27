@@ -298,6 +298,17 @@ describe("groupProductsByGame", () => {
     expect(plain.members.map((m) => m.product.name)).toEqual(["Delta Force"]);
   });
 
+  it("keeps a type-split publisher edition apart from the base game (importer shape: Umum + Garena)", () => {
+    const groups = groupProductsByGame([
+      p("Delta Force", { gameVariant: "Umum" }),
+      p("Delta Force Garena", { gameVariant: "Garena" }),
+    ]);
+    expect(groups.map((g) => [g.gameKey, g.members.map((m) => m.product.name)])).toEqual([
+      ["delta force", ["Delta Force"]],
+      ["delta force garena", ["Delta Force Garena"]],
+    ]);
+  });
+
   it("drops the base marker when it is the sole edition of a game", () => {
     const [g] = groupProductsByGame([p("Arena Breakout", { gameVariant: "Umum" })]);
     expect(g!.members[0]!.edition).toBeNull();

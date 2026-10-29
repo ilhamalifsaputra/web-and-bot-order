@@ -4,14 +4,14 @@
  * server hands back cards shaped by the same shapeProducts() every other grid
  * uses, so prices here can't drift from the ones checkout charges.
  */
-import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { PackageSearch } from "lucide-react";
 import { apiGet } from "../api/client";
-import { parseSortKey, type ShelfPageData, type SortKey } from "../api/types";
+import type { ShelfPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { useSortParam } from "../lib/useSortParam";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
@@ -23,9 +23,7 @@ const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 
 export default function ProductsPage() {
   const { data: ctx } = useShopContext();
-  const [params, setParams] = useSearchParams();
-  const rawSort = params.get("sort");
-  const sort: SortKey = parseSortKey(rawSort, { allowCheapest: true });
+  const [sort, setSort] = useSortParam({ allowCheapest: true });
   const { data } = useQuery({
     queryKey: ["products", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/products?sort=${sort}`),
@@ -71,7 +69,7 @@ export default function ProductsPage() {
         <>
           {products.length > 1 && (
             <div className="flex justify-end mb-4">
-              <SortSelect value={sort} allowCheapest onChange={(next) => setParams(next === "bestseller" ? {} : { sort: next })} />
+              <SortSelect value={sort} allowCheapest onChange={setSort} />
             </div>
           )}
           {/* STO-018: a lone product clamps to one column instead of leaving

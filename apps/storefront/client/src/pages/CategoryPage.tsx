@@ -17,6 +17,7 @@ import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
 import { t } from "../lib/i18n";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
+import { useSortParam } from "../lib/useSortParam";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
@@ -26,17 +27,21 @@ const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 export default function CategoryPage() {
   const { slug = "" } = useParams<{ slug: string }>();
   const { data: ctx } = useShopContext();
-  const [params, setParams] = useSearchParams();
-  const rawSort = params.get("sort");
+  const [params] = useSearchParams();
   // The server decides whether this category offers "cheapest" (Game Top Up
   // does not) and falls back to bestseller itself, so the request carries the
-  // key as typed; the dropdown shows the effective one once the payload is in.
-  const requestedSort: SortKey = parseSortKey(rawSort, { allowCheapest: true });
+  // key as typed; useSortParam below corrects the URL once the payload says.
+  const requestedSort: SortKey = parseSortKey(params.get("sort"), { allowCheapest: true });
   const { data, error, refetch } = useQuery({
     queryKey: ["category", slug, requestedSort],
     queryFn: () => apiGet<CategoryPageData>(`/api/v1/pages/category/${slug}?sort=${requestedSort}`),
     retry: false,
+    // A sort change within the same category keeps the grid up while the new
+    // order loads (including the URL correction above) instead of flashing
+    // the skeleton; another category starts from its own skeleton.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === slug ? previous : undefined),
   });
+  const [sort, setSort] = useSortParam({ allowCheapest: data?.allow_cheapest });
   // Fetched only once this category is known to have no products — never
   // delays the empty-state card itself, which paints from `data` alone.
   const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
@@ -78,7 +83,6 @@ export default function CategoryPage() {
   }
 
   const { category, categories, products, low_threshold, allow_cheapest } = data;
-  const sort = parseSortKey(rawSort, { allowCheapest: allow_cheapest });
   const fx = ctx?.fx;
 
   return (
@@ -121,16 +125,16 @@ export default function CategoryPage() {
         ))}
       </div>
 
-      <CategoryProductsSection products={products} sort={sort} allowCheapest={allow_cheapest} setParams={setParams} fx={fx} low_threshold={low_threshold} suggested={suggested} />
+      <CategoryProductsSection products={products} sort={sort} allowCheapest={allow_cheapest} onSortChange={setSort} fx={fx} low_threshold={low_threshold} suggested={suggested} />
     </>
   );
 }
 
-function CategoryProductsSection({ products, sort, allowCheapest, setParams, fx, low_threshold, suggested }: {
+function CategoryProductsSection({ products, sort, allowCheapest, onSortChange, fx, low_threshold, suggested }: {
   products: import("../components/shop/ProductCard").ProductCardData[];
   sort: SortKey;
   allowCheapest: boolean;
-  setParams: import("react-router-dom").SetURLSearchParams;
+  onSortChange: (next: SortKey) => void;
   fx: string | null | undefined;
   low_threshold: number;
   suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
@@ -141,7 +145,7 @@ function CategoryProductsSection({ products, sort, allowCheapest, setParams, fx,
               there's more than one product to reorder. */}
       {products.length > 1 && (
         <div className="flex justify-end mb-4">
-          <SortSelect value={sort} allowCheapest={allowCheapest} onChange={(next) => setParams(next === "bestseller" ? {} : { sort: next })} />
+          <SortSelect value={sort} allowCheapest={allowCheapest} onChange={onSortChange} />
         </div>
       )}
       {/* STO-018: same fix as the homepage's "Latest products" grid — a

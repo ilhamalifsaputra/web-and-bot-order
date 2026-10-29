@@ -299,6 +299,13 @@ describe("ProductCard", () => {
       expect(screen.queryByText(/diamond|top up|player/i)).not.toBeInTheDocument();
     });
 
+    it("works for a game denomination without any Premium plan wording", () => {
+      renderCard(<ProductCard p={{ ...promo, category_name: "Mobile Legends", other_promo_count: 2 }} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("1000 Diamond")).toBeInTheDocument();
+      expect(screen.getByText("+2 more deals")).toBeInTheDocument();
+      expect(screen.queryByText(/plan|account|month|warranty|subscription/i)).not.toBeInTheDocument();
+    });
+
     it("keeps a plain link and no promo line on a normal card", () => {
       renderCard(<ProductCard p={base} fx="16000" lowThreshold={5} />);
       expect(screen.getByRole("link")).toHaveAttribute("href", "/p/netflix-premium");

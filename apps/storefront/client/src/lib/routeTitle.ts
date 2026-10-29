@@ -6,10 +6,10 @@
  * and locale keys in step with that file's TITLE_KEYS / STATIC_PAGES / the
  * home, /search and browse-all-shelf branches.
  *
- * /p/:slug and /c/:slug are deliberately absent: their titles need the
- * fetched product/category name, which only ProductPage/CategoryPage have
- * once their data arrives — those two pages call useDocumentTitle themselves.
- * This function returns undefined for those two paths so RouteEffects leaves
+ * /p/:slug, /c/:slug and /g/:slug are deliberately absent: their titles need
+ * the fetched product/category/group name, which only ProductPage/
+ * CategoryPage/GroupPage have once their data arrives — those pages call
+ * useDocumentTitle themselves. This function returns undefined for those paths so RouteEffects leaves
  * document.title alone rather than clobbering it with something generic.
  */
 import { t } from "./i18n";
@@ -50,8 +50,8 @@ const SHELF_TITLE_KEYS: Record<string, string> = {
   "/flash": "web.flash_title",
 };
 
-/** /p/:slug and /c/:slug — titled by the page itself once its data loads. */
-const DYNAMIC_ENTITY_PATH = /^\/(p|c)\/[^/]+$/;
+/** /p/:slug, /c/:slug and /g/:slug — titled by the page itself once its data loads. */
+const DYNAMIC_ENTITY_PATH = /^\/(p|c|g)\/[^/]+$/;
 
 /**
  * Title for `pathname`/`search` given the current shop name, or undefined

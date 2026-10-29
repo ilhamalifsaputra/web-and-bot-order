@@ -226,6 +226,20 @@ describe("SPA shell wildcard", () => {
     expect(res.body).toContain('<meta property="og:title" content="Netflix Premium">');
   });
 
+  // /g/:slug is a real React route (GroupPage) — a refresh or a shared link
+  // must not 404 just because the server shell did not know the path.
+  it("200s a known product group page with the group name in <title>, and 404s an unknown one", async () => {
+    const res = await app.inject({ method: "GET", url: "/g/premium-apps" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>Premium Apps — SPA Test Shop</title>");
+    expect(res.body).toContain("<h1>Premium Apps</h1>");
+
+    const missing = await app.inject({ method: "GET", url: "/g/no-such-group" });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.body).toContain("<title>404 — SPA Test Shop</title>");
+  });
+
   // The nav drawer's three browse-all shelves. These live in KNOWN_PATHS, so
   // the regression they guard against is a 404 on refresh: the React route
   // table alone doesn't make a URL real to the server.

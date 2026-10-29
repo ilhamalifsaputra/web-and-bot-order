@@ -20,6 +20,7 @@
  *     token rides in the URL — same Storefront-1 guard as the HTML route).
  */
 import type { FastifyInstance } from "fastify";
+import { productGroupBySlug } from "@app/core";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
 import { formatIdr } from "@app/core/formatters";
@@ -483,6 +484,25 @@ async function headInfo(
           (category.description ? `<p>${esc(category.description)}</p>` : "") +
           linkList(inCategory.map((p) => ({ href: `/p/${p.slug}`, label: p.name }))),
       ),
+      status: 200,
+    };
+  }
+  // /g/:slug — a product group page (client GroupPage). Only the slug is
+  // checked here (an in-memory registry lookup); the products come from the
+  // JSON API once the SPA boots.
+  const groupSlug = /^\/g\/([^/]+)$/.exec(path)?.[1];
+  if (groupSlug) {
+    // Group slugs are plain ASCII registry keys, so the raw segment is
+    // compared as is (no decodeURIComponent to throw on a malformed %-escape).
+    const group = productGroupBySlug(groupSlug);
+    if (!group) {
+      return { title: `404 — ${shopName}`, meta: "", body: "", status: 404 };
+    }
+    const groupName = t(group.labelKey, lang);
+    return {
+      title: `${groupName} — ${shopName}`,
+      meta: canonicalLink(path),
+      body: seoShell(`<nav><a href="/">${esc(shopName)}</a></nav><h1>${esc(groupName)}</h1>`),
       status: 200,
     };
   }

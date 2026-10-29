@@ -6,6 +6,7 @@ import RouteFallback from "./components/shop/RouteFallback";
 import ErrorPage from "./pages/ErrorPage";
 import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
+import GroupPage from "./pages/GroupPage";
 import CategoriesPage from "./pages/CategoriesPage";
 import SearchRedirect from "./pages/SearchRedirect";
 import ProductPage from "./pages/ProductPage";
@@ -102,6 +103,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/c/:slug" element={<CategoryPage />} />
+          <Route path="/g/:slug" element={<GroupPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/flash" element={<FlashPage />} />

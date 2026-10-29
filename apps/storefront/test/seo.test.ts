@@ -116,11 +116,55 @@ describe("crawler-visible SEO body (no JavaScript)", () => {
     // Exactly one H1 — a second one is its own SEO finding.
     expect(res.body.match(/<h1>/g)).toHaveLength(1);
     expect(res.body).toMatch(/<p>[^<]+<\/p>/);
-    expect(res.body).toContain(`href="/c/${activeCategorySlug}"`);
+    // The home page is organised by product group: the shell links each
+    // rendered group's page and that group's top products.
+    expect(res.body).toContain('href="/g/premium-apps"');
     expect(res.body).toContain(`href="/p/${activeProductSlug}"`);
     // Inactive catalog rows stay out of the crawler's link graph too.
     expect(res.body).not.toContain(`href="/c/${inactiveCategorySlug}"`);
     expect(res.body).not.toContain(`href="/p/${inactiveProductSlug}"`);
+  });
+
+  it("mirrors the home page's groups: order, web service toggle, and no removed sections", async () => {
+    const shellOf = async () => {
+      const res = await app.inject({ method: "GET", url: "/" });
+      return /<div id="seo-shell">([\s\S]*?)<\/div>/.exec(res.body)?.[1] ?? "";
+    };
+    const gameCat = await prisma.category.create({
+      data: { name: "Mobile Games SEO", slug: "mobile-games-seo", sortOrder: 3, isActive: true, group: "GAME_TOPUP" },
+    });
+    const game = await createCatalogProduct(prisma, { categoryId: gameCat.id, name: "Mobile Legends SEO", isActive: true });
+    await createDenomination(prisma, { productId: game.id, name: "86 Diamonds", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", isActive: true });
+    try {
+      await setSetting(prisma, "storefront_group_order", JSON.stringify(["GAME_TOPUP", "PREMIUM_APPS"]));
+      let shell = await shellOf();
+      // Group headings (as the page renders them) in the admin's order.
+      const gameAt = shell.indexOf("<h2>🎮 Top Up Games</h2>");
+      const premiumAt = shell.indexOf("<h2>💎 Premium Apps</h2>");
+      expect(gameAt).toBeGreaterThan(-1);
+      expect(premiumAt).toBeGreaterThan(gameAt);
+      expect(shell).toContain('href="/g/top-up-games"');
+      expect(shell).toContain(`href="/p/${game.slug}"`);
+      // The category list and "Latest products" shelf are gone from the page,
+      // so they must be gone from the shell too (cloaking rule).
+      expect(shell).not.toContain("<h2>Categories</h2>");
+      expect(shell).not.toContain("Latest products");
+      expect(shell).not.toContain(`href="/c/${activeCategorySlug}"`);
+
+      // A group whose web service is switched off is not on the page.
+      await setSetting(prisma, "service_game_topup_enabled_web", "false");
+      shell = await shellOf();
+      expect(shell).not.toContain("Top Up Games");
+      expect(shell).not.toContain('href="/g/top-up-games"');
+      expect(shell).not.toContain(`href="/p/${game.slug}"`);
+      expect(shell).toContain('href="/g/premium-apps"');
+    } finally {
+      await setSetting(prisma, "service_game_topup_enabled_web", "");
+      await setSetting(prisma, "storefront_group_order", "");
+      await prisma.denomination.deleteMany({ where: { productId: game.id } });
+      await prisma.product.delete({ where: { id: game.id } });
+      await prisma.category.delete({ where: { id: gameCat.id } });
+    }
   });
 
   // Task 3: the SEO shell used to render as a real, visible block until

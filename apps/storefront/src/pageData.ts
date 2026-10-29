@@ -128,35 +128,32 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
   return last ? `${first} ${last.charAt(0).toUpperCase()}.` : first;
 }
 
-/** Home page data — shaped for the JSON API (GET /api/v1/pages/home). */
-export async function homePageData() {
+/**
+ * The catalog part of the home page: one entry per rendered group (admin
+ * order; a group with no products — its web service is off, or it has none
+ * yet — is left out), the hero preview cards, the flash cards and the
+ * ranking version. Shared by the JSON API (homePageData) and the crawler shell
+ * (routes/spaShell.ts) so both always describe the same page.
+ */
+export async function homeCatalogData() {
   // One pricing instant, one catalog load and one ranking snapshot for the
   // whole page — never one per group.
   const now = new Date();
-  const [categories, products, reviews, waNumber, heroUrl, storedGroupOrder, snapshot] =
-    await Promise.all([
-      listActiveCategories(prisma, "web"),
-      // Already drops products of a service switched off for the website.
-      listCatalogProducts(prisma, "web"),
-      featuredReviews(prisma, 4),
-      // WhatsApp button on the contact section — set in web-admin Settings ›
-      // Website; empty/unset hides the button.
-      getSetting(prisma, "support_whatsapp"),
-      // Hero banner — admin-uploaded image overrides the gradient default.
-      getSetting(prisma, "web_hero_url"),
-      getSetting(prisma, GROUP_ORDER_SETTING_KEY),
-      getBestsellerSnapshot(prisma, { now }),
-    ]);
+  const [categories, products, storedGroupOrder, snapshot] = await Promise.all([
+    listActiveCategories(prisma, "web"),
+    // Already drops products of a service switched off for the website.
+    listCatalogProducts(prisma, "web"),
+    getSetting(prisma, GROUP_ORDER_SETTING_KEY),
+    getBestsellerSnapshot(prisma, { now }),
+  ]);
   const { stock, ratingByDenom, tiers } = await cardInputs(products);
   const ranked = rankedEntries(
     products,
     rankCards(products, shapeProducts(products, stock, ratingByDenom, tiers, false, now), "bestseller", snapshot),
   );
 
-  // One entry per group in the admin's order; a group with no products (its
-  // web service is off, or it simply has none yet) is left out.
   const groups = [];
-  const heroProducts: ProductCard[] = [];
+  const groupEntries: RankedEntry[][] = [];
   for (const key of resolveGroupOrder(storedGroupOrder)) {
     const def = productGroup(key);
     const entries = ranked.filter((e) => groupForCategory(e.product.category.group) === key);
@@ -169,8 +166,7 @@ export async function homePageData() {
       single_category_slug: groupCats.length === 1 ? groupCats[0]!.slug : null,
       sections: homeSections(def, entries, categories),
     });
-    const lead = entries.find((e) => !isOutOfStock(e.card));
-    if (lead && heroProducts.length < HERO_PRODUCTS_LIMIT) heroProducts.push(lead.card);
+    groupEntries.push(entries);
   }
 
   const flashProducts = products.filter((p) => hasLiveFlash(p, now));
@@ -180,6 +176,36 @@ export async function homePageData() {
     "bestseller",
     snapshot,
   ).slice(0, HOME_FLASH_LIMIT);
+
+  return {
+    groups,
+    hero_products: heroCards(groupEntries.map((entries) => entries.map((e) => e.card))),
+    flash,
+    ranking_version: snapshot.version,
+  };
+}
+
+/** The hero's preview cards: the top in-stock card of each group (group order). */
+export function heroCards(groups: readonly (readonly ProductCard[])[]): ProductCard[] {
+  const picked: ProductCard[] = [];
+  for (const cards of groups) {
+    const lead = cards.find((c) => !isOutOfStock(c));
+    if (lead && picked.length < HERO_PRODUCTS_LIMIT) picked.push(lead);
+  }
+  return picked;
+}
+
+/** Home page data — shaped for the JSON API (GET /api/v1/pages/home). */
+export async function homePageData() {
+  const [catalog, reviews, waNumber, heroUrl] = await Promise.all([
+    homeCatalogData(),
+    featuredReviews(prisma, 4),
+    // WhatsApp button on the contact section — set in web-admin Settings ›
+    // Website; empty/unset hides the button.
+    getSetting(prisma, "support_whatsapp"),
+    // Hero banner — admin-uploaded image overrides the gradient default.
+    getSetting(prisma, "web_hero_url"),
+  ]);
 
   // Real testimonials from delivered-order reviews (≥4★ with a comment).
   const testimonials = reviews
@@ -198,10 +224,10 @@ export async function homePageData() {
 
   return {
     hero_image: heroUrl || null,
-    hero_products: heroProducts,
-    groups,
-    flash,
-    ranking_version: snapshot.version,
+    hero_products: catalog.hero_products,
+    groups: catalog.groups,
+    flash: catalog.flash,
+    ranking_version: catalog.ranking_version,
     testimonials,
     low_threshold: config.LOW_STOCK_THRESHOLD,
     bot_username: await resolveBotUsername(),

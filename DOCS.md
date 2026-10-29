@@ -321,11 +321,13 @@ Infinite). Dua game bernama sama tetapi berbeda akhiran publisher/distribusi
 tetap dua `Product` terpisah dan **tidak pernah digabung**.
 
 **Tingkat game.** Kategori Game Top-up yang berisi beberapa game (≥ 2 game dan
-ada game dengan ≥ 2 produk, seperti katalog import Digiflazz yang menaruh semua
-game dalam satu kategori) menampilkan daftar game lebih dulu, lalu edisi dan
-region **per game**. Game/edisi/region diturunkan saat dibaca
-(`deriveGameIdentity`, `packages/core/src/gameIdentity.ts`; nilai admin menang),
-tanpa menulis data. Kategori satu game memakai alur di atas tanpa perubahan.
+ada yang bisa dipilih di dalam game: produk lebih dari satu, edisi, atau region —
+seperti katalog import Digiflazz yang menaruh semua game dalam satu kategori)
+menampilkan daftar game lebih dulu, lalu edisi dan region **per game**.
+Game/edisi/region diturunkan saat dibaca (`deriveGameIdentity`,
+`packages/core/src/gameIdentity.ts`; nilai admin menang), tanpa menulis data.
+Pemilih edisi/region tingkat kategori hanya untuk kategori satu game, dan juga
+memakai identitas turunan (negara di `type` = region, bukan edisi).
 Detail: `docs/game-topup-refactor-phase1-design.md` §2.1.
 
 **Isi region otomatis saat import Digiflazz.** Saat admin mengimpor brand

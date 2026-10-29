@@ -89,8 +89,9 @@ function counts(sink: SentCall[]) {
 const ONE_EDIT = { reply: 0, sendMessage: 0, replyWithPhoto: 0, editMessageText: 1, deleteMessage: 0 };
 const ONE_SEND = { reply: 1, sendMessage: 0, replyWithPhoto: 0, editMessageText: 0, deleteMessage: 0 };
 
+/** A recognised region shows its canonical flagged label ("Indonesia" → "🇮🇩 Indonesia"). */
 function regionIdx(sink: SentCall[], catId: number, label: string): number {
-  const b = buttons(sink).find((x) => x.text === label && x.callback_data?.startsWith(`v1:browse:greg:${catId}:`));
+  const b = buttons(sink).find((x) => (x.text === label || x.text.endsWith(` ${label}`)) && x.callback_data?.startsWith(`v1:browse:greg:${catId}:`));
   return Number(b!.callback_data!.split(":")[4]);
 }
 

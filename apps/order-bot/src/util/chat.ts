@@ -263,7 +263,8 @@ async function retireReplacedBubble(ctx: MyContext, prev: number | undefined, ne
   }
   if (prev === undefined || prev === newId) return;
   if (prev === tappedId && tappedBubbleGone.has(ctx)) return;
-  if (prev !== tappedId && ctx.session.catalogMsgId === prev && (await deleteObsoleteBubble(ctx, prev))) return;
+  // Tap updates only: a typed message keeps the previous screen above it, as before.
+  if (ctx.callbackQuery && prev !== tappedId && ctx.session.catalogMsgId === prev && (await deleteObsoleteBubble(ctx, prev))) return;
   await retireKeyboard(ctx, prev);
 }
 

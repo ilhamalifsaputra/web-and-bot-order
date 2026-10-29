@@ -22,7 +22,7 @@ import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderTy
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { CUSTOMER_SERVICES, serviceForCategoryGroup, usesNumberedSelection } from "@app/core/services";
-import { gameScopePickers, groupProductsByGame, type GameGroup, type GameGroupMember } from "@app/core";
+import { canonicalGameRegion, deriveGameIdentity, gameScopePickers, groupProductsByGame, isBaseEdition, type GameGroup, type GameGroupMember } from "@app/core";
 import {
   prisma,
   ownsTransactionMessageAt,
@@ -30,10 +30,6 @@ import {
   listCatalogProducts,
   listCatalogProductsByGroup,
   listActiveCategoriesByGroup,
-  listCategoryGameVariants,
-  countCategoryProductsWithoutGameRegion,
-  countCategoryProductsWithoutGameVariant,
-  listCategoryGameRegions,
   getCategory,
   soldCountsByProduct,
   getCatalogProductWithDenominations,
@@ -591,9 +587,8 @@ export async function backToRegionPicker(ctx: MyContext, categoryId: number): Pr
   // Reached from a product photo too (a one-product region's detail): a text picker.
   await dropProductPhoto(ctx);
   const gameVariant = sc(ctx).resolvedGameVariant ?? null;
-  const [regions, regionlessCount, regionBack] = await Promise.all([
-    listCategoryGameRegions(prisma, categoryId, gameVariant),
-    countCategoryProductsWithoutGameRegion(prisma, categoryId, gameVariant),
+  const [{ regions, regionlessCount }, regionBack] = await Promise.all([
+    categoryMembers(categoryId).then((members) => memberRegions(members, gameVariant)),
     regionPickerBackTarget(ctx, categoryId),
   ]);
   if (regions.length > 1 && regionlessCount === 0) {
@@ -909,13 +904,15 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   // The GAME LEVEL: a category holding several games (the shape a Digiflazz
   // import leaves: one "Game Top Up" category, every game flat inside it)
   // shows one button per game first; editions and regions are then picked
-  // per game, never across games. A category that is one game (the per-game
-  // layout) keeps the category-level pickers below, unchanged.
+  // per game, never across games (usesGameLevel). The category-level pickers
+  // below therefore only ever show for a ONE-game category (the per-game
+  // layout), read from the same derived identity (categoryMembers).
   const games = await categoryGames(categoryId);
   if (usesGameLevel(games)) {
     await renderGameList(ctx, categoryId, 0, games);
     return;
   }
+  const members = await categoryMembers(categoryId);
 
   // Guaranteed non-null: the branch above already returned for every other
   // value, so `category.group` here is exactly CategoryGroup.GAME_TOPUP.
@@ -930,10 +927,9 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   // handleBackButton's own Task-3 fix above): don't trust which path
   // originally got us here, recheck reality.
   const effectiveBackTarget = backTarget ?? (await categoryLevelBackTarget(group));
-  const [variants, unvariantedCount] = await Promise.all([
-    listCategoryGameVariants(prisma, categoryId),
-    countCategoryProductsWithoutGameVariant(prisma, categoryId),
-  ]);
+  // Derived editions (a country in gameVariant is a REGION, never an edition).
+  const variants = memberVariants(members);
+  const unvariantedCount = members.filter((member) => member.edition === null).length;
 
   // A genuinely MIXED category — at least one catalog-eligible product carries
   // a gameVariant AND at least one doesn't. A variant picker (or the
@@ -1043,10 +1039,7 @@ async function enterGameVariant(
   delete sc(ctx).gameRegionDimensionSkipped;
   sc(ctx).gameVariantEmoji = gameVariantEmoji;
 
-  const [regions, regionlessCount] = await Promise.all([
-    listCategoryGameRegions(prisma, categoryId, gameVariant),
-    countCategoryProductsWithoutGameRegion(prisma, categoryId, gameVariant),
-  ]);
+  const { regions, regionlessCount } = memberRegions(await categoryMembers(categoryId), gameVariant);
   // A MIXED region scope — some eligible products carry a gameRegion and some
   // don't. A region picker (or the single-region auto-apply) would hide every
   // region-less product, so skip the region level: no picker, and the list
@@ -1118,7 +1111,7 @@ async function enterGameRegion(
   // paths) funnels through before falling through to browseProductsFlat, so
   // syncing it here (once) covers every caller.
   sc(ctx).categoryId = categoryId;
-  const products = await listCatalogProducts(prisma, "bot", categoryId, { gameVariant, gameRegion });
+  const products = memberProducts(await categoryMembers(categoryId), { gameVariant, gameRegion });
   if (products.length === 1) {
     // The one-line list is skipped, so the product's Back must skip it too
     // (productBackTarget → the picker the buyer really came from).
@@ -1159,13 +1152,77 @@ async function openGame(categoryId: number, gameKey: string): Promise<CategoryGa
 
 /**
  * Whether a Game Top-up category gets the game level: it holds at least two
- * games and at least one of them has several products (editions / regions /
- * lines). A category that is one game keeps the category-level pickers, and
- * one whose every game is a single product keeps its product list, which then
- * already is one button per game — both exactly as before.
+ * games and any of them has something to pick inside it (several products,
+ * or a derived edition / region). Otherwise the category-level path runs,
+ * which then only ever shows pickers for a ONE-game category: with two or
+ * more games and nothing to pick, it is the plain product list — already one
+ * button per game, and a game's one product opens its pack picker.
  */
 function usesGameLevel(games: readonly CategoryGame[]): boolean {
-  return games.length >= 2 && games.some((game) => game.members.length >= 2);
+  if (games.length < 2) return false;
+  if (games.some((game) => game.members.length >= 2)) return true;
+  // Every game is one product. Name-derived games are real only for imported
+  // products (the Digiflazz brand IS the game); an admin-named product line
+  // ("GI Asia 00", "FF P01") in a per-game category is not a game of its own.
+  const members = games.flatMap((game) => game.members);
+  return members.every((member) => !!member.product.digiflazzBrand?.trim())
+    && members.some((member) => member.edition !== null || member.region !== null);
+}
+
+/**
+ * The category's products with their derived edition / region for the
+ * CATEGORY-level pickers (a one-game category, or one with nothing to pick
+ * per game): the whole category is one scope, so the base marker "Umum" is
+ * dropped only when it is the category's sole edition, and a country in
+ * gameVariant / an old stored label ("🇵🇭 Filipina") reads as the canonical
+ * region (deriveGameIdentity). Freshly read.
+ */
+async function categoryMembers(categoryId: number): Promise<GameGroupMember<CatalogRow>[]> {
+  const derived = groupProductsByGame(await listCatalogProducts(prisma, "bot", categoryId))
+    .flatMap((game) => game.members)
+    .map((member) => ({
+      member,
+      // Only an imported product's variant can be a Digiflazz country type; an
+      // admin-made product's gameVariant is its edition as typed ("Global"
+      // edition), and its gameRegion still reads canonically.
+      identity: member.product.digiflazzBrand?.trim()
+        ? deriveGameIdentity(member.product)
+        : { edition: member.product.gameVariant?.trim() || null, region: canonicalGameRegion(member.product.gameRegion) },
+    }));
+  const editions = new Set(derived.flatMap(({ identity }) => (identity.edition === null ? [] : [identity.edition])));
+  const soleBase = editions.size === 1 && isBaseEdition([...editions][0]);
+  return derived.map(({ member, identity }) => ({
+    product: member.product,
+    edition: soleBase ? null : identity.edition,
+    region: identity.region,
+  }));
+}
+
+/** The category-level edition options from the derived editions, in member
+ * order; the emoji is the first such product's own (as listCategoryGameVariants did). */
+function memberVariants(members: readonly GameGroupMember<CatalogRow>[]): { label: string; emoji: string | null }[] {
+  const out: { label: string; emoji: string | null }[] = [];
+  for (const member of members) {
+    if (member.edition === null || out.some((option) => option.label === member.edition)) continue;
+    out.push({ label: member.edition, emoji: member.product.gameVariant === member.edition ? member.product.gameVariantEmoji : null });
+  }
+  return out;
+}
+
+/** The derived regions inside one edition (null = no edition) and how many of its members have none. */
+function memberRegions(members: readonly GameGroupMember<CatalogRow>[], edition: string | null): { regions: string[]; regionlessCount: number } {
+  const scoped = members.filter((member) => member.edition === edition);
+  const regions: string[] = [];
+  for (const member of scoped) if (member.region !== null && !regions.includes(member.region)) regions.push(member.region);
+  return { regions, regionlessCount: scoped.filter((member) => member.region === null).length };
+}
+
+/** Members' products matching a derived filter; a key that is absent is not filtered (listCatalogProducts' contract). */
+function memberProducts(members: readonly GameGroupMember<CatalogRow>[], filter: { gameVariant?: string | null; gameRegion?: string | null }): CatalogRow[] {
+  return members
+    .filter((member) => (!("gameVariant" in filter) || member.edition === (filter.gameVariant ?? null))
+      && (!("gameRegion" in filter) || member.region === (filter.gameRegion ?? null)))
+    .map((member) => member.product);
 }
 
 /** Forget the game scope and the game screen snapshot (every entry above the game level). */
@@ -1582,7 +1639,11 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     ? await gameScopeProducts(categoryId!, gameScope)
     : categoryId == null && sc(ctx).group === CategoryGroup.PREMIUM_APPS
       ? await listCatalogProductsByGroup(prisma, CategoryGroup.PREMIUM_APPS, "bot")
-      : await listCatalogProducts(prisma, "bot", categoryId, filter);
+      // A one-game Game Top-up category filters on the DERIVED edition / region
+      // (the values its pickers offered), never on the raw columns.
+      : filter && categoryId != null
+        ? memberProducts(await categoryMembers(categoryId), filter)
+        : await listCatalogProducts(prisma, "bot", categoryId, filter);
   if (!products.length) {
     // Finding I2 (final-review): a picker's activeNumberedScreen must not
     // survive into this empty-list screen either — an empty gameVariant/

@@ -325,6 +325,60 @@ describe("Game Top-up game level (fake transport)", () => {
     });
   });
 
+  describe("which categories get the game level", () => {
+    async function category(name: string, rows: Array<[name: string, brand: string, variant: string | null]>) {
+      const id = (await createCategory(prisma, { name, group: CategoryGroup.GAME_TOPUP, sortOrder: 5 })).id;
+      for (const [productName, brand, variant] of rows) {
+        const p = await createCatalogProduct(prisma, { categoryId: id, name: productName, digiflazzBrand: brand, gameVariant: variant });
+        for (const qty of [60, 120]) {
+          await createDenomination(prisma, { productId: p.id, name: `${qty} Coins`, type: "SHARED", durationLabel: `${qty} Coins`, price: new Decimal(qty * 200), qtyValue: qty, qtyUnit: "Coins" });
+        }
+      }
+    }
+    async function openCategory(tg: FakeTelegram, name: string) {
+      await tg.sendText("/start");
+      await tg.pressReply(/Products/);
+      await tg.press(/Game Top Up/);
+      await tg.press((b) => b.callback_data?.startsWith("v1:browse:cat:") === true && b.text.includes(name));
+    }
+
+    it("two games with ONE product each, carrying an edition / a region, still get the game list (never a cross-game edition picker)", async () => {
+      await category("Two Games", [["Delta Force Garena", "Delta Force Garena", "Garena"], ["Valorant Malaysia", "Valorant", "Malaysia"]]);
+      const tg = openBot();
+      await openCategory(tg, "Two Games");
+      expect(tg.screenText()).not.toContain(coreT("browse.choose_variant", EN));
+      expect(tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:game:")).map((b) => bare(b.text))).toEqual(["Delta Force Garena", "Valorant"]);
+      await pressLabel(tg, "Valorant");
+      expect(denomButtons(tg).length).toBeGreaterThan(0);
+    });
+
+    it("a ONE-game category whose country sits in the variant (legacy Digiflazz types) shows a REGION picker, never 'Choose edition'", async () => {
+      await category("Mobile Legends", [["MOBILE LEGENDS Indonesia", "MOBILE LEGENDS Indonesia", "Indonesia"], ["MOBILE LEGENDS Malaysia", "MOBILE LEGENDS Malaysia", "Malaysia"], ["MOBILE LEGENDS Russia", "MOBILE LEGENDS Russia", "Russia"]]);
+      const tg = openBot();
+      await openCategory(tg, "Mobile Legends");
+      expect(tg.screenText()).toContain(coreT("browse.choose_region", EN));
+      expect(tg.screenText()).not.toContain(coreT("browse.choose_variant", EN));
+      expect(tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:greg:")).map((b) => b.text)).toEqual(["🇮🇩 Indonesia", "🇲🇾 Malaysia", "🇷🇺 Russia"]);
+      await pressLabel(tg, "Malaysia");
+      expect(current(tg).text).toContain("MOBILE LEGENDS Malaysia");
+      await tg.press(/Back/);
+      expect(tg.screenText()).toContain(coreT("browse.choose_region", EN));
+    });
+
+    it("an old stored label ('🇵🇭 Filipina') and the canonical one never split into two regions", async () => {
+      const id = (await createCategory(prisma, { name: "Honor of Kings", group: CategoryGroup.GAME_TOPUP, sortOrder: 6 })).id;
+      for (const [name, region] of [["HOK PH old", "🇵🇭 Filipina"], ["HOK PH new", "🇵🇭 Philippines"], ["HOK ID", "🇮🇩 Indonesia"]] as const) {
+        const p = await createCatalogProduct(prisma, { categoryId: id, name, digiflazzBrand: "Honor of Kings", gameRegion: region });
+        await createDenomination(prisma, { productId: p.id, name: "16 Tokens", type: "SHARED", durationLabel: "16 Tokens", price: new Decimal(3000), qtyValue: 16, qtyUnit: "Tokens" });
+      }
+      const tg = openBot();
+      await openCategory(tg, "Honor of Kings");
+      expect(tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:greg:")).map((b) => b.text)).toEqual(["🇮🇩 Indonesia", "🇵🇭 Philippines"]);
+      await pressLabel(tg, "Philippines");
+      expect(tg.buttons().filter((b) => b.callback_data?.startsWith("v1:browse:pick:")).map((b) => b.text).sort()).toEqual(["HOK PH new", "HOK PH old"]);
+    });
+  });
+
   it("an untracked receipt's \"Buy again\" is NEVER deleted: only its keyboard is retired, one new bubble is sent", async () => {
     const tg = openBot();
     await openGameList(tg);

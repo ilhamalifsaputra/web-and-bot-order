@@ -19,7 +19,8 @@ export const sectionAnchor = (groupSlug: string, sectionKey: string) => `g-${gro
  */
 export const scrollMarginClass = (hasGroupNav: boolean) => (hasGroupNav ? "scroll-mt-32" : "scroll-mt-20");
 
-/** Same density as every other grid (CategoryPage, ProductsPage). A lone card
+/** Grid shared by the home sections and GroupPage; same density as
+ * CategoryPage and ProductsPage. A lone card
  * is clamped to one capped column instead of leaving the row two-thirds empty
  * (STO-018). */
 export const gridClass = (count: number) =>
@@ -28,7 +29,8 @@ export const gridClass = (count: number) =>
 /** Section heading scale shared by every home h2. */
 export const SECTION_TITLE_CLASS = "font-display text-2xl font-semibold text-ink sm:text-3xl";
 
-/** Jump-pill look (group nav and category chips) — CategoryPage's pills. */
+/** Pill look shared by the home group nav, the home category chips and
+ * CategoryPage's category-switch pills (all links that jump or navigate). */
 export const jumpPillClass = (active: boolean) =>
   `inline-flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-full px-3 text-sm font-semibold transition-colors ${
     active ? "bg-pine-tint text-pine-dark" : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"

@@ -23,6 +23,7 @@ import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import SegmentedFilter from "../components/shop/SegmentedFilter";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
+import { gridClass } from "../components/home/homeLayout";
 import Button from "../components/ui/Button";
 import { appendUnique, groupPageUrl } from "../lib/groupPageUrl";
 import { t } from "../lib/i18n";
@@ -97,7 +98,10 @@ export default function GroupPage() {
           category={category}
           fx={ctx?.fx}
           hasNextPage={pages.hasNextPage}
-          isFetchingNextPage={pages.isFetchingNextPage}
+          // A placeholder is the previous filter's grid: paging it would
+          // append the wrong filter's products.
+          loadMoreBusy={pages.isFetchingNextPage || pages.isPlaceholderData}
+          loadMoreFailed={pages.isFetchNextPageError}
           onLoadMore={() => void pages.fetchNextPage()}
         />
       )}
@@ -105,12 +109,13 @@ export default function GroupPage() {
   );
 }
 
-function GroupCatalog({ data, category, fx, hasNextPage, isFetchingNextPage, onLoadMore }: {
+function GroupCatalog({ data, category, fx, hasNextPage, loadMoreBusy, loadMoreFailed, onLoadMore }: {
   data: InfiniteData<GroupPageData>;
   category: string;
   fx: string | null | undefined;
   hasNextPage: boolean;
-  isFetchingNextPage: boolean;
+  loadMoreBusy: boolean;
+  loadMoreFailed: boolean;
   onLoadMore: () => void;
 }) {
   const [, setParams] = useSearchParams();
@@ -147,7 +152,7 @@ function GroupCatalog({ data, category, fx, hasNextPage, isFetchingNextPage, onL
       </div>
 
       {products.length > 0 ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div className={gridClass(products.length)}>
           {products.map((p) => (
             <div key={p.slug} className="h-full">
               <ProductCard p={p} fx={fx} lowThreshold={first.low_threshold} />
@@ -164,10 +169,15 @@ function GroupCatalog({ data, category, fx, hasNextPage, isFetchingNextPage, onL
       )}
 
       {hasNextPage && (
-        <div className="mt-8 flex justify-center">
-          <Button variant="soft" onClick={onLoadMore} disabled={isFetchingNextPage} aria-busy={isFetchingNextPage}>
+        <div className="mt-8 flex flex-col items-center gap-2">
+          <Button variant="soft" onClick={onLoadMore} disabled={loadMoreBusy} aria-busy={loadMoreBusy}>
             {t("web.group_load_more")}
           </Button>
+          {loadMoreFailed && (
+            <p role="alert" className="text-sm text-rust-dark">
+              {t("web.error_message")}
+            </p>
+          )}
         </div>
       )}
     </>

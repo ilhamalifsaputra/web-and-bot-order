@@ -139,20 +139,23 @@ function homeFixture({ products, ...overrides }: HomeOverrides = {}): HomePageDa
 }
 
 function renderHome(data: HomePageData, respondGroup?: (path: string) => unknown) {
+  // `home.current` lets a test change what the next home refetch returns.
+  const home = { current: data };
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return context;
-    if (path === "/api/v1/pages/home") return data;
+    if (path === "/api/v1/pages/home") return home.current;
     if (respondGroup && path.startsWith("/api/v1/pages/group/")) return respondGroup(path);
     throw new Error(`unexpected path ${path}`);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <HomePage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient, home };
 }
 
 /** A group-endpoint page as the home "Show more" receives it. */
@@ -309,7 +312,8 @@ describe("HomePage", () => {
       const group = (await screen.findByRole("heading", { level: 2, name: "💎 Premium Apps" })).closest("section")!;
       expect(group.id).toBe("g-premium-apps");
 
-      const chips = within(group).getByRole("navigation", { name: "💎 Premium Apps" });
+      // Named without the emoji, which a screen reader would read out.
+      const chips = within(group).getByRole("navigation", { name: "Premium Apps" });
       expect(within(chips).getAllByRole("link").map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
         ["🎬 Streaming", "#g-premium-apps-c-streaming"],
         ["🎵 Music", "#g-premium-apps-c-music"],
@@ -407,6 +411,42 @@ describe("HomePage", () => {
       expect(within(section3).queryByRole("link", { name: "See all" })).not.toBeInTheDocument();
     });
 
+    // The server bumps the ranking version every few minutes and the home
+    // query refetches on mount/focus — Back from a product page must find the
+    // section still expanded, not collapsed to its first page.
+    it("keeps an expanded section when a home refetch brings a new ranking version", async () => {
+      const { queryClient, home } = renderHome(streamingHome(40), pagedResponder("Stream", 40));
+      const streaming = (await screen.findByRole("heading", { level: 3, name: "🎬 Streaming" })).closest("section")!;
+      fireEvent.click(within(streaming).getByRole("button", { name: "Show more" }));
+      await within(streaming).findByRole("heading", { name: "Stream 20" });
+
+      // New snapshot: version 8, and Stream 11 has climbed into the first page.
+      const moved = streamingHome(40);
+      const streamingSection = moved.groups[0]!.sections[0]!;
+      streamingSection.products = [card("Stream-11", "Stream 11"), ...cards("Stream", 1, 9)];
+      home.current = { ...moved, ranking_version: 8 };
+      await act(() => queryClient.refetchQueries({ queryKey: ["home"] }));
+
+      const section = screen.getByRole("heading", { level: 3, name: "🎬 Streaming" }).closest("section")!;
+      // The refreshed first page is what renders first...
+      await waitFor(() => expect(within(section).getAllByRole("heading", { level: 3 })[1]).toHaveTextContent("Stream 11"));
+      // ...and the expanded cards are still there below it.
+      expect(within(section).getByRole("heading", { name: "Stream 20" })).toBeInTheDocument();
+      // 10 first-page cards + Stream 12..20 (Stream 11 is deduped). Stream 10
+      // left the refreshed first page and was never in the cached expansion,
+      // so it is not shown until "See all" — the accepted cost of keeping the
+      // expansion instead of collapsing it.
+      expect(within(section).getAllByRole("heading", { level: 3 })).toHaveLength(1 + 19);
+      expect(within(section).getAllByRole("heading", { name: "Stream 11" })).toHaveLength(1);
+      // Still one expansion used; the next page keeps the order it started with.
+      fireEvent.click(within(section).getByRole("button", { name: "Show more" }));
+      await within(section).findByRole("heading", { name: "Stream 30" });
+      expect(groupCalls()).toEqual([
+        "/api/v1/pages/group/premium-apps?category=streaming&offset=10&limit=10&v=7",
+        "/api/v1/pages/group/premium-apps?category=streaming&offset=20&limit=10&v=7",
+      ]);
+    });
+
     it("drops products a moved ranking repeats", async () => {
       renderHome(streamingHome(25), () => groupPage([card("Stream-10", "Stream 10"), card("Stream-11", "Stream 11")], 12, 25));
       const streaming = (await screen.findByRole("heading", { level: 3, name: "🎬 Streaming" })).closest("section")!;
@@ -476,7 +516,7 @@ describe("HomePage", () => {
     expect(promiseSection.getByText("Product-specific warranty")).toBeInTheDocument();
     // Nothing on the home page may promise what the shop cannot prove.
     const text = container.textContent ?? "";
-    for (const claim of [/10,000/, /24\/7/, /24 hours/i, /under (an|1) hour/i, /Trusted by thousands/i, /Delivered in minutes/i, /1[–-]10 minutes/]) {
+    for (const claim of [/10,000/, /24\/7/, /24 hours/i, /under (an|1) hour/i, /Trusted by thousands/i, /Delivered in minutes/i, /\b1[–-]10 minutes/]) {
       expect(text).not.toMatch(claim);
     }
   });
@@ -605,27 +645,38 @@ describe("HomePage", () => {
 
   it("renders the hero CTAs as design-system buttons — pine-fill primary + dark-surface outline, both with the white focus ring", async () => {
     renderHome(twoGroups());
-    const primary = await screen.findByRole("link", { name: /Browse products/ });
-    expect(primary.className).toContain("btn-primary");
-    expect(primary.className).toContain("focus-on-dark");
+    // Both CTAs read "Browse products" in English (web.hero_cta and
+    // web.hero_cta_browse_groups); the primary one comes first.
+    const [primary, secondary] = await screen.findAllByRole("link", { name: "Browse products" });
+    expect(primary!.className).toContain("btn-primary");
+    expect(primary!.className).toContain("focus-on-dark");
     // The primary CTA jumps to the first group; the secondary one to the group nav.
     expect(primary).toHaveAttribute("href", "#g-premium-apps");
-    const secondary = screen.getByRole("link", { name: "Categories" });
     expect(secondary).toHaveAttribute("href", "#home-group-nav");
     expect(document.getElementById("home-group-nav")).not.toBeNull();
     // .btn-ghost (ink-soft on sand) is unreadable on bg-ink — the outline CTA
     // keeps a white border + white/15 hover instead (foundations.md §7).
-    expect(secondary.className).toContain("hover:bg-white/15");
-    expect(secondary.className).toContain("focus-on-dark");
+    expect(secondary!.className).toContain("hover:bg-white/15");
+    expect(secondary!.className).toContain("focus-on-dark");
+    // The group nav lists groups, not categories — no CTA calls it "Categories".
+    expect(screen.queryByRole("link", { name: "Categories" })).toBeNull();
+  });
+
+  it("labels the group-nav CTA with its own key in Indonesian", async () => {
+    document.documentElement.lang = "id";
+    renderHome(twoGroups());
+    expect(await screen.findByRole("link", { name: "Jelajahi produk" })).toHaveAttribute("href", "#home-group-nav");
+    expect(screen.getByRole("link", { name: "Lihat produk" })).toHaveAttribute("href", "#g-premium-apps");
   });
 
   // The secondary CTA targets the group nav, which only renders with two or
   // more groups — without it, the link would scroll nowhere, so it is omitted.
   it("omits the hero group-nav CTA when there is only one group", async () => {
     renderHome(homeFixture());
-    const primary = await screen.findByRole("link", { name: /Browse products/ });
-    expect(primary).toHaveAttribute("href", "#g-premium-apps");
-    expect(screen.queryByRole("link", { name: "Categories" })).toBeNull();
+    const links = await screen.findAllByRole("link", { name: "Browse products" });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "#g-premium-apps");
+    expect(document.querySelector('a[href="#home-group-nav"]')).toBeNull();
   });
 
   // Catalog first — hero → group nav → flash → groups → features → how-to-order.

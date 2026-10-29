@@ -46,7 +46,9 @@ export default function HomeGroupSection({ group, hasGroupNav, rankingVersion, f
       <h2 className={SECTION_TITLE_CLASS}>{heading}</h2>
       {split ? (
         <>
-          <nav aria-label={heading} className="mt-4">
+          {/* Named by the plain group name: an emoji in an accessible name is
+              read out ("gem stone Premium Apps"). */}
+          <nav aria-label={label} className="mt-4">
             <div className={`-mx-1 px-1 ${HIDDEN_SCROLLBAR_ROW}`}>
               {group.sections.map((s) => (
                 <a key={s.key} href={`#${sectionAnchor(group.slug, s.key)}`} className={jumpPillClass(false)}>

@@ -197,6 +197,40 @@ describe("GroupPage", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
+  it("says so under the button when Load more fails, keeping what is shown", async () => {
+    renderGroup("top-up-games", (path) => {
+      if (path.includes("offset=2")) throw Object.assign(new Error("boom"), { status: 500 });
+      return gamePage;
+    });
+    await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong. Please try again.");
+    expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument();
+    // Still offered, so the visitor can try again.
+    expect(screen.getByRole("button", { name: "Load more" })).toBeEnabled();
+  });
+
+  it("offers no usable Load more while a new filter's first page is still loading", async () => {
+    let releaseMusic!: (value: GroupPageData) => void;
+    renderGroup("top-up-games", (path) =>
+      path.includes("category=free-fire")
+        ? new Promise<GroupPageData>((resolve) => {
+            releaseMusic = resolve;
+          })
+        : gamePage,
+    );
+    await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+    fireEvent.click(screen.getByRole("button", { name: "🔥 Free Fire" }));
+    // The previous filter's grid stays up as a placeholder; paging it would
+    // append the wrong filter's products, so Load more is gone or disabled.
+    await waitFor(() => expect(screen.getByRole("button", { name: "🔥 Free Fire" })).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument();
+    const loadMore = screen.queryByRole("button", { name: "Load more" });
+    if (loadMore) expect(loadMore).toBeDisabled();
+    releaseMusic({ ...gamePage, products: [card("ff-diamonds", "Free Fire Diamonds", "Free Fire")], total: 1, next_offset: null });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument());
+  });
+
   it("hides Load more when the first page is the whole group", async () => {
     renderGroup("premium-apps", () => premiumPage);
     await screen.findByRole("heading", { name: "Netflix Premium" });

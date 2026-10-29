@@ -20,6 +20,7 @@ import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useSortParam } from "../lib/useSortParam";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ErrorState from "../components/shop/ErrorState";
+import { jumpPillClass } from "../components/home/homeLayout";
 import ErrorPage from "./ErrorPage";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
@@ -114,10 +115,7 @@ export default function CategoryPage() {
           <Link
             key={c.slug}
             to={`/c/${c.slug}`}
-            className={`inline-flex items-center gap-2 whitespace-nowrap min-h-11 rounded-full px-3 text-sm font-semibold transition-colors ${c.id === category.id
-              ? "bg-pine-tint text-pine-dark"
-              : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
-              }`}
+            className={jumpPillClass(c.id === category.id)}
           >
             {c.emoji ? `${c.emoji} ` : ""}
             {c.name}

@@ -3,12 +3,19 @@
  * payload, "Show more" (10 more from the group endpoint, at most twice), then
  * "See all" when products still remain.
  *
- * The extra pages live in a TanStack infinite query keyed by group, section
- * and ranking version. It never fetches on its own (`enabled: false`; only the
- * button pages it), so returning to the home page within the cache window
- * renders the expanded grid at full height straight from the cache and the
- * browser's own scroll restoration lands where the visitor left. A changed
- * ranking version means a different order, so expansions start over.
+ * The extra pages live in a TanStack infinite query keyed by group and
+ * section only. It never fetches on its own (`enabled: false`; only the button
+ * pages it), so returning to the home page within the cache window renders
+ * the expanded grid at full height straight from the cache and the browser's
+ * own scroll restoration lands where the visitor left.
+ *
+ * The ranking version is deliberately NOT in the key: the server bumps it
+ * every few minutes and the home query refetches on mount and focus, so a
+ * keyed version would collapse the expanded section on Back. Instead the
+ * version travels in the page param: the first expansion pins the version the
+ * home payload was ranked with, and every later page reuses the version the
+ * first expansion actually got, so one expansion run pages one order. Cards
+ * the refreshed first page already shows are dropped (appendUnique).
  */
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
@@ -42,15 +49,16 @@ export interface HomeShelfProps {
 
 export default function HomeShelf({ group, section, rankingVersion, fx, lowThreshold }: HomeShelfProps) {
   const { data, fetchNextPage, isFetching, isError } = useInfiniteQuery({
-    queryKey: ["group-section", group.slug, section.key, rankingVersion],
+    queryKey: ["group-section", group.slug, section.key],
     queryFn: ({ pageParam }) =>
       apiGet<GroupPageData>(
-        groupPageUrl(group.slug, { categories: section.category_slugs, offset: pageParam, limit: PAGE_SIZE, v: rankingVersion }),
+        groupPageUrl(group.slug, { categories: section.category_slugs, offset: pageParam.offset, limit: PAGE_SIZE, v: pageParam.v }),
       ),
     // The server may trim sold-out cards off the first page, so paging goes
     // on from the number of cards actually shown.
-    initialPageParam: section.products.length,
-    getNextPageParam: (last) => last.next_offset ?? undefined,
+    initialPageParam: { offset: section.products.length, v: rankingVersion },
+    getNextPageParam: (last, all) =>
+      last.next_offset === null ? undefined : { offset: last.next_offset, v: all[0]!.ranking_version },
     enabled: false,
   });
 

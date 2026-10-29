@@ -453,7 +453,7 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx, browseHref, gro
             className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
           >
             <LayoutGrid className="h-5 w-5" />
-            {t("web.nav_categories")}
+            {t("web.hero_cta_browse_groups")}
           </a>
         )}
       </div>

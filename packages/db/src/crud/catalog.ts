@@ -860,12 +860,14 @@ export async function listCategoryGameRegions(
   return out;
 }
 
-/** Newest active products (by newest active denomination) for the home grid. */
+/**
+ * Newest active products by the product's own creation time (id desc breaks
+ * ties). A denomination added later, e.g. by a provider sync, does not move an
+ * existing product up.
+ */
 export async function listNewestCatalogProducts(db: Db, channel: ServiceChannel, limit = 12): Promise<CatalogProduct[]> {
   const products = await listCatalogProducts(db, channel);
-  const recency = (p: CatalogProduct) =>
-    Math.max(p.createdAt.getTime(), ...p.denominations.map((d) => d.createdAt.getTime()));
-  return products.sort((a, b) => recency(b) - recency(a)).slice(0, limit);
+  return products.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id).slice(0, limit);
 }
 
 /** Options for the Game Top-up search; a plain call keeps the original behavior. */

@@ -1490,6 +1490,19 @@ describe("listNewestCatalogProducts", () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.denominations.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("ranks by product createdAt: a new denomination on an old product does not jump ahead", async () => {
+    const cat = await makeCategory();
+    const older = await makeProduct(cat.id, "Older Product");
+    const newer = await makeProduct(cat.id, "Newer Product");
+    await prisma.product.update({ where: { id: older.id }, data: { createdAt: new Date("2020-01-01T00:00:00Z") } });
+    await prisma.product.update({ where: { id: newer.id }, data: { createdAt: new Date("2021-01-01T00:00:00Z") } });
+    await makeDenom(newer.id, "1 Month", "5");
+    await makeDenom(older.id, "1 Month", "5"); // created now, after the newer product's own
+    const ids = (await listNewestCatalogProducts(prisma, "bot", 1000)).map((p) => p.id);
+    expect(ids.indexOf(newer.id)).toBeGreaterThanOrEqual(0);
+    expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
+  });
 });
 
 describe("flash-sale shelves", () => {

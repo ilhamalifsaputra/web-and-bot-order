@@ -6,6 +6,7 @@ export type { Db } from "./crud/_types";
 export * from "./crud/users";
 export * from "./crud/warmUserCache";
 export * from "./crud/catalog";
+export * from "./crud/productRanking";
 export * from "./crud/bulkTiers";
 export * from "./crud/stock";
 export * from "./crud/stockEvents";

@@ -11,7 +11,7 @@ import { compareBestseller, compareNewest, type BestsellerSnapshot, type Catalog
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import type { PricingTier } from "@app/core/bulk";
-import { usesLocalInventory } from "@app/core/productAvailability";
+import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset, type ThumbnailKind } from "./images";
 import { bestTierBadge, type TierBadge } from "./tierView";
 
@@ -253,9 +253,11 @@ function cardBase(
  * Flash-sale cards (home Flash Sale section and /flash). Unlike a grid card,
  * which leads with the cheapest plan, a flash card advertises the DEAL: the
  * flash-active denomination with the largest percent off (tie: the sale ending
- * soonest, then the lowest id), priced for a non-reseller like every grid.
- * Its id/name ride along so the card can link straight to that plan, and
- * `other_promo_count` counts the product's other live deals. Products with no
+ * soonest, then the lowest id), preferring a plan that can be bought
+ * (hasSellableStock) and only falling back to a sold-out one when no deal is
+ * buyable; priced for a non-reseller like every grid. Its id/name ride along
+ * so the card can link straight to that plan, and `other_promo_count` counts
+ * the other deals in the pool it was chosen from. Products with no
  * live flash sale at `now` produce no card.
  */
 export function shapeFlashCards(
@@ -277,7 +279,12 @@ export function shapeFlashCards(
         a.d.flashEndsAt!.getTime() - b.d.flashEndsAt!.getTime() ||
         a.d.id - b.d.id,
     );
-    const { d: promo, percent } = deals[0]!;
+    // Never advertise a sold-out plan while a buyable deal exists: choose
+    // among the buyable deals, and only when none is buyable fall back to
+    // every deal. "+N more deals" counts the rest of that same pool.
+    const buyable = deals.filter((x) => hasSellableStock(x.d, stock[x.d.id]?.available ?? 0));
+    const pool = buyable.length > 0 ? buyable : deals;
+    const { d: promo, percent } = pool[0]!;
     cards.push({
       ...cardBase(p, stock, ratings, tiers, false, now),
       from_price: effectiveUnitPrice(promo, false, now).toString(),
@@ -286,7 +293,7 @@ export function shapeFlashCards(
       flash_ends_at: promo.flashEndsAt!.toISOString(),
       promo_denomination_id: promo.id,
       promo_denomination_name: promo.name,
-      other_promo_count: deals.length - 1,
+      other_promo_count: pool.length - 1,
     });
   }
   return cards;

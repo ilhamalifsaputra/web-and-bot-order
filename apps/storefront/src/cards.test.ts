@@ -398,6 +398,37 @@ describe("shapeFlashCards", () => {
     expect(shapeFlashCards([product(), product({}, [expired])], {}, new Map(), {}, now)).toEqual([]);
   });
 
+  it("prefers a buyable flash plan over a bigger deal that is sold out", () => {
+    const soldOut = denom({ name: "1 Year", price: "200000", flashDiscountPercent: "40", ...window(5) });
+    const mid = denom({ name: "6 Months", price: "120000", flashDiscountPercent: "20", ...window(5) });
+    const small = denom({ name: "1 Month", price: "30000", flashDiscountPercent: "10", ...window(5) });
+    const stock = { [mid.id]: { available: 2 }, [small.id]: { available: 9 } };
+    const [card] = shapeFlashCards([product({}, [soldOut, mid, small])], stock, new Map(), {}, now);
+    expect(card).toMatchObject({
+      promo_denomination_id: mid.id,
+      promo_denomination_name: "6 Months",
+      flash_discount: "20",
+      from_price: "96000",
+      from_base_price: "120000",
+      // "+N more deals" counts only the other deals a buyer can actually take.
+      other_promo_count: 1,
+    });
+  });
+
+  it("treats a provider plan with no stock rows as buyable", () => {
+    const local = denom({ price: "100000", flashDiscountPercent: "50", ...window(2) });
+    const provider = denom({ price: "80000", autoDeliverySource: "digiflazz", flashDiscountPercent: "25", ...window(2) });
+    const [card] = shapeFlashCards([product({}, [local, provider])], {}, new Map(), {}, now);
+    expect(card).toMatchObject({ promo_denomination_id: provider.id, other_promo_count: 0 });
+  });
+
+  it("falls back to the biggest deal when no flash plan is buyable", () => {
+    const big = denom({ price: "200000", flashDiscountPercent: "40", ...window(5) });
+    const small = denom({ price: "30000", flashDiscountPercent: "10", ...window(5) });
+    const [card] = shapeFlashCards([product({}, [small, big])], { [big.id]: { available: 0 } }, new Map(), {}, now);
+    expect(card).toMatchObject({ promo_denomination_id: big.id, other_promo_count: 1 });
+  });
+
   it("shares stock and rating aggregation with the grid card", () => {
     const d = denom({ price: "100000", flashDiscountPercent: "10", ...window(2) });
     const other = denom({ price: "5000" });

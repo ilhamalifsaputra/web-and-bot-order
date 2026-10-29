@@ -8,12 +8,24 @@
 import { config } from "@app/core/config";
 import { canonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { Decimal } from "@app/core/money";
-import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
+import { activeFlashPercent, effectiveUnitPrice, flashPrice, isFlashActive } from "@app/core/flash";
 import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
+import {
+  GROUP_ORDER_SETTING_KEY,
+  groupForCategory,
+  productGroup,
+  productGroupBySlug,
+  resolveGroupOrder,
+  type ProductGroupDef,
+} from "@app/core";
 import { checkoutInputConfiguration } from "./inputConfiguration";
 import {
   prisma,
   getSetting,
+  getBestsellerSnapshot,
+  getBestsellerSnapshotByVersion,
+  isServiceActive,
+  type BestsellerSnapshot,
   getCanonicalRateContext,
   getCategoryBySlug,
   listActiveCategories,
@@ -33,7 +45,18 @@ import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
 import { resolveDenomIconKind } from "./denomIcon";
 import { productTemplate } from "./productTemplate";
 import { resolveBotUsername, resolveSupportTelegramUrl } from "./shop";
-import { aggregateRating, shapeProducts, sortProductCards, type SortKey, type TierMap } from "./cards";
+import {
+  aggregateRating,
+  isOutOfStock,
+  parseSortKey,
+  rankCards,
+  shapeFlashCards,
+  shapeProducts,
+  type ProductCard,
+  type SortKey,
+  type TierMap,
+} from "./cards";
+import { groupCategories, homeSections, type RankedEntry } from "./homeSections";
 import { legacyBulkView, tierLadder, tierRuleView } from "./tierView";
 
 /**
@@ -43,6 +66,50 @@ import { legacyBulkView, tierLadder, tierRuleView } from "./tierView";
 async function tiersForProducts(products: readonly CatalogProduct[]): Promise<TierMap> {
   return activeTiersByDenomination(prisma, products.flatMap((p) => p.denominations.map((d) => d.id)));
 }
+
+/**
+ * Everything a set of grid cards needs besides the products: catalog-wide
+ * stock counts and rating summaries, plus ONE batched tier query for exactly
+ * these products' denominations.
+ */
+async function cardInputs(products: readonly CatalogProduct[]) {
+  const [stock, ratings, tiers] = await Promise.all([
+    stockStatusCounts(prisma),
+    productRatingSummaries(prisma),
+    tiersForProducts(products),
+  ]);
+  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+  return { stock, ratingByDenom, tiers };
+}
+
+/** Shape and rank a product list as grid cards (always priced for a non-reseller). */
+async function rankedGrid(products: CatalogProduct[], sort: SortKey, snapshot?: BestsellerSnapshot): Promise<ProductCard[]> {
+  const now = new Date();
+  const [{ stock, ratingByDenom, tiers }, ranking] = await Promise.all([
+    cardInputs(products),
+    snapshot ?? getBestsellerSnapshot(prisma, { now }),
+  ]);
+  return rankCards(products, shapeProducts(products, stock, ratingByDenom, tiers, false, now), sort, ranking);
+}
+
+/** The JSON shape of a product group's identity. */
+function groupView(def: ProductGroupDef) {
+  return { key: def.key, slug: def.slug, label_key: def.labelKey, emoji: def.emoji };
+}
+
+/** Each catalog product's card in ranked order, tagged with the product's category. */
+function rankedEntries(products: readonly CatalogProduct[], ranked: readonly ProductCard[]): Array<RankedEntry & { product: CatalogProduct }> {
+  const bySlug = new Map(products.map((p) => [p.slug, p]));
+  return ranked.map((card) => {
+    const product = bySlug.get(card.slug)!;
+    return { product, categoryId: product.categoryId, card };
+  });
+}
+
+/** At most this many flash cards on the home page's Flash Sale section. */
+const HOME_FLASH_LIMIT = 8;
+/** At most this many hero preview cards (one per group). */
+const HERO_PRODUCTS_LIMIT = 3;
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -61,21 +128,56 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 
 /** Home page data — shaped for the JSON API (GET /api/v1/pages/home). */
 export async function homePageData() {
-  const [categories, products, stock, ratings, reviews, waNumber, heroUrl] =
+  // One pricing instant, one catalog load and one ranking snapshot for the
+  // whole page — never one per group.
+  const now = new Date();
+  const [categories, products, reviews, waNumber, heroUrl, storedGroupOrder, snapshot] =
     await Promise.all([
       listActiveCategories(prisma, "web"),
-      listNewestCatalogProducts(prisma, "web", 12),
-      stockStatusCounts(prisma),
-      productRatingSummaries(prisma),
+      // Already drops products of a service switched off for the website.
+      listCatalogProducts(prisma, "web"),
       featuredReviews(prisma, 4),
       // WhatsApp button on the contact section — set in web-admin Settings ›
       // Website; empty/unset hides the button.
       getSetting(prisma, "support_whatsapp"),
       // Hero banner — admin-uploaded image overrides the gradient default.
       getSetting(prisma, "web_hero_url"),
+      getSetting(prisma, GROUP_ORDER_SETTING_KEY),
+      getBestsellerSnapshot(prisma, { now }),
     ]);
-  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  const cards = shapeProducts(products, stock, ratingByDenom, await tiersForProducts(products));
+  const { stock, ratingByDenom, tiers } = await cardInputs(products);
+  const ranked = rankedEntries(
+    products,
+    rankCards(products, shapeProducts(products, stock, ratingByDenom, tiers, false, now), "bestseller", snapshot),
+  );
+
+  // One entry per group in the admin's order; a group with no products (its
+  // web service is off, or it simply has none yet) is left out.
+  const groups = [];
+  const heroProducts: ProductCard[] = [];
+  for (const key of resolveGroupOrder(storedGroupOrder)) {
+    const def = productGroup(key);
+    const entries = ranked.filter((e) => groupForCategory(e.product.category.group) === key);
+    if (entries.length === 0) continue;
+    const groupCats = groupCategories(def, categories, entries);
+    groups.push({
+      ...groupView(def),
+      layout: def.homeLayout,
+      category_count: groupCats.length,
+      single_category_slug: groupCats.length === 1 ? groupCats[0]!.slug : null,
+      sections: homeSections(def, entries, categories),
+    });
+    const lead = entries.find((e) => !isOutOfStock(e.card));
+    if (lead && heroProducts.length < HERO_PRODUCTS_LIMIT) heroProducts.push(lead.card);
+  }
+
+  const flashProducts = products.filter((p) => p.denominations.some((d) => isFlashActive(d, now)));
+  const flash = rankCards(
+    flashProducts,
+    shapeFlashCards(flashProducts, stock, ratingByDenom, tiers, now),
+    "bestseller",
+    snapshot,
+  ).slice(0, HOME_FLASH_LIMIT);
 
   // Real testimonials from delivered-order reviews (≥4★ with a comment).
   const testimonials = reviews
@@ -94,11 +196,10 @@ export async function homePageData() {
 
   return {
     hero_image: heroUrl || null,
-    // No more stock-photo fallback for category tiles either — HomePage.tsx/
-    // CategoriesPage.tsx never read `image` (only emoji/name/slug/description),
-    // so this passes the raw (always-null-today) Category.image column through.
-    categories,
-    products: cards,
+    hero_products: heroProducts,
+    groups,
+    flash,
+    ranking_version: snapshot.version,
     testimonials,
     low_threshold: config.LOW_STOCK_THRESHOLD,
     bot_username: await resolveBotUsername(),
@@ -108,24 +209,91 @@ export async function homePageData() {
 }
 
 /** Category page data, or null for the 404 branch (GET /api/v1/pages/category/:slug). */
-export async function categoryPageData(rawSlug: string, sort: SortKey = "default") {
+export async function categoryPageData(rawSlug: string, rawSort?: unknown) {
   const slug = (rawSlug ?? "").trim();
   const category = slug ? await getCategoryBySlug(prisma, slug, "web") : null;
   if (!category || !category.isActive) return null;
-  const [categories, products, stock, ratings] = await Promise.all([
+  // The category's group decides which sorts it offers (no cheapest on Game Top Up).
+  const def = productGroup(groupForCategory(category.group));
+  const sort = parseSortKey(rawSort, { allowCheapest: def.allowCheapestSort });
+  const [categories, products] = await Promise.all([
     listActiveCategories(prisma, "web"),
     listCatalogProducts(prisma, "web", category.id),
-    stockStatusCounts(prisma),
-    productRatingSummaries(prisma),
   ]);
-  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  // Same shaper as /search & home — one source of truth for grid cards.
-  const cards = shapeProducts(products, stock, ratingByDenom, await tiersForProducts(products));
   return {
     category,
     categories,
-    products: sortProductCards(products, cards, sort),
+    group: def.key,
+    allow_cheapest: def.allowCheapestSort,
+    // Same shaper and ordering as every other grid.
+    products: await rankedGrid(products, sort),
     low_threshold: config.LOW_STOCK_THRESHOLD,
+  };
+}
+
+/** Raw `?category=&sort=&offset=&limit=&v=` of GET /api/v1/pages/group/:slug. */
+export interface GroupPageQuery {
+  category?: unknown;
+  sort?: unknown;
+  offset?: unknown;
+  limit?: unknown;
+  v?: unknown;
+}
+
+const GROUP_PAGE_DEFAULT_LIMIT = 20;
+const GROUP_PAGE_MAX_LIMIT = 40;
+
+/** A whole-number query value, or null when absent or malformed. */
+function intParam(raw: unknown): number | null {
+  if (typeof raw !== "string" || !/^-?\d{1,9}$/.test(raw.trim())) return null;
+  return Number(raw.trim());
+}
+
+/**
+ * Group page data (GET /api/v1/pages/group/:slug), or null for an unknown
+ * slug. Paging is an in-memory slice of the ranked group (the catalog is
+ * loaded whole). A `v` naming a ranking snapshot still held keeps the order
+ * stable across pages; otherwise the current snapshot ranks, and the version
+ * actually used is always returned.
+ */
+export async function groupPageData(rawSlug: string, query: GroupPageQuery = {}) {
+  const def = productGroupBySlug((rawSlug ?? "").trim());
+  if (!def) return null;
+  const sort = parseSortKey(query.sort, { allowCheapest: def.allowCheapestSort });
+  const offset = Math.max(0, intParam(query.offset) ?? 0);
+  const limit = Math.min(GROUP_PAGE_MAX_LIMIT, Math.max(1, intParam(query.limit) ?? GROUP_PAGE_DEFAULT_LIMIT));
+  const requestedVersion = intParam(query.v);
+  const snapshot =
+    (requestedVersion !== null ? await getBestsellerSnapshotByVersion(prisma, requestedVersion) : null) ??
+    (await getBestsellerSnapshot(prisma));
+  const head = {
+    group: { ...groupView(def), allow_cheapest: def.allowCheapestSort },
+    sort,
+    ranking_version: snapshot.version,
+    low_threshold: config.LOW_STOCK_THRESHOLD,
+  };
+  if (!(await isServiceActive(prisma, def.key, "web"))) {
+    return { ...head, unavailable: true, categories: [], products: [], total: 0, next_offset: null };
+  }
+
+  const [categories, catalog] = await Promise.all([listActiveCategories(prisma, "web"), listCatalogProducts(prisma, "web")]);
+  const inGroup = catalog.filter((p) => groupForCategory(p.category.group) === def.key);
+  const groupCats = groupCategories(def, categories, inGroup);
+  // Unknown slugs and other groups' categories are ignored; nothing known left = every category.
+  const wanted = new Set(typeof query.category === "string" ? query.category.split(",").map((s) => s.trim()) : []);
+  const picked = groupCats.filter((c) => wanted.has(c.slug));
+  const pickedIds = new Set((picked.length > 0 ? picked : groupCats).map((c) => c.id));
+  const products = inGroup.filter((p) => pickedIds.has(p.categoryId));
+
+  const ranked = await rankedGrid(products, sort, snapshot);
+  const end = offset + limit;
+  return {
+    ...head,
+    unavailable: false,
+    categories: groupCats.map((c) => ({ slug: c.slug, name: c.name, emoji: c.emoji })),
+    products: ranked.slice(offset, end),
+    total: ranked.length,
+    next_offset: end < ranked.length ? end : null,
   };
 }
 
@@ -292,44 +460,22 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
 }
 
 /** Search page data — shaped for the JSON API (GET /api/v1/pages/search). */
-export async function searchPageData(rawQ: string, sort: SortKey = "default") {
+export async function searchPageData(rawQ: string, sort: SortKey = "bestseller") {
   const q = (rawQ ?? "").trim();
-  const [products, stock, ratings] = await Promise.all([
-    q ? searchCatalog(prisma, q, "web", 24) : Promise.resolve([] as CatalogProduct[]),
-    stockStatusCounts(prisma),
-    productRatingSummaries(prisma),
-  ]);
-  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  const cards = shapeProducts(products, stock, ratingByDenom, await tiersForProducts(products));
+  const products = q ? await searchCatalog(prisma, q, "web", 24) : [];
   return {
     q,
-    products: sortProductCards(products, cards, sort),
-    low_threshold: config.LOW_STOCK_THRESHOLD,
-  };
-}
-
-/**
- * Shared tail of the two full-grid shelves below: shape a set of catalog rows
- * into sorted cards. Stock counts and ratings are catalog-wide; the volume
- * tiers are one batched query for exactly the shelf's denominations.
- */
-async function shelfFrom(products: CatalogProduct[], sort: SortKey) {
-  const [stock, ratings, tiers] = await Promise.all([
-    stockStatusCounts(prisma),
-    productRatingSummaries(prisma),
-    tiersForProducts(products),
-  ]);
-  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-  const cards = shapeProducts(products, stock, ratingByDenom, tiers);
-  return {
-    products: sortProductCards(products, cards, sort),
+    products: await rankedGrid(products, sort),
     low_threshold: config.LOW_STOCK_THRESHOLD,
   };
 }
 
 /** Every purchasable product — the "Browse products" shelf (GET /api/v1/pages/products). */
-export async function allProductsPageData(sort: SortKey = "default") {
-  return shelfFrom(await listCatalogProducts(prisma, "web"), sort);
+export async function allProductsPageData(sort: SortKey = "bestseller") {
+  return {
+    products: await rankedGrid(await listCatalogProducts(prisma, "web"), sort),
+    low_threshold: config.LOW_STOCK_THRESHOLD,
+  };
 }
 
 /**
@@ -337,20 +483,35 @@ export async function allProductsPageData(sort: SortKey = "default") {
  * its card on pages where shopping is genuinely the next step (an empty cart,
  * no orders yet, a search with no results — see the client's
  * lib/useSuggestedProducts.ts for the full list of callers). The shop's
- * newest products, same as the home page's own shelf but capped much smaller
- * since this is a secondary element, not the page's main content — and shaped
- * by the same shelfFrom() every other grid uses, so a suggested card can never
- * disagree with the "real" grid it's standing in for.
+ * newest products (listNewestCatalogProducts' own order, kept as-is), capped
+ * small since this is a secondary element, not the page's main content — and
+ * shaped by the same shapeProducts() every other grid uses, so a suggested
+ * card can never disagree with the "real" grid it's standing in for.
  */
 const SUGGESTED_PRODUCTS_LIMIT = 4;
 export async function suggestionsPageData() {
-  return shelfFrom(await listNewestCatalogProducts(prisma, "web", SUGGESTED_PRODUCTS_LIMIT), "default");
+  const products = await listNewestCatalogProducts(prisma, "web", SUGGESTED_PRODUCTS_LIMIT);
+  const { stock, ratingByDenom, tiers } = await cardInputs(products);
+  return {
+    products: shapeProducts(products, stock, ratingByDenom, tiers),
+    low_threshold: config.LOW_STOCK_THRESHOLD,
+  };
 }
 
-/** Products with a flash sale running right now (GET /api/v1/pages/flash). An
- * empty list is a normal state — no sale is on — not an error. */
-export async function flashPageData(sort: SortKey = "default") {
-  return shelfFrom(await listFlashSaleProducts(prisma, "web"), sort);
+/** Products with a flash sale running right now (GET /api/v1/pages/flash), as
+ * the same flash cards the home Flash Sale section shows. An empty list is a
+ * normal state — no sale is on — not an error. */
+export async function flashPageData(sort: SortKey = "bestseller") {
+  const now = new Date();
+  const products = await listFlashSaleProducts(prisma, "web", now);
+  const [{ stock, ratingByDenom, tiers }, snapshot] = await Promise.all([
+    cardInputs(products),
+    getBestsellerSnapshot(prisma, { now }),
+  ]);
+  return {
+    products: rankCards(products, shapeFlashCards(products, stock, ratingByDenom, tiers, now), sort, snapshot),
+    low_threshold: config.LOW_STOCK_THRESHOLD,
+  };
 }
 
 /** The category index (GET /api/v1/pages/categories). No stock-photo fallback

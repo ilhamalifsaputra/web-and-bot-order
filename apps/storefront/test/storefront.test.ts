@@ -147,15 +147,19 @@ async function loginAs(identifier: string, password: string): Promise<string> {
 // covered by the client jsdom tests under apps/storefront/client/src.
 // ---------------------------------------------------------------------------
 
+type HomeBody = { groups: Array<{ sections: Array<{ category_slugs: string[]; products: Array<{ slug: string }> }> }> };
+/** Every card on the home page, across all group sections. */
+const homeCards = (body: HomeBody) => body.groups.flatMap((g) => g.sections.flatMap((s) => s.products));
+
 describe("GET /api/v1/pages/home", () => {
-  it("returns the product card with its price, and its category", async () => {
+  it("returns the product card with its price, in a section of its category", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.products.find((p: { slug: string }) => p.slug === productSlug)).toMatchObject({
+    expect(homeCards(body).find((p) => p.slug === productSlug)).toMatchObject({
       from_price: "40000",
     });
-    expect(body.categories.some((c: { slug: string }) => c.slug === categorySlug)).toBe(true);
+    expect(body.groups.some((g: HomeBody["groups"][number]) => g.sections.some((s) => s.category_slugs.includes(categorySlug)))).toBe(true);
   });
 
   it("shows a multi-plan product as the product card, never its denominations flat", async () => {
@@ -164,7 +168,7 @@ describe("GET /api/v1/pages/home", () => {
       { name: "HomeBrand 1 Month", price: "29000", duration: "1 Month" },
     ]);
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
-    const slugs = res.json().products.map((p: { slug: string }) => p.slug);
+    const slugs = homeCards(res.json()).map((p) => p.slug);
     expect(slugs).toContain(product.slug);
     for (const d of members) expect(slugs).not.toContain(String(d.id));
   });

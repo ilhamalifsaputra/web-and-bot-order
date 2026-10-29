@@ -24,14 +24,19 @@ import { getUsdIdrRate } from "../pricing";
 import {
   homePageData,
   categoryPageData,
+  groupPageData,
   productPageData,
   searchPageData,
   allProductsPageData,
   flashPageData,
   categoriesPageData,
   suggestionsPageData,
+  type GroupPageQuery,
 } from "../pageData";
-import { isSortKey } from "../cards";
+import { parseSortKey } from "../cards";
+
+/** Search and the browse-all shelves span both groups, so every sort is offered. */
+const ALL_SORTS = { allowCheapest: true };
 
 const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   // ---- Shop chrome context (header/footer/cart badge) ----
@@ -148,11 +153,21 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ---- Category ----
+  // The raw ?sort= goes through: which sorts a category offers depends on its group.
   app.get<{ Params: { slug: string }; Querystring: { sort?: string } }>(
     "/pages/category/:slug",
     async (req, reply) => {
-      const sort = isSortKey(req.query.sort) ? req.query.sort : "default";
-      const data = await categoryPageData(req.params.slug, sort);
+      const data = await categoryPageData(req.params.slug, req.query.sort);
+      if (!data) return reply.code(404).send({ error: "not_found" });
+      return reply.send(data);
+    },
+  );
+
+  // ---- Product group (/g/:slug, and the home sections' "Show more") ----
+  app.get<{ Params: { slug: string }; Querystring: GroupPageQuery }>(
+    "/pages/group/:slug",
+    async (req, reply) => {
+      const data = await groupPageData(req.params.slug, req.query);
       if (!data) return reply.code(404).send({ error: "not_found" });
       return reply.send(data);
     },
@@ -188,19 +203,16 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Search ----
   app.get<{ Querystring: { q?: string; sort?: string } }>("/pages/search", async (req, reply) => {
-    const sort = isSortKey(req.query.sort) ? req.query.sort : "default";
-    return reply.send(await searchPageData(req.query.q ?? "", sort));
+    return reply.send(await searchPageData(req.query.q ?? "", parseSortKey(req.query.sort, ALL_SORTS)));
   });
 
   // ---- Browse-all shelves reached from the nav drawer ----
   app.get<{ Querystring: { sort?: string } }>("/pages/products", async (req, reply) => {
-    const sort = isSortKey(req.query.sort) ? req.query.sort : "default";
-    return reply.send(await allProductsPageData(sort));
+    return reply.send(await allProductsPageData(parseSortKey(req.query.sort, ALL_SORTS)));
   });
 
   app.get<{ Querystring: { sort?: string } }>("/pages/flash", async (req, reply) => {
-    const sort = isSortKey(req.query.sort) ? req.query.sort : "default";
-    return reply.send(await flashPageData(sort));
+    return reply.send(await flashPageData(parseSortKey(req.query.sort, ALL_SORTS)));
   });
 
   app.get("/pages/categories", async (_req, reply) => {

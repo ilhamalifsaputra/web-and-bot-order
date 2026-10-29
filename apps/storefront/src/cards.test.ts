@@ -5,8 +5,8 @@
  * card advertises an original price no plan was ever sold at.
  */
 import { describe, it, expect } from "vitest";
-import { aggregateRating, shapeProducts } from "./cards";
-import type { CatalogProduct } from "@app/db";
+import { aggregateRating, isOutOfStock, parseSortKey, rankCards, shapeFlashCards, shapeProducts, type ProductCard } from "./cards";
+import type { BestsellerSnapshot, CatalogProduct } from "@app/db";
 
 const HOUR = 3_600_000;
 const live = { flashStartsAt: new Date(Date.now() - HOUR), flashEndsAt: new Date(Date.now() + HOUR) };
@@ -244,5 +244,186 @@ describe("shapeProducts — volume tier badge", () => {
     });
     expect(card!.bulk_discount).toBeNull();
     expect(card!.bulk_up_to).toBe(false);
+  });
+});
+
+const DAY = 24 * HOUR;
+
+let nextProductId = 100;
+const product = (over: Record<string, unknown> = {}, denominations: CatalogProduct["denominations"] = [denom()]) => {
+  const id = nextProductId++;
+  return {
+    id,
+    slug: `p-${id}`,
+    name: `Product ${id}`,
+    webImageUrl: null,
+    createdAt: new Date(Date.now() - 30 * DAY),
+    category: { name: "Streaming" },
+    denominations,
+    ...over,
+  } as unknown as CatalogProduct;
+};
+
+const snapshot = (recent: Array<[number, number]>, allTime: Array<[number, number]> = []): BestsellerSnapshot => ({
+  version: 7,
+  computedAt: new Date(),
+  recent: new Map(recent),
+  allTime: new Map(allTime),
+});
+
+describe("parseSortKey", () => {
+  it("accepts the three sort keys", () => {
+    expect(parseSortKey("bestseller", { allowCheapest: true })).toBe("bestseller");
+    expect(parseSortKey("newest", { allowCheapest: true })).toBe("newest");
+    expect(parseSortKey("cheapest", { allowCheapest: true })).toBe("cheapest");
+  });
+
+  it("falls back to bestseller for legacy, unknown and missing keys", () => {
+    for (const raw of ["default", "rating", "bogus", "", undefined, null, 3, ["newest"]]) {
+      expect(parseSortKey(raw, { allowCheapest: true })).toBe("bestseller");
+    }
+  });
+
+  it("rejects cheapest where the page does not offer it", () => {
+    expect(parseSortKey("cheapest", { allowCheapest: false })).toBe("bestseller");
+    expect(parseSortKey("newest", { allowCheapest: false })).toBe("newest");
+  });
+});
+
+describe("shapeProducts — new badge and promo fields", () => {
+  it("marks a product created within the last 14 days as new, and an older one not", () => {
+    const now = new Date();
+    const cards = shapeProducts(
+      [product({ createdAt: new Date(now.getTime() - 13 * DAY) }), product({ createdAt: new Date(now.getTime() - 15 * DAY) })],
+      {},
+      new Map(),
+      {},
+      false,
+      now,
+    );
+    expect(cards.map((c) => c.is_new)).toEqual([true, false]);
+  });
+
+  it("gives a regular grid card empty promo fields", () => {
+    const [card] = shapeProducts([product()], {}, new Map());
+    expect(card).toMatchObject({ promo_denomination_id: null, promo_denomination_name: null, other_promo_count: 0 });
+  });
+});
+
+describe("shapeFlashCards", () => {
+  const now = new Date();
+  const window = (endsInHours: number) => ({
+    flashStartsAt: new Date(now.getTime() - HOUR),
+    flashEndsAt: new Date(now.getTime() + endsInHours * HOUR),
+  });
+
+  it("represents the denomination with the largest flash percent, even when it is not the cheapest plan", () => {
+    const cheap = denom({ name: "1 Week", price: "10000" });
+    const small = denom({ name: "1 Month", price: "30000", flashDiscountPercent: "10", ...window(2) });
+    const big = denom({ name: "1 Year", price: "200000", flashDiscountPercent: "40", ...window(5) });
+    const [card] = shapeFlashCards([product({}, [cheap, small, big])], {}, new Map(), {}, now);
+    expect(card).toMatchObject({
+      from_price: "120000",
+      from_base_price: "200000",
+      flash_discount: "40",
+      flash_ends_at: big.flashEndsAt!.toISOString(),
+      promo_denomination_id: big.id,
+      promo_denomination_name: "1 Year",
+      other_promo_count: 1,
+      variant_count: 3,
+    });
+  });
+
+  it("breaks a percent tie by the sale ending soonest, then by the lowest id", () => {
+    const later = denom({ price: "50000", flashDiscountPercent: "20", ...window(5) });
+    const sooner = denom({ price: "60000", flashDiscountPercent: "20", ...window(1) });
+    const [bySoonest] = shapeFlashCards([product({}, [later, sooner])], {}, new Map(), {}, now);
+    expect(bySoonest!.promo_denomination_id).toBe(sooner.id);
+
+    const sameEnd = window(3);
+    const first = denom({ price: "50000", flashDiscountPercent: "20", ...sameEnd });
+    const second = denom({ price: "40000", flashDiscountPercent: "20", ...sameEnd });
+    const [byId] = shapeFlashCards([product({}, [second, first])], {}, new Map(), {}, now);
+    expect(byId!.promo_denomination_id).toBe(first.id);
+  });
+
+  it("prices the promo plan for a non-reseller even when a reseller price is lower", () => {
+    const d = denom({ price: "100000", resellerPrice: "50000", flashDiscountPercent: "10", ...window(2) });
+    const [card] = shapeFlashCards([product({}, [d])], {}, new Map(), {}, now);
+    expect(card!.from_price).toBe("90000");
+  });
+
+  it("skips products with no live flash sale", () => {
+    const expired = denom({
+      flashDiscountPercent: "20",
+      flashStartsAt: new Date(now.getTime() - 2 * HOUR),
+      flashEndsAt: new Date(now.getTime() - HOUR),
+    });
+    expect(shapeFlashCards([product(), product({}, [expired])], {}, new Map(), {}, now)).toEqual([]);
+  });
+
+  it("shares stock and rating aggregation with the grid card", () => {
+    const d = denom({ price: "100000", flashDiscountPercent: "10", ...window(2) });
+    const other = denom({ price: "5000" });
+    const p = product({}, [d, other]);
+    const stock = { [d.id]: { available: 3 }, [other.id]: { available: 4 } };
+    const ratings = new Map([[other.id, { avg: 4, count: 2 }]]);
+    const [flashCard] = shapeFlashCards([p], stock, ratings, {}, now);
+    const [gridCard] = shapeProducts([p], stock, ratings, {}, false, now);
+    expect(flashCard).toMatchObject({ available: gridCard!.available, rating: 4, rating_count: 2, image_kind: gridCard!.image_kind });
+  });
+});
+
+describe("rankCards", () => {
+  const card = (p: CatalogProduct, over: Partial<ProductCard> = {}): ProductCard =>
+    ({ ...shapeProducts([p], {}, new Map())[0]!, ...over });
+
+  it("orders by bestseller snapshot: recent, then all-time, then newest", () => {
+    const old = product({ createdAt: new Date(Date.now() - 50 * DAY) });
+    const young = product({ createdAt: new Date(Date.now() - 1 * DAY) });
+    const hot = product({ createdAt: new Date(Date.now() - 60 * DAY) });
+    const steady = product({ createdAt: new Date(Date.now() - 60 * DAY) });
+    const products = [old, young, hot, steady];
+    const ranked = rankCards(products, products.map((p) => card(p)), "bestseller", snapshot([[hot.id, 5]], [[steady.id, 9]]));
+    expect(ranked.map((c) => c.slug)).toEqual([hot.slug, steady.slug, young.slug, old.slug]);
+  });
+
+  it("orders by newest createdAt", () => {
+    const a = product({ createdAt: new Date(Date.now() - 3 * DAY) });
+    const b = product({ createdAt: new Date(Date.now() - 1 * DAY) });
+    const ranked = rankCards([a, b], [card(a), card(b)], "newest", snapshot([[a.id, 10]]));
+    expect(ranked.map((c) => c.slug)).toEqual([b.slug, a.slug]);
+  });
+
+  it("orders by cheapest from_price as decimals, breaking ties by newest", () => {
+    const nine = product();
+    const ten = product();
+    const tieOld = product({ createdAt: new Date(Date.now() - 9 * DAY) });
+    const tieNew = product({ createdAt: new Date(Date.now() - 2 * DAY) });
+    const ranked = rankCards(
+      [ten, nine, tieOld, tieNew],
+      [card(ten, { from_price: "10000" }), card(nine, { from_price: "9000" }), card(tieOld, { from_price: "9500" }), card(tieNew, { from_price: "9500" })],
+      "cheapest",
+      snapshot([]),
+    );
+    expect(ranked.map((c) => c.slug)).toEqual([nine.slug, tieNew.slug, tieOld.slug, ten.slug]);
+  });
+
+  it("moves out-of-stock local-inventory products to the back, keeping their relative order", () => {
+    const soldOutHot = product();
+    const soldOutWarm = product();
+    const inStock = product();
+    const provider = product();
+    const products = [soldOutHot, soldOutWarm, inStock, provider];
+    const cards = [
+      card(soldOutHot, { all_local_inventory: true, available: 0 }),
+      card(soldOutWarm, { all_local_inventory: true, available: 0 }),
+      card(inStock, { all_local_inventory: true, available: 2 }),
+      // Provider SKUs carry no stock count and are always purchasable.
+      card(provider, { all_local_inventory: false, available: 0 }),
+    ];
+    const ranked = rankCards(products, cards, "bestseller", snapshot([[soldOutHot.id, 9], [soldOutWarm.id, 8], [inStock.id, 1]]));
+    expect(ranked.map((c) => c.slug)).toEqual([inStock.slug, provider.slug, soldOutHot.slug, soldOutWarm.slug]);
+    expect(ranked.map(isOutOfStock)).toEqual([false, false, true, true]);
   });
 });

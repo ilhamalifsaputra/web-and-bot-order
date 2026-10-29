@@ -84,6 +84,37 @@ describe("GET /sitemap.xml", () => {
   });
 });
 
+describe("GET /sitemap.xml — product group pages", () => {
+  it("lists /g/<slug> only for groups that have products and an enabled web service", async () => {
+    const sitemap = async () => (await app.inject({ method: "GET", url: "/sitemap.xml" })).body;
+    // The fixture's only products are Premium Apps (a null-group category).
+    let body = await sitemap();
+    expect(body).toContain("<loc>https://shop.test.invalid/g/premium-apps</loc>");
+    expect(body).not.toContain("/g/top-up-games");
+
+    const gameCat = await prisma.category.create({
+      data: { name: "Sitemap Games", slug: "sitemap-games", sortOrder: 4, isActive: true, group: "GAME_TOPUP" },
+    });
+    const game = await createCatalogProduct(prisma, { categoryId: gameCat.id, name: "Sitemap Game", isActive: true });
+    try {
+      await createDenomination(prisma, { productId: game.id, name: "10 Gems", type: "SHARED", durationLabel: "10 Gems", price: "5000", isActive: true });
+      body = await sitemap();
+      expect(body).toContain("<loc>https://shop.test.invalid/g/top-up-games</loc>");
+
+      // Web service off: the group page says "unavailable", so it is not listed.
+      await setSetting(prisma, "service_game_topup_enabled_web", "false");
+      body = await sitemap();
+      expect(body).not.toContain("/g/top-up-games");
+      expect(body).toContain("<loc>https://shop.test.invalid/g/premium-apps</loc>");
+    } finally {
+      await setSetting(prisma, "service_game_topup_enabled_web", "");
+      await prisma.denomination.deleteMany({ where: { productId: game.id } });
+      await prisma.product.delete({ where: { id: game.id } });
+      await prisma.category.delete({ where: { id: gameCat.id } });
+    }
+  });
+});
+
 describe("GET /robots.txt", () => {
   it("emits the expected Allow/Disallow lines and the Sitemap line", async () => {
     const res = await app.inject({ method: "GET", url: "/robots.txt" });

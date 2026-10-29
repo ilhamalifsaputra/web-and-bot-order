@@ -7,6 +7,7 @@
  * or touch the DB writer here — this is a pure read-only crawler surface.
  */
 import type { FastifyPluginAsync } from "fastify";
+import { PRODUCT_GROUPS, groupForCategory } from "@app/core";
 import { config } from "@app/core/config";
 import { prisma, listActiveCategories, listCatalogProducts } from "@app/db";
 
@@ -44,6 +45,13 @@ const seoRoutes: FastifyPluginAsync = async (app) => {
     const urlTags: string[] = ["/", "/about", "/contact", "/how-to-order", "/terms", "/privacy", "/refund"].map(
       (p) => `<url><loc>${xmlEscape(origin + p)}</loc></url>`,
     );
+    // Product group pages (/g/:slug) for every group with something to show.
+    // listCatalogProducts already drops a service switched off for the
+    // website, so a group whose page would read "unavailable" is left out.
+    const groupsWithProducts = new Set(products.map((p) => groupForCategory(p.category.group)));
+    for (const g of PRODUCT_GROUPS) {
+      if (groupsWithProducts.has(g.key)) urlTags.push(`<url><loc>${xmlEscape(`${origin}/g/${g.slug}`)}</loc></url>`);
+    }
     for (const c of categories) {
       urlTags.push(`<url><loc>${xmlEscape(`${origin}/c/${c.slug}`)}</loc></url>`);
     }

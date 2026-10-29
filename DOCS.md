@@ -320,6 +320,14 @@ Edisi dipisah dari `type` Digiflazz (mis. Arena Breakout vs Arena Breakout
 Infinite). Dua game bernama sama tetapi berbeda akhiran publisher/distribusi
 tetap dua `Product` terpisah dan **tidak pernah digabung**.
 
+**Tingkat game.** Kategori Game Top-up yang berisi beberapa game (≥ 2 game dan
+ada game dengan ≥ 2 produk, seperti katalog import Digiflazz yang menaruh semua
+game dalam satu kategori) menampilkan daftar game lebih dulu, lalu edisi dan
+region **per game**. Game/edisi/region diturunkan saat dibaca
+(`deriveGameIdentity`, `packages/core/src/gameIdentity.ts`; nilai admin menang),
+tanpa menulis data. Kategori satu game memakai alur di atas tanpa perubahan.
+Detail: `docs/game-topup-refactor-phase1-design.md` §2.1.
+
 **Isi region otomatis saat import Digiflazz.** Saat admin mengimpor brand
 (Settings → Digiflazz sync → apply), `Product.gameRegion` diisi dari akhiran
 region grup di price list lewat `gameRegionLabel`, dengan syarat:
@@ -456,6 +464,19 @@ Daftar cek:
   picker. Dengan fixture kecil (tanpa `--bulk`): kategori, game, region (bila
   ada), paket; game tanpa region langsung ke paket; kategori campuran
   menampilkan semua produk.
+- [ ] Tingkat game (katalog seperti produksi: satu kategori "Game Top Up" berisi
+  banyak game, mis. hasil import Digiflazz): Game Top-up -> daftar game (satu
+  tombol per game, tidak ada "MOBILE LEGENDS Malaysia"/"Mobile Legends (BR)"
+  sebagai game) -> Mobile Legends -> pemilih region berbendera (Indonesia,
+  Malaysia, Russia, Brazil, Philippines, Global) -> paket hanya region itu.
+  Jalur edisi: daftar game -> Arena Breakout -> Umum/Infinite -> paket (pilih
+  region muncul bila game itu punya ≥ 2 region). Pack picker berupa pesan teks
+  (tanpa foto), foto produk hanya di detail paket; pack picker 2 halaman
+  menampilkan `1/2 ›` lalu `‹ 2/2`. Ulangi game -> edisi -> region -> paket ->
+  detail -> ← Kembali sampai daftar game beberapa kali: jumlah pesan di chat
+  tetap, tidak ada "Choose edition"/"Pilih edisi" ganda. Ketuk tombol di bubble
+  lama atau ketuk dua kali cepat: toast "layar kedaluwarsa", tanpa pesan baru.
+  Premium Apps di database yang sama tetap bernomor.
 - [ ] Tanpa sistem angka di Game Top-up: picker edisi, picker region, dan daftar
   produk **tidak** mengirim pesan "Gunakan angka di bawah untuk memilih:" dan
   tidak memasang keyboard bawah 1-2-3. Daftar produk memakai tombol inline per

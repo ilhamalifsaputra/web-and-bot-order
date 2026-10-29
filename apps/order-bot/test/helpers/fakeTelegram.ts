@@ -122,7 +122,10 @@ export class FakeTelegram {
         return { ok: true, result: { ...asMessage(id), text: msg.text } };
       }
       case "deleteMessage":
-        this.messages.delete(Number(payload.message_id));
+        // Like Telegram: deleting a message that is already gone is refused.
+        if (!this.messages.delete(Number(payload.message_id))) {
+          return { ok: false, error_code: 400, description: "Bad Request: message to delete not found" };
+        }
         return { ok: true, result: true };
       case "getChatMember":
         return { ok: true, result: { status: "member", user: { id: this.user.id, is_bot: false, first_name: this.user.first_name } } };
@@ -214,10 +217,14 @@ export class FakeTelegram {
     } as unknown as Update);
   }
 
-  /** Tap a callback button for an explicit message (e.g. an OLD keyboard). */
+  /** Tap a callback button for an explicit message (e.g. an OLD keyboard). The
+   * update carries the message as it is NOW (text/caption and its inline
+   * keyboard, like Telegram's callback_query.message); taps fired together
+   * (Promise.all) all carry the message as it was before the first one ran. */
   async tap(messageId: number, data: string): Promise<void> {
     const update_id = this.nextUpdateId();
     const msg = this.messages.get(messageId);
+    const reply_markup = msg && msg.inline.length ? { inline_keyboard: structuredClone(msg.inline) } : undefined;
     await this.bot.handleUpdate({
       update_id,
       callback_query: {
@@ -230,6 +237,7 @@ export class FakeTelegram {
           date: 0,
           chat: this.chat(),
           ...(msg?.kind === "photo" ? { photo: [{ file_id: "f", file_unique_id: "u", width: 1, height: 1 }], caption: msg.text } : { text: msg?.text ?? "" }),
+          ...(reply_markup ? { reply_markup } : {}),
         },
       },
     } as unknown as Update);

@@ -51,6 +51,31 @@ tag git yang sungguhan sampai dokumen ini ditulis.
     menjadi "dibatalkan", dan hanya bila pembatalan itu tidak menambah pesan
     baru di chat, pembeli menerima tepat satu push. Rollback: seperti baris di
     atas (`docs/ROLLBACK.md`).
+  - Tingkat **game** di bot untuk kategori Game Top-up yang berisi banyak game
+    (bentuk katalog hasil import Digiflazz di produksi): kategori → daftar
+    game (satu tombol per game, harga "mulai Rp…") → edisi game itu (bila ≥ 2)
+    → region game itu (bila ≥ 2) → pack picker. Game, edisi, dan region
+    diturunkan dari nama/`gameVariant` lewat `deriveGameIdentity` (nilai admin
+    menang), jadi data lama tanpa `gameRegion` langsung benar tanpa backfill.
+    Pack picker Game kini pesan teks (foto produk hanya di detail paket);
+    tombol penunjuk halaman `1/2` di antara panah daftar inline dan pack picker;
+    bubble usang yang diketuk dihapus saat diganti foto/teks baru, sehingga
+    chat tidak menumpuk saat bolak-balik; tombol lama/ganda menjawab "layar
+    kedaluwarsa" tanpa pesan baru. Kategori satu game dan Premium Apps tidak
+    berubah. Tidak ada perubahan skema atau data; cukup restart order-bot.
+    Rollback: revert kode lalu restart order-bot; tombol `browse:games` /
+    `browse:game` / `ged` / `grg` di bubble yang masih terbuka menjawab toast
+    "layar kedaluwarsa", tanpa data yang perlu dibalik.
+  - Laporan **region tidak dikenali**: produk yang tampak seperti anggota
+    game ber-region tetapi region-nya tidak ada di whitelist (mis. akhiran
+    "(KZ)" atau `type` "Kazakhstan" di samping "Malaysia") kini dilaporkan,
+    bukan diam-diam menjadi edisi/game sendiri: `findUnrecognisedGameRegions`
+    di `packages/core/src/gameIdentity.ts`, field `unrecognisedRegions` pada
+    respons preview import Digiflazz (`/api/catalog/digiflazz/sync/preview`)
+    dan pada laporan `fillGameRegions`, plus bagian "Regions not recognised"
+    di output dry run `scripts/fill-game-regions.ts`. Hanya laporan: perilaku
+    browse dan import tidak berubah. Rollback: revert kode; field tambahan
+    di respons hilang, tidak ada data yang ditulis.
 - **Skrip seed fixture manual `scripts/seed-game-topup-fixtures.ts`** dan
   pembangun fixture bersama `tests/helpers/gameTopupFixtures.ts` untuk uji
   manual Game Top-up di `@testtoko_bot`. Skrip menolak jalan kecuali host lokal,

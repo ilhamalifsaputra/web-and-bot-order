@@ -54,6 +54,10 @@ export interface SessionData {
   dbUser?: DbUserSnap;
   /** Last menu/admin message ids for in-place edits (chat.ts). */
   menuMsgId?: number;
+  /** `menuMsgId` when the bubble was last rendered with a catalog-only
+   *  keyboard (util/chat.ts isCatalogKeyboard); an obsolete catalog bubble may
+   *  be deleted instead of only losing its keyboard. Undefined otherwise. */
+  catalogMsgId?: number;
   adminMsgId?: number;
   /** Message id of the QR code photo sent alongside payment instructions. */
   qrMsgId?: number;

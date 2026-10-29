@@ -79,9 +79,10 @@ async function freeFire() {
 const buttons = (sink: SentCall[]): Button[] =>
   ((lastMarkup(sink) as { inline_keyboard?: Button[][] } | undefined)?.inline_keyboard ?? []).flat();
 
-/** Region index of `label` on the picker the last screen rendered. */
+/** Region index of `label` on the picker the last screen rendered. A recognised
+ * region shows its canonical flagged label ("Indonesia" → "🇮🇩 Indonesia"). */
 function regionIdx(sink: SentCall[], catId: number, label: string): number {
-  const b = buttons(sink).find((x) => x.text === label && x.callback_data?.startsWith(`v1:browse:greg:${catId}:`));
+  const b = buttons(sink).find((x) => (x.text === label || x.text.endsWith(` ${label}`)) && x.callback_data?.startsWith(`v1:browse:greg:${catId}:`));
   return Number(b!.callback_data!.split(":")[4]);
 }
 

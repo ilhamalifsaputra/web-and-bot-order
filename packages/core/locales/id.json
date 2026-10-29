@@ -193,6 +193,8 @@
   "browse.invalid_number": "Masukkan angka antara 1 dan {max}.",
   "browse.list_decorated": "📦 <b>Daftar Produk</b>\n\n{items}\n\n📄 Halaman {page}/{total}\n💡 Masukkan nomor untuk lanjut.",
   "browse.list_inline": "📦 <b>Daftar Produk</b>\n\n{items}\n\n📄 Halaman {page}/{total}",
+  "browse.game_list": "🎮 <b>Daftar Game</b>\n\n{items}\n\n📄 Halaman {page}/{total}",
+  "browse.game_heading": "🎮 <b>{game}</b>",
   "browse.use_buttons": "Pilih dengan menekan tombol pada daftar.",
   "browse.product_from_price": "mulai {price}",
   "hint.game_list": "Pilih game, atau ketik /search untuk mencari.",

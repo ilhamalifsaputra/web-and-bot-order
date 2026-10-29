@@ -115,6 +115,24 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     // so the wizard UI can distinguish region-split groups.
     expect(body.groups[0].rawBrand).toBe("Mobile Legends");
     expect(body.groups[0].region).toBeNull();
+    expect(body.unrecognisedRegions).toEqual({ brands: [], note: null });
+  });
+
+  it("reports the regions not recognised: a type that is a country missing from the whitelist", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      { buyerSkuCode: "vmy", productName: "Valorant 125 VP", category: "Game", brand: "Valorant", type: "Malaysia", price: new Decimal(20000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+      { buyerSkuCode: "vkz", productName: "Valorant 125 VP", category: "Game", brand: "Valorant", type: "Kazakhstan", price: new Decimal(21000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+    ]);
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.groups).toHaveLength(2);
+    expect(body.unrecognisedRegions.brands).toEqual(["Valorant Kazakhstan"]);
+    expect(body.unrecognisedRegions.note).toBe(
+      "Regions not recognised: Valorant Kazakhstan — add one row to packages/core/src/regionLabel.ts or set the game region in the admin.",
+    );
   });
 
   // Money audit C13: an unreadable stored markup threw a DecimalError (500).

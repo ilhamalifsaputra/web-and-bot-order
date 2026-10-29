@@ -14,6 +14,7 @@
  * error stopped the run) or the catalog revision bump failed.
  */
 import { prisma, fillGameRegions, redactConnectionUrls } from "@app/db";
+import { unrecognisedRegionsNote } from "@app/core";
 
 const USAGE = `Fill Product.gameRegion for already-imported Game Top-up products.
 
@@ -89,6 +90,10 @@ async function main(): Promise<void> {
   console.log(
     `\n${report.scopes.length} scope(s); ${report.updated} product(s) updated, ${report.skipped} product(s) in scopes skipped by a rule, ${report.failed} product(s) in scopes that failed.`,
   );
+  // A new country missing from the whitelist is reported, never guessed or written.
+  for (const category of report.unrecognisedRegions) {
+    console.log(`\n${category.categoryName} [#${category.categoryId}]: ${unrecognisedRegionsNote(category.products.map((p) => `#${p.productId} "${p.name}"`))}`);
+  }
   if (report.stoppedEarly) console.log("A scope failed unexpectedly; the run stopped early there and later scopes were NOT attempted.");
   if (report.revisionBumpFailed) console.log("WARNING: regions were written but bumping the detection catalog revision failed; bump it manually.");
   if (!apply) console.log("Run again with --apply to write the scopes marked WOULD WRITE.");

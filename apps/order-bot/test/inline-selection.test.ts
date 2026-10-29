@@ -89,8 +89,9 @@ function counts(sink: SentCall[]) {
 const ONE_EDIT = { reply: 0, sendMessage: 0, replyWithPhoto: 0, editMessageText: 1, deleteMessage: 0 };
 const ONE_SEND = { reply: 1, sendMessage: 0, replyWithPhoto: 0, editMessageText: 0, deleteMessage: 0 };
 
+/** A recognised region shows its canonical flagged label ("Indonesia" → "🇮🇩 Indonesia"). */
 function regionIdx(sink: SentCall[], catId: number, label: string): number {
-  const b = buttons(sink).find((x) => x.text === label && x.callback_data?.startsWith(`v1:browse:greg:${catId}:`));
+  const b = buttons(sink).find((x) => (x.text === label || x.text.endsWith(` ${label}`)) && x.callback_data?.startsWith(`v1:browse:greg:${catId}:`));
   return Number(b!.callback_data!.split(":")[4]);
 }
 
@@ -143,7 +144,8 @@ describe("Game Top-up product list: inline buttons, no numbers", () => {
     expect(counts(tap.sink)).toEqual(ONE_EDIT);
     expect(pickButtons(tap.sink)).toHaveLength(10);
     const r0 = rows(tap.sink);
-    expect(r0.at(-2)).toEqual([{ text: t(tap.ctx, "browse.nav_next"), callback_data: "v1:browse:page:1" }]);
+    // Page indicator (a no-op tap) between the arrows.
+    expect(r0.at(-2)).toEqual([{ text: "1/2", callback_data: "v1:noop" }, { text: "›", callback_data: "v1:browse:page:1" }]);
     expect(r0.at(-1)![0]!.text).toBe(t(tap.ctx, "menu.back"));
 
     const page2 = next(tap.ctx, { callbackData: "v1:browse:page:1" });
@@ -151,7 +153,7 @@ describe("Game Top-up product list: inline buttons, no numbers", () => {
     expect(counts(page2.sink)).toEqual(ONE_EDIT);
     expect(pickButtons(page2.sink).map((x) => x.text)).toEqual(["FF P10", "FF P11"]);
     const r1 = rows(page2.sink);
-    expect(r1.at(-2)).toEqual([{ text: t(page2.ctx, "browse.nav_prev"), callback_data: "v1:browse:page:0" }]);
+    expect(r1.at(-2)).toEqual([{ text: "‹", callback_data: "v1:browse:page:0" }, { text: "2/2", callback_data: "v1:noop" }]);
     expect(r1.at(-1)![0]!.text).toBe(t(page2.ctx, "menu.back"));
     expect(hasReplyKeyboard(page2.sink)).toBe(false);
   });

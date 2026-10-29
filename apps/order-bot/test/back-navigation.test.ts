@@ -464,10 +464,10 @@ describe("product list Back follows the pickers that were really shown", () => {
     const cat = await genshin(11);
     const list = await openAsiaList(cat);
     const rows = (lastMarkup(list.sink) as Markup).inline_keyboard!;
-    // Ten product buttons, then Next, then Back.
+    // Ten product buttons, then the page indicator (a no-op) + Next, then Back.
     expect(rows).toHaveLength(12);
     expect(rows.slice(0, 10).every((row) => row.length === 1 && row[0]!.callback_data!.startsWith("v1:browse:pick:"))).toBe(true);
-    expect(rows.slice(10).map((row) => row.map((b) => b.callback_data))).toEqual([["v1:browse:page:1"], [`v1:browse:gregs:${cat.id}`]]);
+    expect(rows.slice(10).map((row) => row.map((b) => b.callback_data))).toEqual([["v1:noop", "v1:browse:page:1"], [`v1:browse:gregs:${cat.id}`]]);
     expect(rows[11]![0]!.text).toBe(persistentLabel("back", "en"));
 
     const back = await tap(list.ctx, `v1:browse:gregs:${cat.id}`);

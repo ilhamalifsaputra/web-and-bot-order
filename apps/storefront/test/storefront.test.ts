@@ -147,19 +147,29 @@ async function loginAs(identifier: string, password: string): Promise<string> {
 // covered by the client jsdom tests under apps/storefront/client/src.
 // ---------------------------------------------------------------------------
 
-type HomeBody = { groups: Array<{ sections: Array<{ category_slugs: string[]; products: Array<{ slug: string }> }> }> };
-/** Every card on the home page, across all group sections. */
-const homeCards = (body: HomeBody) => body.groups.flatMap((g) => g.sections.flatMap((s) => s.products));
+type HomeBody = { groups: Array<{ slug: string; sections: Array<{ category_slugs: string[] }> }> };
+
+/**
+ * Every card of one category through the group endpoint the home sections
+ * page from. Reading the home first page instead would depend on how this
+ * file's shared catalog happens to rank.
+ */
+async function categoryCards(groupSlug: string, slug: string): Promise<Array<{ slug: string; from_price: string }>> {
+  const res = await app.inject({ method: "GET", url: `/api/v1/pages/group/${groupSlug}?category=${slug}&limit=40` });
+  expect(res.statusCode).toBe(200);
+  return res.json().products;
+}
 
 describe("GET /api/v1/pages/home", () => {
-  it("returns the product card with its price, in a section of its category", async () => {
+  it("lists the category in a home section and returns its product card with its price", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
     expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(homeCards(body).find((p) => p.slug === productSlug)).toMatchObject({
+    // A null-group category is shown under Premium Apps.
+    const premium = (res.json() as HomeBody).groups.find((g) => g.slug === "premium-apps");
+    expect(premium?.sections.some((s) => s.category_slugs.includes(categorySlug))).toBe(true);
+    expect((await categoryCards("premium-apps", categorySlug)).find((p) => p.slug === productSlug)).toMatchObject({
       from_price: "40000",
     });
-    expect(body.groups.some((g: HomeBody["groups"][number]) => g.sections.some((s) => s.category_slugs.includes(categorySlug)))).toBe(true);
   });
 
   it("shows a multi-plan product as the product card, never its denominations flat", async () => {
@@ -167,8 +177,7 @@ describe("GET /api/v1/pages/home", () => {
       { name: "HomeBrand 7 day", price: "9000", duration: "7 day" },
       { name: "HomeBrand 1 Month", price: "29000", duration: "1 Month" },
     ]);
-    const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
-    const slugs = homeCards(res.json()).map((p) => p.slug);
+    const slugs = (await categoryCards("premium-apps", categorySlug)).map((p) => p.slug);
     expect(slugs).toContain(product.slug);
     for (const d of members) expect(slugs).not.toContain(String(d.id));
   });

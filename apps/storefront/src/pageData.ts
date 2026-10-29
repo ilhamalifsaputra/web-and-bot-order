@@ -8,7 +8,7 @@
 import { config } from "@app/core/config";
 import { canonicalProduct, type CanonicalProductContext } from "@app/core/canonicalProduct";
 import { Decimal } from "@app/core/money";
-import { activeFlashPercent, effectiveUnitPrice, flashPrice, isFlashActive } from "@app/core/flash";
+import { activeFlashPercent, effectiveUnitPrice, flashPrice, hasLiveFlash } from "@app/core/flash";
 import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import {
   GROUP_ORDER_SETTING_KEY,
@@ -52,7 +52,9 @@ import {
   rankCards,
   shapeFlashCards,
   shapeProducts,
+  soldOutLast,
   type ProductCard,
+  type SearchSort,
   type SortKey,
   type TierMap,
 } from "./cards";
@@ -171,7 +173,7 @@ export async function homePageData() {
     if (lead && heroProducts.length < HERO_PRODUCTS_LIMIT) heroProducts.push(lead.card);
   }
 
-  const flashProducts = products.filter((p) => p.denominations.some((d) => isFlashActive(d, now)));
+  const flashProducts = products.filter((p) => hasLiveFlash(p, now));
   const flash = rankCards(
     flashProducts,
     shapeFlashCards(flashProducts, stock, ratingByDenom, tiers, now),
@@ -233,7 +235,8 @@ export async function categoryPageData(rawSlug: string, rawSort?: unknown) {
 
 /** Raw `?category=&sort=&offset=&limit=&v=` of GET /api/v1/pages/group/:slug. */
 export interface GroupPageQuery {
-  category?: unknown;
+  /** Comma-separated slugs; the parameter may also repeat (string[]). */
+  category?: string | string[];
   sort?: unknown;
   offset?: unknown;
   limit?: unknown;
@@ -280,7 +283,11 @@ export async function groupPageData(rawSlug: string, query: GroupPageQuery = {})
   const inGroup = catalog.filter((p) => groupForCategory(p.category.group) === def.key);
   const groupCats = groupCategories(def, categories, inGroup);
   // Unknown slugs and other groups' categories are ignored; nothing known left = every category.
-  const wanted = new Set(typeof query.category === "string" ? query.category.split(",").map((s) => s.trim()) : []);
+  // `?category=a,b` and a repeated `?category=a&category=b` mean the same.
+  const rawCategories = Array.isArray(query.category) ? query.category : [query.category];
+  const wanted = new Set(
+    rawCategories.flatMap((v) => (typeof v === "string" ? v.split(",").map((s) => s.trim()) : [])),
+  );
   const picked = groupCats.filter((c) => wanted.has(c.slug));
   const pickedIds = new Set((picked.length > 0 ? picked : groupCats).map((c) => c.id));
   const products = inGroup.filter((p) => pickedIds.has(p.categoryId));
@@ -460,12 +467,21 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
 }
 
 /** Search page data — shaped for the JSON API (GET /api/v1/pages/search). */
-export async function searchPageData(rawQ: string, sort: SortKey = "bestseller") {
+export async function searchPageData(rawQ: string, sort: SearchSort = "relevance") {
   const q = (rawQ ?? "").trim();
   const products = q ? await searchCatalog(prisma, q, "web", 24) : [];
+  let cards: ProductCard[];
+  if (sort === "relevance") {
+    // searchCatalog's own order, with only the sold-out partition applied.
+    const { stock, ratingByDenom, tiers } = await cardInputs(products);
+    cards = soldOutLast(shapeProducts(products, stock, ratingByDenom, tiers));
+  } else {
+    cards = await rankedGrid(products, sort);
+  }
   return {
     q,
-    products: await rankedGrid(products, sort),
+    sort,
+    products: cards,
     low_threshold: config.LOW_STOCK_THRESHOLD,
   };
 }

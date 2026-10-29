@@ -33,9 +33,9 @@ import {
   suggestionsPageData,
   type GroupPageQuery,
 } from "../pageData";
-import { parseSortKey } from "../cards";
+import { parseSearchSort, parseSortKey } from "../cards";
 
-/** Search and the browse-all shelves span both groups, so every sort is offered. */
+/** The browse-all shelves span both groups, so every sort is offered. */
 const ALL_SORTS = { allowCheapest: true };
 
 const apiPagesRoutes: FastifyPluginAsync = async (app) => {
@@ -203,7 +203,8 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Search ----
   app.get<{ Querystring: { q?: string; sort?: string } }>("/pages/search", async (req, reply) => {
-    return reply.send(await searchPageData(req.query.q ?? "", parseSortKey(req.query.sort, ALL_SORTS)));
+    // No explicit sort keeps search's relevance order (search-only default).
+    return reply.send(await searchPageData(req.query.q ?? "", parseSearchSort(req.query.sort)));
   });
 
   // ---- Browse-all shelves reached from the nav drawer ----

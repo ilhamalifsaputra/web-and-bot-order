@@ -93,6 +93,15 @@ export function isFlashActive(d: FlashFields, now: Date = new Date()): boolean {
 }
 
 /**
+ * True when any of a product's denominations has a live flash sale at `now` —
+ * the one rule that puts a product on the Flash Sale shelves (the db's
+ * listFlashSaleProducts and the storefront home section both use it).
+ */
+export function hasLiveFlash(product: { denominations: readonly FlashFields[] }, now: Date = new Date()): boolean {
+  return product.denominations.some((d) => isFlashActive(d, now));
+}
+
+/**
  * The base price with the live flash discount applied, or null when no flash
  * sale is running. Ignores resellerPrice — this is the "everyone" price, which
  * is what the strike-through UI compares against.

@@ -251,6 +251,12 @@ describe("GET /api/v1/pages/group/:slug", () => {
     expect(unknownOnly.total).toBe(5);
   });
 
+  it("treats a repeated category parameter like a comma-separated list", async () => {
+    const body = (await groupPage("premium-apps", `?category=${C.music}&category=${C.tools},nope`)).json();
+    expect(body.total).toBe(2);
+    expect(body.products.map((p: Card) => p.slug)).toEqual([S.t1, S.m1]);
+  });
+
   it("pages with offset and limit without repeating or skipping a product", async () => {
     const all = (await groupPage("premium-apps")).json().products.map((p: Card) => p.slug);
     const seen: string[] = [];
@@ -333,6 +339,27 @@ describe("GET /api/v1/pages/category/:slug — sort keys", () => {
   it("sorts a Premium Apps category by cheapest when asked", async () => {
     const body = (await app.inject({ method: "GET", url: `/api/v1/pages/category/${C.video}?sort=cheapest` })).json();
     expect(body.products.map((p: Card) => p.slug)).toEqual([S.v2, S.v3, S.v1]);
+  });
+});
+
+describe("GET /api/v1/pages/search — sort", () => {
+  const search = async (query: string) => (await app.inject({ method: "GET", url: `/api/v1/pages/search?q=ML${query}` })).json();
+
+  it("keeps the search relevance order by default, with sold-out products last", async () => {
+    for (const query of ["", "&sort=default", "&sort=rating", "&sort=bogus"]) {
+      const body = await search(query);
+      expect(body.sort).toBe("relevance");
+      expect(body.products.map((p: Card) => p.slug)).toEqual([S.g1, S.g2, S.g3]);
+    }
+  });
+
+  it("applies an explicit sort key", async () => {
+    const bestseller = await search("&sort=bestseller");
+    expect(bestseller.sort).toBe("bestseller");
+    expect(bestseller.products.map((p: Card) => p.slug)).toEqual([S.g2, S.g1, S.g3]);
+    const cheapest = await search("&sort=cheapest");
+    expect(cheapest.sort).toBe("cheapest");
+    expect(cheapest.products.map((p: Card) => p.slug)).toEqual([S.g1, S.g2, S.g3]);
   });
 });
 

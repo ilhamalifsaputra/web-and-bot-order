@@ -17,7 +17,7 @@
 import { config } from "@app/core/config";
 import { CategoryGroup, type CategoryGroup as CategoryGroupType, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
-import { isFlashActive } from "@app/core/flash";
+import { hasLiveFlash, isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { usesLocalInventory } from "@app/core/productAvailability";
@@ -989,7 +989,7 @@ export async function searchCatalog(
  */
 export async function listFlashSaleProducts(db: Db, channel: ServiceChannel, now: Date = new Date()): Promise<CatalogProduct[]> {
   const products = await listCatalogProducts(db, channel);
-  return products.filter((p) => p.denominations.some((d) => isFlashActive(d, now)));
+  return products.filter((p) => hasLiveFlash(p, now));
 }
 
 /**

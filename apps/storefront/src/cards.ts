@@ -307,10 +307,26 @@ export function parseSortKey(raw: unknown, opts: { allowCheapest: boolean }): So
   return "bestseller";
 }
 
+/**
+ * Search's effective sort. With no explicit sort key (missing, legacy or
+ * unknown) search keeps `searchCatalog`'s own relevance order; an explicit
+ * key works as on every other page. Search-only: "relevance" is not a
+ * SortKey and no other page offers it.
+ */
+export type SearchSort = SortKey | "relevance";
+export function parseSearchSort(raw: unknown): SearchSort {
+  return (SORT_KEYS as readonly unknown[]).includes(raw) ? parseSortKey(raw, { allowCheapest: true }) : "relevance";
+}
+
 /** Sold out: every active plan draws from local inventory and none is left
  * (mirrors the client's StockBadge rule). */
 export function isOutOfStock(card: ProductCard): boolean {
   return card.all_local_inventory && card.available === 0;
+}
+
+/** Stable partition: sold-out cards move to the back, every other order kept. */
+export function soldOutLast(cards: readonly ProductCard[]): ProductCard[] {
+  return [...cards.filter((c) => !isOutOfStock(c)), ...cards.filter(isOutOfStock)];
 }
 
 /**
@@ -341,6 +357,5 @@ export function rankCards(
     if (sort === "cheapest") return new Decimal(a.from_price).comparedTo(new Decimal(b.from_price)) || compareNewest(pa, pb);
     return bestseller(pa, pb);
   };
-  const sorted = [...cards].sort(compare);
-  return [...sorted.filter((c) => !isOutOfStock(c)), ...sorted.filter(isOutOfStock)];
+  return soldOutLast([...cards].sort(compare));
 }

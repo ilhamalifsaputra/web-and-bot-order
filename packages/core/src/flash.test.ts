@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { activeFlashPercent, isFlashActive, flashPrice, effectiveUnitPrice } from "./flash";
+import { activeFlashPercent, isFlashActive, flashPrice, effectiveUnitPrice, hasLiveFlash } from "./flash";
 import { Decimal } from "./money";
 
 const START = new Date("2026-07-20T10:00:00Z");
@@ -227,5 +227,14 @@ describe("effectiveUnitPrice", () => {
   it("never compounds the two discounts", () => {
     const price = effectiveUnitPrice(sku({ resellerPrice: "9000" }), true, DURING);
     expect(price.greaterThanOrEqualTo(new Decimal("8000"))).toBe(true);
+  });
+});
+
+describe("hasLiveFlash", () => {
+  it("is true when any denomination has a live sale, false otherwise", () => {
+    const off = sku({ flashDiscountPercent: null });
+    expect(hasLiveFlash({ denominations: [off, sku()] }, DURING)).toBe(true);
+    expect(hasLiveFlash({ denominations: [off, sku()] }, END)).toBe(false);
+    expect(hasLiveFlash({ denominations: [] }, DURING)).toBe(false);
   });
 });

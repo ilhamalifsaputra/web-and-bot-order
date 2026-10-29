@@ -5,7 +5,17 @@
  * card advertises an original price no plan was ever sold at.
  */
 import { describe, it, expect } from "vitest";
-import { aggregateRating, isOutOfStock, parseSortKey, rankCards, shapeFlashCards, shapeProducts, type ProductCard } from "./cards";
+import {
+  aggregateRating,
+  isOutOfStock,
+  parseSearchSort,
+  parseSortKey,
+  rankCards,
+  shapeFlashCards,
+  shapeProducts,
+  soldOutLast,
+  type ProductCard,
+} from "./cards";
 import type { BestsellerSnapshot, CatalogProduct } from "@app/db";
 
 const HOUR = 3_600_000;
@@ -287,6 +297,32 @@ describe("parseSortKey", () => {
   it("rejects cheapest where the page does not offer it", () => {
     expect(parseSortKey("cheapest", { allowCheapest: false })).toBe("bestseller");
     expect(parseSortKey("newest", { allowCheapest: false })).toBe("newest");
+  });
+});
+
+describe("parseSearchSort", () => {
+  it("defaults search to relevance for missing, legacy and unknown keys", () => {
+    for (const raw of [undefined, "", "default", "rating", "bogus", ["newest"]]) {
+      expect(parseSearchSort(raw)).toBe("relevance");
+    }
+  });
+
+  it("keeps an explicit sort key, cheapest included", () => {
+    expect(parseSearchSort("bestseller")).toBe("bestseller");
+    expect(parseSearchSort("newest")).toBe("newest");
+    expect(parseSearchSort("cheapest")).toBe("cheapest");
+  });
+});
+
+describe("soldOutLast", () => {
+  it("keeps the incoming order and only moves sold-out cards to the back", () => {
+    const cards = [
+      { slug: "a", all_local_inventory: true, available: 0 },
+      { slug: "b", all_local_inventory: false, available: 0 },
+      { slug: "c", all_local_inventory: true, available: 0 },
+      { slug: "d", all_local_inventory: true, available: 4 },
+    ] as ProductCard[];
+    expect(soldOutLast(cards).map((c) => c.slug)).toEqual(["b", "d", "a", "c"]);
   });
 });
 

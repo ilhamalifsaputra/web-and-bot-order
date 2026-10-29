@@ -9,7 +9,7 @@ import { Link } from "react-router-dom";
 import { t, tCount } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";
 import DefaultThumb, { type ThumbnailKind } from "./DefaultThumb";
-import FlashBadge, { FlashWasPrice } from "./FlashBadge";
+import FlashBadge, { FlashWasPrice, useFlashCountdown } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
 import StockBadge from "./StockBadge";
@@ -193,6 +193,34 @@ function PromoLine({ name, otherCount }: { name: string | null | undefined; othe
   );
 }
 
+/**
+ * The card's price. `from_price` already carries a live flash discount; once
+ * that sale's countdown ends the figure is stale, so the card switches to the
+ * same plan's regular price (`from_base_price`, server-sent — never derived),
+ * or shows no price at all when there is none, rather than keep quoting the
+ * expired sale price. A flash card prices ONE plan (its promo denomination),
+ * not the product's cheapest, so it drops the "from" label.
+ */
+function CardPrice({ p, fx, preSale }: {
+  p: ProductCardData;
+  fx: string | null | undefined;
+  preSale: string | null;
+}) {
+  const { ended } = useFlashCountdown(p.flash_discount ? p.flash_ends_at : null);
+  const price = ended ? (p.from_base_price ?? null) : p.from_price;
+  if (price === null) return null;
+  const promoPlan = p.promo_denomination_id != null;
+  return (
+    <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
+      {!promoPlan && t("web.from_price")}
+      <Price value={price} fx={fx} size="text-base" />
+      {/* The struck-through regular price, server-sent (from_base_price) and
+          display only; it disappears with the sale it belongs to. */}
+      {!ended && preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
+    </p>
+  );
+}
+
 function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
   p: ProductCardData;
   fx: string | null | undefined;
@@ -223,14 +251,7 @@ function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
     )}
 
     <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
-      <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
-        {t("web.from_price")}
-        <Price value={p.from_price} fx={fx} size="text-base" />
-        {/* The card payload carries no base price (cards.ts), so the
-                pre-sale figure is reconstructed from the percent — display
-                only, and it never feeds a total. */}
-        {preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
-      </p>
+      <CardPrice p={p} fx={fx} preSale={preSale} />
       {/* A count badge only when every plan is local stock; a mixed
               product is purchasable through its provider/manual plans
               whatever its partial local count says. */}

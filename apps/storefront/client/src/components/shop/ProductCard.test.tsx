@@ -311,28 +311,59 @@ describe("ProductCard", () => {
       expect(screen.getByRole("link")).toHaveAttribute("href", "/p/netflix-premium");
     });
 
-    it("swaps the badge for Promo ended and drops the strike-through when the countdown ends", () => {
+    it("swaps the badge for Promo ended and the sale price for the plan's regular price when the countdown ends", () => {
       vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
       try {
         vi.setSystemTime(new Date("2099-01-01T00:00:00.000Z").getTime() - 3000);
-        renderCard(<ProductCard p={promo} fx="16000" lowThreshold={5} />);
+        renderCard(<ProductCard p={{ ...promo, from_price: "70000" }} fx="16000" lowThreshold={5} />);
         expect(screen.getByText("Flash sale −30%")).toBeInTheDocument();
-        expect(screen.getByText("Rp100,000")).toBeInTheDocument();
+        expect(screen.getByText("Rp70,000")).toBeInTheDocument();
+        // While the sale runs the regular price is the struck-through figure.
+        expect(screen.getByText("Rp100,000")).toHaveClass("line-through");
         expect(screen.queryByText("Promo ended")).not.toBeInTheDocument();
         act(() => {
           vi.advanceTimersByTime(4000);
         });
         expect(screen.getByText("Promo ended")).toBeInTheDocument();
         expect(screen.queryByText("Flash sale −30%")).not.toBeInTheDocument();
-        expect(screen.queryByText("Rp100,000")).not.toBeInTheDocument();
+        // No stale promo price: the regular price is now THE price, not struck.
+        expect(screen.queryByText("Rp70,000")).not.toBeInTheDocument();
+        const regular = screen.getByText("Rp100,000");
+        expect(regular).not.toHaveClass("line-through");
+        expect(regular.closest(".line-through")).toBeNull();
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it("shows Promo ended at once for a sale that already ended", () => {
-      renderCard(<ProductCard p={{ ...promo, flash_ends_at: "2000-01-01T00:00:00.000Z" }} fx="16000" lowThreshold={5} />);
+    it("shows Promo ended at once, with the regular price, for a sale that already ended", () => {
+      renderCard(
+        <ProductCard p={{ ...promo, from_price: "70000", flash_ends_at: "2000-01-01T00:00:00.000Z" }} fx="16000" lowThreshold={5} />,
+      );
       expect(screen.getByText("Promo ended")).toBeInTheDocument();
+      expect(screen.queryByText("Rp70,000")).not.toBeInTheDocument();
+      expect(screen.getByText("Rp100,000")).toBeInTheDocument();
+    });
+
+    it("hides the price after the sale ends when the card has no regular price", () => {
+      renderCard(
+        <ProductCard
+          p={{ ...promo, from_price: "70000", from_base_price: null, flash_ends_at: "2000-01-01T00:00:00.000Z" }}
+          fx="16000"
+          lowThreshold={5}
+        />,
+      );
+      expect(screen.getByText("Promo ended")).toBeInTheDocument();
+      expect(screen.queryByText("Rp70,000")).not.toBeInTheDocument();
+    });
+
+    it("does not label a promo plan's price as the product's 'from' price", () => {
+      renderCard(<ProductCard p={promo} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("Rp79,000").closest("p")).not.toHaveTextContent(/^from/);
+      expect(screen.queryByText(/^from$/)).not.toBeInTheDocument();
+      // A normal grid card still says "from".
+      renderCard(<ProductCard p={{ ...base, slug: "other" }} fx="16000" lowThreshold={5} />);
+      expect(screen.getAllByText((_, el) => el?.tagName === "P" && /^from/.test(el.textContent ?? ""))).toHaveLength(1);
     });
   });
 

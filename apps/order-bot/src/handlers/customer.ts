@@ -1495,7 +1495,11 @@ async function dropTappedPhotoBubble(ctx: MyContext): Promise<void> {
     } catch {
       /* gone/too old */
     }
-    ctx.session.menuMsgId = undefined;
+    // Forget the menu bubble only when it was this photo: on a fast double tap
+    // the first update already replaced it, and the replacement it tracked is
+    // what this update's render must take over (and, for a catalog render,
+    // delete — util/chat.ts), not leave behind as a second live bubble.
+    if (ctx.session.menuMsgId === cqMsg.message_id) ctx.session.menuMsgId = undefined;
   }
 }
 

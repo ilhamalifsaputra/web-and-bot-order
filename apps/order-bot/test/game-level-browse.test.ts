@@ -30,7 +30,7 @@ import { ensureFixtureBuyerAndSettings, FIXTURE_BUYER_TELEGRAM_ID } from "../../
 import { buildBot } from "../src/main";
 import { invalidateRateCache } from "../src/util/rate";
 import { coreT } from "../src/util/i18n";
-import { persistentLabel } from "../src/keyboards/customer";
+import { paymentSuccessKb, persistentLabel } from "../src/keyboards/customer";
 import { FAKE_ME, FakeTelegram } from "./helpers/fakeTelegram";
 
 const BUYER = FIXTURE_BUYER_TELEGRAM_ID;
@@ -255,12 +255,14 @@ describe("Game Top-up game level (fake transport)", () => {
     expect(denomButtons(tg).length).toBeGreaterThan(0);
   });
 
-  it("Back after the bubble was deleted: a Back from the photo detail sends exactly one replacement", async () => {
+  it("Back after the bubble was deleted: a Back from the photo detail sends exactly one replacement, a late duplicate never adds a live bubble", async () => {
     const tg = openBot();
     await openGameList(tg);
     await pressLabel(tg, "Free Fire");
     await tg.press((b) => b.callback_data?.startsWith("v1:browse:denom:") === true);
     const detail = tg.findButton(/Back/);
+    const detailMessage = structuredClone(tg.messages.get(detail.messageId)!);
+    const size = tg.messages.size;
     const mark = tg.mark();
     await tg.press(/Back/);
     const screen = tg.screen(mark);
@@ -268,11 +270,75 @@ describe("Game Top-up game level (fake transport)", () => {
     expect(screen.filter((m) => m === "deleteMessage")).toHaveLength(1);
     expect(screen.filter((m) => m.startsWith("edit"))).toHaveLength(0);
     expect(tg.messages.has(detail.messageId)).toBe(false);
-    // Tapping the deleted detail's Back again (a late duplicate) never stacks a second picker.
-    const again = tg.mark();
-    await tg.tap(detail.messageId, detail.button.callback_data!);
-    expect(tg.screen(again).filter((m) => m === "sendMessage" || m === "sendPhoto").length).toBeLessThanOrEqual(1);
+    expect(tg.messages.size).toBe(size);
+    // The deleted detail's Back tapped again (a late duplicate carrying the old bubble): still one live bubble.
+    tg.messages.set(detail.messageId, detailMessage);
+    const tapPromise = tg.tap(detail.messageId, detail.button.callback_data!);
+    tg.messages.delete(detail.messageId);
+    await tapPromise;
+    expect(tg.messages.size).toBe(size);
     expect(pickerBubbles(tg)).toBe(1);
+  });
+
+  describe("fast DOUBLE taps (both updates carry the same bubble) keep the live message count constant", () => {
+    const doubleTap = async (tg: FakeTelegram, match: (b: { text: string; callback_data?: string }) => boolean) => {
+      const { button, messageId } = tg.findButton(match);
+      await Promise.all([tg.tap(messageId, button.callback_data!), tg.tap(messageId, button.callback_data!)]);
+    };
+
+    it("on a pack picker button (text → photo detail)", async () => {
+      const tg = openBot();
+      await openGameList(tg);
+      await pressLabel(tg, "Free Fire");
+      const size = tg.messages.size;
+      await doubleTap(tg, (b) => b.callback_data?.startsWith("v1:browse:denom:") === true);
+      expect(tg.messages.size).toBe(size);
+      expect(pickerBubbles(tg)).toBe(1);
+      expect(current(tg).kind).toBe("photo");
+    });
+
+    it("on the detail's Back (photo → text pack picker)", async () => {
+      const tg = openBot();
+      await openGameList(tg);
+      await pressLabel(tg, "Free Fire");
+      await tg.press((b) => b.callback_data?.startsWith("v1:browse:denom:") === true);
+      const size = tg.messages.size;
+      await doubleTap(tg, (b) => /Back/.test(b.text));
+      expect(tg.messages.size).toBe(size);
+      expect(pickerBubbles(tg)).toBe(1);
+      expect(denomButtons(tg).length).toBeGreaterThan(0);
+    });
+
+    it("on a picker's Back up to the game list (text → banner photo)", async () => {
+      const tg = openBot();
+      await openGameList(tg);
+      await pressLabel(tg, "Genshin Impact");
+      await pressLabel(tg, "Welkin");
+      await pressLabel(tg, "Indonesia");
+      await tg.press(/Back/); // region picker (text)
+      await tg.press(/Back/); // edition picker (text)
+      const size = tg.messages.size;
+      await doubleTap(tg, (b) => /Back/.test(b.text));
+      expect(tg.messages.size).toBe(size);
+      expect(pickerBubbles(tg)).toBe(1);
+      expect(atGameList(tg)).toBe(true);
+    });
+  });
+
+  it("an untracked receipt's \"Buy again\" is NEVER deleted: only its keyboard is retired, one new bubble is sent", async () => {
+    const tg = openBot();
+    await openGameList(tg);
+    await tg.sendText("/start");
+    // The settled "Payment received" screen of an order nobody tracks any more (not a FulfillmentMessage, not the anchor).
+    const receipt = await tg.bot.api.sendMessage(BUYER, "✅ Payment received", { reply_markup: paymentSuccessKb(EN) });
+    const size = tg.messages.size;
+    const mark = tg.mark();
+    await tg.press((b) => b.callback_data === "v1:browse:prods");
+    expect(atGameList(tg)).toBe(true);
+    expect(tg.messages.has(receipt.message_id)).toBe(true);
+    expect(tg.messages.get(receipt.message_id)!.inline).toEqual([]);
+    expect(tg.since(mark).some((c) => c.method === "deleteMessage" && c.payload.message_id === receipt.message_id)).toBe(false);
+    expect(tg.messages.size).toBe(size + 1);
   });
 
   it("a typed ← Back on a game's region picker edits the menu bubble up to the edition picker and deletes the typed text", async () => {

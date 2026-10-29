@@ -188,31 +188,83 @@ function tappedIsPhoto(ctx: MyContext): boolean {
 }
 
 /**
- * After a fresh send (`newId`) replaced the screen: with `replaceTapped` (or a
- * text-only screen replacing a tapped photo) the tapped bubble is obsolete and
- * is deleted — not when it is a transaction bubble or the session's payment
- * anchor, and only once per update; a failed delete just retires its keyboard.
- * Otherwise (and for any other previous menu bubble `prev`) the keyboard is
- * retired, exactly as before.
+ * Callbacks a catalog screen's keyboard may carry: the browse / search screens
+ * themselves, the pack detail's quantity stepper, Buy (it only opens the
+ * order confirmation; no order exists yet) and restock buttons, the page
+ * indicator / disabled stepper no-op, and the main-menu button of a Back row.
+ * Anything else (order:, pay*, usdt:, voucher:, checkout:, wallet*, topup:,
+ * ticket:, help:, a URL or copy button…) marks a bubble that is NOT a catalog
+ * screen — a receipt, a payment or confirmation screen — and such a bubble is
+ * never deleted.
+ */
+const CATALOG_CALLBACK = /^v1:(?:(?:browse|search|qty|buy|restock):.+|noop|menu:main)$/;
+const SCREEN_CALLBACK = /^v1:(?:browse|search):/;
+
+/**
+ * ALLOWLIST for deleting an obsolete bubble: true only when every button of
+ * `markup` is a catalog callback (CATALOG_CALLBACK) and at least one opens a
+ * browse / search screen. A missing or empty keyboard is never a catalog one.
+ */
+export function isCatalogKeyboard(markup: unknown): boolean {
+  const rows = (markup as { inline_keyboard?: unknown } | null | undefined)?.inline_keyboard;
+  if (!Array.isArray(rows)) return false;
+  const buttons = rows.flat() as Array<{ callback_data?: unknown } | null | undefined>;
+  let opensScreen = false;
+  for (const button of buttons) {
+    const data = button?.callback_data;
+    if (typeof data !== "string" || !CATALOG_CALLBACK.test(data)) return false;
+    if (SCREEN_CALLBACK.test(data)) opensScreen = true;
+  }
+  return opensScreen;
+}
+
+/** Track the menu bubble and whether it now shows a catalog-only keyboard. */
+function setMenuBubble(ctx: MyContext, messageId: number | undefined, markup: Markup): void {
+  ctx.session.menuMsgId = messageId;
+  ctx.session.catalogMsgId = messageId !== undefined && isCatalogKeyboard(markup) ? messageId : undefined;
+}
+
+/** Best-effort delete of an obsolete bubble that is not a transaction bubble or the payment anchor; true when it is gone. */
+async function deleteObsoleteBubble(ctx: MyContext, messageId: number): Promise<boolean> {
+  const chatId = ctx.chat?.id;
+  if (chatId === undefined || ctx.session.paymentAnchorMsgId === messageId || (await isTransactionBubble(ctx, messageId))) return false;
+  try {
+    await ctx.api.deleteMessage(chatId, messageId);
+    return true;
+  } catch {
+    return false; // too old (48 h), not ours, or already gone
+  }
+}
+
+/**
+ * After a fresh send (`newId`) replaced the screen of a catalog render
+ * (`replaceTapped`, or `textOnly` replacing a tapped photo): the tapped bubble
+ * is obsolete and is deleted when its own keyboard is a catalog one
+ * (isCatalogKeyboard — an allowlist: a receipt's "Buy again", a payment or a
+ * confirmation bubble is never deleted, only its keyboard retired). A previous
+ * menu bubble `prev` that is not the tapped one (a fast double tap whose first
+ * update already deleted the tapped bubble) is deleted too when it was
+ * rendered as a catalog bubble (session.catalogMsgId), so the live message
+ * count stays constant. A failed delete retires the keyboard and never blocks.
+ * Without those options the keyboard of `prev` is retired, exactly as before.
  */
 async function retireReplacedBubble(ctx: MyContext, prev: number | undefined, newId: number, opts?: RenderOptions): Promise<void> {
-  const tappedId = tappedBubbleGone.has(ctx) ? undefined : ctx.callbackQuery?.message?.message_id;
-  const deleteTapped = !!opts?.replaceTapped || (!!opts?.textOnly && tappedIsPhoto(ctx));
-  const chatId = ctx.chat?.id;
-  if (deleteTapped && tappedId !== undefined && tappedId !== newId && chatId !== undefined
-    && ctx.session.paymentAnchorMsgId !== tappedId && !(await isTransactionBubble(ctx, tappedId))) {
-    let deleted = true;
-    try {
-      await ctx.api.deleteMessage(chatId, tappedId);
-    } catch {
-      deleted = false; // too old (48 h) or already gone: retire it below instead
-    }
-    if (deleted) markTappedBubbleDeleted(ctx);
-    else await retireKeyboard(ctx, tappedId);
-    if (prev !== undefined && prev !== tappedId && prev !== newId) await retireKeyboard(ctx, prev);
+  const catalogRender = !!opts?.replaceTapped || (!!opts?.textOnly && tappedIsPhoto(ctx));
+  if (!catalogRender) {
+    if (prev !== undefined && prev !== newId) await retireKeyboard(ctx, prev);
     return;
   }
-  if (prev !== undefined && prev !== newId) await retireKeyboard(ctx, prev);
+  const tapped = tappedBubbleGone.has(ctx) ? undefined : ctx.callbackQuery?.message;
+  const tappedId = tapped?.message_id;
+  if (tappedId !== undefined && tappedId !== newId) {
+    if (isCatalogKeyboard(tapped?.reply_markup) && (await deleteObsoleteBubble(ctx, tappedId))) markTappedBubbleDeleted(ctx);
+    // Not a catalog bubble (a receipt's "Buy again"…) or not deletable: it stays, without its keyboard.
+    else if (prev !== tappedId) await retireKeyboard(ctx, tappedId);
+  }
+  if (prev === undefined || prev === newId) return;
+  if (prev === tappedId && tappedBubbleGone.has(ctx)) return;
+  if (prev !== tappedId && ctx.session.catalogMsgId === prev && (await deleteObsoleteBubble(ctx, prev))) return;
+  await retireKeyboard(ctx, prev);
 }
 
 /** Render the next customer screen (edit on tap, send on typed input). */
@@ -224,10 +276,10 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // screen only; a reply keyboard still needs a fresh send).
   const typedNav = typedNavigation.get(ctx);
   if (!ctx.callbackQuery && typedNav && (replyMarkup === undefined || isInline(replyMarkup))) {
-    ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
+    setMenuBubble(ctx, await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
       replacePhoto: typedNav.textOnly || !!opts?.textOnly,
       captionText: opts?.captionText !== undefined ? withTypedNavigationNotice(ctx, opts.captionText) : undefined,
-    });
+    }), replyMarkup);
     return;
   }
 
@@ -272,7 +324,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
         // anchored bubble" lookup for that chat.
         const prev = ctx.session.menuMsgId;
         if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
-        ctx.session.menuMsgId = cqMsg.message_id;
+        setMenuBubble(ctx, cqMsg.message_id, replyMarkup);
         // This bubble may have been an order's payment screen a moment ago; it
         // now shows a menu, so that order's claim on it has to go. Session-gated
         // and free when nothing is anchored — see util/paymentAnchor.ts.
@@ -284,7 +336,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   const prev = ctx.session.menuMsgId ?? tappedId;
   const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
   await retireReplacedBubble(ctx, prev, msg.message_id, opts);
-  ctx.session.menuMsgId = msg.message_id;
+  setMenuBubble(ctx, msg.message_id, replyMarkup);
 }
 
 // Telegram caption limit. A banner-as-photo render carries the menu text as the
@@ -337,7 +389,7 @@ export async function renderMenu(
           // assignment was a bug.
           const prev = ctx.session.menuMsgId;
           if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
-          ctx.session.menuMsgId = cqMsg.message_id;
+          setMenuBubble(ctx, cqMsg.message_id, replyMarkup);
           // A caption edit leaves the message alive showing this menu, so an
           // anchored payment screen here is now gone — release it (same gate as
           // smartEdit). The QRIS/PayDisini wait screen IS a photo+caption
@@ -350,7 +402,7 @@ export async function renderMenu(
     const prev = ctx.session.menuMsgId ?? (tappedGone ? undefined : ctx.callbackQuery?.message?.message_id);
     const msg = await ctx.replyWithPhoto(photo, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
     await retireReplacedBubble(ctx, prev, msg.message_id, opts);
-    ctx.session.menuMsgId = msg.message_id;
+    setMenuBubble(ctx, msg.message_id, replyMarkup);
     if (onPhotoSent && msg.photo?.length) await onPhotoSent(msg.photo[msg.photo.length - 1]!.file_id);
     return;
   }
@@ -453,10 +505,10 @@ async function editAnchor(
 export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup, opts?: RenderOptions): Promise<void> {
   if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup, opts);
   endScreenModes(ctx);
-  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
+  setMenuBubble(ctx, await editAnchor(ctx, ctx.session.menuMsgId, withTypedNavigationNotice(ctx, text), replyMarkup, {
     replacePhoto: typedNavigation.get(ctx)?.textOnly,
     captionText: opts?.captionText !== undefined ? withTypedNavigationNotice(ctx, opts.captionText) : undefined,
-  });
+  }), replyMarkup);
 }
 
 /** Render an admin wizard step into the anchor bubble (edit-in-place). */

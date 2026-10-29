@@ -41,7 +41,7 @@ import { isRoundingPolicy } from "@app/core/pricingRule";
 import { CUSTOMER_SERVICES, SERVICE_CHANNELS, type ServiceChannel } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { verifySmtp, sendMail, safeMailFailure, requireMailAcceptance, EMAIL_RECIPIENT_RE } from "@app/core/mailer";
-import { resolveBooleanSetting } from "@app/core";
+import { resolveBooleanSetting, resolveGroupOrder, GROUP_ORDER_SETTING_KEY } from "@app/core";
 import { layout, components, toAbsoluteAssetUrl, type BrandConfig } from "@app/core/email";
 import { claimSmtpTest, emailDeliveryDiagnostics } from "@app/db";
 import {
@@ -776,6 +776,11 @@ function digiflazzWebhookUrl(): string | null {
   return base ? `${base.replace(/\/+$/, "")}/pay/digiflazz/callback` : null;
 }
 
+/** The admin-facing name of a product group (its customer service label). */
+function groupLabel(key: string): string {
+  return CUSTOMER_SERVICES.find((service) => service.group === key)?.label ?? key;
+}
+
 export default async function settingsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/settings", { preHandler: currentAdmin }, async (req, reply) => {
     const rows = await listAllSettings(prisma);
@@ -825,6 +830,10 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       fields,
       payMethodState,
       serviceStates: await listServiceStates(prisma),
+      groupOrder: resolveGroupOrder(await getSetting(prisma, GROUP_ORDER_SETTING_KEY)).map((key) => ({
+        key,
+        label: groupLabel(key),
+      })),
       bybitHealth,
       bybitBscHealth,
       digiflazzWebhookUrl: digiflazzWebhookUrl(),
@@ -869,6 +878,29 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       action: "setting_set",
       targetType: "setting",
       details: `${body.enabled ? "Enabled" : "Disabled"} ${service.label} for ${channel === "bot" ? "the Telegram bot" : "the website"}.`,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/settings/services/order", { preHandler: csrfProtect }, async (req, reply) => {
+    const { groups } = (req.body ?? {}) as { groups?: unknown };
+    const known = resolveGroupOrder(null) as string[];
+    const valid =
+      Array.isArray(groups) &&
+      groups.length === known.length &&
+      new Set(groups).size === known.length &&
+      groups.every((key) => typeof key === "string" && known.includes(key));
+    if (!valid) {
+      return reply.code(400).send({ error: "Send every product group exactly once to set the website order." });
+    }
+    const order = groups as string[];
+
+    await setSetting(prisma, GROUP_ORDER_SETTING_KEY, JSON.stringify(order));
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "setting_set",
+      targetType: "setting",
+      details: `Changed the website product group order to ${order.map(groupLabel).join(", then ")}.`,
     });
     return reply.send({ ok: true });
   });

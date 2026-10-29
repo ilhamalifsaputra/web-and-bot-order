@@ -701,6 +701,33 @@ export type CatalogProduct = Product & {
 };
 
 /**
+ * What makes a product appear in the customer catalog: active, not archived,
+ * in an active category, with at least one active denomination priced above
+ * zero. One definition shared by the catalog listing and the admin counts so
+ * they cannot drift apart.
+ */
+export const CATALOG_ELIGIBLE_PRODUCT_WHERE = {
+  isActive: true,
+  isArchived: false,
+  category: { isActive: true },
+  denominations: { some: { isActive: true, price: { gt: 0 } } },
+} as const;
+
+/**
+ * How many catalog-eligible products each category holds (categories with none
+ * are absent from the map). The admin Categories page uses it to warn about
+ * Premium categories the website folds into "More Premium Apps".
+ */
+export async function countCatalogEligibleProductsByCategory(db: Db): Promise<Map<number, number>> {
+  const rows = await db.product.groupBy({
+    by: ["categoryId"],
+    where: CATALOG_ELIGIBLE_PRODUCT_WHERE,
+    _count: { _all: true },
+  });
+  return new Map(rows.map((row) => [row.categoryId, row._count._all]));
+}
+
+/**
  * Active products (with ≥1 active denomination) in a category — or the whole
  * catalog when categoryId is omitted. Each carries its active denominations
  * price-asc so a card can show the starting price. Ordered by sortOrder, name.
@@ -724,13 +751,10 @@ export async function listCatalogProducts(
 ): Promise<CatalogProduct[]> {
   const [products, groups] = await Promise.all([db.product.findMany({
     where: {
-      isActive: true,
-      isArchived: false,
-      category: { isActive: true },
+      ...CATALOG_ELIGIBLE_PRODUCT_WHERE,
       ...(categoryId != null ? { categoryId } : {}),
       ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
       ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
-      denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
       category: true,

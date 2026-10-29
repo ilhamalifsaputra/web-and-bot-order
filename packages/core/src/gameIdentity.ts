@@ -82,13 +82,16 @@ const TRAILING_PARENTHETICAL = /^(.*\S)\s*\(([^()]*)\)$/;
 /** A region may span up to this many trailing words ("South East Asia"). */
 const MAX_REGION_WORDS = 3;
 
-/** Remove a trailing whitelisted region; `rest` is never empty. */
-function stripTrailingRegion(base: string): { rest: string; region: string | null } {
+/** Remove a trailing whitelisted region; `rest` is never empty. `bareWords`
+ * false: only a "(…)" suffix counts, never a bare trailing word. `bare` tells
+ * whether the region came from a bare trailing word. */
+function stripTrailingRegion(base: string, bareWords = true): { rest: string; region: string | null; bare: boolean } {
   const paren = TRAILING_PARENTHETICAL.exec(base);
   if (paren) {
     const hit = lookupGameRegion(paren[2]);
-    return hit ? { rest: paren[1]!.trim(), region: hit.row.label } : { rest: base, region: null };
+    return hit ? { rest: paren[1]!.trim(), region: hit.row.label, bare: false } : { rest: base, region: null, bare: false };
   }
+  if (!bareWords) return { rest: base, region: null, bare: false };
   const words = base.split(" ");
   for (let n = Math.min(MAX_REGION_WORDS, words.length - 1); n >= 1; n--) {
     const tail = words.slice(-n).join(" ");
@@ -97,9 +100,9 @@ function stripTrailingRegion(base: string): { rest: string; region: string | nul
     // A bare short code counts only when written in capitals ("ML BR"), so an
     // ordinary trailing word like "my" or "id" is never read as a country.
     if (hit.viaShortCode && tail !== tail.toUpperCase()) continue;
-    return { rest: words.slice(0, -n).join(" "), region: hit.row.label };
+    return { rest: words.slice(0, -n).join(" "), region: hit.row.label, bare: true };
   }
-  return { rest: base, region: null };
+  return { rest: base, region: null, bare: false };
 }
 
 /** Remove `phrase` from the end of `base` (normalized word comparison), or null. */
@@ -116,33 +119,67 @@ function stripTrailingPhrase(base: string, phrase: string): string | null {
 interface DerivedIdentity extends GameIdentity {
   /** The stripped base in its original casing, for displayGameName. */
   rawName: string;
+  /** A bare trailing region WORD was stripped from the title ("Hero of
+   * Indonesia" → "Hero of"): only trusted when another product shares the
+   * stripped key (deriveGameIdentities). */
+  bareStrip: boolean;
 }
 
-function derive(input: GameIdentityInput): DerivedIdentity {
+function derive(input: GameIdentityInput, bareWords = true): DerivedIdentity {
   const name = collapse(input.name);
   const source = blankToNull(input.digiflazzBrand) ?? name;
   const variant = blankToNull(input.gameVariant);
   const variantRegion = variant ? (lookupGameRegion(variant)?.row.label ?? null) : null;
 
-  const first = stripTrailingRegion(source);
+  const first = stripTrailingRegion(source, bareWords);
   let base = first.rest;
   let suffixRegion = first.region;
+  let bareStrip = first.bare;
   // Only an edition word is stripped: never the base marker, never a region
   // (handled above) and never a publisher — "Delta Force Garena" stays a game.
   if (variant && !variantRegion && !isBaseEdition(variant) && !isGamePublisherWord(variant)) {
     base = stripTrailingPhrase(base, variant) ?? base;
   }
   if (!suffixRegion) {
-    const second = stripTrailingRegion(base);
+    const second = stripTrailingRegion(base, bareWords);
     base = second.rest;
     suffixRegion = second.region;
+    bareStrip ||= second.bare;
   }
-  const nameRegion = source === name ? null : stripTrailingRegion(name).region;
+  const nameStrip = source === name ? null : stripTrailingRegion(name, bareWords);
+  const nameRegion = nameStrip?.region ?? null;
 
-  const region = canonicalGameRegion(input.gameRegion) ?? variantRegion ?? suffixRegion ?? nameRegion;
+  const explicitRegion = canonicalGameRegion(input.gameRegion);
+  const region = explicitRegion ?? variantRegion ?? suffixRegion ?? nameRegion;
   const edition = variant && !variantRegion ? variant : null;
   const gameKey = normalizeGameKey(base) || normalizeGameKey(source);
-  return { gameKey, gameName: displayGameName([base]), edition, region, rawName: base };
+  // A bare word confirmed by the region-type variant or the explicit region is not weak.
+  if (bareStrip && suffixRegion !== null && (suffixRegion === variantRegion || suffixRegion === explicitRegion)) bareStrip = false;
+  // A bare name word that is the only source of the region is just as weak.
+  if (!bareStrip && nameStrip?.bare && region === nameRegion && region !== null && !canonicalGameRegion(input.gameRegion) && !variantRegion) bareStrip = true;
+  return { gameKey, gameName: displayGameName([base]), edition, region, rawName: base, bareStrip };
+}
+
+/**
+ * Identities for one category's products, aligned with the input: like
+ * deriveGameIdentity, except that a bare trailing region WORD stripped from a
+ * title is trusted only when another product shares the stripped key ("Hero
+ * of Indonesia" alone keeps its title and has no region; next to "Hero of
+ * Malaysia" both become "Hero of" with their regions). A "(…)" suffix, a
+ * region-type variant and an explicit gameRegion are always trusted.
+ */
+function deriveAll(products: readonly GameIdentityInput[]): DerivedIdentity[] {
+  const identities = products.map((product) => derive(product));
+  return identities.map((identity, index) => {
+    if (!identity.bareStrip) return identity;
+    const shared = identities.some((other, otherIndex) => otherIndex !== index && other.gameKey === identity.gameKey);
+    return shared ? identity : derive(products[index]!, false);
+  });
+}
+
+/** The identities of one category's products (see deriveAll), aligned with the input. Pure. */
+export function deriveGameIdentities(products: readonly GameIdentityInput[]): GameIdentity[] {
+  return deriveAll(products).map(({ gameKey, gameName, edition, region }) => ({ gameKey, gameName, edition, region }));
 }
 
 /** The game, edition and region of one product. Pure; see the module header. */
@@ -221,7 +258,8 @@ function compareNames(a: string, b: string): number {
  * the input.
  */
 export function groupProductsByGame<T extends GameGroupableProduct>(products: readonly T[]): GameGroup<T>[] {
-  const rows = products.map((product, index) => ({ product, index, identity: derive(product) }));
+  const identities = deriveAll(products);
+  const rows = products.map((product, index) => ({ product, index, identity: identities[index]! }));
   rows.sort(
     (a, b) =>
       (a.product.sortOrder ?? 0) - (b.product.sortOrder ?? 0) ||
@@ -329,6 +367,12 @@ export interface UnrecognisedRegion<T> {
 }
 
 const SHORT_CODE = /^[A-Z]{2,3}$/;
+/** Tokens that are never a region: numbers / years, currency codes, product qualifiers. */
+const NOT_A_REGION = new Set([
+  "idr", "usd", "usdt", "sgd", "myr", "php", "thb", "vnd", "eur", "gbp", "jpy", "krw", "cny", "inr", "brl", "rub", "try", "aud", "twd", "hkd",
+  "lite", "max", "pro", "mini", "wallet", "plus", "premium", "vip", "promo", "bonus", "gift", "voucher", "pass",
+]);
+const isNeverRegion = (token: string) => /^\d+$/.test(token.replace(/[\s.,]/g, "")) || NOT_A_REGION.has(normalizeGameKey(token));
 
 /**
  * The "regions not recognised" report: products of one category that look
@@ -340,16 +384,18 @@ const SHORT_CODE = /^[A-Z]{2,3}$/;
  * Each product at most once, in input order.
  */
 export function findUnrecognisedGameRegions<T extends GameGroupableProduct>(products: readonly T[]): UnrecognisedRegion<T>[] {
-  const identities = products.map((product) => derive(product));
+  const identities = deriveAll(products);
   const regionedKeys = new Set(identities.filter((identity) => identity.region !== null).map((identity) => identity.gameKey));
   const out: UnrecognisedRegion<T>[] = [];
   products.forEach((product, index) => {
     const identity = identities[index]!;
     if (identity.region !== null) return;
     const variant = blankToNull(product.gameVariant);
-    // A publisher, the base marker or the product's own edition in parentheses is not a region.
+    // A publisher, the base marker, a number / currency / qualifier, or the
+    // product's own edition in parentheses is not a region.
     const isQuiet = (token: string) =>
-      isGamePublisherWord(token) || isBaseEdition(token) || (variant !== null && normalizeGameKey(token) === normalizeGameKey(variant));
+      isGamePublisherWord(token) || isBaseEdition(token) || isNeverRegion(token)
+      || (variant !== null && normalizeGameKey(token) === normalizeGameKey(variant));
     for (const source of [blankToNull(product.digiflazzBrand), collapse(product.name)]) {
       const token = source ? blankToNull(TRAILING_PARENTHETICAL.exec(source)?.[2]) : null;
       if (token && !isQuiet(token)) {
@@ -357,13 +403,20 @@ export function findUnrecognisedGameRegions<T extends GameGroupableProduct>(prod
         return;
       }
     }
-    if (variant && SHORT_CODE.test(variant) && !isGamePublisherWord(variant)) {
+    if (variant && SHORT_CODE.test(variant) && !isGamePublisherWord(variant) && !isNeverRegion(variant)) {
       out.push({ product, reason: "unknown_code", token: variant });
       return;
     }
-    if (regionedKeys.has(identity.gameKey)) {
-      out.push({ product, reason: "region_missing_in_regioned_game", token: variant && !isBaseEdition(variant) ? variant : null });
+    if (!regionedKeys.has(identity.gameKey)) return;
+    // A real edition (carried by another product of the same game too, or a
+    // known qualifier) is not a missed country.
+    const edition = identity.edition;
+    if (edition !== null && !isBaseEdition(edition)) {
+      if (isNeverRegion(edition)) return;
+      const shared = identities.some((other, otherIndex) => otherIndex !== index && other.gameKey === identity.gameKey && other.edition === edition);
+      if (shared) return;
     }
+    out.push({ product, reason: "region_missing_in_regioned_game", token: variant && !isBaseEdition(variant) ? variant : null });
   });
   return out;
 }

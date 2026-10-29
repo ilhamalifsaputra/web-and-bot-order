@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  deriveGameIdentities,
   deriveGameIdentity,
   displayGameName,
   findUnrecognisedGameRegions,
@@ -401,6 +402,35 @@ describe("gameScopePickers — same rules as the category-level pickers", () => 
   });
 });
 
+describe("a bare trailing region word in a title (minor 4)", () => {
+  it("keeps a title that merely ends in a region word when no other product shares the stripped name", () => {
+    const groups = groupProductsByGame([p("Hero of Indonesia"), p("Counter Strike Global"), p("Free Fire")]);
+    expect(groups.map((g) => [g.gameName, g.members[0]!.region])).toEqual([
+      ["Counter Strike Global", null],
+      ["Free Fire", null],
+      ["Hero of Indonesia", null],
+    ]);
+    expect(deriveGameIdentities([p("Hero of Indonesia")])[0]).toMatchObject({ gameName: "Hero of Indonesia", region: null });
+  });
+
+  it("still strips it when another product shares the stripped name, or when the region is in parentheses / the variant / explicit", () => {
+    const groups = groupProductsByGame([p("Hero of Indonesia"), p("Hero of Malaysia")]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.members.map((m) => m.region)).toEqual([ID, MY]);
+    expect(deriveGameIdentities([p("Lone Game (BR)")])[0]).toMatchObject({ gameName: "Lone Game", region: BR });
+    expect(deriveGameIdentities([p("Valorant Malaysia", { digiflazzBrand: "Valorant", gameVariant: "Malaysia" })])[0]).toMatchObject({ gameName: "Valorant", region: MY });
+    expect(deriveGameIdentities([p("Era of Brazil", { gameRegion: "Brazil" })])[0]).toMatchObject({ region: BR });
+    // Importer shape (brand = composite name, the country is the Digiflazz type): confirmed, stripped even alone.
+    expect(deriveGameIdentities([p("Valorant Malaysia", { gameVariant: "Malaysia" })])[0]).toMatchObject({ gameName: "Valorant", region: MY });
+  });
+
+  it("deriveGameIdentities is the same identity groupProductsByGame groups by", () => {
+    const rows = productionCatalog();
+    const keys = deriveGameIdentities(rows).map((identity) => identity.gameKey);
+    expect(new Set(keys).size).toBe(groupProductsByGame(rows).length);
+  });
+});
+
 describe("findUnrecognisedGameRegions (the 'regions not recognised' report)", () => {
   const report = (rows: P[]) => findUnrecognisedGameRegions(rows).map((r) => [r.product.name, r.reason, r.token]);
 
@@ -428,6 +458,29 @@ describe("findUnrecognisedGameRegions (the 'regions not recognised' report)", ()
       p("Valorant Kazakhstan", { digiflazzBrand: "Valorant", gameVariant: "Kazakhstan" }),
       p("Free Fire"),
     ])).toEqual([["Valorant Kazakhstan", "region_missing_in_regioned_game", "Kazakhstan"]]);
+  });
+
+  it("skips numbers, years, currency codes and qualifiers (Lite, MAX, Pro, Mini, Wallet), and real shared editions (minor 5)", () => {
+    expect(report([
+      p("Free Fire (2024)"),
+      p("Free Fire MAX (MAX)"),
+      p("Steam Wallet (IDR)"),
+      p("PUBG Mobile (Lite)"),
+      p("Razer Gold (USD)"),
+      p("Game Pass (12)"),
+      p("Clash (Pro)", { gameVariant: "Pro" }),
+      p("Code IDR", { digiflazzBrand: "Code", gameVariant: "IDR" }),
+    ])).toEqual([]);
+    // An edition carried by several products of a regioned game is a real edition, not a missed country.
+    expect(report([
+      p("Genshin Welkin Indonesia", { digiflazzBrand: "Genshin", gameVariant: "Welkin", gameRegion: ID }),
+      p("Genshin Welkin", { digiflazzBrand: "Genshin", gameVariant: "Welkin" }),
+      p("Genshin Welkin Plus", { digiflazzBrand: "Genshin", gameVariant: "Welkin" }),
+    ])).toEqual([]);
+  });
+
+  it("no false positive for a catalog without regions at all", () => {
+    expect(report([p("Arena Breakout", { gameVariant: "Umum" }), p("Arena Breakout Infinite", { gameVariant: "Infinite" }), p("Free Fire"), p("Growtopia")])).toEqual([]);
   });
 
   it("never lists a product with an explicit admin region, even an unlisted one", () => {

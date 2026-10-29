@@ -167,8 +167,10 @@ describe("GET /api/v1/pages/home — grouped by product group", () => {
     expect(games.sections[0]!.products.map((p) => p.slug)).toEqual([S.g2, S.g4, S.g1, S.g3]);
   });
 
-  it("puts each group's first available bestseller in the hero, in group order", async () => {
-    expect((await home()).hero_products.map((p) => p.slug)).toEqual([S.v2, S.g2]);
+  it("puts each group's first available bestseller in the hero, in group order, then fills to 3", async () => {
+    // One per group first (v2, g2); the third slot goes to the next available
+    // product across groups in group order — Premium's second, t1.
+    expect((await home()).hero_products.map((p) => p.slug)).toEqual([S.v2, S.g2, S.t1]);
   });
 
   it("follows the admin group order setting", async () => {
@@ -176,7 +178,7 @@ describe("GET /api/v1/pages/home — grouped by product group", () => {
     try {
       const body = await home();
       expect(body.groups.map((g) => g.key)).toEqual(["GAME_TOPUP", "PREMIUM_APPS"]);
-      expect(body.hero_products.map((p) => p.slug)).toEqual([S.g2, S.v2]);
+      expect(body.hero_products.map((p) => p.slug)).toEqual([S.g2, S.v2, S.g4]);
     } finally {
       await deleteSetting(prisma, GROUP_ORDER_SETTING_KEY);
     }
@@ -187,7 +189,8 @@ describe("GET /api/v1/pages/home — grouped by product group", () => {
     try {
       const body = await home();
       expect(body.groups.map((g) => g.key)).toEqual(["PREMIUM_APPS"]);
-      expect(body.hero_products.map((p) => p.slug)).toEqual([S.v2]);
+      // One group left: still three cards, in that group's bestseller order.
+      expect(body.hero_products.map((p) => p.slug)).toEqual([S.v2, S.t1, S.m1]);
     } finally {
       await deleteSetting(prisma, GAME_WEB_KEY);
     }

@@ -110,7 +110,7 @@ function rankedEntries(products: readonly CatalogProduct[], ranked: readonly Pro
 
 /** At most this many flash cards on the home page's Flash Sale section. */
 const HOME_FLASH_LIMIT = 8;
-/** At most this many hero preview cards (one per group). */
+/** At most this many hero preview cards (one per group first, then filled up). */
 const HERO_PRODUCTS_LIMIT = 3;
 
 /**
@@ -185,12 +185,23 @@ export async function homeCatalogData() {
   };
 }
 
-/** The hero's preview cards: the top in-stock card of each group (group order). */
-export function heroCards(groups: readonly (readonly ProductCard[])[]): ProductCard[] {
+/**
+ * The hero's preview cards (up to HERO_PRODUCTS_LIMIT): the top in-stock card
+ * of each group first, in group order; then, when there are fewer groups than
+ * slots, the next in-stock cards walking the groups in group order and each
+ * group in its own (bestseller) order. Never a duplicate, never a sold-out card.
+ */
+function heroCards(groups: readonly (readonly ProductCard[])[]): ProductCard[] {
+  const available = groups.map((cards) => cards.filter((c) => !isOutOfStock(c)));
+  const leads = available.flatMap((cards) => cards.slice(0, 1));
+  const rest = available.flatMap((cards) => cards.slice(1));
   const picked: ProductCard[] = [];
-  for (const cards of groups) {
-    const lead = cards.find((c) => !isOutOfStock(c));
-    if (lead && picked.length < HERO_PRODUCTS_LIMIT) picked.push(lead);
+  const seen = new Set<string>();
+  for (const card of [...leads, ...rest]) {
+    if (picked.length === HERO_PRODUCTS_LIMIT) break;
+    if (seen.has(card.slug)) continue;
+    seen.add(card.slug);
+    picked.push(card);
   }
   return picked;
 }

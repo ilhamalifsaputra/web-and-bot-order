@@ -895,7 +895,8 @@ export async function listCategoryGameRegions(
  */
 export async function listNewestCatalogProducts(db: Db, channel: ServiceChannel, limit = 12): Promise<CatalogProduct[]> {
   const products = await listCatalogProducts(db, channel);
-  return products.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id).slice(0, limit);
+  // Sort a copy: never reorder the list listCatalogProducts handed back.
+  return [...products].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id).slice(0, limit);
 }
 
 /** Options for the Game Top-up search; a plain call keeps the original behavior. */

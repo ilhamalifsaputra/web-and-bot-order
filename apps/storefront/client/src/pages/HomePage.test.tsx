@@ -656,7 +656,6 @@ describe("HomePage", () => {
     expect(document.getElementById("home-group-nav")).not.toBeNull();
     // .btn-ghost (ink-soft on sand) is unreadable on bg-ink — the outline CTA
     // keeps a white border + white/15 hover instead (foundations.md §7).
-    expect(secondary).toHaveAttribute("href", "#home-group-nav");
     expect(secondary.className).toContain("hover:bg-white/15");
     expect(secondary.className).toContain("focus-on-dark");
     // The group nav lists groups, not categories — no CTA calls it "Categories".

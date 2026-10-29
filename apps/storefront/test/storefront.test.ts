@@ -160,7 +160,7 @@ async function categoryCards(groupSlug: string, slug: string): Promise<Array<{ s
   return res.json().products;
 }
 
-describe("GET /api/v1/pages/home", () => {
+describe("home group sections (GET /api/v1/pages/home, cards via GET /api/v1/pages/group/:slug)", () => {
   it("lists the category in a home section and returns its product card with its price", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
     expect(res.statusCode).toBe(200);

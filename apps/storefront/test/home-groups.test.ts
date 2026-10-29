@@ -266,7 +266,9 @@ describe("GET /api/v1/pages/group/:slug", () => {
     let offset: number | null = 0;
     let pages = 0;
     while (offset !== null) {
-      const body = (await groupPage("premium-apps", `?offset=${offset}&limit=2`)).json();
+      const body: { products: Card[]; next_offset: number | null } = (
+        await groupPage("premium-apps", `?offset=${offset}&limit=2`)
+      ).json();
       expect(body.products.length).toBeLessThanOrEqual(2);
       seen.push(...body.products.map((p: Card) => p.slug));
       offset = body.next_offset;

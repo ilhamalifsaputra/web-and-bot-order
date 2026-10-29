@@ -169,6 +169,7 @@ function renderInstantBuy(
     ctx?: ShopContext;
     throughProductPage?: boolean;
     productError?: Error;
+    search?: string;
   } = {},
 ) {
   const ctx = options.ctx ?? context;
@@ -197,7 +198,7 @@ function renderInstantBuy(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/p/${slug}`]}>
+      <MemoryRouter initialEntries={[`/p/${slug}${options.search ?? ""}`]}>
         <Routes>
           <Route path="/p/:slug" element={options.throughProductPage ? <ProductPage /> : <InstantBuyPage />} />
           <Route path="/checkout/:code/pay" element={<div>pay-page-stub</div>} />
@@ -210,6 +211,31 @@ function renderInstantBuy(
 }
 
 describe("InstantBuyPage", () => {
+  describe("?d= preselect (flash card links)", () => {
+    it("selects the denomination named by ?d=", async () => {
+      renderInstantBuy({ search: "?d=2" });
+      await screen.findByText("Summary");
+      expect(screen.getByRole("radio", { name: /172 Diamonds/ })).toBeChecked();
+      expect(screen.getByRole("radio", { name: /86 Diamonds/ })).not.toBeChecked();
+    });
+
+    it("ignores an unknown id and keeps the first denomination", async () => {
+      renderInstantBuy({ search: "?d=999" });
+      await screen.findByText("Summary");
+      expect(screen.getByRole("radio", { name: /86 Diamonds/ })).toBeChecked();
+    });
+
+    it("ignores a denomination that cannot be bought", async () => {
+      const product = {
+        ...productData,
+        denominations: [productData.denominations[0]!, { ...productData.denominations[1]!, purchasable: false }],
+      };
+      renderInstantBuy({ product, search: "?d=2" });
+      await screen.findByText("Summary");
+      expect(screen.getByRole("radio", { name: /86 Diamonds/ })).toBeChecked();
+    });
+  });
+
   // H-31 (batch 5): the Game Top Up summary total is the large figure too,
   // and this flow (no cart) shows no Cart → Pay → Done stepper.
   it("shows the order total at text-2xl in the display font and no stepper", async () => {

@@ -40,7 +40,7 @@ import CheckoutErrorBanner from "../components/shop/CheckoutErrorBanner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BadgeCheck, Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import { useIdempotentPost } from "../api/idempotency";
 import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
@@ -65,6 +65,7 @@ import { humanError, isQuoteChanged } from "../lib/errors";
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { formatPriceFor } from "../lib/format";
 import { currentLang, t } from "../lib/i18n";
+import { preselectedDenomination } from "../lib/preselectDenomination";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useIsWideDesktop } from "../lib/useMediaQuery";
@@ -121,6 +122,7 @@ export default function InstantBuyPage() {
   useDocumentTitle(data && ctx?.shop_name ? `${data.product.name} — ${ctx.shop_name}` : undefined);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const requestedDenomination = useSearchParams()[0].get("d");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [checkoutAttempted, setCheckoutAttempted] = useState(false);
@@ -146,7 +148,7 @@ export default function InstantBuyPage() {
     setSelectedId(null);
   }, [slug]);
 
-  const { denominations, selected, needsInfo, fieldConfigKey, configValid } = instantBuySelection({ data, selectedId });
+  const { denominations, selected, needsInfo, fieldConfigKey, configValid } = instantBuySelection({ data, selectedId, requestedDenomination });
 
   const { voucherInput, setVoucherInput, method, setMethod, page, appliedVoucher, previewContext, totals, voucherPending, previewQuery, previewErrorKey, previewMutation, applyVoucher, onVoucherKeyDown, reprice } = useTopupPricing({ slug, selected, ctx, configValid, submitLock });
   // A refused order whose total changed (409 error.quote_changed): the summary
@@ -872,13 +874,14 @@ function usePrimaryPurchaseVisibility({ isDesktop }: {
   return { setPrimaryElement, primaryVisible } as const;
 }
 
-function instantBuySelection({ data, selectedId }: {
+function instantBuySelection({ data, selectedId, requestedDenomination }: {
   data: NoInfer<ProductPageData> | undefined;
   selectedId: number | null;
+  requestedDenomination: string | null;
 }) {
   const denominations = data?.denominations ?? [];
 
-  const fallback = denominations.find((d) => d.purchasable) ?? denominations[0];
+  const fallback = preselectedDenomination(denominations, requestedDenomination);
 
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
 

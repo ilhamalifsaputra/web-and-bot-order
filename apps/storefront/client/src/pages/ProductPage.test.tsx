@@ -164,7 +164,7 @@ const relatedProduct: ProductCardData = {
   all_non_auto: false,
 };
 
-function renderProduct(slug: string, respond: (path: string) => unknown, ctx: ShopContext = context, nextSlug?: string) {
+function renderProduct(slug: string, respond: (path: string) => unknown, ctx: ShopContext = context, nextSlug?: string, search = "") {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
@@ -172,7 +172,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown, ctx: Sh
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/p/${slug}`]}>
+      <MemoryRouter initialEntries={[`/p/${slug}${search}`]}>
         {nextSlug && <Link to={`/p/${nextSlug}`}>Next product</Link>}
         <Routes>
           <Route path="/p/:slug" element={<ProductPage />} />
@@ -232,6 +232,31 @@ describe("ProductPage", () => {
     const badge = document.querySelector("#buy-summary .rounded-full");
     expect(badge).toHaveClass("bg-amberx-tint", "text-amberx");
     expect(badge).toHaveTextContent("3 left");
+  });
+
+  describe("?d= preselect (flash card links)", () => {
+    it("selects the purchasable plan named by ?d=", async () => {
+      renderProduct("netflix-premium", () => productData, context, undefined, "?d=3");
+      await screen.findByRole("heading", { name: "Netflix Premium" });
+      expect(screen.getByRole("radio", { name: /6 Months/ })).toBeChecked();
+      expect(screen.getByRole("radio", { name: /3 Months/ })).not.toBeChecked();
+    });
+
+    it("lets the buyer pick another plan afterwards", async () => {
+      renderProduct("netflix-premium", () => productData, context, undefined, "?d=3");
+      await screen.findByRole("heading", { name: "Netflix Premium" });
+      fireEvent.click(screen.getByRole("radio", { name: /3 Months/ }));
+      expect(screen.getByRole("radio", { name: /3 Months/ })).toBeChecked();
+    });
+
+    it.each([["unpurchasable plan", "?d=1"], ["unknown id", "?d=999"], ["not a number", "?d=abc"], ["empty", "?d="]])(
+      "ignores %s and keeps the default plan",
+      async (_label, search) => {
+        renderProduct("netflix-premium", () => productData, context, undefined, search);
+        await screen.findByRole("heading", { name: "Netflix Premium" });
+        expect(screen.getByRole("radio", { name: /3 Months/ })).toBeChecked();
+      },
+    );
   });
 
   it("selecting another in-stock denomination updates the displayed price, qty max, and stock badge", async () => {

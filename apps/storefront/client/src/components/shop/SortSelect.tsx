@@ -4,14 +4,15 @@ import { t } from "../../lib/i18n";
 import Select from "../ui/Select";
 
 const SORT_OPTIONS: { value: SortKey; labelKey: string }[] = [
-  { value: "default", labelKey: "web.sort_default" },
-  { value: "cheapest", labelKey: "web.sort_cheapest" },
+  { value: "bestseller", labelKey: "web.sort_bestseller" },
   { value: "newest", labelKey: "web.sort_newest" },
-  { value: "rating", labelKey: "web.sort_rating" },
+  { value: "cheapest", labelKey: "web.sort_cheapest" },
 ];
 
 export interface SortSelectProps {
   value: SortKey;
+  /** False on Game Top Up pages: "cheapest" is not offered there. */
+  allowCheapest: boolean;
   onChange: (value: SortKey) => void;
 }
 
@@ -27,7 +28,7 @@ export interface SortSelectProps {
  * back to its compact inline shape from `sm` up, where the callers' right
  * alignment still makes sense.
  */
-export default function SortSelect({ value, onChange }: SortSelectProps) {
+export default function SortSelect({ value, allowCheapest, onChange }: SortSelectProps) {
   return (
     <label className="flex w-full items-center gap-2 sm:w-auto">
       <span className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-ink-soft">
@@ -42,7 +43,7 @@ export default function SortSelect({ value, onChange }: SortSelectProps) {
         onChange={(e) => onChange(e.target.value as SortKey)}
         className="min-w-0 flex-1 sm:w-auto! sm:flex-none"
       >
-        {SORT_OPTIONS.map((opt) => (
+        {SORT_OPTIONS.filter((opt) => allowCheapest || opt.value !== "cheapest").map((opt) => (
           <option key={opt.value} value={opt.value}>
             {t(opt.labelKey)}
           </option>

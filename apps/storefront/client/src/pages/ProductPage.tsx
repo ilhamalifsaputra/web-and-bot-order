@@ -17,7 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -38,6 +38,7 @@ import Alert from "../components/ui/Alert";
 import { tError } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
 import { t, tCount } from "../lib/i18n";
+import { preselectedDenomination } from "../lib/preselectDenomination";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useLineQuote } from "../lib/useLineQuote";
@@ -156,6 +157,7 @@ function ProductSession({ slug }: { slug: string }) {
   const queryClient = useQueryClient();
   const { ctx, data, error, refetch } = useProductPageData(slug);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const requestedDenomination = useSearchParams()[0].get("d");
   const [qty, setQty] = useState(1);
   const [cartError, setCartError] = useState<unknown>(null);
   const isDesktop = useIsDesktop();
@@ -205,7 +207,7 @@ function ProductSession({ slug }: { slug: string }) {
 
   // Preselect the first in-stock plan, else the first plan — same order as
   // the script's `firstEnabled || radios[0]`.
-  const fallback = denominations.find((d) => d.purchasable) ?? denominations[0];
+  const fallback = preselectedDenomination(denominations, requestedDenomination);
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
   if (!selected) return null;
 

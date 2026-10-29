@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import HomePage from "./HomePage";
 import { apiGet } from "../api/client";
-import type { HomePageData, ShopContext } from "../api/types";
+import type { Category, HomePageData, ShopContext } from "../api/types";
 import type { ProductCardData } from "../components/shop/ProductCard";
 
 vi.mock("../api/client", () => ({
@@ -43,13 +43,48 @@ const product: ProductCardData = {
   all_non_auto: false,
 };
 
-function homeFixture(overrides: Partial<HomePageData> = {}): HomePageData {
+type LegacyHomeOverrides = Partial<HomePageData> & {
+  categories?: Category[];
+  products?: ProductCardData[];
+};
+
+/** Builds the group-based payload from a flat card list: one "category"
+ * section per category (all cards in the first), so the interim HomePage
+ * adapter sees the same categories and products these tests always used. */
+function homeFixture({ categories, products, ...overrides }: LegacyHomeOverrides = {}): HomePageData {
+  const cats = categories ?? [
+    { id: 1, name: "Streaming", slug: "streaming", emoji: "🎬", description: null, image: "", sortOrder: 0, isActive: true },
+  ];
+  const cards = products ?? [product];
   return {
     hero_image: null,
-    categories: [
-      { id: 1, name: "Streaming", slug: "streaming", emoji: "🎬", description: null, image: "", sortOrder: 0, isActive: true },
+    hero_products: cards.length >= 2 ? cards.slice(0, 3) : [],
+    groups: [
+      {
+        key: "PREMIUM_APPS",
+        slug: "premium-apps",
+        label_key: "web.group_premium_apps",
+        emoji: "💎",
+        layout: "byCategory",
+        category_count: cats.length,
+        single_category_slug: cats.length === 1 ? cats[0]!.slug : null,
+        sections:
+          cats.length === 0
+            ? [{ key: "all", kind: "group" as const, title: null, emoji: null, category_slugs: [], products: cards, total: cards.length, all_sold_out: false }]
+            : cats.map((c, i) => ({
+                key: `c-${c.slug}`,
+                kind: "category" as const,
+                title: c.name,
+                emoji: c.emoji,
+                category_slugs: [c.slug],
+                products: i === 0 ? cards : [],
+                total: i === 0 ? cards.length : 0,
+                all_sold_out: false,
+              })),
+      },
     ],
-    products: [product],
+    flash: [],
+    ranking_version: 1,
     testimonials: [],
     low_threshold: 5,
     bot_username: "tokobot",

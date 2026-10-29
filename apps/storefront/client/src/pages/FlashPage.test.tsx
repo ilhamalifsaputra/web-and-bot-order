@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import FlashPage from "./FlashPage";
@@ -42,7 +42,7 @@ const product: ProductCardData = {
   all_non_auto: false,
 };
 
-function renderFlash(data: ShelfPageData) {
+function renderFlash(data: ShelfPageData, search = "") {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return context;
     return data;
@@ -50,7 +50,7 @@ function renderFlash(data: ShelfPageData) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/flash"]}>
+      <MemoryRouter initialEntries={[`/flash${search}`]}>
         <Routes>
           <Route path="/flash" element={<FlashPage />} />
         </Routes>
@@ -74,6 +74,29 @@ describe("FlashPage", () => {
     expect(nav).toHaveTextContent("Flash sale");
     const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid");
     expect(grid?.className).toMatch(/xl:grid-cols-5/);
+  });
+
+  it("offers bestseller, newest and cheapest, defaulting to bestseller", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderFlash({ products: [product, second], low_threshold: 5 });
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const select = screen.getByLabelText("Sort");
+    expect(select).toHaveValue("bestseller");
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Bestseller",
+      "Newest",
+      "Price: low to high",
+    ]);
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/flash?sort=bestseller");
+    fireEvent.change(select, { target: { value: "newest" } });
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/flash?sort=newest"));
+  });
+
+  it("treats a legacy ?sort=default as bestseller", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderFlash({ products: [product, second], low_threshold: 5 }, "?sort=default");
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByLabelText("Sort")).toHaveValue("bestseller");
   });
 
   it("renders the empty state when no sale is running", async () => {

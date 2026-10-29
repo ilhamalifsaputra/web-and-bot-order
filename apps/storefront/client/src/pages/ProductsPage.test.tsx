@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProductsPage from "./ProductsPage";
@@ -42,7 +42,7 @@ const product: ProductCardData = {
   all_non_auto: false,
 };
 
-function renderProducts(data: ShelfPageData) {
+function renderProducts(data: ShelfPageData, search = "") {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return context;
     return data;
@@ -50,7 +50,7 @@ function renderProducts(data: ShelfPageData) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/products"]}>
+      <MemoryRouter initialEntries={[`/products${search}`]}>
         <Routes>
           <Route path="/products" element={<ProductsPage />} />
         </Routes>
@@ -74,6 +74,30 @@ describe("ProductsPage", () => {
     expect(nav).toHaveTextContent("All products");
     const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid");
     expect(grid?.className).toMatch(/xl:grid-cols-5/);
+  });
+
+  it("offers bestseller, newest and cheapest, defaulting to bestseller", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderProducts({ products: [product, second], low_threshold: 5 });
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const select = screen.getByLabelText("Sort");
+    expect(select).toHaveValue("bestseller");
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Bestseller",
+      "Newest",
+      "Price: low to high",
+    ]);
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/products?sort=bestseller");
+    fireEvent.change(select, { target: { value: "cheapest" } });
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/products?sort=cheapest"));
+  });
+
+  it("treats a legacy ?sort=rating as bestseller", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderProducts({ products: [product, second], low_threshold: 5 }, "?sort=rating");
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByLabelText("Sort")).toHaveValue("bestseller");
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/products?sort=bestseller");
   });
 
   it("renders the empty state when there are no products", async () => {

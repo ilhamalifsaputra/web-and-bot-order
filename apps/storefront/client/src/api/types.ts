@@ -33,6 +33,9 @@ export interface Category {
   image: string | null;
   sortOrder: number;
   isActive: boolean;
+  /** Product group key (`PREMIUM_APPS` / `GAME_TOPUP`); null on a legacy
+   * category, which the storefront treats as Premium Apps. */
+  group?: string | null;
 }
 
 /** Homepage category tile — the raw Category shape (apps/storefront/src/
@@ -51,11 +54,53 @@ export interface Testimonial {
   comment: string;
 }
 
-/** GET /api/v1/pages/home — everything home.njk spread on top of shopContext(). */
+/** One section of a home group (apps/storefront/src/homeSections.ts). */
+export interface HomeSection {
+  key: string;
+  kind: "group" | "category" | "others";
+  title: string | null;
+  emoji: string | null;
+  category_slugs: string[];
+  /** The first page of cards; the rest is paged from the group endpoint. */
+  products: ProductCardData[];
+  total: number;
+  all_sold_out: boolean;
+}
+
+/** One product group rendered on the home page. */
+export interface HomeGroup {
+  key: string;
+  slug: string;
+  label_key: string;
+  emoji: string;
+  layout: "single" | "byCategory";
+  category_count: number;
+  single_category_slug: string | null;
+  sections: HomeSection[];
+}
+
+/** GET /api/v1/pages/group/:slug. */
+export interface GroupPageData {
+  group: { key: string; slug: string; label_key: string; emoji: string; allow_cheapest: boolean };
+  /** The group's web service is switched off. */
+  unavailable: boolean;
+  categories: Array<{ slug: string; name: string; emoji: string | null }>;
+  sort: SortKey;
+  products: ProductCardData[];
+  total: number;
+  next_offset: number | null;
+  ranking_version: number;
+  low_threshold: number;
+}
+
+/** GET /api/v1/pages/home. */
 export interface HomePageData {
   hero_image: string | null;
-  categories: HomeCategory[];
-  products: ProductCardData[];
+  hero_products: ProductCardData[];
+  groups: HomeGroup[];
+  /** Flash cards (live sales only); empty when no sale is running. */
+  flash: ProductCardData[];
+  ranking_version: number;
   testimonials: Testimonial[];
   low_threshold: number;
   bot_username: string;
@@ -70,6 +115,10 @@ export interface HomePageData {
 export interface CategoryPageData {
   category: Category;
   categories: Category[];
+  /** The category's product group key. */
+  group: string;
+  /** False on Game Top Up: the sort dropdown must not offer "cheapest". */
+  allow_cheapest: boolean;
   products: ProductCardData[];
   low_threshold: number;
 }
@@ -77,14 +126,16 @@ export interface CategoryPageData {
 /** GET /api/v1/pages/search — everything search.njk spread on top of shopContext(). */
 export interface SearchPageData {
   q: string;
+  /** Effective order: `relevance` unless an explicit sort key was sent. */
+  sort: SortKey | "relevance";
   products: ProductCardData[];
   low_threshold: number;
 }
 
 /** GET /api/v1/pages/products and /api/v1/pages/flash — the two browse-all
  * shelves the nav drawer links to. Same shape: one is the whole catalog, the
- * other only what's on flash sale right now (server: shelfFrom() in
- * apps/storefront/src/pageData.ts). An empty `products` on /flash means no sale
+ * other only what's on flash sale right now (server: allProductsPageData()
+ * and flashPageData() in apps/storefront/src/pageData.ts). An empty `products` on /flash means no sale
  * is running, which is a normal state rather than an error. */
 export interface ShelfPageData {
   products: ProductCardData[];
@@ -213,10 +264,18 @@ export interface ProductPageData {
   low_threshold: number;
 }
 
-/** STO-007 — sort keys offered on the Category/Search grids, matching
- * apps/storefront/src/cards.ts's `SORT_KEYS`. */
-export const SORT_KEYS = ["default", "cheapest", "newest", "rating"] as const;
+/** Sort keys offered on the grids, matching apps/storefront/src/cards.ts's
+ * `SORT_KEYS`. `bestseller` is the default and is omitted from the URL. */
+export const SORT_KEYS = ["bestseller", "newest", "cheapest"] as const;
 export type SortKey = (typeof SORT_KEYS)[number];
+
+/** Mirror of the server's parseSortKey: unknown, legacy (`default`, `rating`)
+ * and disallowed (`cheapest` where it is not offered) values become `bestseller`. */
+export function parseSortKey(raw: string | null | undefined, opts: { allowCheapest: boolean }): SortKey {
+  if (raw === "newest") return "newest";
+  if (raw === "cheapest" && opts.allowCheapest) return "cheapest";
+  return "bestseller";
+}
 
 /** One cart line — JSON twin of CartLineView (apps/storefront/src/routes/cart.ts). */
 export interface CartLineView {

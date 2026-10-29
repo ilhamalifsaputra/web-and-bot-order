@@ -40,11 +40,11 @@ import {
 import { useReducedMotion } from "motion/react";
 import { Link } from "react-router-dom";
 import { apiGet } from "../api/client";
-import type { HomePageData } from "../api/types";
+import type { Category, HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
-import ProductCard from "../components/shop/ProductCard";
+import ProductCard, { type ProductCardData } from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import Stars from "../components/shop/Stars";
@@ -93,6 +93,26 @@ const HERO_CARD_STYLES: Array<{ top: string; right: string; rotate: number }> = 
   { top: "72%", right: "0%", rotate: -2 },
 ];
 
+/** Interim adapter until the group-based home layout lands: the payload no
+ * longer carries a flat `products` list or category tiles, so the existing
+ * sections read the cards of every group and the category-kind sections. */
+function flattenHome(data: HomePageData): { categories: Category[]; products: ProductCardData[] } {
+  const sections = data.groups.flatMap((g) => g.sections);
+  const categories: Category[] = sections
+    .filter((s) => s.kind === "category" && s.category_slugs[0])
+    .map((s, i) => ({
+      id: i,
+      name: s.title ?? "",
+      slug: s.category_slugs[0]!,
+      emoji: s.emoji,
+      description: null,
+      image: null,
+      sortOrder: i,
+      isActive: true,
+    }));
+  return { categories, products: sections.flatMap((s) => s.products) };
+}
+
 export default function HomePage() {
   const reducedMotion = useReducedMotion();
   const { data: ctx } = useShopContext();
@@ -104,7 +124,7 @@ export default function HomePage() {
   // empty the whole catalog has zero products, so a suggestions fetch would
   // just return the same empty list. Wired up anyway for consistency with
   // every other empty state; it simply never has anything to show here.
-  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
+  const { data: suggested } = useSuggestedProducts(!!data && flattenHome(data).products.length === 0);
 
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection. A full
@@ -132,10 +152,11 @@ export default function HomePage() {
     );
   }
 
-  const { hero_image, categories, products, testimonials, low_threshold, support_telegram_url, wa_number } = data;
+  const { hero_image, hero_products, testimonials, low_threshold, support_telegram_url, wa_number } = data;
+  const { categories, products } = flattenHome(data);
   // Real inventory only — never a fabricated/placeholder product. Fewer than
   // 2 available products means no composition at all (see homepage design spec).
-  const heroProducts = products.length >= 2 ? products.slice(0, 3) : [];
+  const heroProducts = hero_products.length >= 2 ? hero_products : [];
   const fx = ctx?.fx;
 
   const contactCount = 1 + (wa_number ? 1 : 0) + (support_telegram_url ? 1 : 0);

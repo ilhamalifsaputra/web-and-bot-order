@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import type { ReactElement } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProductCard, { type ProductCardData } from "./ProductCard";
@@ -233,6 +233,102 @@ describe("ProductCard", () => {
   // Fase 12: the old hardcoded Unsplash-fallback gradient is gone — a
   // photo-less card now renders the DefaultThumb design-system placeholder,
   // keyed by the server-resolved `image_kind`, with no <img>/<picture> at all.
+  describe("new badge", () => {
+    it("shows New when the product is recent and nothing otherwise", () => {
+      const { rerender } = renderCard(<ProductCard p={{ ...base, is_new: true }} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("New")).toBeInTheDocument();
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <ProductCard p={{ ...base, is_new: false }} fx="16000" lowThreshold={5} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      expect(screen.queryByText("New")).not.toBeInTheDocument();
+    });
+
+    it("says Baru in Indonesian", () => {
+      document.documentElement.lang = "id";
+      renderCard(<ProductCard p={{ ...base, is_new: true }} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("Baru")).toBeInTheDocument();
+    });
+  });
+
+  describe("flash card promo denomination", () => {
+    const promo: ProductCardData = {
+      ...base,
+      slug: "mobile-legends",
+      name: "Mobile Legends",
+      flash_discount: "30",
+      from_base_price: "100000",
+      flash_ends_at: "2099-01-01T00:00:00.000Z",
+      promo_denomination_id: 42,
+      promo_denomination_name: "1000 Diamond",
+      other_promo_count: 0,
+    };
+
+    it("names the promo denomination and links with ?d= to preselect it", () => {
+      renderCard(<ProductCard p={promo} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("1000 Diamond")).toBeInTheDocument();
+      expect(screen.getByRole("link")).toHaveAttribute("href", "/p/mobile-legends?d=42");
+      expect(screen.queryByText(/more deal/)).not.toBeInTheDocument();
+    });
+
+    it("counts the other promos, singular and plural", () => {
+      const { rerender } = renderCard(<ProductCard p={{ ...promo, other_promo_count: 1 }} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("+1 more deal")).toBeInTheDocument();
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <ProductCard p={{ ...promo, other_promo_count: 3 }} fx="16000" lowThreshold={5} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      expect(screen.getByText("+3 more deals")).toBeInTheDocument();
+    });
+
+    it("works for a Premium plan without any game wording", () => {
+      renderCard(
+        <ProductCard
+          p={{ ...promo, slug: "netflix-premium", name: "Netflix Premium", promo_denomination_name: "Netflix 1 month" }}
+          fx="16000"
+          lowThreshold={5}
+        />,
+      );
+      expect(screen.getByText("Netflix 1 month")).toBeInTheDocument();
+      expect(screen.queryByText(/diamond|top up|player/i)).not.toBeInTheDocument();
+    });
+
+    it("keeps a plain link and no promo line on a normal card", () => {
+      renderCard(<ProductCard p={base} fx="16000" lowThreshold={5} />);
+      expect(screen.getByRole("link")).toHaveAttribute("href", "/p/netflix-premium");
+    });
+
+    it("swaps the badge for Promo ended and drops the strike-through when the countdown ends", () => {
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      try {
+        vi.setSystemTime(new Date("2099-01-01T00:00:00.000Z").getTime() - 3000);
+        renderCard(<ProductCard p={promo} fx="16000" lowThreshold={5} />);
+        expect(screen.getByText("Flash sale −30%")).toBeInTheDocument();
+        expect(screen.getByText("Rp100,000")).toBeInTheDocument();
+        expect(screen.queryByText("Promo ended")).not.toBeInTheDocument();
+        act(() => {
+          vi.advanceTimersByTime(4000);
+        });
+        expect(screen.getByText("Promo ended")).toBeInTheDocument();
+        expect(screen.queryByText("Flash sale −30%")).not.toBeInTheDocument();
+        expect(screen.queryByText("Rp100,000")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows Promo ended at once for a sale that already ended", () => {
+      renderCard(<ProductCard p={{ ...promo, flash_ends_at: "2000-01-01T00:00:00.000Z" }} fx="16000" lowThreshold={5} />);
+      expect(screen.getByText("Promo ended")).toBeInTheDocument();
+    });
+  });
+
   describe("image fallback (DefaultThumb)", () => {
     it("renders DefaultThumb (no <img>/<picture>) when image is null", () => {
       const { container } = renderCard(

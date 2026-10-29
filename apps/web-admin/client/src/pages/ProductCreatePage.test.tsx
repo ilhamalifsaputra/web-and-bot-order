@@ -271,11 +271,24 @@ describe("ProductCreatePage", () => {
     const input = await screen.findByPlaceholderText(/new category name/i);
     fireEvent.change(input, { target: { value: "Streaming" } });
 
+    // A new category must have a group: Confirm stays disabled until one is
+    // picked, nothing is preselected and there is no "Not set" option.
     const confirmBtn = screen.getByRole("button", { name: /confirm/i });
+    expect(confirmBtn).toBeDisabled();
+    const groupSelect = screen.getByRole("combobox", { name: "Group" });
+    expect(groupSelect).toHaveTextContent("Choose a group");
+    await user.click(groupSelect);
+    const groupOptions = await screen.findAllByRole("option");
+    expect(groupOptions.map((o) => o.textContent)).toEqual(["🎮 Game Top Up", "💎 Premium Apps"]);
+    await user.click(screen.getByRole("option", { name: "💎 Premium Apps" }));
+
     await waitFor(() => expect(confirmBtn).not.toBeDisabled());
     await user.click(confirmBtn);
 
-    expect(apiPost).toHaveBeenCalledWith("/api/catalog/categories", { name: "Streaming" });
+    expect(apiPost).toHaveBeenCalledWith("/api/catalog/categories", {
+      name: "Streaming",
+      group: "PREMIUM_APPS",
+    });
 
     // Collapses back to the Select, with the new category selected
     await waitFor(() => expect(screen.queryByPlaceholderText(/new category name/i)).not.toBeInTheDocument());

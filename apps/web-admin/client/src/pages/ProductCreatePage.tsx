@@ -43,6 +43,9 @@ export function ProductCreatePage() {
   const [error, setError] = useState<string | null>(null);
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  // A new category must belong to a group (the server rejects one without).
+  // Nothing is preselected so the admin makes the Game/Premium choice on purpose.
+  const [newCategoryGroup, setNewCategoryGroup] = useState("");
   const [categoryError, setCategoryError] = useState<string | null>(null);
 
   const activeCategories = (data?.categories ?? []).filter((c) => c.isActive);
@@ -54,6 +57,7 @@ export function ProductCreatePage() {
     mutationFn: () =>
       apiPost<{ category: { id: number; name: string } }>("/api/catalog/categories", {
         name: newCategoryName.trim(),
+        group: newCategoryGroup,
       }),
     onMutate: () => setCategoryError(null),
     onSuccess: ({ category }) => {
@@ -61,6 +65,7 @@ export function ProductCreatePage() {
       setCategoryId(category.id);
       setCreatingCategory(false);
       setNewCategoryName("");
+      setNewCategoryGroup("");
     },
     onError: (e: Error) => setCategoryError(e.message),
   });
@@ -110,11 +115,24 @@ export function ProductCreatePage() {
                 value={newCategoryName}
                 onChange={(e) => setNewCategoryName(e.target.value)}
               />
+              <Select value={newCategoryGroup} onValueChange={setNewCategoryGroup}>
+                <SelectTrigger aria-label="Group">
+                  <SelectValue placeholder="Choose a group" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="GAME_TOPUP">🎮 Game Top Up</SelectItem>
+                  <SelectItem value="PREMIUM_APPS">💎 Premium Apps</SelectItem>
+                </SelectContent>
+              </Select>
               {categoryError && <p className="text-sm text-rust">{categoryError}</p>}
               <div className="flex gap-2">
                 <Button
                   size="sm"
-                  disabled={newCategoryName.trim().length === 0 || createCategory.isPending}
+                  disabled={
+                    newCategoryName.trim().length === 0 ||
+                    newCategoryGroup === "" ||
+                    createCategory.isPending
+                  }
                   onClick={() => createCategory.mutate()}
                 >
                   {createCategory.isPending ? "Creating…" : "Confirm"}
@@ -125,6 +143,7 @@ export function ProductCreatePage() {
                   onClick={() => {
                     setCreatingCategory(false);
                     setNewCategoryName("");
+                    setNewCategoryGroup("");
                     setCategoryError(null);
                   }}
                 >

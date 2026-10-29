@@ -80,6 +80,17 @@ describe("POST /api/catalog/categories", () => {
     expect(res.statusCode).toBe(201);
     expect(res.json().category.group).toBe("PREMIUM_APPS");
   });
+
+  it("accepts the Create Product page's inline form body: only a name and a group", async () => {
+    // ProductCreatePage's "+ New category" sends exactly { name, group } and
+    // nothing else (no emoji, description or checkout flow).
+    const res = await send("POST", "/api/catalog/categories", { name: "Streaming", group: "GAME_TOPUP" });
+    expect(res.statusCode).toBe(201);
+    const { category } = res.json();
+    expect(category).toMatchObject({ name: "Streaming", group: "GAME_TOPUP" });
+    const row = await prisma.category.findUnique({ where: { id: category.id } });
+    expect(row!.group).toBe("GAME_TOPUP");
+  });
 });
 
 describe("PATCH /api/catalog/categories/:id", () => {

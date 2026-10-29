@@ -25,20 +25,25 @@ describe("canonicalDenominationPickerKb rows", () => {
     expect(rows.slice(2)).toEqual([["v1:browse:pick:7:0"], ["v1:browse:prods"]]);
   });
 
-  it("multi-page middle page: Prev/Next share one row between products and Refresh", () => {
+  it("multi-page middle page: Prev, the page indicator and Next share one row between products and Refresh", () => {
     const kb = canonicalDenominationPickerKb([[btn(1), btn(2)], [btn(3)]], 7, "en", 1, 3);
     expect(rowsOf(kb)).toEqual([
       ["v1:browse:denom:1", "v1:browse:denom:2"],
       ["v1:browse:denom:3"],
-      ["v1:browse:pick:7:0", "v1:browse:pick:7:2"],
+      ["v1:browse:pick:7:0", "v1:noop", "v1:browse:pick:7:2"],
       ["v1:browse:pick:7:1"],
       ["v1:browse:prods"],
     ]);
+    expect(kb.inline_keyboard[2]!.map((b) => b.text)).toEqual(["‹", "2/3", "›"]);
   });
 
-  it("first page has only Next, last page has only Prev", () => {
-    expect(rowsOf(canonicalDenominationPickerKb([[btn(1)]], 7, "en", 0, 2))[1]).toEqual(["v1:browse:pick:7:1"]);
-    expect(rowsOf(canonicalDenominationPickerKb([[btn(1)]], 7, "en", 1, 2))[1]).toEqual(["v1:browse:pick:7:0"]);
+  it("first page has only Next, last page has only Prev, the page indicator (a no-op) beside it", () => {
+    const first = canonicalDenominationPickerKb([[btn(1)]], 7, "en", 0, 2);
+    expect(rowsOf(first)[1]).toEqual(["v1:noop", "v1:browse:pick:7:1"]);
+    expect(first.inline_keyboard[1]!.map((b) => b.text)).toEqual(["1/2", "›"]);
+    const last = canonicalDenominationPickerKb([[btn(1)]], 7, "en", 1, 2);
+    expect(rowsOf(last)[1]).toEqual(["v1:browse:pick:7:0", "v1:noop"]);
+    expect(last.inline_keyboard[1]!.map((b) => b.text)).toEqual(["‹", "2/2"]);
   });
 
   it("single page: no pagination row at all", () => {
@@ -49,7 +54,7 @@ describe("canonicalDenominationPickerKb rows", () => {
   it("empty rows (intro-only page) still keeps arrows, Refresh and Back", () => {
     const kb = canonicalDenominationPickerKb([], 7, "en", 1, 3);
     expect(rowsOf(kb)).toEqual([
-      ["v1:browse:pick:7:0", "v1:browse:pick:7:2"],
+      ["v1:browse:pick:7:0", "v1:noop", "v1:browse:pick:7:2"],
       ["v1:browse:pick:7:1"],
       ["v1:browse:prods"],
     ]);

@@ -21,8 +21,9 @@ import { hasRepeatedIcon } from "@app/core/unitDisplay";
 import { presentCanonicalCatalog } from "../src/util/canonicalPresenter";
 import { BUTTON_LABEL_MAX, truncLabel } from "../src/util/format";
 import {
-  canonicalDenominationPickerKb, categoryPickerKb, denominationPickerKb, gameRegionPickerKb, gameVariantPickerKb, popularKb, productListKb,
+  canonicalDenominationPickerKb, categoryPickerKb, denominationPickerKb, gameListKb, gameRegionPickerKb, gameVariantPickerKb, popularKb, productListKb,
 } from "../src/keyboards/customer";
+import { t as coreT } from "@app/core/i18n";
 
 type Currency = "IDR" | "USD";
 interface Fixture { id: number; name: string; price: string; /** The admin-structured quantity and unit, when the SKU has them. */ qty?: [number, string] }
@@ -395,9 +396,29 @@ describe("keyboard label guard: the other pickers keep their own limits", () => 
       if ("callback_data" in button) expect(Buffer.byteLength(button.callback_data, "utf8")).toBeLessThanOrEqual(64);
     }
     expect(texts.at(-1)).toBe("x".repeat(LIST_LABEL_MAX_CHARS));
-    // Prev and Next on page 2 of 3, then the Back row.
-    expect(keyboard.inline_keyboard.at(-2)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual(["v1:browse:page:0", "v1:browse:page:2"]);
+    // Prev, the page indicator (a no-op) and Next on page 2 of 3, then the Back row.
+    expect(keyboard.inline_keyboard.at(-2)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual(["v1:browse:page:0", "v1:noop", "v1:browse:page:2"]);
+    expect(keyboard.inline_keyboard.at(-2)![1]!.text).toBe("2/3");
     expect(keyboard.inline_keyboard.at(-1)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual(["v1:browse:gregs:1000000000"]);
+  });
+  it("the Game Top-up game list: one game per row, phone budget, unique, callbacks within 64 bytes, page indicator between the arrows", () => {
+    const games = [...hostileNames, ...hostileNames, "x".repeat(LIST_LABEL_MAX_CHARS)].map((name, i) => ({ name, index: 1_000_000 + i }));
+    const keyboard = gameListKb(games, 1_000_000_000, 1, 3, "en", "v1:browse:grp:GAME_TOPUP");
+    const rows = buttonsOf(keyboard, "v1:browse:game:").filter((row) => row.length > 0);
+    expect(rows.flat()).toHaveLength(games.length);
+    for (const row of rows) expect(row).toHaveLength(1);
+    const texts = rows.flat().map((button) => button.text);
+    expect(new Set(texts).size).toBe(texts.length);
+    for (const button of keyboard.inline_keyboard.flat()) {
+      expect(visualWidth(button.text), button.text).toBeLessThanOrEqual(MAX_LABEL_WIDTH);
+      expect(Buffer.byteLength(button.text, "utf8"), button.text).toBeLessThanOrEqual(MAX_LABEL_BYTES);
+      if ("callback_data" in button) expect(Buffer.byteLength(button.callback_data, "utf8")).toBeLessThanOrEqual(64);
+    }
+    expect(keyboard.inline_keyboard.at(-2)!.map((b) => b.text)).toEqual([coreT("browse.nav_prev", "en"), "2/3", coreT("browse.nav_next", "en")]);
+    expect(keyboard.inline_keyboard.at(-2)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual([
+      "v1:browse:games:1000000000:0", "v1:noop", "v1:browse:games:1000000000:2",
+    ]);
+    expect(keyboard.inline_keyboard.at(-1)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual(["v1:browse:grp:GAME_TOPUP"]);
   });
   it("variant and region buttons for a name within the admin budget fit two to a row", () => {
     const budgetOf = (kind: "gameVariant" | "gameRegion", emoji = false) => buttonNameBudget(kind, { emoji });

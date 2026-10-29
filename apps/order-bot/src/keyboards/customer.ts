@@ -372,6 +372,15 @@ interface DenominationLike {
   buttonLabel?: string;
 }
 
+/**
+ * The "1/2" page indicator placed between the Prev/Next arrows of a multi-page
+ * inline list or pack picker. Its callback is the router's no-op
+ * (`v1:noop`), which only answers the query: a tap changes nothing.
+ */
+export function pageIndicatorButton(page: number, pageCount: number): { text: string; callback_data: string } {
+  return { text: `${page + 1}/${pageCount}`, callback_data: cb("noop") };
+}
+
 /** Catalog presenter owns labels and adaptive rows; callbacks stay compatible.
  * `backTarget`: the product list by default, or the search results / Popular
  * list the product was opened from. */
@@ -383,10 +392,12 @@ export function canonicalDenominationPickerKb(buttonRows: CatalogButton[][], pro
     .filter((row) => row.length > 0)
     .map((row) => row.map((button) => ({ text: button.text, callback_data: button.callback_data })));
   if (pageCount > 1) {
+    // ‹ 1/2 › — the page indicator sits between the arrows (a no-op tap).
     const arrows: Array<{ text: string; callback_data: string }> = [];
     if (page > 0) arrows.push({ text: "‹", callback_data: cb("browse", "pick", productId, page - 1) });
+    arrows.push(pageIndicatorButton(page, pageCount));
     if (page < pageCount - 1) arrows.push({ text: "›", callback_data: cb("browse", "pick", productId, page + 1) });
-    if (arrows.length > 0) rows.push(arrows);
+    rows.push(arrows);
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), callback_data: cb("browse", "pick", productId, page) }]);
   rows.push([{ text: coreT("menu.back", lang), callback_data: backTarget }]);
@@ -501,13 +512,15 @@ export function gameVariantPickerKb(
   categoryId: number,
   backTarget: string,
   lang: string,
+  /** `gvar` (a category's editions) or `ged` (one game's editions, the game level). */
+  action: "gvar" | "ged" = "gvar",
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < variants.length; i += 2) {
     rows.push(
       variants.slice(i, i + 2).map((v, j) => ({
         text: v.emoji ? `${v.emoji} ${v.label}` : v.label,
-        data: cb("browse", "gvar", categoryId, i + j),
+        data: cb("browse", action, categoryId, i + j),
       })),
     );
   }
@@ -535,13 +548,15 @@ export function gameRegionPickerKb(
   categoryId: number,
   backTarget: string,
   lang: string,
+  /** `greg` (a category's regions) or `grg` (one game's regions, the game level). */
+  action: "greg" | "grg" = "greg",
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < regions.length; i += 2) {
     rows.push(
       regions.slice(i, i + 2).map((r, j) => ({
         text: r,
-        data: cb("browse", "greg", categoryId, i + j),
+        data: cb("browse", action, categoryId, i + j),
       })),
     );
   }
@@ -612,8 +627,8 @@ function cutChars(text: string, max: number): string {
 /**
  * The INLINE product list (every service except a numbered one —
  * `usesNumberedSelection`, @app/core/services): one button per product on the
- * page (`browse:pick:<id>`, one per row), then Prev/Next when the list spans
- * more than one page, then the Back row to `backTarget` (the caller's
+ * page (`browse:pick:<id>`, one per row), then Prev / "1/2" page indicator /
+ * Next when the list spans more than one page, then the Back row to `backTarget` (the caller's
  * `listBackTarget`) on every page, a single page too. The label is the product
  * name, cut at LIST_LABEL_MAX_CHARS characters like the popular-product
  * buttons (but by whole code points, never splitting an emoji) and then to
@@ -628,18 +643,59 @@ export function productListKb(
   lang: string,
   backTarget: string,
 ): InlineKeyboard {
+  const labels = uniqueListLabels(products.map((p) => p.name));
+  const rows: Btn[][] = products.map((p, i) => [{ text: labels[i]!, data: cb("browse", "pick", p.id) }]);
+  rows.push(...listNavRows(page, totalPages, lang, (target) => cb("browse", "page", target)));
+  rows.push(backRow(lang, backTarget, false));
+  return ik(rows);
+}
+
+/** Prev, the "1/2" page indicator, Next — one row, only for a multi-page inline list. */
+function listNavRows(page: number, totalPages: number, lang: string, pageData: (page: number) => string): Btn[][] {
+  if (totalPages <= 1) return [];
+  const nav: Btn[] = [];
+  if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: pageData(page - 1) });
+  const indicator = pageIndicatorButton(page, totalPages);
+  nav.push({ text: indicator.text, data: indicator.callback_data });
+  if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: pageData(page + 1) });
+  return [nav];
+}
+
+/** Unique, phone-sized inline labels for a list of names: each cut at
+ * LIST_LABEL_MAX_CHARS code points and then to the phone budget, duplicates
+ * suffixed " (2)", " (3)"… in list order. */
+function uniqueListLabels(names: string[]): string[] {
   const seen = new Map<string, number>();
-  const rows: Btn[][] = products.map((p) => {
-    let text = fitLabel(cutChars(p.name.replace(/\s+/g, " ").trim(), LIST_LABEL_MAX_CHARS));
+  return names.map((name) => {
+    const text = fitLabel(cutChars(name.replace(/\s+/g, " ").trim(), LIST_LABEL_MAX_CHARS));
     const count = (seen.get(text) ?? 0) + 1;
     seen.set(text, count);
-    if (count > 1) text = fitLabel(text, ` (${count})`);
-    return [{ text, data: cb("browse", "pick", p.id) }];
+    return count > 1 ? fitLabel(text, ` (${count})`) : text;
   });
-  const nav: Btn[] = [];
-  if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
-  if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
-  if (nav.length) rows.push(nav);
+}
+
+/**
+ * The Game Top-up GAME LIST (the game level of a category holding several
+ * games): one inline button per game on the page, addressed by the game's
+ * index in the category's game order (`browse:game:<categoryId>:<index>`; the
+ * handler resolves it against the snapshot of the list it rendered, so a
+ * catalog change or an old bubble can never open the wrong game), then
+ * Prev / page indicator / Next (`browse:games:<categoryId>:<page>`) on a
+ * multi-page list, then the Back row (the category level). Labels are the game
+ * names cut like the product list's; the message body names every game in
+ * full with its From price.
+ */
+export function gameListKb(
+  games: Array<{ name: string; index: number }>,
+  categoryId: number,
+  page: number,
+  totalPages: number,
+  lang: string,
+  backTarget: string,
+): InlineKeyboard {
+  const labels = uniqueListLabels(games.map((g) => g.name));
+  const rows: Btn[][] = games.map((g, i) => [{ text: labels[i]!, data: cb("browse", "game", categoryId, g.index) }]);
+  rows.push(...listNavRows(page, totalPages, lang, (target) => cb("browse", "games", categoryId, target)));
   rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }

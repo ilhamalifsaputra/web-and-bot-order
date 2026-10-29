@@ -70,6 +70,15 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   // (customer.backToRegionPicker).
   // `gvar`/`greg:<categoryId>:<idx>` resolve a tapped index against the
   // snapshot browseCategoryEntry/pickGameVariant stashed in scratch.
+  //
+  // The GAME LEVEL (a Game Top-up category holding several games):
+  // `games:<categoryId>:<page>` renders the game list (also the Back target of
+  // the game's pickers), `game:<categoryId>:<idx>` opens one game,
+  // `ged`/`grg:<categoryId>:<idx>` pick that game's edition / region, and
+  // `geds`/`grgs:<categoryId>` are the Backs re-rendering those pickers. Every
+  // index resolves against the snapshot of the screen it was tapped on
+  // (scratch.gamePicker) and a fresh catalog read; anything else is a stale
+  // screen (toast, nothing rendered).
   const action = parts[2];
   if (action === "prods") await customer.browseResume(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
@@ -93,6 +102,12 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   else if (action === "gregs") await customer.backToRegionPicker(ctx, parseInt(parts[3]!, 10));
   else if (action === "gvar") await customer.pickGameVariant(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
   else if (action === "greg") await customer.pickGameRegion(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  else if (action === "games") await customer.browseGameList(ctx, parseInt(parts[3]!, 10), parts[4] ? parseInt(parts[4], 10) : 0);
+  else if (action === "game") await customer.pickGame(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  else if (action === "ged") await customer.pickGameEdition(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  else if (action === "grg") await customer.pickGameScopeRegion(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  else if (action === "geds") await customer.backToGameEditionPicker(ctx, parseInt(parts[3]!, 10));
+  else if (action === "grgs") await customer.backToGameRegionPicker(ctx, parseInt(parts[3]!, 10));
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Browse callback used an unrecognized action "${action}" — likely a button from a stale/pre-rename bubble, showing the stale-screen toast instead`);
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });

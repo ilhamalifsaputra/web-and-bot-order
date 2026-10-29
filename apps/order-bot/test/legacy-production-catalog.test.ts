@@ -2,8 +2,8 @@
 import "./setup-db";
 
 /**
- * PRODUCTION-SIMULATION ACCEPTANCE CRITERIA (WIP: expected RED until the game
- * level lands).
+ * PRODUCTION-SIMULATION ACCEPTANCE CRITERIA (the regression test of the game
+ * level; it was RED, 6 of 8 failing, before the game level landed).
  *
  * This file encodes the behaviour a buyer must see when the shop's catalog is
  * the one a real Digiflazz import leaves behind (tests/helpers/legacyProductionCatalog.ts:
@@ -105,7 +105,12 @@ async function openGameList(tg: FakeTelegram) {
 const pressExact = (tg: FakeTelegram, name: string | RegExp) =>
   tg.press((b) => (typeof name === "string" ? bare(b.text).toLowerCase() === name.toLowerCase() : name.test(b.text)));
 
-const FORBIDDEN_AS_GAME = /MOBILE LEGENDS (Indonesia|Malaysia|Russia)|Mobile Legends \((BR|PH)\)|Mobile Legends Global|Delta Force Garena|Arena Breakout Infinite|Valorant Malaysia/i;
+// "Delta Force Garena" is NOT forbidden: a publisher word is never a region or
+// an edition of another game, so a different publisher's edition stays its own
+// game (owner rule, plan "game beda penerbit tidak digabung"; pinned by
+// packages/core/src/gameIdentity.test.ts "keeps a type-split publisher edition
+// apart from the base game").
+const FORBIDDEN_AS_GAME = /MOBILE LEGENDS (Indonesia|Malaysia|Russia)|Mobile Legends \((BR|PH)\)|Mobile Legends Global|Arena Breakout Infinite|Valorant Malaysia/i;
 
 /** Game list → Mobile Legends → a region → that region's pack picker. */
 async function openMlPacks(tg: FakeTelegram, region: string) {
@@ -122,7 +127,7 @@ describe("production legacy catalog (acceptance)", () => {
     const shown = labels(tg);
     expect.soft(shown.filter((l) => FORBIDDEN_AS_GAME.test(l))).toEqual([]);
     expect([...shown].sort()).toEqual(
-      ["Arena Breakout", "Delta Force", "Free Fire", "Growtopia", "Mobile Legends", "Valorant", "Where Winds Meet"].sort(),
+      ["Arena Breakout", "Delta Force", "Delta Force Garena", "Free Fire", "Growtopia", "Mobile Legends", "Valorant", "Where Winds Meet"].sort(),
     );
   });
 
@@ -152,8 +157,9 @@ describe("production legacy catalog (acceptance)", () => {
   it("3. editions are per game (Arena Breakout: Umum / Infinite) and Malaysia is never an edition", async () => {
     const tg = openBot();
     await openGameList(tg);
-    // No edition appears at the game level.
-    expect.soft(labels(tg).filter((l) => /Umum|Infinite|Garena/i.test(l))).toEqual([]);
+    // No edition appears at the game level ("Delta Force Garena" is a game of
+    // its own, a different publisher, see FORBIDDEN_AS_GAME).
+    expect.soft(labels(tg).filter((l) => /Umum|Infinite/i.test(l))).toEqual([]);
 
     await pressExact(tg, "Arena Breakout");
     expect(tg.screenText()).toContain(coreT("browse.choose_variant", EN));

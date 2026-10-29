@@ -7,13 +7,14 @@
  * Apps) gives each category with enough products its own sub-section and
  * merges the rest into one final "Others" sub-section.
  */
-import { groupForCategory, type ProductGroupDef } from "@app/core";
+import { MIN_CATEGORY_SECTION_PRODUCTS, groupForCategory, type ProductGroupDef } from "@app/core";
 import { isOutOfStock, type ProductCard } from "./cards";
 
 /** Cards on a section's first page; "Show more" fetches this many again. */
 export const HOME_SECTION_PAGE = 10;
-/** A category needs this many products for its own byCategory sub-section. */
-export const MIN_CATEGORY_SECTION_PRODUCTS = 3;
+/** A category needs this many products for its own byCategory sub-section
+ * (defined in @app/core so the admin's mirror can be pinned to it). */
+export { MIN_CATEGORY_SECTION_PRODUCTS };
 /** The sold-out cap (at most half the first page) applies only above this many products. */
 export const SOLD_OUT_CAP_MIN_TOTAL = 6;
 

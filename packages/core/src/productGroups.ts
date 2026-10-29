@@ -36,6 +36,15 @@ export const PRODUCT_GROUPS: readonly ProductGroupDef[] = [
   },
 ];
 
+/**
+ * A category needs at least this many products for its own sub-section in a
+ * `byCategory` group on the storefront home page; smaller ones are merged into
+ * the group's final "More <group>" sub-section. The admin Categories page
+ * keeps a mirror (apps/web-admin/client/src/lib/categorySections.ts — the
+ * admin client may not import @app/core); productGroups.test.ts pins the two.
+ */
+export const MIN_CATEGORY_SECTION_PRODUCTS = 3;
+
 /** The registry entry for a group key. */
 export function productGroup(key: CategoryGroup): ProductGroupDef {
   const group = PRODUCT_GROUPS.find((entry) => entry.key === key);

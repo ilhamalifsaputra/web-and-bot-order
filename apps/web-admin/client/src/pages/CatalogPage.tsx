@@ -292,7 +292,9 @@ export function CatalogPage() {
         }
       />
 
-      <Alert role="status" className="mb-4">
+      {/* A static explanation, not a live update: "note" overrides the Alert
+          primitive's default role="alert" so it isn't announced on load. */}
+      <Alert role="note" className="mb-4">
         <Info aria-hidden="true" />
         <AlertDescription>
           On the website home page, products that were ordered and delivered most often in the last 30 days are shown

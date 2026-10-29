@@ -44,9 +44,7 @@ import {
   type CategoryRow,
 } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
-
-/** Same threshold as the website's home page (MIN_CATEGORY_SECTION_PRODUCTS in the storefront). */
-const MIN_PREMIUM_SECTION_PRODUCTS = 3;
+import { MIN_PREMIUM_SECTION_PRODUCTS } from "../lib/categorySections";
 
 /** A delete the server refused because the category still holds products. */
 interface BlockedDelete {
@@ -66,11 +64,18 @@ function CategoryGroupCell({ row }: { row: CategoryRow }) {
       ) : (
         <span className="text-amberx">Not set — shown as Premium Apps</span>
       )}
-      {premium && row.isActive && row.activeProductCount < MIN_PREMIUM_SECTION_PRODUCTS && (
-        <div className="mt-1 text-xs text-ink-soft">
-          Shown under "More Premium Apps" on the website (fewer than {MIN_PREMIUM_SECTION_PRODUCTS} active products).
-        </div>
-      )}
+      {/* Only 1-2 products: with none the category isn't on the website at
+          all. "May": when no Premium category reaches the threshold the website
+          shows one ungrouped Premium grid instead of a "More" section. */}
+      {premium &&
+        row.isActive &&
+        row.activeProductCount > 0 &&
+        row.activeProductCount < MIN_PREMIUM_SECTION_PRODUCTS && (
+          <div className="mt-1 text-xs text-ink-soft">
+            May be grouped under "More Premium Apps" on the website (fewer than {MIN_PREMIUM_SECTION_PRODUCTS} active
+            products).
+          </div>
+        )}
     </div>
   );
 }

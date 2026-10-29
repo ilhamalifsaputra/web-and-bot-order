@@ -117,29 +117,34 @@ describe("CategoriesPage", () => {
     expect(warning.className).toMatch(/amber/);
   });
 
-  it("notes the 'More Premium Apps' fold only for active Premium or legacy categories with fewer than 3 active products", async () => {
+  it("notes the possible 'More Premium Apps' fold only for active Premium or legacy categories with 1 or 2 active products", async () => {
     mockFetch({
       categories: [
         { ...APPS, id: 1, name: "Few", slug: "few", group: "PREMIUM_APPS", activeProductCount: 2 },
         { ...APPS, id: 2, name: "Enough", slug: "enough", group: "PREMIUM_APPS", activeProductCount: 3 },
-        { ...APPS, id: 3, name: "Legacy few", slug: "legacy-few", group: null, activeProductCount: 0 },
+        { ...APPS, id: 3, name: "Legacy few", slug: "legacy-few", group: null, activeProductCount: 1 },
         { ...GAMES, id: 4, name: "Few games", slug: "few-games", group: "GAME_TOPUP", isActive: true, activeProductCount: 1 },
         { ...APPS, id: 5, name: "Off", slug: "off", group: "PREMIUM_APPS", isActive: false, activeProductCount: 1 },
+        // No active products: not on the website at all, so nothing is folded.
+        { ...APPS, id: 6, name: "Empty", slug: "empty", group: "PREMIUM_APPS", activeProductCount: 0 },
+        { ...APPS, id: 7, name: "Legacy empty", slug: "legacy-empty", group: null, activeProductCount: 0 },
       ],
       products: [],
     });
     render(<CategoriesPage />, { wrapper: Wrapper });
 
     await screen.findByText("/c/few");
-    const note = 'Shown under "More Premium Apps" on the website (fewer than 3 active products).';
-    // Few (Premium, 2) and Legacy few (null group, 0) only.
+    // Conditional: with no Premium category reaching 3 the website shows one
+    // ungrouped Premium grid instead.
+    const note = 'May be grouped under "More Premium Apps" on the website (fewer than 3 active products).';
+    // Few (Premium, 2) and Legacy few (null group, 1) only.
     expect(screen.getAllByText(note)).toHaveLength(2);
     const rowOf = (slug: string) => screen.getByText(`/c/${slug}`).closest("tr")!;
     expect(within(rowOf("few")).getByText(note)).toBeInTheDocument();
     expect(within(rowOf("legacy-few")).getByText(note)).toBeInTheDocument();
-    expect(within(rowOf("enough")).queryByText(note)).not.toBeInTheDocument();
-    expect(within(rowOf("few-games")).queryByText(note)).not.toBeInTheDocument();
-    expect(within(rowOf("off")).queryByText(note)).not.toBeInTheDocument();
+    for (const slug of ["enough", "few-games", "off", "empty", "legacy-empty"]) {
+      expect(within(rowOf(slug)).queryByText(note)).not.toBeInTheDocument();
+    }
   });
 
   it("opens the create dialog from the header button", async () => {

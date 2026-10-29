@@ -716,7 +716,11 @@ export const CATALOG_ELIGIBLE_PRODUCT_WHERE = {
 /**
  * How many catalog-eligible products each category holds (categories with none
  * are absent from the map). The admin Categories page uses it to warn about
- * Premium categories the website folds into "More Premium Apps".
+ * Premium categories the website may fold into "More Premium Apps".
+ *
+ * Channel-independent: it ignores the per-channel service toggles (a service
+ * switched off for the website or the bot still counts here), so it is the
+ * catalog's count, not what one channel currently shows.
  */
 export async function countCatalogEligibleProductsByCategory(db: Db): Promise<Map<number, number>> {
   const rows = await db.product.groupBy({

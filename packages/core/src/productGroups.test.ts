@@ -3,12 +3,16 @@ import { CategoryGroup } from "./enums";
 import { CUSTOMER_SERVICES } from "./services";
 import {
   GROUP_ORDER_SETTING_KEY,
+  MIN_CATEGORY_SECTION_PRODUCTS,
   PRODUCT_GROUPS,
   groupForCategory,
   productGroup,
   productGroupBySlug,
   resolveGroupOrder,
 } from "./productGroups";
+// The admin client may not import @app/core (scripts/check-frontend-boundaries.ts),
+// so it keeps a dependency-free mirror of the threshold; this pins the two together.
+import { MIN_PREMIUM_SECTION_PRODUCTS } from "../../../apps/web-admin/client/src/lib/categorySections";
 
 const ALL_GROUPS = Object.values(CategoryGroup);
 
@@ -128,5 +132,12 @@ describe("resolveGroupOrder", () => {
 
   it("keeps a full reversed list as stored", () => {
     expect(resolveGroupOrder(JSON.stringify(REVERSED))).toEqual(REVERSED);
+  });
+});
+
+describe("MIN_CATEGORY_SECTION_PRODUCTS", () => {
+  it("is 3, and the admin Categories page's mirror says the same", () => {
+    expect(MIN_CATEGORY_SECTION_PRODUCTS).toBe(3);
+    expect(MIN_PREMIUM_SECTION_PRODUCTS).toBe(MIN_CATEGORY_SECTION_PRODUCTS);
   });
 });

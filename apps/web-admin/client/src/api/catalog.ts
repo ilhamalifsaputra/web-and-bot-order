@@ -20,8 +20,10 @@ export interface CategoryRow {
   /** Customer-facing top-level bucket ("GAME_TOPUP" | "PREMIUM_APPS"), or
    * null until an admin classifies it. See CategoryGroup in @app/core/enums. */
   group: string | null;
-  /** Products the website would list in this category (active, not archived,
-   * with an active priced denomination) — the storefront's "Others" rule input. */
+  /** Catalog-eligible products in this category (active, not archived, with an
+   * active priced denomination) — the storefront's "Others" rule input. Ignores
+   * the per-channel service toggles: a service switched off for the website
+   * still counts here. */
   activeProductCount: number;
 }
 

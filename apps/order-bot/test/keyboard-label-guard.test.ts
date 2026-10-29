@@ -28,6 +28,9 @@ import { t as coreT } from "@app/core/i18n";
 type Currency = "IDR" | "USD";
 interface Fixture { id: number; name: string; price: string; /** The admin-structured quantity and unit, when the SKU has them. */ qty?: [number, string] }
 
+/** The widest label a button may have in a row of `n`: NARROW_LABEL_WIDTH for two, its share of MAX_LABEL_WIDTH for three or more. */
+const rowShare = (n: number) => (n <= 2 ? NARROW_LABEL_WIDTH : Math.floor(MAX_LABEL_WIDTH / n));
+
 const PRODUCT_ID = 3;
 const DENOM_PREFIX = "v1:browse:denom:";
 // Ids of different widths, so the callback byte cap is exercised with real-world-sized ids.
@@ -127,8 +130,8 @@ function violations(products: CanonicalProduct[], locale: string): string[] {
     // No two identical labels on one page (price alone must never tell two SKUs apart).
     const texts = all.map((button) => button.text);
     for (const text of new Set(texts)) if (texts.filter((other) => other === text).length > 1) found.push(`${where}: label "${text}" appears more than once`);
-    // Two to a row only when both are narrow.
-    for (const row of rows) if (row.length > 1 && row.some((button) => visualWidth(button.text) > NARROW_LABEL_WIDTH)) found.push(`${where}: a wide label shares its row: ${row.map((button) => `"${button.text}"`).join(" ")}`);
+    // Two to a row only when both are narrow; three or more only within their share of the width.
+    for (const row of rows) if (row.length > 1 && row.some((button) => visualWidth(button.text) > rowShare(row.length))) found.push(`${where}: a wide label shares its row: ${row.map((button) => `"${button.text}"`).join(" ")}`);
     // Product rows first; navigation (Prev/Next, Refresh, Back) never shares a row with a product.
     const lastProductRow = rows.reduce((last, row, index) => row.some((button) => button.data.startsWith(DENOM_PREFIX)) ? index : last, -1);
     const firstNavRow = rows.findIndex((row) => row.some((button) => !button.data.startsWith(DENOM_PREFIX)));
@@ -401,6 +404,21 @@ describe("keyboard label guard: the other pickers keep their own limits", () => 
     expect(keyboard.inline_keyboard.at(-2)![1]!.text).toBe("2/3");
     expect(keyboard.inline_keyboard.at(-1)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual(["v1:browse:gregs:1000000000"]);
   });
+  it("navigation rows of the inline list, the game list and the pack picker (‹ page ›) fit their row share in every language", () => {
+    for (const lang of ["en", "id"]) {
+      const keyboards = [
+        productListKb([{ id: 1, name: "A" }], 1, 3, lang, "v1:browse:grps"),
+        gameListKb([{ name: "A", index: 10 }], 1_000_000_000, 1, 3, lang, "v1:browse:grps"),
+        canonicalDenominationPickerKb([], 1_000_000_000, lang, 1, 3),
+      ];
+      for (const keyboard of keyboards) {
+        for (const row of keyboard.inline_keyboard) {
+          if (row.length < 2) continue;
+          for (const button of row) expect(visualWidth(button.text), `${lang}: "${button.text}" in a row of ${row.length}`).toBeLessThanOrEqual(rowShare(row.length));
+        }
+      }
+    }
+  });
   it("the Game Top-up game list: one game per row, phone budget, unique, callbacks within 64 bytes, page indicator between the arrows", () => {
     const games = [...hostileNames, ...hostileNames, "x".repeat(LIST_LABEL_MAX_CHARS)].map((name, i) => ({ name, index: 1_000_000 + i }));
     const keyboard = gameListKb(games, 1_000_000_000, 1, 3, "en", "v1:browse:grp:GAME_TOPUP");
@@ -414,7 +432,7 @@ describe("keyboard label guard: the other pickers keep their own limits", () => 
       expect(Buffer.byteLength(button.text, "utf8"), button.text).toBeLessThanOrEqual(MAX_LABEL_BYTES);
       if ("callback_data" in button) expect(Buffer.byteLength(button.callback_data, "utf8")).toBeLessThanOrEqual(64);
     }
-    expect(keyboard.inline_keyboard.at(-2)!.map((b) => b.text)).toEqual([coreT("browse.nav_prev", "en"), "2/3", coreT("browse.nav_next", "en")]);
+    expect(keyboard.inline_keyboard.at(-2)!.map((b) => b.text)).toEqual(["‹", "2/3", "›"]);
     expect(keyboard.inline_keyboard.at(-2)!.map((b) => ("callback_data" in b ? b.callback_data : ""))).toEqual([
       "v1:browse:games:1000000000:0", "v1:noop", "v1:browse:games:1000000000:2",
     ]);

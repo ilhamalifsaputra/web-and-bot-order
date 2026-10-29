@@ -22,7 +22,7 @@ import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderTy
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { CUSTOMER_SERVICES, serviceForCategoryGroup, usesNumberedSelection } from "@app/core/services";
-import { canonicalGameRegion, deriveGameIdentity, gameScopePickers, groupProductsByGame, isBaseEdition, type GameGroup, type GameGroupMember } from "@app/core";
+import { canonicalGameRegion, deriveGameIdentities, gameScopePickers, groupProductsByGame, isBaseEdition, type GameGroup, type GameGroupMember } from "@app/core";
 import {
   prisma,
   ownsTransactionMessageAt,
@@ -1178,7 +1178,10 @@ function usesGameLevel(games: readonly CategoryGame[]): boolean {
  * region (deriveGameIdentity). Freshly read.
  */
 async function categoryMembers(categoryId: number): Promise<GameGroupMember<CatalogRow>[]> {
-  const derived = groupProductsByGame(await listCatalogProducts(prisma, "bot", categoryId))
+  const products = await listCatalogProducts(prisma, "bot", categoryId);
+  // Category-aware identities: a bare trailing region word is trusted only when shared (deriveGameIdentities).
+  const identityOf = new Map(deriveGameIdentities(products).map((identity, index) => [products[index]!.id, identity] as const));
+  const derived = groupProductsByGame(products)
     .flatMap((game) => game.members)
     .map((member) => ({
       member,
@@ -1186,7 +1189,7 @@ async function categoryMembers(categoryId: number): Promise<GameGroupMember<Cata
       // admin-made product's gameVariant is its edition as typed ("Global"
       // edition), and its gameRegion still reads canonically.
       identity: member.product.digiflazzBrand?.trim()
-        ? deriveGameIdentity(member.product)
+        ? identityOf.get(member.product.id)!
         : { edition: member.product.gameVariant?.trim() || null, region: canonicalGameRegion(member.product.gameRegion) },
     }));
   const editions = new Set(derived.flatMap(({ identity }) => (identity.edition === null ? [] : [identity.edition])));
@@ -2072,7 +2075,8 @@ export async function browseProduct(ctx: MyContext, productId: number, requested
   const { pages } = presentCanonicalCatalog(products, { locale: lang, intro });
   const pageIndex = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pages.length - 1);
   const page = pages[pageIndex]!;
-  const text = page.text + prices.rateNotice(lang) + (pages.length > 1 ? `\n${pageIndex + 1}/${pages.length}` : "") + `\n${t(ctx, "hint.packs")}`;
+  // The page ("1/2") is the indicator button between the arrows, not repeated in the body.
+  const text = page.text + prices.rateNotice(lang) + `\n${t(ctx, "hint.packs")}`;
   // Remembered so the denomination detail's Back returns to this same page.
   sc(ctx).productPage = pageIndex;
   // The Game Top-up pack picker is a TEXT message (owner decision): no product

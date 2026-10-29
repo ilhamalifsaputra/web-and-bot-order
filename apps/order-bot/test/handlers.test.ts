@@ -2814,7 +2814,8 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
 
     expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(false);
     const scratch = ctx.session.scratch as { resolvedGameRegion?: string | null };
-    expect(scratch.resolvedGameRegion).toBe("Global");
+    // The region reads canonically (a recognised region gets its flagged label).
+    expect(scratch.resolvedGameRegion).toBe("🌐 Global");
   });
 
   it("region step mirrors the show logic: a single resolved variant with 2 distinct regions renders the region picker", async () => {

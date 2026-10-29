@@ -645,19 +645,21 @@ export function productListKb(
 ): InlineKeyboard {
   const labels = uniqueListLabels(products.map((p) => p.name));
   const rows: Btn[][] = products.map((p, i) => [{ text: labels[i]!, data: cb("browse", "pick", p.id) }]);
-  rows.push(...listNavRows(page, totalPages, lang, (target) => cb("browse", "page", target)));
+  rows.push(...listNavRows(page, totalPages, (target) => cb("browse", "page", target)));
   rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }
 
-/** Prev, the "1/2" page indicator, Next — one row, only for a multi-page inline list. */
-function listNavRows(page: number, totalPages: number, lang: string, pageData: (page: number) => string): Btn[][] {
+/** ‹ 1/2 › — one row, only for a multi-page inline list. Three buttons share
+ * the row, so the arrows are the compact "‹" / "›" of the pack picker (the
+ * localized "◀️ Sebelumnya" would not fit a third of the phone width). */
+function listNavRows(page: number, totalPages: number, pageData: (page: number) => string): Btn[][] {
   if (totalPages <= 1) return [];
   const nav: Btn[] = [];
-  if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: pageData(page - 1) });
+  if (page > 0) nav.push({ text: "‹", data: pageData(page - 1) });
   const indicator = pageIndicatorButton(page, totalPages);
   nav.push({ text: indicator.text, data: indicator.callback_data });
-  if (page < totalPages - 1) nav.push({ text: coreT("browse.nav_next", lang), data: pageData(page + 1) });
+  if (page < totalPages - 1) nav.push({ text: "›", data: pageData(page + 1) });
   return [nav];
 }
 
@@ -695,7 +697,7 @@ export function gameListKb(
 ): InlineKeyboard {
   const labels = uniqueListLabels(games.map((g) => g.name));
   const rows: Btn[][] = games.map((g, i) => [{ text: labels[i]!, data: cb("browse", "game", categoryId, g.index) }]);
-  rows.push(...listNavRows(page, totalPages, lang, (target) => cb("browse", "games", categoryId, target)));
+  rows.push(...listNavRows(page, totalPages, (target) => cb("browse", "games", categoryId, target)));
   rows.push(backRow(lang, backTarget, false));
   return ik(rows);
 }

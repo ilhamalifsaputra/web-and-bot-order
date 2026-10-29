@@ -145,7 +145,7 @@ describe("Game Top-up product list: inline buttons, no numbers", () => {
     expect(pickButtons(tap.sink)).toHaveLength(10);
     const r0 = rows(tap.sink);
     // Page indicator (a no-op tap) between the arrows.
-    expect(r0.at(-2)).toEqual([{ text: "1/2", callback_data: "v1:noop" }, { text: t(tap.ctx, "browse.nav_next"), callback_data: "v1:browse:page:1" }]);
+    expect(r0.at(-2)).toEqual([{ text: "1/2", callback_data: "v1:noop" }, { text: "›", callback_data: "v1:browse:page:1" }]);
     expect(r0.at(-1)![0]!.text).toBe(t(tap.ctx, "menu.back"));
 
     const page2 = next(tap.ctx, { callbackData: "v1:browse:page:1" });
@@ -153,7 +153,7 @@ describe("Game Top-up product list: inline buttons, no numbers", () => {
     expect(counts(page2.sink)).toEqual(ONE_EDIT);
     expect(pickButtons(page2.sink).map((x) => x.text)).toEqual(["FF P10", "FF P11"]);
     const r1 = rows(page2.sink);
-    expect(r1.at(-2)).toEqual([{ text: t(page2.ctx, "browse.nav_prev"), callback_data: "v1:browse:page:0" }, { text: "2/2", callback_data: "v1:noop" }]);
+    expect(r1.at(-2)).toEqual([{ text: "‹", callback_data: "v1:browse:page:0" }, { text: "2/2", callback_data: "v1:noop" }]);
     expect(r1.at(-1)![0]!.text).toBe(t(page2.ctx, "menu.back"));
     expect(hasReplyKeyboard(page2.sink)).toBe(false);
   });

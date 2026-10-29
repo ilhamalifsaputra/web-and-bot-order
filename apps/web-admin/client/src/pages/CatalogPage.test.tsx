@@ -100,6 +100,17 @@ beforeEach(() => {
 });
 
 describe("CatalogPage", () => {
+  it("explains how the website home page ranks products", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ categories: [], products: [PRODUCT] }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent(
+      'On the website home page, products that were ordered and delivered most often in the last 30 days are shown first in each section. New products get a "New" badge for 14 days and appear under "Show more" until they start selling. The bot\'s Popular menu uses all-time sales.',
+    );
+  });
+
   it("shows product rows", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({ categories: [], products: [PRODUCT] }),

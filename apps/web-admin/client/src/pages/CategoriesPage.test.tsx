@@ -85,12 +85,61 @@ describe("CategoriesPage", () => {
     mockFetch({ categories: [APPS, GAMES], products: [PRODUCT, ARCHIVED_PRODUCT] });
     render(<CategoriesPage />, { wrapper: Wrapper });
 
-    expect(await screen.findByText(/Apps/)).toBeInTheDocument();
+    expect(await screen.findByText("/c/apps")).toBeInTheDocument();
     expect(screen.getByText("/c/apps")).toBeInTheDocument();
     expect(screen.getByText("/c/games")).toBeInTheDocument();
     // One product in Apps, and the archived one is not counted.
     expect(screen.getByRole("button", { name: "1 product" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "0 products" })).toBeInTheDocument();
+  });
+
+  it("says the order is shared by the website and the Telegram bot", async () => {
+    mockFetch({ categories: [APPS], products: [] });
+    render(<CategoriesPage />, { wrapper: Wrapper });
+    await screen.findByText("/c/apps");
+    expect(screen.getByText("This order is used by both the website and the Telegram bot.")).toBeInTheDocument();
+  });
+
+  it("shows each category's group, with an amber warning for a legacy category with none", async () => {
+    mockFetch({
+      categories: [
+        { ...APPS, group: "PREMIUM_APPS", activeProductCount: 5 },
+        { ...GAMES, group: "GAME_TOPUP", activeProductCount: 5 },
+        { ...APPS, id: 8, name: "Legacy", slug: "legacy", group: null, activeProductCount: 5 },
+      ],
+      products: [],
+    });
+    render(<CategoriesPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("💎 Premium Apps")).toBeInTheDocument();
+    expect(screen.getByText("🎮 Game Top Up")).toBeInTheDocument();
+    const warning = screen.getByText("Not set — shown as Premium Apps");
+    expect(warning.className).toMatch(/amber/);
+  });
+
+  it("notes the 'More Premium Apps' fold only for active Premium or legacy categories with fewer than 3 active products", async () => {
+    mockFetch({
+      categories: [
+        { ...APPS, id: 1, name: "Few", slug: "few", group: "PREMIUM_APPS", activeProductCount: 2 },
+        { ...APPS, id: 2, name: "Enough", slug: "enough", group: "PREMIUM_APPS", activeProductCount: 3 },
+        { ...APPS, id: 3, name: "Legacy few", slug: "legacy-few", group: null, activeProductCount: 0 },
+        { ...GAMES, id: 4, name: "Few games", slug: "few-games", group: "GAME_TOPUP", isActive: true, activeProductCount: 1 },
+        { ...APPS, id: 5, name: "Off", slug: "off", group: "PREMIUM_APPS", isActive: false, activeProductCount: 1 },
+      ],
+      products: [],
+    });
+    render(<CategoriesPage />, { wrapper: Wrapper });
+
+    await screen.findByText("/c/few");
+    const note = 'Shown under "More Premium Apps" on the website (fewer than 3 active products).';
+    // Few (Premium, 2) and Legacy few (null group, 0) only.
+    expect(screen.getAllByText(note)).toHaveLength(2);
+    const rowOf = (slug: string) => screen.getByText(`/c/${slug}`).closest("tr")!;
+    expect(within(rowOf("few")).getByText(note)).toBeInTheDocument();
+    expect(within(rowOf("legacy-few")).getByText(note)).toBeInTheDocument();
+    expect(within(rowOf("enough")).queryByText(note)).not.toBeInTheDocument();
+    expect(within(rowOf("few-games")).queryByText(note)).not.toBeInTheDocument();
+    expect(within(rowOf("off")).queryByText(note)).not.toBeInTheDocument();
   });
 
   it("opens the create dialog from the header button", async () => {

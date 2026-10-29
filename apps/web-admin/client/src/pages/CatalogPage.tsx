@@ -1,3 +1,4 @@
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -25,6 +26,7 @@ import {
   Archive,
   ArchiveRestore,
   Check,
+  Info,
   MoreVertical,
   Package,
   Plus,
@@ -289,6 +291,15 @@ export function CatalogPage() {
           </div>
         }
       />
+
+      <Alert role="status" className="mb-4">
+        <Info aria-hidden="true" />
+        <AlertDescription>
+          On the website home page, products that were ordered and delivered most often in the last 30 days are shown
+          first in each section. New products get a "New" badge for 14 days and appear under "Show more" until they
+          start selling. The bot's Popular menu uses all-time sales.
+        </AlertDescription>
+      </Alert>
 
       {/* Product-family tabs. Scrolls sideways on a narrow phone rather than
           widening the page. */}

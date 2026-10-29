@@ -26,10 +26,19 @@ export interface ServiceState {
   enabledWeb: boolean;
 }
 
+/** One product group in the website home-page order (labels are admin-facing). */
+export interface GroupOrderEntry {
+  key: string;
+  label: string;
+}
+
 export interface SettingsData {
   fields: SettingsField[];
   payMethodState: Record<string, PayMethodState>;
   serviceStates: ServiceState[];
+  /** Website home-page group order, already resolved server-side. Optional so
+   * a client served by an older server still renders. */
+  groupOrder?: GroupOrderEntry[];
   /** Bybit Internal Transfer / Bybit BSC poller health, computed server-side
    * by `evaluatePollHealth` (packages/core/src/payments/pollHealth.ts) —
    * always a verdict, never the raw heartbeat, and never null: a disabled or

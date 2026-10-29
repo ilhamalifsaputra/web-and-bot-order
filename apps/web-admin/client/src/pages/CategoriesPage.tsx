@@ -45,10 +45,34 @@ import {
 } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
 
+/** Same threshold as the website's home page (MIN_CATEGORY_SECTION_PRODUCTS in the storefront). */
+const MIN_PREMIUM_SECTION_PRODUCTS = 3;
+
 /** A delete the server refused because the category still holds products. */
 interface BlockedDelete {
   category: CategoryRow;
   message: string;
+}
+
+/** A category's group, plus the "More Premium Apps" note when the website folds it away. */
+function CategoryGroupCell({ row }: { row: CategoryRow }) {
+  const premium = row.group === null || row.group === "PREMIUM_APPS";
+  return (
+    <div className="min-w-0 text-sm">
+      {row.group === "GAME_TOPUP" ? (
+        <span className="text-ink">🎮 Game Top Up</span>
+      ) : row.group === "PREMIUM_APPS" ? (
+        <span className="text-ink">💎 Premium Apps</span>
+      ) : (
+        <span className="text-amberx">Not set — shown as Premium Apps</span>
+      )}
+      {premium && row.isActive && row.activeProductCount < MIN_PREMIUM_SECTION_PRODUCTS && (
+        <div className="mt-1 text-xs text-ink-soft">
+          Shown under "More Premium Apps" on the website (fewer than {MIN_PREMIUM_SECTION_PRODUCTS} active products).
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function CategoriesPage() {
@@ -140,7 +164,12 @@ export function CategoriesPage() {
     <PageLayout title="Categories">
       <PageHeader
         title="Categories"
-        description="Group products into the shelves customers browse. Order here is the order they appear in the shop."
+        description={
+          <>
+            Group products into the shelves customers browse. Order here is the order they appear in the shop.
+            <span className="block">This order is used by both the website and the Telegram bot.</span>
+          </>
+        }
         actions={
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" />
@@ -196,6 +225,11 @@ export function CategoriesPage() {
                   <div className="truncate font-mono text-xs text-ink-soft">/c/{row.slug}</div>
                 </div>
               ),
+            },
+            {
+              key: "group",
+              header: "Group",
+              render: (row: CategoryRow) => <CategoryGroupCell row={row} />,
             },
             {
               key: "description",

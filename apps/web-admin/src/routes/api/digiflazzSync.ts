@@ -28,7 +28,7 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
-import { gameRegionLabel } from "@app/core";
+import { findUnrecognisedGameRegions, gameRegionLabel, unrecognisedRegionsNote } from "@app/core";
 import { serviceForCategoryGroup } from "@app/core/services";
 import { CategoryGroup } from "@app/core/enums";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -245,7 +245,22 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         suggestedPrice: digiflazzSellPrice(context, item.price, categoryOf(g)).toString(),
       })),
     }));
-    return reply.send({ groups: withPrices });
+    // "Regions not recognised": groups that look like a regioned member of a
+    // game but whose region is not in the whitelist (regionLabel.ts), so a new
+    // country is reported instead of silently becoming an edition or a game of
+    // its own. Report only — the import and the bot are not changed by it.
+    const unrecognised = findUnrecognisedGameRegions(groups.map((g) => ({ name: g.brand, digiflazzBrand: g.brand, gameVariant: g.gameVariant ?? null, gameRegion: null })));
+    const unrecognisedBrands = unrecognised.map((r) => r.product.name);
+    if (unrecognisedBrands.length > 0) {
+      logger.warn(
+        { brands: unrecognisedBrands.length },
+        `A Digiflazz import preview found ${unrecognisedBrands.length} brand group(s) whose game region is not in the region whitelist, so the bot cannot offer them as a region; add a row to packages/core/src/regionLabel.ts or set the game region in the admin.`,
+      );
+    }
+    return reply.send({
+      groups: withPrices,
+      unrecognisedRegions: { brands: unrecognisedBrands, note: unrecognisedRegionsNote(unrecognisedBrands) },
+    });
   });
 
   // The full catalog sync on demand — the same run the hourly cron makes

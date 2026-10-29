@@ -54,7 +54,7 @@
  * Dry run (`apply: false`, the default) performs zero writes.
  */
 import { CategoryGroup } from "@app/core/enums";
-import { gameRegionLabel } from "@app/core";
+import { findUnrecognisedGameRegions, gameRegionLabel, type UnrecognisedRegionReason } from "@app/core";
 import { logger } from "@app/core/logger";
 import { parseProductRegion } from "@app/core/suppliers/digiflazz";
 import type { PrismaClient } from "../client";
@@ -111,6 +111,19 @@ export interface GameRegionBackfillReport {
   stoppedEarly: boolean;
   /** True when data was written but the detection catalog revision bump then failed. */
   revisionBumpFailed?: boolean;
+  /**
+   * "Regions not recognised" (findUnrecognisedGameRegions, @app/core): per
+   * category, the products that look like a regioned member of a game but
+   * whose region could not be derived — a country missing from the whitelist.
+   * Report only: nothing here is written. Categories with none are left out.
+   */
+  unrecognisedRegions: GameRegionUnrecognisedCategory[];
+}
+
+export interface GameRegionUnrecognisedCategory {
+  categoryId: number;
+  categoryName: string;
+  products: Array<{ productId: number; name: string; reason: UnrecognisedRegionReason; token: string | null }>;
 }
 
 export interface FillGameRegionsOptions {
@@ -155,7 +168,7 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
     select: { id: true, name: true },
     orderBy: { id: "asc" },
   });
-  const report: GameRegionBackfillReport = { applied: apply, scopes: [], updated: 0, skipped: 0, failed: 0, stoppedEarly: false };
+  const report: GameRegionBackfillReport = { applied: apply, scopes: [], updated: 0, skipped: 0, failed: 0, stoppedEarly: false, unrecognisedRegions: [] };
   let wroteAny = false;
   let stopped = false;
 
@@ -165,6 +178,15 @@ export async function fillGameRegions(db: PrismaClient, opts: FillGameRegionsOpt
       select: { id: true, name: true, digiflazzBrand: true, gameVariant: true, gameRegion: true },
       orderBy: { id: "asc" },
     });
+    // Report only (never written): products whose region could not be derived.
+    const unrecognised = findUnrecognisedGameRegions(products);
+    if (unrecognised.length) {
+      report.unrecognisedRegions.push({
+        categoryId: category.id,
+        categoryName: category.name,
+        products: unrecognised.map(({ product, reason, token }) => ({ productId: product.id, name: product.name, reason, token })),
+      });
+    }
     const byVariant = new Map<string | null, typeof products>();
     for (const p of products) byVariant.set(p.gameVariant, [...(byVariant.get(p.gameVariant) ?? []), p]);
 

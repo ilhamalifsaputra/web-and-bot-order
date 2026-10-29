@@ -23,6 +23,28 @@ const regionOf = async (id: number) => (await db.prisma.product.findUniqueOrThro
 const auditCount = () => db.prisma.auditLog.count({ where: { action: "game_region_backfill" } });
 
 describe("fillGameRegions", () => {
+  it("reports the regions not recognised per category (a country missing from the whitelist), writing nothing for them", async () => {
+    const kz = await mk("Game K (KZ)");
+    const valMy = await mk("Valorant Malaysia", { digiflazzBrand: "Valorant", gameVariant: "Malaysia" });
+    const valKz = await mk("Valorant Kazakhstan", { digiflazzBrand: "Valorant", gameVariant: "Kazakhstan" });
+    await mk("Game K (Global)");
+    const report = await fillGameRegions(db.prisma, { apply: false, categoryIds: [categoryId] });
+    expect(report.unrecognisedRegions).toHaveLength(1);
+    expect(report.unrecognisedRegions[0]).toMatchObject({ categoryId });
+    expect(report.unrecognisedRegions[0]!.products).toEqual([
+      { productId: kz.id, name: "Game K (KZ)", reason: "unknown_suffix", token: "KZ" },
+      { productId: valKz.id, name: "Valorant Kazakhstan", reason: "region_missing_in_regioned_game", token: "Kazakhstan" },
+    ]);
+    expect(await regionOf(valMy.id)).toBeNull();
+    expect(await regionOf(valKz.id)).toBeNull();
+  });
+
+  it("leaves the report empty for a category whose regions are all recognised", async () => {
+    await mk("Game Z (Global)"); await mk("Game Z (Malaysia)");
+    const report = await fillGameRegions(db.prisma, { apply: false, categoryIds: [categoryId] });
+    expect(report.unrecognisedRegions).toEqual([]);
+  });
+
   it("fills every member of a fully recognised scope and audits each product once", async () => {
     const a = await mk("Game X (Global)");
     const b = await mk("Game X (Malaysia)");

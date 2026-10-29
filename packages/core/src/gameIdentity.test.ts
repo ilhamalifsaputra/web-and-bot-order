@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   deriveGameIdentity,
   displayGameName,
+  findUnrecognisedGameRegions,
   gameScopePickers,
   groupProductsByGame,
+  unrecognisedRegionsNote,
   isBaseEdition,
   normalizeGameKey,
   type GameIdentityInput,
@@ -396,5 +398,57 @@ describe("gameScopePickers — same rules as the category-level pickers", () => 
       showEditionPicker: false,
       showRegionPicker: false,
     });
+  });
+});
+
+describe("findUnrecognisedGameRegions (the 'regions not recognised' report)", () => {
+  const report = (rows: P[]) => findUnrecognisedGameRegions(rows).map((r) => [r.product.name, r.reason, r.token]);
+
+  it("lists nothing for the production catalog: every regioned member is recognised", () => {
+    expect(report(productionCatalog())).toEqual([]);
+  });
+
+  it("flags an unknown '(…)' suffix, but never a publisher, the base marker or the product's own edition", () => {
+    expect(report([
+      p("Mobile Legends (KZ)", { gameVariant: "Umum" }),
+      p("Mobile Legends (BR)", { gameVariant: "Umum" }),
+      p("Delta Force (Garena)"),
+      p("Arena Breakout (Umum)", { gameVariant: "Umum" }),
+      p("Genshin Impact (Welkin)", { gameVariant: "Welkin" }),
+    ])).toEqual([["Mobile Legends (KZ)", "unknown_suffix", "KZ"]]);
+  });
+
+  it("flags an unknown short UPPERCASE region code in the variant", () => {
+    expect(report([p("PUBG Mobile KZ", { digiflazzBrand: "PUBG Mobile", gameVariant: "KZ" })])).toEqual([["PUBG Mobile KZ", "unknown_code", "KZ"]]);
+  });
+
+  it("flags a member without a region in a game whose other members have one (a new country read as an edition)", () => {
+    expect(report([
+      p("Valorant Malaysia", { digiflazzBrand: "Valorant", gameVariant: "Malaysia" }),
+      p("Valorant Kazakhstan", { digiflazzBrand: "Valorant", gameVariant: "Kazakhstan" }),
+      p("Free Fire"),
+    ])).toEqual([["Valorant Kazakhstan", "region_missing_in_regioned_game", "Kazakhstan"]]);
+  });
+
+  it("never lists a product with an explicit admin region, even an unlisted one", () => {
+    expect(report([
+      p("Valorant Malaysia", { digiflazzBrand: "Valorant", gameVariant: "Malaysia" }),
+      p("Valorant Kazakhstan", { digiflazzBrand: "Valorant", gameVariant: "Kazakhstan", gameRegion: "Kazakhstan" }),
+      p("Honkai (KZ)", { gameRegion: "🇰🇿 Kazakhstan" }),
+    ])).toEqual([]);
+  });
+
+  it("does not change grouping (pure): the flagged products keep their derived identity", () => {
+    const rows = [p("Valorant Malaysia", { digiflazzBrand: "Valorant", gameVariant: "Malaysia" }), p("Valorant Kazakhstan", { digiflazzBrand: "Valorant", gameVariant: "Kazakhstan" })];
+    const before = JSON.stringify(groupProductsByGame(rows));
+    findUnrecognisedGameRegions(rows);
+    expect(JSON.stringify(groupProductsByGame(rows))).toBe(before);
+  });
+
+  it("the admin note names the products and the two fixes", () => {
+    expect(unrecognisedRegionsNote([])).toBeNull();
+    expect(unrecognisedRegionsNote(["Mobile Legends (KZ)", "Valorant Kazakhstan"])).toBe(
+      "Regions not recognised: Mobile Legends (KZ), Valorant Kazakhstan — add one row to packages/core/src/regionLabel.ts or set the game region in the admin.",
+    );
   });
 });

@@ -311,3 +311,65 @@ export function gameScopePickers(
     showRegionPicker: !regionMixed && regions.length >= 2,
   };
 }
+
+/** Why a product looks like a regioned game member whose region was not derived. */
+export type UnrecognisedRegionReason =
+  /** The name / brand ends in "(…)" that is not a known region, publisher, base marker or the product's edition. */
+  | "unknown_suffix"
+  /** The variant is a short UPPERCASE code ("KZ") that is not a known region or publisher. */
+  | "unknown_code"
+  /** Other products of the same game carry a region, this one has none. */
+  | "region_missing_in_regioned_game";
+
+export interface UnrecognisedRegion<T> {
+  product: T;
+  reason: UnrecognisedRegionReason;
+  /** The unrecognised text ("KZ", "Kazakhstan") when there is one. */
+  token: string | null;
+}
+
+const SHORT_CODE = /^[A-Z]{2,3}$/;
+
+/**
+ * The "regions not recognised" report: products of one category that look
+ * like a regioned member of a game but whose region could not be derived, so a
+ * new country that is not in the whitelist (regionLabel.ts GAME_REGIONS) is
+ * never silently flattened into an edition or a game of its own. Pure; it
+ * never changes how products are grouped or browsed. A product with any
+ * derived region (an admin's unlisted `gameRegion` included) is never listed.
+ * Each product at most once, in input order.
+ */
+export function findUnrecognisedGameRegions<T extends GameGroupableProduct>(products: readonly T[]): UnrecognisedRegion<T>[] {
+  const identities = products.map((product) => derive(product));
+  const regionedKeys = new Set(identities.filter((identity) => identity.region !== null).map((identity) => identity.gameKey));
+  const out: UnrecognisedRegion<T>[] = [];
+  products.forEach((product, index) => {
+    const identity = identities[index]!;
+    if (identity.region !== null) return;
+    const variant = blankToNull(product.gameVariant);
+    // A publisher, the base marker or the product's own edition in parentheses is not a region.
+    const isQuiet = (token: string) =>
+      isGamePublisherWord(token) || isBaseEdition(token) || (variant !== null && normalizeGameKey(token) === normalizeGameKey(variant));
+    for (const source of [blankToNull(product.digiflazzBrand), collapse(product.name)]) {
+      const token = source ? blankToNull(TRAILING_PARENTHETICAL.exec(source)?.[2]) : null;
+      if (token && !isQuiet(token)) {
+        out.push({ product, reason: "unknown_suffix", token });
+        return;
+      }
+    }
+    if (variant && SHORT_CODE.test(variant) && !isGamePublisherWord(variant)) {
+      out.push({ product, reason: "unknown_code", token: variant });
+      return;
+    }
+    if (regionedKeys.has(identity.gameKey)) {
+      out.push({ product, reason: "region_missing_in_regioned_game", token: variant && !isBaseEdition(variant) ? variant : null });
+    }
+  });
+  return out;
+}
+
+/** The one-line admin note for that report, or null when nothing is listed. */
+export function unrecognisedRegionsNote(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  return `Regions not recognised: ${names.join(", ")} — add one row to packages/core/src/regionLabel.ts or set the game region in the admin.`;
+}

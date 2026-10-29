@@ -248,7 +248,7 @@ describe("HomePage", () => {
   describe("group nav", () => {
     it("shows one jump pill per group, in the payload's order, under the navbar", async () => {
       renderHome(twoGroups());
-      const nav = await screen.findByRole("navigation", { name: "Categories" });
+      const nav = await screen.findByRole("navigation", { name: "Product types" });
       const pills = within(nav).getAllByRole("link");
       expect(pills.map((a) => a.textContent)).toEqual(["💎 Premium Apps", "🎮 Top Up Games"]);
       expect(pills.map((a) => a.getAttribute("href"))).toEqual(["#g-premium-apps", "#g-top-up-games"]);
@@ -260,14 +260,14 @@ describe("HomePage", () => {
     it("is not rendered with a single group", async () => {
       renderHome(homeFixture());
       await screen.findByRole("heading", { name: "Netflix Premium" });
-      expect(screen.queryByRole("navigation", { name: "Categories" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("navigation", { name: "Product types" })).not.toBeInTheDocument();
       expect(document.getElementById("g-premium-apps")?.className).toContain("scroll-mt-20");
     });
 
     it("marks the group on screen as current (scrollspy)", async () => {
       vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
       renderHome(twoGroups());
-      const nav = await screen.findByRole("navigation", { name: "Categories" });
+      const nav = await screen.findByRole("navigation", { name: "Product types" });
       const [premium, game] = within(nav).getAllByRole("link");
       expect(premium).not.toHaveAttribute("aria-current");
       const observer = FakeIntersectionObserver.instances.at(-1)!;
@@ -505,7 +505,7 @@ describe("HomePage", () => {
   it("shows the empty catalog state when no group has products", async () => {
     renderHome(homeFixture({ groups: [], hero_products: [] }));
     expect(await screen.findByText("No products yet — check back soon.")).toBeInTheDocument();
-    expect(screen.queryByRole("navigation", { name: "Categories" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Product types" })).not.toBeInTheDocument();
   });
 
   it("renders the static Our Promise section with always-true wording and no customer-count or timing claims", async () => {
@@ -645,27 +645,29 @@ describe("HomePage", () => {
 
   it("renders the hero CTAs as design-system buttons — pine-fill primary + dark-surface outline, both with the white focus ring", async () => {
     renderHome(twoGroups());
-    // Both CTAs read "Browse products" in English (web.hero_cta and
-    // web.hero_cta_browse_groups); the primary one comes first.
-    const [primary, secondary] = await screen.findAllByRole("link", { name: "Browse products" });
-    expect(primary!.className).toContain("btn-primary");
-    expect(primary!.className).toContain("focus-on-dark");
+    // Two links, two purposes: browse the first group, or pick a product type.
+    const primary = await screen.findByRole("link", { name: "Browse products" });
+    const secondary = screen.getByRole("link", { name: "Shop by type" });
+    expect(primary.className).toContain("btn-primary");
+    expect(primary.className).toContain("focus-on-dark");
     // The primary CTA jumps to the first group; the secondary one to the group nav.
     expect(primary).toHaveAttribute("href", "#g-premium-apps");
     expect(secondary).toHaveAttribute("href", "#home-group-nav");
     expect(document.getElementById("home-group-nav")).not.toBeNull();
     // .btn-ghost (ink-soft on sand) is unreadable on bg-ink — the outline CTA
     // keeps a white border + white/15 hover instead (foundations.md §7).
-    expect(secondary!.className).toContain("hover:bg-white/15");
-    expect(secondary!.className).toContain("focus-on-dark");
+    expect(secondary).toHaveAttribute("href", "#home-group-nav");
+    expect(secondary.className).toContain("hover:bg-white/15");
+    expect(secondary.className).toContain("focus-on-dark");
     // The group nav lists groups, not categories — no CTA calls it "Categories".
     expect(screen.queryByRole("link", { name: "Categories" })).toBeNull();
   });
 
-  it("labels the group-nav CTA with its own key in Indonesian", async () => {
+  it("labels the group-nav CTA and the group nav with their own keys in Indonesian", async () => {
     document.documentElement.lang = "id";
     renderHome(twoGroups());
-    expect(await screen.findByRole("link", { name: "Jelajahi produk" })).toHaveAttribute("href", "#home-group-nav");
+    expect(await screen.findByRole("link", { name: "Pilih jenis produk" })).toHaveAttribute("href", "#home-group-nav");
+    expect(screen.getByRole("navigation", { name: "Jenis produk" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Lihat produk" })).toHaveAttribute("href", "#g-premium-apps");
   });
 

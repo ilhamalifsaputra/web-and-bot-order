@@ -56,7 +56,7 @@ export default function HomeGroupNav({ groups }: { groups: readonly HomeGroup[] 
     scroller.scrollTo({ left: Math.max(0, left), behavior: preferredScrollBehavior() });
   }, [active]);
 
-  const label = t("web.nav_categories");
+  const label = t("web.group_nav_label");
   return (
     <div
       id={GROUP_NAV_ID}

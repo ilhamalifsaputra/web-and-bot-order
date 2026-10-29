@@ -3,7 +3,7 @@
  * snapshot, and the pure comparators. Orders are inserted directly so
  * `deliveredAt` and `kind` can be controlled.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
@@ -35,6 +35,10 @@ afterAll(async () => {
 let categoryId: number;
 let userId: number;
 let seq = 0;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 beforeEach(async () => {
   await resetDb(prisma);
@@ -220,5 +224,24 @@ describe("getBestsellerSnapshot cache", () => {
     expect(await getBestsellerSnapshotByVersion(prisma, v2.version)).toBe(v2);
     expect(await getBestsellerSnapshotByVersion(prisma, v1.version)).toBeNull();
     expect(await getBestsellerSnapshotByVersion(prisma, 99)).toBeNull();
+  });
+
+  it("a failed refresh rejects, keeps the cached snapshot, and does not skip a version", async () => {
+    const t0 = new Date("2026-10-01T00:00:00Z");
+    const later = new Date(t0.getTime() + BESTSELLER_TTL_MS);
+
+    // Nothing cached yet: fail, then recover with version 1.
+    vi.spyOn(prisma.orderItem, "findMany").mockRejectedValueOnce(new Error("db down"));
+    await expect(getBestsellerSnapshot(prisma, { now: t0 })).rejects.toThrow("db down");
+    const v1 = await getBestsellerSnapshot(prisma, { now: t0 });
+    expect(v1.version).toBe(1);
+
+    // The cached snapshot survives a failed refresh; the retry gets the next version.
+    vi.spyOn(prisma.orderItem, "findMany").mockRejectedValueOnce(new Error("db down again"));
+    await expect(getBestsellerSnapshot(prisma, { now: later })).rejects.toThrow("db down again");
+    expect(await getBestsellerSnapshotByVersion(prisma, 1)).toBe(v1);
+    const v2 = await getBestsellerSnapshot(prisma, { now: later });
+    expect(v2.version).toBe(2);
+    expect(await getBestsellerSnapshotByVersion(prisma, 1)).toBe(v1);
   });
 });

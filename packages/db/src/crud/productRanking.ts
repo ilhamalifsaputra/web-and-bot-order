@@ -17,8 +17,18 @@ export const BESTSELLER_TTL_MS = 5 * 60_000;
  * or after it count.
  */
 export async function deliveredOrderCountsByProduct(db: Db, since?: Date): Promise<Map<number, number>> {
-  const pairs = await db.orderItem.groupBy({
-    by: ["productId", "orderId"],
+  return countDistinctOrders(await loadDeliveredPairs(db, since), since);
+}
+
+interface DeliveredPair {
+  productId: number;
+  orderId: number;
+  deliveredAt: Date | null;
+}
+
+/** One scan: every (product, delivered PRODUCT order) pair, with the order's delivery time. */
+async function loadDeliveredPairs(db: Db, since?: Date): Promise<DeliveredPair[]> {
+  const rows = await db.orderItem.findMany({
     where: {
       order: {
         status: OrderStatus.DELIVERED,
@@ -26,20 +36,30 @@ export async function deliveredOrderCountsByProduct(db: Db, since?: Date): Promi
         ...(since ? { deliveredAt: { gte: since } } : {}),
       },
     },
+    distinct: ["productId", "orderId"],
+    select: { productId: true, orderId: true, order: { select: { deliveredAt: true } } },
   });
-  if (pairs.length === 0) return new Map();
+  if (rows.length === 0) return [];
 
-  const denominationIds = [...new Set(pairs.map((p) => p.productId))];
+  // OrderItem.productId holds a Denomination id; map it to its Product.
+  const denominationIds = [...new Set(rows.map((r) => r.productId))];
   const denominations = await db.denomination.findMany({
     where: { id: { in: denominationIds } },
     select: { id: true, productId: true },
   });
   const productOfDenomination = new Map(denominations.map((d) => [d.id, d.productId]));
+  const pairs: DeliveredPair[] = [];
+  for (const r of rows) {
+    const productId = productOfDenomination.get(r.productId);
+    if (productId !== undefined) pairs.push({ productId, orderId: r.orderId, deliveredAt: r.order.deliveredAt });
+  }
+  return pairs;
+}
 
+function countDistinctOrders(pairs: DeliveredPair[], since?: Date): Map<number, number> {
   const ordersByProduct = new Map<number, Set<number>>();
-  for (const { productId: denominationId, orderId } of pairs) {
-    const productId = productOfDenomination.get(denominationId);
-    if (productId === undefined) continue;
+  for (const { productId, orderId, deliveredAt } of pairs) {
+    if (since && (!deliveredAt || deliveredAt < since)) continue;
     let orders = ordersByProduct.get(productId);
     if (!orders) {
       orders = new Set();
@@ -55,9 +75,9 @@ export interface BestsellerSnapshot {
   version: number;
   computedAt: Date;
   /** Distinct delivered orders in the last 30 days. */
-  recent: Map<number, number>;
+  recent: ReadonlyMap<number, number>;
   /** Distinct delivered orders ever. */
-  allTime: Map<number, number>;
+  allTime: ReadonlyMap<number, number>;
 }
 
 interface SnapshotState {
@@ -95,10 +115,10 @@ export async function getBestsellerSnapshot(db: Db, opts: { now?: Date } = {}): 
   if (state.inflight) return state.inflight;
 
   const refresh = (async () => {
-    const [recent, allTime] = await Promise.all([
-      deliveredOrderCountsByProduct(db, new Date(now.getTime() - RECENT_WINDOW_MS)),
-      deliveredOrderCountsByProduct(db),
-    ]);
+    // One scan feeds both maps.
+    const pairs = await loadDeliveredPairs(db);
+    const recent = countDistinctOrders(pairs, new Date(now.getTime() - RECENT_WINDOW_MS));
+    const allTime = countDistinctOrders(pairs);
     const snapshot: BestsellerSnapshot = { version: ++state.lastVersion, computedAt: now, recent, allTime };
     state.previous = state.current;
     state.current = snapshot;

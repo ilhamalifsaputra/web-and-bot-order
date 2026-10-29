@@ -1,11 +1,11 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import { render, screen, waitFor, act, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import HomePage from "./HomePage";
 import { apiGet } from "../api/client";
-import type { Category, HomePageData, ShopContext } from "../api/types";
+import type { GroupPageData, HomeGroup, HomePageData, HomeSection, ShopContext } from "../api/types";
 import type { ProductCardData } from "../components/shop/ProductCard";
 
 vi.mock("../api/client", () => ({
@@ -43,48 +43,92 @@ const product: ProductCardData = {
   all_non_auto: false,
 };
 
-type LegacyHomeOverrides = Partial<HomePageData> & {
-  categories?: Category[];
+function card(slug: string, name: string, extra: Partial<ProductCardData> = {}): ProductCardData {
+  return { ...product, slug, name, ...extra };
+}
+
+function cards(prefix: string, from: number, count: number, extra: Partial<ProductCardData> = {}): ProductCardData[] {
+  return Array.from({ length: count }, (_, i) => card(`${prefix}-${from + i}`, `${prefix} ${from + i}`, extra));
+}
+
+function section(overrides: Partial<HomeSection> & Pick<HomeSection, "key">): HomeSection {
+  const products = overrides.products ?? [product];
+  return {
+    kind: "group",
+    title: null,
+    emoji: null,
+    category_slugs: ["streaming"],
+    total: products.length,
+    all_sold_out: false,
+    ...overrides,
+    products,
+  };
+}
+
+function premiumGroup(overrides: Partial<HomeGroup> = {}): HomeGroup {
+  return {
+    key: "PREMIUM_APPS",
+    slug: "premium-apps",
+    label_key: "web.group_premium_apps",
+    emoji: "💎",
+    layout: "byCategory",
+    category_count: 1,
+    single_category_slug: "streaming",
+    sections: [section({ key: "all" })],
+    ...overrides,
+  };
+}
+
+const gameCard = (slug: string, name: string) =>
+  card(slug, name, { category_name: "Mobile Legends", variant_count: 12, all_non_auto: true, available: 0, rating: null, rating_count: 0 });
+
+function gameGroup(overrides: Partial<HomeGroup> = {}): HomeGroup {
+  return {
+    key: "GAME_TOPUP",
+    slug: "top-up-games",
+    label_key: "web.group_game_topup",
+    emoji: "🎮",
+    layout: "single",
+    category_count: 2,
+    single_category_slug: null,
+    sections: [
+      section({
+        key: "all",
+        category_slugs: ["mobile-legends", "free-fire"],
+        products: [gameCard("ml-diamonds", "Mobile Legends Diamonds"), gameCard("ff-diamonds", "Free Fire Diamonds")],
+      }),
+    ],
+    ...overrides,
+  };
+}
+
+/** Premium Apps split by category: two big categories plus an "others" bucket. */
+function premiumByCategory(): HomeGroup {
+  return premiumGroup({
+    category_count: 3,
+    single_category_slug: null,
+    sections: [
+      section({ key: "c-streaming", kind: "category", title: "Streaming", emoji: "🎬", category_slugs: ["streaming"], products: cards("Stream", 1, 3) }),
+      section({ key: "c-music", kind: "category", title: "Music", emoji: "🎵", category_slugs: ["music"], products: cards("Tune", 1, 3) }),
+      section({ key: "others", kind: "others", category_slugs: ["tools", "vpn"], products: cards("Tool", 1, 2) }),
+    ],
+  });
+}
+
+type HomeOverrides = Partial<HomePageData> & {
+  /** Shorthand: the cards of the default single Premium Apps section (and the
+   * hero preview when there are at least two). */
   products?: ProductCardData[];
 };
 
-/** Builds the group-based payload from a flat card list: one "category"
- * section per category (all cards in the first), so the interim HomePage
- * adapter sees the same categories and products these tests always used. */
-function homeFixture({ categories, products, ...overrides }: LegacyHomeOverrides = {}): HomePageData {
-  const cats = categories ?? [
-    { id: 1, name: "Streaming", slug: "streaming", emoji: "🎬", description: null, image: "", sortOrder: 0, isActive: true },
-  ];
-  const cards = products ?? [product];
+function homeFixture({ products, ...overrides }: HomeOverrides = {}): HomePageData {
+  const sectionCards = products ?? [product];
   return {
     hero_image: null,
-    hero_products: cards.length >= 2 ? cards.slice(0, 3) : [],
-    groups: [
-      {
-        key: "PREMIUM_APPS",
-        slug: "premium-apps",
-        label_key: "web.group_premium_apps",
-        emoji: "💎",
-        layout: "byCategory",
-        category_count: cats.length,
-        single_category_slug: cats.length === 1 ? cats[0]!.slug : null,
-        sections:
-          cats.length === 0
-            ? [{ key: "all", kind: "group" as const, title: null, emoji: null, category_slugs: [], products: cards, total: cards.length, all_sold_out: false }]
-            : cats.map((c, i) => ({
-                key: `c-${c.slug}`,
-                kind: "category" as const,
-                title: c.name,
-                emoji: c.emoji,
-                category_slugs: [c.slug],
-                products: i === 0 ? cards : [],
-                total: i === 0 ? cards.length : 0,
-                all_sold_out: false,
-              })),
-      },
-    ],
+    hero_products: sectionCards.length >= 2 ? sectionCards.slice(0, 3) : [],
+    groups: [premiumGroup({ sections: [section({ key: "all", products: sectionCards })] })],
     flash: [],
-    ranking_version: 1,
+    ranking_version: 7,
     testimonials: [],
     low_threshold: 5,
     bot_username: "tokobot",
@@ -94,10 +138,11 @@ function homeFixture({ categories, products, ...overrides }: LegacyHomeOverrides
   };
 }
 
-function renderHome(data: HomePageData) {
+function renderHome(data: HomePageData, respondGroup?: (path: string) => unknown) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return context;
     if (path === "/api/v1/pages/home") return data;
+    if (respondGroup && path.startsWith("/api/v1/pages/group/")) return respondGroup(path);
     throw new Error(`unexpected path ${path}`);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -110,29 +155,317 @@ function renderHome(data: HomePageData) {
   );
 }
 
+/** A group-endpoint page as the home "Show more" receives it. */
+function groupPage(products: ProductCardData[], next_offset: number | null, total: number): GroupPageData {
+  return {
+    group: { key: "PREMIUM_APPS", slug: "premium-apps", label_key: "web.group_premium_apps", emoji: "💎", allow_cheapest: true },
+    unavailable: false,
+    categories: [],
+    sort: "bestseller",
+    products,
+    total,
+    next_offset,
+    ranking_version: 7,
+    low_threshold: 5,
+  };
+}
+
+/** Answers "Show more" from a ranked list of `total` cards, paging by offset/limit. */
+function pagedResponder(prefix: string, total: number) {
+  return (path: string) => {
+    const url = new URL(path, "http://shop.test");
+    const offset = Number(url.searchParams.get("offset"));
+    const limit = Number(url.searchParams.get("limit"));
+    const end = Math.min(total, offset + limit);
+    return groupPage(cards(prefix, offset + 1, end - offset), end < total ? end : null, total);
+  };
+}
+
+const groupCalls = () =>
+  (apiGet as Mock).mock.calls.map((c) => c[0] as string).filter((p) => p.startsWith("/api/v1/pages/group/"));
+
+/** IntersectionObserver stand-in that lets a test say which sections are on screen. */
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = [];
+  readonly observed: Element[] = [];
+  constructor(readonly callback: IntersectionObserverCallback) {
+    FakeIntersectionObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.observed.push(el);
+  }
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+  show(visibleIds: string[]) {
+    const entries = this.observed.map((target) => ({ target, isIntersecting: visibleIds.includes(target.id) }) as IntersectionObserverEntry);
+    this.callback(entries, this as unknown as IntersectionObserver);
+  }
+}
+
+const twoGroups = () => homeFixture({ groups: [premiumGroup(), gameGroup()] });
+
 describe("HomePage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
   });
 
-  it("renders the hero, a product card, and a category pill", async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeIntersectionObserver.instances = [];
+  });
+
+  it("renders the hero and the group's product cards", async () => {
     renderHome(homeFixture());
     expect(await screen.findByText("Your digital needs, one trusted place.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /View products/ })).toHaveAttribute("href", "/c/streaming");
+    expect(screen.getByRole("heading", { level: 2, name: "💎 Premium Apps" })).toBeInTheDocument();
   });
 
-  it("gives category and contact cards a consistent lift-and-shadow hover treatment", async () => {
+  it("gives the contact cards a consistent lift-and-shadow hover treatment", async () => {
     renderHome(homeFixture());
     await screen.findByRole("heading", { name: "Netflix Premium" });
-    const categoryLink = screen.getByRole("link", { name: /View products/ });
-    expect(categoryLink.className).toContain("hover:-translate-y-0.5");
-    expect(categoryLink.className).toContain("hover:shadow-lift");
-
     const ticketLink = screen.getByRole("link", { name: /Support ticket/ });
     expect(ticketLink.className).toContain("hover:-translate-y-0.5");
     expect(ticketLink.className).toContain("hover:shadow-lift");
+  });
+
+  it("removes the category tiles and the old new-arrivals shelf", async () => {
+    const { container } = renderHome(twoGroups());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(container.querySelector("#categories")).toBeNull();
+    expect(container.querySelector("#products")).toBeNull();
+    expect(screen.queryByRole("link", { name: /View products/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("New arrivals")).not.toBeInTheDocument();
+  });
+
+  describe("group nav", () => {
+    it("shows one jump pill per group, in the payload's order, under the navbar", async () => {
+      renderHome(twoGroups());
+      const nav = await screen.findByRole("navigation", { name: "Categories" });
+      const pills = within(nav).getAllByRole("link");
+      expect(pills.map((a) => a.textContent)).toEqual(["💎 Premium Apps", "🎮 Top Up Games"]);
+      expect(pills.map((a) => a.getAttribute("href"))).toEqual(["#g-premium-apps", "#g-top-up-games"]);
+      expect(nav.closest(".sticky")?.className).toContain("top-16");
+      // Each section clears the navbar plus the pill bar when jumped to.
+      expect(document.getElementById("g-premium-apps")?.className).toContain("scroll-mt-32");
+    });
+
+    it("is not rendered with a single group", async () => {
+      renderHome(homeFixture());
+      await screen.findByRole("heading", { name: "Netflix Premium" });
+      expect(screen.queryByRole("navigation", { name: "Categories" })).not.toBeInTheDocument();
+      expect(document.getElementById("g-premium-apps")?.className).toContain("scroll-mt-20");
+    });
+
+    it("marks the group on screen as current (scrollspy)", async () => {
+      vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+      renderHome(twoGroups());
+      const nav = await screen.findByRole("navigation", { name: "Categories" });
+      const [premium, game] = within(nav).getAllByRole("link");
+      expect(premium).not.toHaveAttribute("aria-current");
+      const observer = FakeIntersectionObserver.instances.at(-1)!;
+      expect(observer.observed.map((el) => el.id)).toEqual(["g-premium-apps", "g-top-up-games"]);
+
+      act(() => observer.show(["g-top-up-games"]));
+      expect(game).toHaveAttribute("aria-current", "true");
+      expect(premium).not.toHaveAttribute("aria-current");
+
+      act(() => observer.show(["g-premium-apps", "g-top-up-games"]));
+      expect(premium).toHaveAttribute("aria-current", "true");
+      expect(game).not.toHaveAttribute("aria-current");
+
+      act(() => observer.show([]));
+      expect(premium).not.toHaveAttribute("aria-current");
+      expect(game).not.toHaveAttribute("aria-current");
+    });
+  });
+
+  describe("flash section", () => {
+    it("shows the live flash cards with a See all link to /flash", async () => {
+      const flashCard = card("netflix-flash", "Netflix Flash", { flash_discount: "20", flash_ends_at: new Date(Date.now() + 3_600_000).toISOString() });
+      renderHome(homeFixture({ flash: [flashCard] }));
+      const heading = await screen.findByRole("heading", { level: 2, name: "Flash sale" });
+      const flash = heading.closest("section")!;
+      expect(flash.id).toBe("flash");
+      expect(within(flash).getByRole("heading", { name: "Netflix Flash" })).toBeInTheDocument();
+      expect(within(flash).getByRole("link", { name: /See all/ })).toHaveAttribute("href", "/flash");
+    });
+
+    it("is hidden when no sale is live", async () => {
+      const { container } = renderHome(homeFixture({ flash: [] }));
+      await screen.findByRole("heading", { name: "Netflix Premium" });
+      expect(container.querySelector("#flash")).toBeNull();
+      expect(screen.queryByRole("heading", { level: 2, name: "Flash sale" })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("group sections", () => {
+    it("splits a byCategory group into category sub-sections with jump chips and an 'others' heading", async () => {
+      renderHome(homeFixture({ groups: [premiumByCategory(), gameGroup()] }));
+      const group = (await screen.findByRole("heading", { level: 2, name: "💎 Premium Apps" })).closest("section")!;
+      expect(group.id).toBe("g-premium-apps");
+
+      const chips = within(group).getByRole("navigation", { name: "💎 Premium Apps" });
+      expect(within(chips).getAllByRole("link").map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
+        ["🎬 Streaming", "#g-premium-apps-c-streaming"],
+        ["🎵 Music", "#g-premium-apps-c-music"],
+        ["More Premium Apps", "#g-premium-apps-others"],
+      ]);
+      // Chips are plain anchors at the top of the section, not a second sticky bar.
+      expect(chips.closest(".sticky")).toBeNull();
+
+      const subHeadings = within(group).getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+      expect(subHeadings).toEqual(["🎬 Streaming", "Stream 1", "Stream 2", "Stream 3", "🎵 Music", "Tune 1", "Tune 2", "Tune 3", "More Premium Apps", "Tool 1", "Tool 2"]);
+      const streaming = document.getElementById("g-premium-apps-c-streaming")!;
+      expect(within(streaming).getAllByRole("link", { name: /Stream/ })).toHaveLength(3);
+      expect(document.getElementById("g-premium-apps-others")).not.toBeNull();
+    });
+
+    it("renders a single-layout group as one grid with no chips or sub-headings", async () => {
+      renderHome(twoGroups());
+      const group = (await screen.findByRole("heading", { level: 2, name: "🎮 Top Up Games" })).closest("section")!;
+      expect(group.id).toBe("g-top-up-games");
+      expect(within(group).queryByRole("navigation")).not.toBeInTheDocument();
+      expect(group.querySelectorAll(".grid")).toHaveLength(1);
+      const grid = group.querySelector(".grid")!;
+      expect(grid.className).toContain("grid-cols-2");
+      expect(grid.className).toContain("sm:grid-cols-3");
+      expect(grid.className).toContain("lg:grid-cols-4");
+      expect(grid.className).toContain("xl:grid-cols-5");
+      expect(within(group).getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+        "Mobile Legends Diamonds",
+        "Free Fire Diamonds",
+      ]);
+    });
+
+    it("keeps each family's own card wording", async () => {
+      renderHome(twoGroups());
+      const premium = (await screen.findByRole("heading", { level: 2, name: "💎 Premium Apps" })).closest("section")!;
+      const game = screen.getByRole("heading", { level: 2, name: "🎮 Top Up Games" }).closest("section")!;
+      expect(premium.textContent).not.toMatch(/diamond|top up|player id|server/i);
+      expect(game.textContent).not.toMatch(/premium|subscription|account|warranty/i);
+      expect(game.textContent).toContain("Mobile Legends Diamonds");
+    });
+
+    it("shows a one-line notice above a section whose products are all sold out", async () => {
+      const soldOut = [card("netflix-premium", "Netflix Premium", { available: 0, all_local_inventory: true })];
+      renderHome(
+        homeFixture({ groups: [premiumGroup({ sections: [section({ key: "all", products: soldOut, all_sold_out: true })] })] }),
+      );
+      const notice = await screen.findByText("Everything here is sold out for now.");
+      const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid")!;
+      expect(notice.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("shows no notice when the section has stock", async () => {
+      renderHome(homeFixture());
+      await screen.findByRole("heading", { name: "Netflix Premium" });
+      expect(screen.queryByText("Everything here is sold out for now.")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("show more", () => {
+    function streamingHome(total: number) {
+      return homeFixture({
+        groups: [
+          premiumGroup({
+            category_count: 2,
+            single_category_slug: null,
+            sections: [
+              section({ key: "c-streaming", kind: "category", title: "Streaming", emoji: "🎬", category_slugs: ["streaming"], products: cards("Stream", 1, 10), total }),
+              section({ key: "c-music", kind: "category", title: "Music", emoji: "🎵", category_slugs: ["music"], products: cards("Tune", 1, 3) }),
+            ],
+          }),
+          gameGroup(),
+        ],
+      });
+    }
+
+    it("fetches the next 10 of that section with the ranking version and appends them", async () => {
+      renderHome(streamingHome(25), pagedResponder("Stream", 25));
+      const streaming = (await screen.findByRole("heading", { level: 3, name: "🎬 Streaming" })).closest("section")!;
+      fireEvent.click(within(streaming).getByRole("button", { name: "Show more" }));
+      expect(await within(streaming).findByRole("heading", { name: "Stream 20" })).toBeInTheDocument();
+      expect(groupCalls()).toEqual(["/api/v1/pages/group/premium-apps?category=streaming&offset=10&limit=10&v=7"]);
+      expect(within(streaming).getAllByRole("heading", { level: 3 })).toHaveLength(1 + 20);
+    });
+
+    it("joins every category of an 'others' or whole-group section into the request", async () => {
+      const others = premiumByCategory();
+      others.sections[2] = { ...others.sections[2]!, products: cards("Tool", 1, 10), total: 12 };
+      renderHome(homeFixture({ groups: [others, gameGroup()] }), pagedResponder("Tool", 12));
+      const section3 = (await screen.findByRole("heading", { level: 3, name: "More Premium Apps" })).closest("section")!;
+      fireEvent.click(within(section3).getByRole("button", { name: "Show more" }));
+      await within(section3).findByRole("heading", { name: "Tool 12" });
+      expect(groupCalls()).toEqual(["/api/v1/pages/group/premium-apps?category=tools,vpn&offset=10&limit=10&v=7"]);
+      // Everything is shown: no further button and no See all.
+      expect(within(section3).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+      expect(within(section3).queryByRole("link", { name: "See all" })).not.toBeInTheDocument();
+    });
+
+    it("drops products a moved ranking repeats", async () => {
+      renderHome(streamingHome(25), () => groupPage([card("Stream-10", "Stream 10"), card("Stream-11", "Stream 11")], 12, 25));
+      const streaming = (await screen.findByRole("heading", { level: 3, name: "🎬 Streaming" })).closest("section")!;
+      fireEvent.click(within(streaming).getByRole("button", { name: "Show more" }));
+      await within(streaming).findByRole("heading", { name: "Stream 11" });
+      expect(within(streaming).getAllByRole("heading", { name: "Stream 10" })).toHaveLength(1);
+    });
+
+    it("caps at two expansions, then links a category sub-section to its category page", async () => {
+      renderHome(streamingHome(40), pagedResponder("Stream", 40));
+      const streaming = (await screen.findByRole("heading", { level: 3, name: "🎬 Streaming" })).closest("section")!;
+      expect(within(streaming).queryByRole("link", { name: "See all" })).not.toBeInTheDocument();
+      fireEvent.click(within(streaming).getByRole("button", { name: "Show more" }));
+      await within(streaming).findByRole("heading", { name: "Stream 20" });
+      fireEvent.click(within(streaming).getByRole("button", { name: "Show more" }));
+      await within(streaming).findByRole("heading", { name: "Stream 30" });
+      expect(groupCalls()[1]).toBe("/api/v1/pages/group/premium-apps?category=streaming&offset=20&limit=10&v=7");
+      expect(within(streaming).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+      expect(within(streaming).getByRole("link", { name: "See all" })).toHaveAttribute("href", "/c/streaming");
+    });
+
+    it("links a capped whole-group section to the group page, or to the only category's page", async () => {
+      const big = (slug: string | null, count: number) =>
+        gameGroup({
+          category_count: slug ? 1 : 2,
+          single_category_slug: slug,
+          sections: [section({ key: "all", category_slugs: slug ? [slug] : ["mobile-legends", "free-fire"], products: cards("Game", 1, 10), total: count })],
+        });
+      const expand = async (group: HTMLElement) => {
+        fireEvent.click(within(group).getByRole("button", { name: "Show more" }));
+        await within(group).findByRole("heading", { name: "Game 20" });
+        fireEvent.click(within(group).getByRole("button", { name: "Show more" }));
+        await within(group).findByRole("heading", { name: "Game 30" });
+      };
+
+      const { unmount } = renderHome(homeFixture({ groups: [premiumGroup(), big(null, 50)] }), pagedResponder("Game", 50));
+      let group = (await screen.findByRole("heading", { level: 2, name: "🎮 Top Up Games" })).closest("section")!;
+      await expand(group);
+      expect(within(group).getByRole("link", { name: "See all" })).toHaveAttribute("href", "/g/top-up-games");
+      unmount();
+
+      renderHome(homeFixture({ groups: [premiumGroup(), big("mobile-legends", 50)] }), pagedResponder("Game", 50));
+      group = (await screen.findByRole("heading", { level: 2, name: "🎮 Top Up Games" })).closest("section")!;
+      await expand(group);
+      expect(within(group).getByRole("link", { name: "See all" })).toHaveAttribute("href", "/c/mobile-legends");
+    });
+
+    it("offers no button when the first page is the whole section", async () => {
+      renderHome(twoGroups());
+      await screen.findByRole("heading", { name: "Netflix Premium" });
+      expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "See all" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows the empty catalog state when no group has products", async () => {
+    renderHome(homeFixture({ groups: [], hero_products: [] }));
+    expect(await screen.findByText("No products yet — check back soon.")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Categories" })).not.toBeInTheDocument();
   });
 
   it("renders the static Our Promise section with always-true wording and no customer-count or timing claims", async () => {
@@ -143,7 +476,7 @@ describe("HomePage", () => {
     expect(promiseSection.getByText("Product-specific warranty")).toBeInTheDocument();
     // Nothing on the home page may promise what the shop cannot prove.
     const text = container.textContent ?? "";
-    for (const claim of [/10,000/, /24\/7/, /24 hours/i, /under (an|1) hour/i, /Trusted by thousands/i, /Delivered in minutes/i, /1[–-]10 minutes/]) {
+    for (const claim of [/10,000/, /24\/7/, /24 hours/i, /under (an|1) hour/i, /Trusted by thousands/i, /Delivered in minutes/i, /1[–-]10 minutes/]) {
       expect(text).not.toMatch(claim);
     }
   });
@@ -271,43 +604,48 @@ describe("HomePage", () => {
   });
 
   it("renders the hero CTAs as design-system buttons — pine-fill primary + dark-surface outline, both with the white focus ring", async () => {
-    renderHome(homeFixture());
+    renderHome(twoGroups());
     const primary = await screen.findByRole("link", { name: /Browse products/ });
     expect(primary.className).toContain("btn-primary");
     expect(primary.className).toContain("focus-on-dark");
+    // The primary CTA jumps to the first group; the secondary one to the group nav.
+    expect(primary).toHaveAttribute("href", "#g-premium-apps");
     const secondary = screen.getByRole("link", { name: "Categories" });
-    // H-02: the secondary CTA browses categories, not the contact section.
-    expect(secondary).toHaveAttribute("href", "#categories");
-    expect(primary).toHaveAttribute("href", "#products");
+    expect(secondary).toHaveAttribute("href", "#home-group-nav");
+    expect(document.getElementById("home-group-nav")).not.toBeNull();
     // .btn-ghost (ink-soft on sand) is unreadable on bg-ink — the outline CTA
     // keeps a white border + white/15 hover instead (foundations.md §7).
     expect(secondary.className).toContain("hover:bg-white/15");
     expect(secondary.className).toContain("focus-on-dark");
   });
 
-  // The hero's second CTA targets #categories, which only renders when the shop
-  // has categories — without any, the link would scroll nowhere, so it is omitted.
-  it("omits the hero categories CTA when the shop has no categories", async () => {
-    const { container } = renderHome(homeFixture({ categories: [] }));
-    await screen.findByRole("link", { name: /Browse products/ });
-    expect(container.querySelector("#categories")).toBeNull();
+  // The secondary CTA targets the group nav, which only renders with two or
+  // more groups — without it, the link would scroll nowhere, so it is omitted.
+  it("omits the hero group-nav CTA when there is only one group", async () => {
+    renderHome(homeFixture());
+    const primary = await screen.findByRole("link", { name: /Browse products/ });
+    expect(primary).toHaveAttribute("href", "#g-premium-apps");
     expect(screen.queryByRole("link", { name: "Categories" })).toBeNull();
   });
 
-  // H-01: catalog first — hero → categories → products → features → how-to-order.
-  it("orders the sections hero, categories, products, features, how-to-order", async () => {
-    const { container } = renderHome(homeFixture());
+  // Catalog first — hero → group nav → flash → groups → features → how-to-order.
+  it("orders the sections hero, group nav, flash, groups, features, how-to-order", async () => {
+    const { container } = renderHome({ ...twoGroups(), flash: [card("netflix-flash", "Netflix Flash")] });
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const hero = container.querySelector("section.bg-ink")!;
-    const categories = container.querySelector("#categories")!;
-    const products = container.querySelector("#products")!;
+    const nav = container.querySelector("#home-group-nav")!;
+    const flash = container.querySelector("#flash")!;
+    const premium = container.querySelector("#g-premium-apps")!;
+    const game = container.querySelector("#g-top-up-games")!;
     const howTo = container.querySelector("#how-to-order")!;
     const features = screen.getByRole("heading", { level: 2, name: "Why shop with us?" }).closest("section")!;
     const follows = (a: Element, b: Element) =>
       Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(follows(hero, categories)).toBe(true);
-    expect(follows(categories, products)).toBe(true);
-    expect(follows(products, features)).toBe(true);
+    expect(follows(hero, nav)).toBe(true);
+    expect(follows(nav, flash)).toBe(true);
+    expect(follows(flash, premium)).toBe(true);
+    expect(follows(premium, game)).toBe(true);
+    expect(follows(game, features)).toBe(true);
     expect(follows(features, howTo)).toBe(true);
   });
 
@@ -322,10 +660,10 @@ describe("HomePage", () => {
   });
 
   it("gives every home section heading the same text-2xl sm:text-3xl font-semibold scale", async () => {
-    const { container } = renderHome(homeFixture());
+    const { container } = renderHome({ ...twoGroups(), flash: [card("netflix-flash", "Netflix Flash")] });
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const h2s = Array.from(container.querySelectorAll("h2"));
-    expect(h2s.length).toBeGreaterThanOrEqual(6);
+    expect(h2s.length).toBeGreaterThanOrEqual(8);
     for (const h of h2s) {
       expect(h.className).toContain("text-2xl");
       expect(h.className).toContain("sm:text-3xl");
@@ -356,18 +694,17 @@ describe("HomePage", () => {
     expect(container.textContent ?? "").not.toMatch(/delivered instantly|Instant delivery/i);
   });
 
-  it("shows a hero product-preview composition when at least two products are available, linking each card to its product", async () => {
-    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
-    const { container } = renderHome(homeFixture({ products: [product, second] }));
+  it("builds the hero product preview from hero_products, not from the section cards", async () => {
+    const premiumLead = card("canva-pro", "Canva Pro");
+    const gameLead = gameCard("ml-diamonds", "Mobile Legends Diamonds");
+    const { container } = renderHome({ ...twoGroups(), hero_products: [premiumLead, gameLead] });
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const preview = container.querySelector('[data-testid="hero-product-preview"]');
     expect(preview).not.toBeNull();
     const cardLinks = preview!.querySelectorAll("a");
-    expect(cardLinks.length).toBe(2);
-    expect(cardLinks[0]).toHaveAttribute("href", "/p/netflix-premium");
-    expect(cardLinks[1]).toHaveAttribute("href", "/p/spotify-premium");
-    expect(preview!.textContent).toContain("Netflix Premium");
-    expect(preview!.textContent).toContain("Spotify Premium");
+    expect(Array.from(cardLinks).map((a) => a.getAttribute("href"))).toEqual(["/p/canva-pro", "/p/ml-diamonds"]);
+    expect(preview!.textContent).toContain("Canva Pro");
+    expect(preview!.textContent).not.toContain("Netflix Premium");
   });
 
   it("renders an <img> with the product's image inside the hero product-preview card when one is set", async () => {
@@ -433,7 +770,7 @@ describe("HomePage", () => {
       { ...product, slug: "canva-pro", name: "Canva Pro" },
       { ...product, slug: "capcut-pro", name: "CapCut Pro" },
     ];
-    const { container } = renderHome(homeFixture({ products }));
+    const { container } = renderHome(homeFixture({ products, hero_products: products }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const preview = container.querySelector('[data-testid="hero-product-preview"]');
     expect(preview!.querySelectorAll("a").length).toBe(3);
@@ -447,8 +784,8 @@ describe("HomePage", () => {
 
   // STO-018: a single product in the 3-column grid used to leave two-thirds
   // of the row empty — clamp to a capped-width single column instead.
-  it("clamps the Latest products grid to one column when there's only one product", async () => {
-    const { container } = renderHome(homeFixture({ products: [product] }));
+  it("clamps a section grid to one column when there's only one product", async () => {
+    renderHome(homeFixture({ products: [product] }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const grid = screen.getByRole("heading", { name: "Netflix Premium" }).closest(".grid");
     expect(grid?.className).toContain("max-w-sm");
@@ -506,9 +843,9 @@ describe("HomePage", () => {
     expect(screen.queryByText(/^Was /)).not.toBeInTheDocument();
   });
 
-  // A sale that has already ended must not leave a badge (or a strike-through
-  // against a price nothing beats) behind on a page left open.
-  it("hides the flash badge once flash_ends_at has passed", async () => {
+  // A sale that has already ended must not leave a live badge (or a
+  // strike-through against a price nothing beats) behind on a page left open.
+  it("drops the live flash badge once flash_ends_at has passed", async () => {
     const endedAt = new Date(Date.now() - 60_000).toISOString();
     renderHome(homeFixture({ products: [{ ...product, flash_discount: "20", flash_ends_at: endedAt }] }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
@@ -542,16 +879,14 @@ describe("HomePage", () => {
     expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
   });
 
+  // The catalog never waits on an observer: with one group there is no nav,
+  // so nothing is observed at all, and the cards are there on first paint.
   it("shows the catalog and information without waiting for an intersection or timer", async () => {
     const observer = vi.fn();
     vi.stubGlobal("IntersectionObserver", observer);
-    try {
-      const { container } = renderHome(homeFixture());
-      expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
-      expect(container.querySelector(".reveal")).toBeNull();
-      expect(observer).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const { container } = renderHome(homeFixture());
+    expect(await screen.findByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    expect(container.querySelector(".reveal")).toBeNull();
+    expect(observer).not.toHaveBeenCalled();
   });
 });

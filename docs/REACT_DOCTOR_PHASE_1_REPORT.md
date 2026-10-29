@@ -322,3 +322,10 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Simulasi produksi buatan: `tests/helpers/legacyProductionCatalog.ts` + `apps/order-bot/test/legacy-production-catalog.test.ts` (8/8) mereproduksi bentuk katalog dari screenshot produksi; `game-level-browse.test.ts` pinning jumlah bubble hidup untuk siklus berulang, ketukan lama, ketukan ganda dan Back setelah bubble hilang.
 - Gate pada `91f83b54` (jalur hemat memori; shard 7 dijalankan ulang karena worker mati kehabisan memori, bukan kegagalan tes): build, typecheck semua paket, `tsc -p tsconfig.test.json`, `pnpm run pretest` exit 0; Vitest 8 shard satu worker: **691 file dan 13.252 tes lulus, semua shard exit 0**; `pnpm doctor:full` 655 file, 0 error, 0 warning; `pnpm lint` 655 file tanpa temuan kategori Bugs.
 - Belum terbukti: perilaku Telegram sungguhan (waktu hapus pesan, batas 48 jam, ketukan paralel nyata), format kawat gateway, dan daftar region selain BR/PH/MY (SG, TH, VN, TR, RU, Global, SEA masih draf). Keputusan pemilik: "Delta Force Garena" tetap game tersendiri.
+
+
+## Storefront homepage by product group, Task 5 (HomePage + GroupPage) - 30 Oktober 2026
+
+- Worktree `homepage-group-shelves`. New home catalog (sticky group nav with scrollspy, flash section, per-group sections with "Show more"/"See all") in `components/home/*`, new `/g/:slug` GroupPage with an `aria-pressed` segmented category filter, shared `useSortParam` hook for Category/Flash/Products/Group.
+- `pnpm doctor:full`: **668 files, 0 errors and 0 warnings across both clients and all categories** (a first run flagged `no-high-complexity-react-function` on GroupPage; fixed by splitting the page into `useGroupPages` + `GroupCatalog`, no suppression). `pnpm doctor:changed`: 33 files, no Bugs findings. Storefront client lint clean; all 134 storefront client test files (1,387 tests) pass.
+- Runtime behaviour not yet verified in a real browser: scrollspy band, sticky offsets / `scroll-mt`, horizontal pill auto-scroll, Back-navigation scroll restoration with expanded sections.

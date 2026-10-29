@@ -9,11 +9,11 @@
  * the first page's `ranking_version` so the order holds while paging, and any
  * product a moved ranking repeats is dropped.
  */
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 import { PackageSearch, Store } from "lucide-react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { parseSortKey, type GroupPageData } from "../api/types";
+import { parseSortKey, type GroupPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import EmptyState from "../components/shop/EmptyState";
@@ -34,22 +34,15 @@ const PAGE_SIZE = 20;
 const SKELETON_CARDS = Array.from({ length: 10 }, (_, i) => i);
 const ALL = "";
 
-export default function GroupPage() {
-  const { slug = "" } = useParams<{ slug: string }>();
-  const { data: ctx } = useShopContext();
-  const [params, setParams] = useSearchParams();
-  const category = params.get("category") ?? ALL;
-  // Sent as typed; the server falls back to bestseller where a sort is not
-  // offered, and useSortParam then corrects the URL.
-  const requestedSort = parseSortKey(params.get("sort"), { allowCheapest: true });
-
-  const { data, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: ["group", slug, category, requestedSort],
+/** The group's pages for one filter + sort, paged by `next_offset`. */
+function useGroupPages(slug: string, category: string, sort: SortKey) {
+  return useInfiniteQuery({
+    queryKey: ["group", slug, category, sort],
     queryFn: ({ pageParam }) =>
       apiGet<GroupPageData>(
         groupPageUrl(slug, {
           categories: category ? [category] : [],
-          sort: requestedSort,
+          sort,
           offset: pageParam.offset,
           limit: PAGE_SIZE,
           v: pageParam.v,
@@ -63,21 +56,68 @@ export default function GroupPage() {
     // one loads; another group starts from its own skeleton.
     placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === slug ? previous : undefined),
   });
-  const first = data?.pages[0];
-  const [sort, setSort] = useSortParam({ allowCheapest: first?.group.allow_cheapest });
+}
+
+export default function GroupPage() {
+  const { slug = "" } = useParams<{ slug: string }>();
+  const { data: ctx } = useShopContext();
+  const [params] = useSearchParams();
+  const category = params.get("category") ?? ALL;
+  // Sent as typed; the server falls back to bestseller where a sort is not
+  // offered, and useSortParam (in GroupCatalog) then corrects the URL.
+  const requestedSort = parseSortKey(params.get("sort"), { allowCheapest: true });
+  const pages = useGroupPages(slug, category, requestedSort);
+  const first = pages.data?.pages[0];
 
   useDocumentTitle(first && ctx?.shop_name ? `${t(first.group.label_key)} — ${ctx.shop_name}` : undefined);
 
-  if (error) {
-    if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    if (!data) return <ErrorState onRetry={() => void refetch()} />;
+  if (pages.error) {
+    if ((pages.error as Error & { status?: number }).status === 404) return <ErrorPage />;
+    if (!pages.data) return <ErrorState onRetry={() => void pages.refetch()} />;
   }
-  if (!data || !first) return <GroupPageSkeleton />;
+  if (!pages.data || !first) return <GroupPageSkeleton />;
 
-  const { group, categories, low_threshold, unavailable } = first;
-  const label = t(group.label_key);
+  const label = t(first.group.label_key);
+  return (
+    <>
+      <Breadcrumb items={[{ label: t("web.nav_home"), href: "/" }, { label }]} />
+      <div className="mb-6">
+        <h1 className="page-title">{`${first.group.emoji} ${label}`}</h1>
+      </div>
+      {first.unavailable ? (
+        <EmptyState
+          icon={Store}
+          title={t("web.group_unavailable")}
+          description={t("web.group_unavailable_desc")}
+          action={{ label: t("web.back_home"), to: "/" }}
+        />
+      ) : (
+        <GroupCatalog
+          data={pages.data}
+          category={category}
+          fx={ctx?.fx}
+          hasNextPage={pages.hasNextPage}
+          isFetchingNextPage={pages.isFetchingNextPage}
+          onLoadMore={() => void pages.fetchNextPage()}
+        />
+      )}
+    </>
+  );
+}
+
+function GroupCatalog({ data, category, fx, hasNextPage, isFetchingNextPage, onLoadMore }: {
+  data: InfiniteData<GroupPageData>;
+  category: string;
+  fx: string | null | undefined;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  onLoadMore: () => void;
+}) {
+  const [, setParams] = useSearchParams();
+  const first = data.pages[0]!;
+  const [sort, setSort] = useSortParam({ allowCheapest: first.group.allow_cheapest });
   const products = data.pages.reduce<ProductCardData[]>((shown, page) => appendUnique(shown, page.products), []);
-  const activeCategory = categories.some((c) => c.slug === category) ? category : ALL;
+  const activeCategory = first.categories.some((c) => c.slug === category) ? category : ALL;
 
   const selectCategory = (next: string) =>
     setParams((prev) => {
@@ -89,67 +129,46 @@ export default function GroupPage() {
 
   return (
     <>
-      <Breadcrumb items={[{ label: t("web.nav_home"), href: "/" }, { label }]} />
-      <div className="mb-6">
-        <h1 className="page-title">{`${group.emoji} ${label}`}</h1>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {first.categories.length > 1 ? (
+          <SegmentedFilter
+            label={t("web.categories")}
+            value={activeCategory}
+            onChange={selectCategory}
+            options={[
+              { value: ALL, label: t("web.group_all_categories") },
+              ...first.categories.map((c) => ({ value: c.slug, label: c.emoji ? `${c.emoji} ${c.name}` : c.name })),
+            ]}
+          />
+        ) : (
+          <span />
+        )}
+        {first.total > 1 && <SortSelect value={sort} allowCheapest={first.group.allow_cheapest} onChange={setSort} />}
       </div>
 
-      {unavailable ? (
+      {products.length > 0 ? (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {products.map((p) => (
+            <div key={p.slug} className="h-full">
+              <ProductCard p={p} fx={fx} lowThreshold={first.low_threshold} />
+            </div>
+          ))}
+        </div>
+      ) : (
         <EmptyState
-          icon={Store}
-          title={t("web.group_unavailable")}
-          description={t("web.group_unavailable_desc")}
+          icon={PackageSearch}
+          title={t("web.catalog_empty")}
+          description={t("web.catalog_empty_desc")}
           action={{ label: t("web.back_home"), to: "/" }}
         />
-      ) : (
-        <>
-          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            {categories.length > 1 ? (
-              <SegmentedFilter
-                label={t("web.categories")}
-                value={activeCategory}
-                onChange={selectCategory}
-                options={[
-                  { value: ALL, label: t("web.group_all_categories") },
-                  ...categories.map((c) => ({ value: c.slug, label: c.emoji ? `${c.emoji} ${c.name}` : c.name })),
-                ]}
-              />
-            ) : (
-              <span />
-            )}
-            {first.total > 1 && <SortSelect value={sort} allowCheapest={group.allow_cheapest} onChange={setSort} />}
-          </div>
+      )}
 
-          {products.length > 0 ? (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {products.map((p) => (
-                <div key={p.slug} className="h-full">
-                  <ProductCard p={p} fx={ctx?.fx} lowThreshold={low_threshold} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              icon={PackageSearch}
-              title={t("web.catalog_empty")}
-              description={t("web.catalog_empty_desc")}
-              action={{ label: t("web.back_home"), to: "/" }}
-            />
-          )}
-
-          {hasNextPage && (
-            <div className="mt-8 flex justify-center">
-              <Button
-                variant="soft"
-                onClick={() => void fetchNextPage()}
-                disabled={isFetchingNextPage}
-                aria-busy={isFetchingNextPage}
-              >
-                {t("web.group_load_more")}
-              </Button>
-            </div>
-          )}
-        </>
+      {hasNextPage && (
+        <div className="mt-8 flex justify-center">
+          <Button variant="soft" onClick={onLoadMore} disabled={isFetchingNextPage} aria-busy={isFetchingNextPage}>
+            {t("web.group_load_more")}
+          </Button>
+        </div>
       )}
     </>
   );

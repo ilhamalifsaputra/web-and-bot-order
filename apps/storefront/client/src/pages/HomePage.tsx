@@ -1,9 +1,10 @@
 import * as m from "motion/react-m";
 /**
- * TSX port of apps/storefront/views/home.njk (design.md §4.8) — hero, features,
- * categories, featured products, "Our Promise", real
- * testimonials, FAQ, and contact. Markup/classes copied verbatim apart from
- * the mechanical Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
+ * TSX port of apps/storefront/views/home.njk (design.md §4.8) — hero, the
+ * catalog by product group (sticky group nav, flash sale, one section per
+ * group: components/home/*), features, "Our Promise", real testimonials, FAQ,
+ * and contact. Markup/classes copied verbatim apart from the mechanical
+ * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
  *
  * Note: home.njk's stats band was replaced by the static "Our Promise"
  * section (design.md §4.8, "not customer-count promises"), and the API no
@@ -12,9 +13,7 @@ import * as m from "motion/react-m";
 import { useQuery } from "@tanstack/react-query";
 import {
   BadgeCheck,
-  Box,
   CheckCircle,
-  ChevronRight,
   Clock,
   Coins,
   CreditCard,
@@ -40,11 +39,15 @@ import {
 import { useReducedMotion } from "motion/react";
 import { Link } from "react-router-dom";
 import { apiGet } from "../api/client";
-import type { Category, HomePageData } from "../api/types";
+import type { HomePageData } from "../api/types";
+import HomeFlashSection from "../components/home/HomeFlashSection";
+import HomeGroupNav from "../components/home/HomeGroupNav";
+import HomeGroupSection from "../components/home/HomeGroupSection";
+import { GROUP_NAV_ID, groupAnchor } from "../components/home/homeLayout";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
-import ProductCard, { type ProductCardData } from "../components/shop/ProductCard";
+import type { ProductCardData } from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import Stars from "../components/shop/Stars";
@@ -57,7 +60,6 @@ import Card from "../components/ui/Card";
 import TrustBadgeRow from "../components/ui/TrustBadgeRow";
 import { t } from "../lib/i18n";
 import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
-import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import "./HomePage.css";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -93,38 +95,17 @@ const HERO_CARD_STYLES: Array<{ top: string; right: string; rotate: number }> = 
   { top: "72%", right: "0%", rotate: -2 },
 ];
 
-/** Interim adapter until the group-based home layout lands: the payload no
- * longer carries a flat `products` list or category tiles, so the existing
- * sections read the cards of every group and the category-kind sections. */
-function flattenHome(data: HomePageData): { categories: Category[]; products: ProductCardData[] } {
-  const sections = data.groups.flatMap((g) => g.sections);
-  const categories: Category[] = sections
-    .filter((s) => s.kind === "category" && s.category_slugs[0])
-    .map((s, i) => ({
-      id: i,
-      name: s.title ?? "",
-      slug: s.category_slugs[0]!,
-      emoji: s.emoji,
-      description: null,
-      image: null,
-      sortOrder: i,
-      isActive: true,
-    }));
-  return { categories, products: sections.flatMap((s) => s.products) };
-}
-
 export default function HomePage() {
   const reducedMotion = useReducedMotion();
   const { data: ctx } = useShopContext();
+  // Default cache settings on purpose: coming Back to the home page renders
+  // straight from the cache (with the sections' expanded pages, see
+  // HomeShelf) at full height, so the browser's own scroll restoration works,
+  // while a background refetch keeps stock and sales current.
   const { data } = useQuery({
     queryKey: ["home"],
     queryFn: () => apiGet<HomePageData>("/api/v1/pages/home"),
   });
-  // Newest-products is already this page's own "products" — if that list is
-  // empty the whole catalog has zero products, so a suggestions fetch would
-  // just return the same empty list. Wired up anyway for consistency with
-  // every other empty state; it simply never has anything to show here.
-  const { data: suggested } = useSuggestedProducts(!!data && flattenHome(data).products.length === 0);
 
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection. A full
@@ -152,12 +133,15 @@ export default function HomePage() {
     );
   }
 
-  const { hero_image, hero_products, testimonials, low_threshold, support_telegram_url, wa_number } = data;
-  const { categories, products } = flattenHome(data);
+  const { hero_image, hero_products, groups, flash, ranking_version, testimonials, low_threshold, support_telegram_url, wa_number } = data;
   // Real inventory only — never a fabricated/placeholder product. Fewer than
-  // 2 available products means no composition at all (see homepage design spec).
-  const heroProducts = hero_products.length >= 2 ? hero_products : [];
+  // 2 available products means no composition at all (see homepage design
+  // spec); at most three, the number of preview slots.
+  const heroProducts = hero_products.length >= 2 ? hero_products.slice(0, HERO_CARD_STYLES.length) : [];
   const fx = ctx?.fx;
+  // One group needs no group nav: its section directly follows the hero.
+  const hasGroupNav = groups.length >= 2;
+  const firstGroup = groups[0];
 
   const contactCount = 1 + (wa_number ? 1 : 0) + (support_telegram_url ? 1 : 0);
   const contactCols = contactCount === 3 ? "sm:grid-cols-3" : contactCount === 2 ? "sm:grid-cols-2" : "";
@@ -193,39 +177,35 @@ export default function HomePage() {
   return (
     <>
       {/* 1. Hero (design.md §4.8, mockup perbaikan) */}
-      <HomeHero hero_image={hero_image} heroProducts={heroProducts} reducedMotion={reducedMotion} fx={fx} categories={categories} />
+      <HomeHero
+        hero_image={hero_image}
+        heroProducts={heroProducts}
+        reducedMotion={reducedMotion}
+        fx={fx}
+        browseHref={firstGroup ? `#${groupAnchor(firstGroup.slug)}` : "#products"}
+        groupNavHref={hasGroupNav ? `#${GROUP_NAV_ID}` : null}
+      />
 
-      {/* 3. Kategori */}
-      {categories.length > 0 && (
-        <section className="mt-16" id="categories">
-          <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.categories")}</p>
-          <h2 className="mt-1 font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.categories_title")}</h2>
-
-          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {categories.map((c) => (
-              <Link
-                key={c.slug}
-                to={`/c/${c.slug}`}
-                className="card card-pad group flex items-center gap-4 transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
-              >
-                <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl group-hover:scale-105 transition-transform">
-                  {c.emoji ? c.emoji : <Box className="w-6 h-6 text-pine" />}
-                </span>
-                <div className="min-w-0">
-                  <h3 className="font-semibold text-ink truncate">{c.name}</h3>
-                  <span className="inline-flex items-center gap-1 text-sm font-medium text-pine">
-                    {t("web.view_products")}
-                    <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
+      {/* 3. Catalog by product group: sticky group nav, flash sale, one
+          section per group in the admin's order. */}
+      {hasGroupNav && <HomeGroupNav groups={groups} />}
+      {flash.length > 0 && <HomeFlashSection products={flash} hasGroupNav={hasGroupNav} fx={fx} lowThreshold={low_threshold} />}
+      {groups.length > 0 ? (
+        groups.map((g) => (
+          <HomeGroupSection
+            key={g.key}
+            group={g}
+            hasGroupNav={hasGroupNav}
+            rankingVersion={ranking_version}
+            fx={fx}
+            lowThreshold={low_threshold}
+          />
+        ))
+      ) : (
+        <section id="products" className="mt-12">
+          <EmptyState icon={PackageSearch} title={t("web.catalog_empty")} description={t("web.catalog_empty_desc")} />
         </section>
       )}
-
-      {/* 4. Produk unggulan */}
-      <Home4ProdukUnggulan categories={categories} products={products} fx={fx} low_threshold={low_threshold} suggested={suggested} />
 
       {/* 2. Fitur / keunggulan */}
       <section className="mt-16">
@@ -410,12 +390,15 @@ export default function HomePage() {
   );
 }
 
-function HomeHero({ hero_image, heroProducts, reducedMotion, fx, categories }: {
-  categories: import("../api/types").Category[];
+function HomeHero({ hero_image, heroProducts, reducedMotion, fx, browseHref, groupNavHref }: {
   hero_image: string | null;
-  heroProducts: import("../components/shop/ProductCard").ProductCardData[];
+  heroProducts: ProductCardData[];
   reducedMotion: boolean | null;
   fx: string | null | undefined;
+  /** The first group's section (or the empty-catalog notice). */
+  browseHref: string;
+  /** The group nav, or null when there is none (fewer than two groups). */
+  groupNavHref: string | null;
 }) {
   return (<section className="relative overflow-hidden rounded-3xl bg-ink px-6 py-12 sm:px-10 sm:py-16 mb-12">
     {hero_image ? (
@@ -458,15 +441,15 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx, categories }: {
                 works on bg-ink; the outline CTA keeps a white border/hover
                 rather than .btn-ghost (ink-soft-on-sand is unreadable here).
                 Both keep the white .focus-on-dark ring. */}
-        <m.a href="#products" {...hoverLift} className="btn btn-primary focus-on-dark">
+        <m.a href={browseHref} {...hoverLift} className="btn btn-primary focus-on-dark">
           <ShoppingBag className="h-5 w-5" />
           {t("web.hero_cta")}
         </m.a>
-        {/* #categories only renders when there are categories; without
-            them this link would scroll nowhere. */}
-        {categories.length > 0 && (
+        {/* The group nav only renders with two or more groups; without it
+            this link would scroll nowhere. */}
+        {groupNavHref && (
           <a
-            href="#categories"
+            href={groupNavHref}
             className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
           >
             <LayoutGrid className="h-5 w-5" />
@@ -543,50 +526,6 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx, categories }: {
             </m.div>
           ))}
         </m.div>
-      </div>
-    )}
-  </section>);
-}
-
-function Home4ProdukUnggulan({ categories, products, fx, low_threshold, suggested }: {
-  categories: import("../api/types").Category[];
-  products: import("../components/shop/ProductCard").ProductCardData[];
-  fx: string | null | undefined;
-  low_threshold: number;
-  suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
-}) {
-  return (<section id="products" className="mt-16">
-    <div className="flex items-end justify-between">
-      <div>
-        <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
-        <h2 className="mt-1 font-display text-2xl font-semibold text-ink sm:text-3xl">{t("web.new_arrivals")}</h2>
-      </div>
-      {categories.length > 0 && (
-        <a href="#categories" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
-          {t("web.view_by_category")} <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-        </a>
-      )}
-    </div>
-
-    {products.length > 0 ? (
-      // STO-018: a single product in a 3-column grid leaves two-thirds of
-      // the row empty, reading as broken rather than a deliberate
-      // one-item shelf — clamp to one column with a capped width instead
-      // of stretching an isolated card across the full row.
-      <div className={`mt-5 grid gap-4 ${products.length === 1 ? "max-w-sm" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}>
-        {products.map((p) => (
-          <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
-        ))}
-      </div>
-    ) : (
-      <div className="mt-5">
-        <EmptyState
-          icon={PackageSearch}
-          title={t("web.catalog_empty")}
-          description={t("web.catalog_empty_desc")}
-          action={{ label: t("web.nav_categories"), to: "/categories" }}
-          suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
-        />
       </div>
     )}
   </section>);

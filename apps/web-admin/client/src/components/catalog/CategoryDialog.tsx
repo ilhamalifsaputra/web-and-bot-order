@@ -33,6 +33,45 @@ import type { CategoryRow } from "../../api/catalog";
 // UNCATEGORIZED convention for its own nullable category Select.
 const NO_GROUP = "_none_";
 
+/**
+ * The group Select. A legacy category with no group is offered "Not set" only
+ * until the admin picks a real group — a group can't be cleared once it is set.
+ */
+function GroupField({
+  value,
+  onChange,
+  legacyNotSet,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  legacyNotSet: boolean;
+}) {
+  // Only while "Not set" is still the current value: picking a real group
+  // removes it, and it is never offered again in this dialog session.
+  const offerNotSet = legacyNotSet && value === NO_GROUP;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor="cat-group">Group</Label>
+      <Select
+        value={value}
+        onValueChange={onChange}
+      >
+        <SelectTrigger id="cat-group" aria-label="Group">
+          <SelectValue placeholder="Choose a group" />
+        </SelectTrigger>
+        <SelectContent>
+          {offerNotSet && <SelectItem value={NO_GROUP}>Not set (shown as Premium Apps)</SelectItem>}
+          <SelectItem value="GAME_TOPUP">🎮 Game Top Up</SelectItem>
+          <SelectItem value="PREMIUM_APPS">💎 Premium Apps</SelectItem>
+        </SelectContent>
+      </Select>
+      <p className="mt-2 text-xs text-ink-soft">
+        Decides where this category appears on the website and in the bot.
+      </p>
+    </div>
+  );
+}
+
 export function CategoryDialog({
   category,
   onClose,
@@ -50,7 +89,9 @@ export function CategoryDialog({
   const [checkoutFlow, setCheckoutFlow] = useState<"catalog" | "instant">(
     category?.checkoutFlow ?? "catalog",
   );
-  const [group, setGroup] = useState<string>(category?.group ?? NO_GROUP);
+  // A new category has no group until one is chosen; a legacy category with no
+  // group starts on the "not set" sentinel (see GroupField).
+  const [group, setGroup] = useState<string>(editing ? (category.group ?? NO_GROUP) : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -155,19 +196,7 @@ export function CategoryDialog({
               Categories in the Game Top-Up group always use the top-up page, whichever flow is chosen here.
             </p>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="cat-group">Group</Label>
-            <Select value={group} onValueChange={setGroup}>
-              <SelectTrigger id="cat-group" aria-label="Group">
-                <SelectValue placeholder="Not set" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_GROUP}>Not set</SelectItem>
-                <SelectItem value="GAME_TOPUP">🎮 Game Top Up</SelectItem>
-                <SelectItem value="PREMIUM_APPS">💎 Premium Apps</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <GroupField value={group} onChange={setGroup} legacyNotSet={editing && category.group === null} />
           {editing && (
             <p className="text-sm text-ink-soft">
               Web address: <span className="font-mono text-ink">/c/{category.slug}</span> — this
@@ -179,7 +208,7 @@ export function CategoryDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={saving || !name.trim()}>
+          <Button onClick={() => void save()} disabled={saving || !name.trim() || group === ""}>
             {saving ? "Saving…" : editing ? "Save" : "Create"}
           </Button>
         </DialogFooter>

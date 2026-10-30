@@ -17,7 +17,7 @@
 import { config } from "@app/core/config";
 import { CategoryGroup, type CategoryGroup as CategoryGroupType, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
-import { isFlashActive } from "@app/core/flash";
+import { hasLiveFlash, isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { usesLocalInventory } from "@app/core/productAvailability";
@@ -701,6 +701,37 @@ export type CatalogProduct = Product & {
 };
 
 /**
+ * What makes a product appear in the customer catalog: active, not archived,
+ * in an active category, with at least one active denomination priced above
+ * zero. One definition shared by the catalog listing and the admin counts so
+ * they cannot drift apart.
+ */
+export const CATALOG_ELIGIBLE_PRODUCT_WHERE = {
+  isActive: true,
+  isArchived: false,
+  category: { isActive: true },
+  denominations: { some: { isActive: true, price: { gt: 0 } } },
+} as const;
+
+/**
+ * How many catalog-eligible products each category holds (categories with none
+ * are absent from the map). The admin Categories page uses it to warn about
+ * Premium categories the website may fold into "More Premium Apps".
+ *
+ * Channel-independent: it ignores the per-channel service toggles (a service
+ * switched off for the website or the bot still counts here), so it is the
+ * catalog's count, not what one channel currently shows.
+ */
+export async function countCatalogEligibleProductsByCategory(db: Db): Promise<Map<number, number>> {
+  const rows = await db.product.groupBy({
+    by: ["categoryId"],
+    where: CATALOG_ELIGIBLE_PRODUCT_WHERE,
+    _count: { _all: true },
+  });
+  return new Map(rows.map((row) => [row.categoryId, row._count._all]));
+}
+
+/**
  * Active products (with ≥1 active denomination) in a category — or the whole
  * catalog when categoryId is omitted. Each carries its active denominations
  * price-asc so a card can show the starting price. Ordered by sortOrder, name.
@@ -724,13 +755,10 @@ export async function listCatalogProducts(
 ): Promise<CatalogProduct[]> {
   const [products, groups] = await Promise.all([db.product.findMany({
     where: {
-      isActive: true,
-      isArchived: false,
-      category: { isActive: true },
+      ...CATALOG_ELIGIBLE_PRODUCT_WHERE,
       ...(categoryId != null ? { categoryId } : {}),
       ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
       ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
-      denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
       category: true,
@@ -860,12 +888,15 @@ export async function listCategoryGameRegions(
   return out;
 }
 
-/** Newest active products (by newest active denomination) for the home grid. */
+/**
+ * Newest active products by the product's own creation time (id desc breaks
+ * ties). A denomination added later, e.g. by a provider sync, does not move an
+ * existing product up.
+ */
 export async function listNewestCatalogProducts(db: Db, channel: ServiceChannel, limit = 12): Promise<CatalogProduct[]> {
   const products = await listCatalogProducts(db, channel);
-  const recency = (p: CatalogProduct) =>
-    Math.max(p.createdAt.getTime(), ...p.denominations.map((d) => d.createdAt.getTime()));
-  return products.sort((a, b) => recency(b) - recency(a)).slice(0, limit);
+  // Sort a copy: never reorder the list listCatalogProducts handed back.
+  return [...products].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id).slice(0, limit);
 }
 
 /** Options for the Game Top-up search; a plain call keeps the original behavior. */
@@ -987,7 +1018,7 @@ export async function searchCatalog(
  */
 export async function listFlashSaleProducts(db: Db, channel: ServiceChannel, now: Date = new Date()): Promise<CatalogProduct[]> {
   const products = await listCatalogProducts(db, channel);
-  return products.filter((p) => p.denominations.some((d) => isFlashActive(d, now)));
+  return products.filter((p) => hasLiveFlash(p, now));
 }
 
 /**

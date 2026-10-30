@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   prisma,
   listAllCategories,
+  countCatalogEligibleProductsByCategory,
   listProducts,
   getCategory,
   updateCategory,
@@ -154,11 +155,18 @@ function catalogKindFields(
 
 export default async function catalogApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/catalog", { preHandler: currentAdmin }, async (req, reply) => {
-    const [categories, products] = await Promise.all([
+    const [categories, products, eligibleCounts] = await Promise.all([
       listAllCategories(prisma),
       listProducts(prisma, undefined, "all"),
+      countCatalogEligibleProductsByCategory(prisma),
     ]);
-    return reply.send({ categories, products });
+    return reply.send({
+      categories: categories.map((category) => ({
+        ...category,
+        activeProductCount: eligibleCounts.get(category.id) ?? 0,
+      })),
+      products,
+    });
   });
 
   app.post("/api/catalog/products", { preHandler: csrfProtect }, async (req, reply) => {
@@ -203,13 +211,16 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     // Unlike checkoutFlow below, group has no safe schema default to fall
     // back to — it's null until an admin classifies it — so an explicitly
     // sent, unrecognized value is rejected rather than silently dropped.
-    let group: string | null = null;
-    if (body.group !== undefined && body.group !== null) {
-      if (typeof body.group !== "string" || !Object.values(CategoryGroup).includes(body.group as CategoryGroup)) {
-        return reply.code(400).send({ error: "Invalid group." });
-      }
-      group = body.group;
+    // New categories must be classified; only legacy rows may stay null. The
+    // rule lives here, not in createCategory, which the bot's "General"
+    // fallback and many tests call without a group.
+    if (body.group === undefined || body.group === null) {
+      return reply.code(400).send({ error: "Choose a group for this category." });
     }
+    if (typeof body.group !== "string" || !Object.values(CategoryGroup).includes(body.group as CategoryGroup)) {
+      return reply.code(400).send({ error: "Invalid group." });
+    }
+    const group: string = body.group;
 
     const cat = await createCategory(prisma, {
       name,
@@ -266,6 +277,11 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       fields.checkoutFlow = body.checkoutFlow;
     }
     if (body.group !== undefined) {
+      // Once classified, a category can't go back to "not set". A legacy
+      // null-group category re-saved with null is a harmless no-op.
+      if (body.group === null && existing.group !== null) {
+        return reply.code(400).send({ error: "A category's group can't be cleared once it is set." });
+      }
       if (body.group !== null && !Object.values(CategoryGroup).includes(body.group as CategoryGroup)) {
         return reply.code(400).send({ error: "Invalid group." });
       }

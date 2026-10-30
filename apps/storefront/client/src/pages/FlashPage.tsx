@@ -12,9 +12,8 @@ import * as m from "motion/react-m";
  */
 import { useQuery } from "@tanstack/react-query";
 import { Zap } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { SORT_KEYS, type ShelfPageData, type SortKey } from "../api/types";
+import type { ShelfPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import EmptyState from "../components/shop/EmptyState";
@@ -25,15 +24,14 @@ import SortSelect from "../components/shop/SortSelect";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { useSortParam } from "../lib/useSortParam";
 ;
 
 const SKELETON_CARDS = Array.from({ length: 4 }, (_, i) => i);
 
 export default function FlashPage() {
   const { data: ctx } = useShopContext();
-  const [params, setParams] = useSearchParams();
-  const rawSort = params.get("sort");
-  const sort: SortKey = SORT_KEYS.includes(rawSort as SortKey) ? (rawSort as SortKey) : "default";
+  const [sort, setSort] = useSortParam({ allowCheapest: true });
   const { data } = useQuery({
     queryKey: ["flash", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/flash?sort=${sort}`),
@@ -79,7 +77,7 @@ export default function FlashPage() {
         <>
           {products.length > 1 && (
             <div className="flex justify-end mb-4">
-              <SortSelect value={sort} onChange={(next) => setParams(next === "default" ? {} : { sort: next })} />
+              <SortSelect value={sort} allowCheapest onChange={setSort} />
             </div>
           )}
           <m.div

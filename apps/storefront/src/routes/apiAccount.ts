@@ -98,8 +98,8 @@ const dt = (d: Date, fmt = "yyyy-LL-dd HH:mm"): string => localize(d, fmt);
 const splitAttachments = (v: string | null): string[] => (v ? v.split(",").filter(Boolean) : []);
 
 /** The /help list-control query vocabularies (Task 11). An unrecognized value
- * on either falls back to the default (mirrors apiPages.ts's `isSortKey`
- * handling — a bad `?sort=` there just falls through, it doesn't 400). */
+ * on either falls back to the default (mirrors apiPages.ts's `parseSortKey`
+ * handling — a bad `?sort=` there just falls back, it doesn't 400). */
 const SUPPORT_LIST_SORTS: readonly SupportTicketListSort[] = [
   "latest_update",
   "created_desc",
@@ -469,7 +469,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     }
 
     // An unrecognized status/sort value falls back to its default rather than
-    // 400ing (mirrors apiPages.ts's `isSortKey` handling).
+    // 400ing (mirrors apiPages.ts's `parseSortKey` handling).
     const statusFilter: SupportTicketStatusFilter = SUPPORT_STATUS_FILTERS.includes(
       status as SupportTicketStatusFilter,
     )

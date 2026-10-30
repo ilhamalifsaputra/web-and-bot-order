@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CategoryPage from "./CategoryPage";
 import { apiGet } from "../api/client";
@@ -48,11 +48,18 @@ const categoryData: CategoryPageData = {
     { id: 1, name: "Streaming", slug: "streaming", emoji: "🎬", description: null, image: null, sortOrder: 0, isActive: true },
     { id: 2, name: "Gaming", slug: "gaming", emoji: "🎮", description: null, image: null, sortOrder: 1, isActive: true },
   ],
+  group: "PREMIUM_APPS",
+  allow_cheapest: true,
   products: [product],
   low_threshold: 5,
 };
 
-function renderCategory(slug: string, respond: (path: string) => unknown) {
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location-search">{location.search}</output>;
+}
+
+function renderCategory(slug: string, respond: (path: string) => unknown, search = "") {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return context;
     return respond(path);
@@ -60,9 +67,17 @@ function renderCategory(slug: string, respond: (path: string) => unknown) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/c/${slug}`]}>
+      <MemoryRouter initialEntries={[`/c/${slug}${search}`]}>
         <Routes>
-          <Route path="/c/:slug" element={<CategoryPage />} />
+          <Route
+            path="/c/:slug"
+            element={
+              <>
+                <CategoryPage />
+                <LocationProbe />
+              </>
+            }
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -140,11 +155,52 @@ describe("CategoryPage", () => {
     const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
     renderCategory("streaming", () => ({ ...categoryData, products: [product, second] }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
-    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=default");
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=bestseller");
     fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "cheapest" } });
     await waitFor(() =>
       expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=cheapest"),
     );
+  });
+
+  it("does not offer cheapest on a category that disallows it", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderCategory("streaming", () => ({ ...categoryData, allow_cheapest: false, products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const labels = within(screen.getByLabelText("Sort")).getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toEqual(["Bestseller", "Newest"]);
+  });
+
+  it("shows a legacy ?sort=rating as bestseller", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderCategory("streaming", () => ({ ...categoryData, products: [product, second] }), "?sort=rating");
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByLabelText("Sort")).toHaveValue("bestseller");
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=bestseller");
+  });
+
+  it("shows ?sort=cheapest as bestseller where the category does not offer it", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderCategory(
+      "streaming",
+      () => ({ ...categoryData, allow_cheapest: false, products: [product, second] }),
+      "?sort=cheapest",
+    );
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByLabelText("Sort")).toHaveValue("bestseller");
+    // The URL is corrected (replace) to what is shown, and the page stays up
+    // while the corrected request runs instead of flashing the skeleton.
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent(/^$/));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=bestseller"));
+    expect(screen.queryByLabelText("Loading…")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+  });
+
+  it("keeps the other query params when the sort changes", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderCategory("streaming", () => ({ ...categoryData, products: [product, second] }), "?ref=promo");
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "newest" } });
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent("?ref=promo&sort=newest"));
   });
 
   it("omits the sort dropdown when there's only one product", async () => {
@@ -177,7 +233,7 @@ describe("CategoryPage", () => {
   });
 
   it("renders a retryable ErrorState on a non-404 error and refetches on retry", async () => {
-    const path = "/api/v1/pages/category/streaming?sort=default";
+    const path = "/api/v1/pages/category/streaming?sort=bestseller";
     renderCategory("streaming", () => {
       throw Object.assign(new Error("boom"), { status: 500 });
     });
@@ -199,7 +255,7 @@ describe("CategoryPage", () => {
     fail = true;
     await queryClient.refetchQueries({ queryKey: ["category"] });
     await waitFor(() =>
-      expect(queryClient.getQueryState(["category", "streaming", "default"])?.status).toBe("error"),
+      expect(queryClient.getQueryState(["category", "streaming", "bestseller"])?.status).toBe("error"),
     );
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();

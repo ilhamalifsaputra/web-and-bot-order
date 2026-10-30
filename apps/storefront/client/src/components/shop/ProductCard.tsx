@@ -9,7 +9,7 @@ import { Link } from "react-router-dom";
 import { t, tCount } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";
 import DefaultThumb, { type ThumbnailKind } from "./DefaultThumb";
-import FlashBadge, { FlashWasPrice } from "./FlashBadge";
+import FlashBadge, { FlashWasPrice, useFlashCountdown } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
 import StockBadge from "./StockBadge";
@@ -66,6 +66,14 @@ export interface ProductCardData {
    * its partial local count as the product's badge. Optional only so older
    * fixtures type-check; the server always sends it. */
   all_local_inventory?: boolean;
+  /** Product created within the last 14 days — drives the "New" badge. */
+  is_new?: boolean;
+  /** Flash cards only: the promo denomination the card represents (its id
+   * preselects it via `?d=`), its display name, and how many OTHER
+   * denominations of the product are on sale too. Null/0 on a normal card. */
+  promo_denomination_id?: number | null;
+  promo_denomination_name?: string | null;
+  other_promo_count?: number;
 }
 
 export interface ProductCardProps {
@@ -81,7 +89,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
   const preSale = p.flash_discount ? (p.from_base_price ?? null) : null;
   return (
     <MotionLink
-      to={`/p/${p.slug}`}
+      to={p.promo_denomination_id ? `/p/${p.slug}?d=${p.promo_denomination_id}` : `/p/${p.slug}`}
       {...pressable}
       className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-soft transition hover:shadow-lift hover:border-pine-tint flex flex-col"
     >
@@ -130,10 +138,15 @@ function ProductCardImage({ p, bulkPercent }: {
     {/* Flash badge above the bulk badge in one stacked column — they can
             both be live on the same product, and two absolutely-positioned
             badges at top-3 left-3 would sit on top of each other. */}
-    {(p.flash_discount || p.bulk_discount) && (
+    {(p.flash_discount || p.bulk_discount || p.is_new) && (
       <div className="absolute top-2 left-2 sm:top-3 sm:left-3 flex max-w-2/3 flex-col items-start gap-1.5">
+        {p.is_new && (
+          <span className="inline-flex items-center rounded-full bg-pine px-2.5 py-1 text-xs font-medium text-white shadow-xs">
+            {t("web.badge_new")}
+          </span>
+        )}
         {p.flash_discount && (
-          <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
+          <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" showEnded />
         )}
         {p.bulk_discount && (
           <span className="inline-flex items-center rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark shadow-xs">
@@ -165,6 +178,49 @@ function ProductCardImage({ p, bulkPercent }: {
   </div>);
 }
 
+/** Flash cards: the discounted plan's own display name (already a plan or
+ * denomination label, so no family-specific vocabulary is added here) and how
+ * many other plans of the product are on sale too. */
+function PromoLine({ name, otherCount }: { name: string | null | undefined; otherCount: number }) {
+  if (!name) return null;
+  return (
+    <p className="mt-1 text-sm font-medium text-ink line-clamp-1 break-words">
+      {name}
+      {otherCount > 0 && (
+        <span className="ml-1.5 text-xs font-normal text-rust-dark">{tCount("web.flash_more_deals", otherCount)}</span>
+      )}
+    </p>
+  );
+}
+
+/**
+ * The card's price. `from_price` already carries a live flash discount; once
+ * that sale's countdown ends the figure is stale, so the card switches to the
+ * same plan's regular price (`from_base_price`, server-sent — never derived),
+ * or shows no price at all when there is none, rather than keep quoting the
+ * expired sale price. A flash card prices ONE plan (its promo denomination),
+ * not the product's cheapest, so it drops the "from" label.
+ */
+function CardPrice({ p, fx, preSale }: {
+  p: ProductCardData;
+  fx: string | null | undefined;
+  preSale: string | null;
+}) {
+  const { ended } = useFlashCountdown(p.flash_discount ? p.flash_ends_at : null);
+  const price = ended ? (p.from_base_price ?? null) : p.from_price;
+  if (price === null) return null;
+  const promoPlan = p.promo_denomination_id != null;
+  return (
+    <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
+      {!promoPlan && t("web.from_price")}
+      <Price value={price} fx={fx} size="text-base" />
+      {/* The struck-through regular price, server-sent (from_base_price) and
+          display only; it disappears with the sale it belongs to. */}
+      {!ended && preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
+    </p>
+  );
+}
+
 function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
   p: ProductCardData;
   fx: string | null | undefined;
@@ -185,6 +241,8 @@ function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
       )}
     </p>
 
+    <PromoLine name={p.promo_denomination_name} otherCount={p.other_promo_count ?? 0} />
+
     {p.rating_count > 0 && (
       <div className="flex items-center gap-1.5 text-xs text-ink-soft mt-1">
         <Stars rating={p.rating ?? 0} /> <span>{String(Math.round((p.rating ?? 0) * 10) / 10)}</span>
@@ -193,14 +251,7 @@ function ProductCardDetails({ p, fx, preSale, lowThreshold, bulkPercent }: {
     )}
 
     <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
-      <p className="min-w-0 text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
-        {t("web.from_price")}
-        <Price value={p.from_price} fx={fx} size="text-base" />
-        {/* The card payload carries no base price (cards.ts), so the
-                pre-sale figure is reconstructed from the percent — display
-                only, and it never feeds a total. */}
-        {preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
-      </p>
+      <CardPrice p={p} fx={fx} preSale={preSale} />
       {/* A count badge only when every plan is local stock; a mixed
               product is purchasable through its provider/manual plans
               whatever its partial local count says. */}

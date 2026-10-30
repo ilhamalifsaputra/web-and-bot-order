@@ -30,6 +30,7 @@ import {
   listActiveCategories,
   listActiveCategoriesByGroup,
   listCatalogProducts,
+  countCatalogEligibleProductsByCategory,
   listCatalogProductsByGroup,
   getCategoryBySlug,
   getCatalogProductBySlugWithDenominations,
@@ -574,6 +575,33 @@ describe("thumbnailKind / currencyIconKind (Fase 12)", () => {
     await updateCatalogProduct(prisma, p.id, { thumbnailKind: null });
     const afterClear = await getCatalogProduct(prisma, p.id);
     expect(afterClear!.thumbnailKind).toBeNull();
+  });
+});
+
+describe("countCatalogEligibleProductsByCategory", () => {
+  it("counts exactly the products listCatalogProducts would show, per category", async () => {
+    const cat = await makeCategory();
+    const empty = await makeCategory();
+    const shown = await makeProduct(cat.id, "Counted");
+    await makeDenom(shown.id, "1 Month", "10");
+    const free = await makeProduct(cat.id, "Zero price");
+    await makeDenom(free.id, "1 Month", "0");
+    await makeProduct(cat.id, "No denominations");
+    const inactiveProduct = await makeProduct(cat.id, "Inactive product");
+    await makeDenom(inactiveProduct.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: inactiveProduct.id }, data: { isActive: false } });
+    const archived = await makeProduct(cat.id, "Archived product");
+    await makeDenom(archived.id, "1 Month", "10");
+    await setCatalogProductArchived(prisma, archived.id, true);
+    const inactiveDenom = await makeProduct(cat.id, "Inactive denomination");
+    const d = await makeDenom(inactiveDenom.id, "1 Month", "10");
+    await prisma.denomination.update({ where: { id: d.id }, data: { isActive: false } });
+
+    const counts = await countCatalogEligibleProductsByCategory(prisma);
+    const visible = await listCatalogProducts(prisma, "web", cat.id);
+    expect(counts.get(cat.id)).toBe(1);
+    expect(counts.get(cat.id)).toBe(visible.length);
+    expect(counts.get(empty.id) ?? 0).toBe(0);
   });
 });
 
@@ -1489,6 +1517,19 @@ describe("listNewestCatalogProducts", () => {
     const list = await listNewestCatalogProducts(prisma, "bot", 1);
     expect(list).toHaveLength(1);
     expect(list[0]!.denominations.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("ranks by product createdAt: a new denomination on an old product does not jump ahead", async () => {
+    const cat = await makeCategory();
+    const older = await makeProduct(cat.id, "Older Product");
+    const newer = await makeProduct(cat.id, "Newer Product");
+    await prisma.product.update({ where: { id: older.id }, data: { createdAt: new Date("2020-01-01T00:00:00Z") } });
+    await prisma.product.update({ where: { id: newer.id }, data: { createdAt: new Date("2021-01-01T00:00:00Z") } });
+    await makeDenom(newer.id, "1 Month", "5");
+    await makeDenom(older.id, "1 Month", "5"); // created now, after the newer product's own
+    const ids = (await listNewestCatalogProducts(prisma, "bot", 1000)).map((p) => p.id);
+    expect(ids.indexOf(newer.id)).toBeGreaterThanOrEqual(0);
+    expect(ids.indexOf(newer.id)).toBeLessThan(ids.indexOf(older.id));
   });
 });
 

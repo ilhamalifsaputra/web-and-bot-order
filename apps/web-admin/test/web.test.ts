@@ -2152,7 +2152,7 @@ describe("catalog JSON API — create category", () => {
 
   it("happy path: creates category and logs audit", async () => {
     const before = await prisma.category.count();
-    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming", group: "PREMIUM_APPS" });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { category: { id: number; name: string; slug: string } };
     expect(body.category.name).toBe("Streaming");
@@ -2169,6 +2169,7 @@ describe("catalog JSON API — create category", () => {
   it("persists emoji, description and sortOrder", async () => {
     const res = await postCategoryJson(seed.cookie, seed.csrf, {
       name: "Streaming",
+      group: "PREMIUM_APPS",
       emoji: "🎬",
       description: "Video streaming subscriptions",
       sortOrder: 3,
@@ -2182,7 +2183,7 @@ describe("catalog JSON API — create category", () => {
   });
 
   it("defaults checkoutFlow to \"catalog\" when omitted", async () => {
-    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming", group: "PREMIUM_APPS" });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { category: { id: number } };
     const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
@@ -2190,7 +2191,7 @@ describe("catalog JSON API — create category", () => {
   });
 
   it("persists checkoutFlow \"instant\" when given", async () => {
-    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Top-ups", checkoutFlow: "instant" });
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Top-ups", group: "GAME_TOPUP", checkoutFlow: "instant" });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { category: { id: number } };
     const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
@@ -2198,7 +2199,7 @@ describe("catalog JSON API — create category", () => {
   });
 
   it("silently falls back to \"catalog\" for an invalid checkoutFlow instead of rejecting the request", async () => {
-    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Flow", checkoutFlow: "bogus" });
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Flow", group: "PREMIUM_APPS", checkoutFlow: "bogus" });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { category: { id: number } };
     const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
@@ -2213,12 +2214,12 @@ describe("catalog JSON API — create category", () => {
     expect(cat!.group).toBe("GAME_TOPUP");
   });
 
-  it("defaults group to null when omitted", async () => {
+  it("rejects an omitted group with 400 and creates nothing", async () => {
+    const before = await prisma.category.count();
     const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "No Group" });
-    expect(res.statusCode).toBe(201);
-    const body = JSON.parse(res.body) as { category: { id: number } };
-    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
-    expect(cat!.group).toBeNull();
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe("Choose a group for this category.");
+    expect(await prisma.category.count()).toBe(before);
   });
 
   it("rejects an invalid group with 400 and creates nothing", async () => {
@@ -2880,16 +2881,16 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       expect(cat!.group).toBe("PREMIUM_APPS");
     });
 
-    it("clears the group back to null when explicitly sent null", async () => {
+    it("refuses to clear a group once it is set", async () => {
       await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
         group: "GAME_TOPUP",
       });
       const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
         group: null,
       });
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(400);
       const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
-      expect(cat!.group).toBeNull();
+      expect(cat!.group).toBe("GAME_TOPUP");
     });
 
     it("rejects an invalid group with 400 and writes nothing", async () => {

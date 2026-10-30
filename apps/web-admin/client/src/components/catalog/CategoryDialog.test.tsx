@@ -37,6 +37,11 @@ beforeEach(() => {
   Element.prototype.releasePointerCapture = vi.fn();
 });
 
+async function pickGroup(user: ReturnType<typeof userEvent.setup>, label: string) {
+  await user.click(screen.getByRole("combobox", { name: "Group" }));
+  await user.click(await screen.findByRole("option", { name: label }));
+}
+
 describe("CategoryDialog", () => {
   it("explains that the Game Top-Up group always uses the top-up page", () => {
     render(<CategoryDialog onClose={vi.fn()} onSaved={vi.fn()} />);
@@ -48,6 +53,7 @@ describe("CategoryDialog", () => {
   it("creates a category with POST when no category is given", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ category: { id: 9 } }, 201));
     vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onSaved = vi.fn();
     const onClose = vi.fn();
 
@@ -56,7 +62,8 @@ describe("CategoryDialog", () => {
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  Games  " } });
     fireEvent.change(screen.getByLabelText("Emoji"), { target: { value: "🎮" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await pickGroup(user, "🎮 Game Top Up");
+    await user.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     const req = lastRequest(fetchMock);
@@ -67,7 +74,7 @@ describe("CategoryDialog", () => {
       emoji: "🎮",
       description: null,
       checkoutFlow: "catalog",
-      group: null,
+      group: "GAME_TOPUP",
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -168,8 +175,9 @@ describe("CategoryDialog", () => {
     expect(screen.getByText("/c/apps")).toBeInTheDocument();
   });
 
-  it("keeps the save button disabled until a name is typed", () => {
+  it("keeps Create disabled until both a name and a group are set", async () => {
     vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<CategoryDialog onClose={vi.fn()} onSaved={vi.fn()} />);
 
     const create = screen.getByRole("button", { name: "Create" });
@@ -179,7 +187,75 @@ describe("CategoryDialog", () => {
     expect(create).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Games" } });
+    expect(create).toBeDisabled();
+
+    await pickGroup(user, "💎 Premium Apps");
     expect(create).toBeEnabled();
+  });
+
+  it("keeps Save disabled while editing if the name is blanked", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    render(<CategoryDialog category={{ ...CATEGORY, group: "PREMIUM_APPS" }} onClose={vi.fn()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: " " } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("offers no 'Not set' option and no preselected group when creating", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<CategoryDialog onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    const select = screen.getByRole("combobox", { name: "Group" });
+    expect(select).not.toHaveTextContent("Game Top Up");
+    expect(select).not.toHaveTextContent("Premium Apps");
+    await user.click(select);
+    await screen.findByRole("option", { name: "🎮 Game Top Up" });
+    expect(screen.queryByRole("option", { name: /Not set/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+  });
+
+  it("explains what the group decides", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    render(<CategoryDialog onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(
+      screen.getByText("Decides where this category appears on the website and in the bot."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a legacy category's missing group as 'Not set (shown as Premium Apps)' and keeps sending null", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 7, name: "Apps" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSaved = vi.fn();
+    render(<CategoryDialog category={CATEGORY} onClose={vi.fn()} onSaved={onSaved} />);
+
+    expect(screen.getByRole("combobox", { name: "Group" })).toHaveTextContent("Not set (shown as Premium Apps)");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(lastRequest(fetchMock).body.group).toBeNull();
+  });
+
+  it("stops offering 'Not set' for a legacy category once another group was picked", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<CategoryDialog category={CATEGORY} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await user.click(screen.getByRole("combobox", { name: "Group" }));
+    expect(await screen.findByRole("option", { name: "Not set (shown as Premium Apps)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "🎮 Game Top Up" }));
+
+    await user.click(screen.getByRole("combobox", { name: "Group" }));
+    await screen.findByRole("option", { name: "💎 Premium Apps" });
+    expect(screen.queryByRole("option", { name: /Not set/ })).not.toBeInTheDocument();
+  });
+
+  it("offers no 'Not set' option when editing a category that has a group", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<CategoryDialog category={{ ...CATEGORY, group: "GAME_TOPUP" }} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await user.click(screen.getByRole("combobox", { name: "Group" }));
+    await screen.findByRole("option", { name: "💎 Premium Apps" });
+    expect(screen.queryByRole("option", { name: /Not set/ })).not.toBeInTheDocument();
   });
 
   it("surfaces the server's message and leaves the dialog open when saving fails", async () => {
@@ -190,9 +266,11 @@ describe("CategoryDialog", () => {
     const onClose = vi.fn();
     const onSaved = vi.fn();
 
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<CategoryDialog onClose={onClose} onSaved={onSaved} />);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Games" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await pickGroup(user, "🎮 Game Top Up");
+    await user.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByText("A category named Games already exists.")).toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();

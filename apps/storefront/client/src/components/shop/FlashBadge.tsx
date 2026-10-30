@@ -101,6 +101,9 @@ export interface FlashBadgeProps {
   /** Append the live countdown inside the badge (product detail only — the
    * grid cards and the checkout summary stay quiet). */
   withCountdown?: boolean;
+  /** Once the sale ends, show a muted "Promo ended" chip instead of nothing
+   * (grid cards that outlive their sale while mounted). */
+  showEnded?: boolean;
   className?: string;
 }
 
@@ -109,11 +112,21 @@ export default function FlashBadge({
   endsAt = null,
   tone = "tint",
   withCountdown = false,
+  showEnded = false,
   className = "",
 }: FlashBadgeProps) {
   const { text, ended } = useFlashCountdown(endsAt);
   const pct = flashPercentLabel(percent);
-  if (pct === null || ended) return null;
+  if (pct === null) return null;
+  if (ended) {
+    return showEnded ? (
+      <span
+        className={`inline-flex items-center rounded-full bg-sand px-2.5 py-1 text-xs font-medium text-ink-soft shadow-xs ${className}`}
+      >
+        {t("web.flash_ended")}
+      </span>
+    ) : null;
+  }
   const toneClass = tone === "solid" ? "bg-rust/90 text-white backdrop-blur-sm" : "bg-rust-tint text-rust-dark";
   return (
     <span

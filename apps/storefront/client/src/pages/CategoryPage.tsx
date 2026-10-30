@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PackageSearch } from "lucide-react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { SORT_KEYS, type CategoryPageData, type SortKey } from "../api/types";
+import { parseSortKey, type CategoryPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import EmptyState from "../components/shop/EmptyState";
@@ -17,8 +17,10 @@ import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
 import { t } from "../lib/i18n";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
+import { useSortParam } from "../lib/useSortParam";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ErrorState from "../components/shop/ErrorState";
+import { jumpPillClass } from "../components/home/homeLayout";
 import ErrorPage from "./ErrorPage";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
@@ -26,14 +28,21 @@ const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 export default function CategoryPage() {
   const { slug = "" } = useParams<{ slug: string }>();
   const { data: ctx } = useShopContext();
-  const [params, setParams] = useSearchParams();
-  const rawSort = params.get("sort");
-  const sort: SortKey = SORT_KEYS.includes(rawSort as SortKey) ? (rawSort as SortKey) : "default";
+  const [params] = useSearchParams();
+  // The server decides whether this category offers "cheapest" (Game Top Up
+  // does not) and falls back to bestseller itself, so the request carries the
+  // key as typed; useSortParam below corrects the URL once the payload says.
+  const requestedSort: SortKey = parseSortKey(params.get("sort"), { allowCheapest: true });
   const { data, error, refetch } = useQuery({
-    queryKey: ["category", slug, sort],
-    queryFn: () => apiGet<CategoryPageData>(`/api/v1/pages/category/${slug}?sort=${sort}`),
+    queryKey: ["category", slug, requestedSort],
+    queryFn: () => apiGet<CategoryPageData>(`/api/v1/pages/category/${slug}?sort=${requestedSort}`),
     retry: false,
+    // A sort change within the same category keeps the grid up while the new
+    // order loads (including the URL correction above) instead of flashing
+    // the skeleton; another category starts from its own skeleton.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === slug ? previous : undefined),
   });
+  const [sort, setSort] = useSortParam({ allowCheapest: data?.allow_cheapest });
   // Fetched only once this category is known to have no products — never
   // delays the empty-state card itself, which paints from `data` alone.
   const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
@@ -74,7 +83,7 @@ export default function CategoryPage() {
     );
   }
 
-  const { category, categories, products, low_threshold } = data;
+  const { category, categories, products, low_threshold, allow_cheapest } = data;
   const fx = ctx?.fx;
 
   return (
@@ -106,10 +115,7 @@ export default function CategoryPage() {
           <Link
             key={c.slug}
             to={`/c/${c.slug}`}
-            className={`inline-flex items-center gap-2 whitespace-nowrap min-h-11 rounded-full px-3 text-sm font-semibold transition-colors ${c.id === category.id
-              ? "bg-pine-tint text-pine-dark"
-              : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
-              }`}
+            className={jumpPillClass(c.id === category.id)}
           >
             {c.emoji ? `${c.emoji} ` : ""}
             {c.name}
@@ -117,26 +123,27 @@ export default function CategoryPage() {
         ))}
       </div>
 
-      <CategoryProductsSection products={products} sort={sort} setParams={setParams} fx={fx} low_threshold={low_threshold} suggested={suggested} />
+      <CategoryProductsSection products={products} sort={sort} allowCheapest={allow_cheapest} onSortChange={setSort} fx={fx} low_threshold={low_threshold} suggested={suggested} />
     </>
   );
 }
 
-function CategoryProductsSection({ products, sort, setParams, fx, low_threshold, suggested }: {
+function CategoryProductsSection({ products, sort, allowCheapest, onSortChange, fx, low_threshold, suggested }: {
   products: import("../components/shop/ProductCard").ProductCardData[];
-  sort: "default" | "cheapest" | "newest" | "rating";
-  setParams: import("react-router-dom").SetURLSearchParams;
+  sort: SortKey;
+  allowCheapest: boolean;
+  onSortChange: (next: SortKey) => void;
   fx: string | null | undefined;
   low_threshold: number;
   suggested: NoInfer<import("../api/types").ShelfPageData> | undefined;
 }) {
   return (products.length > 0 ? (
     <>
-      {/* STO-007: cheapest/newest/rating sort — only worth showing once
+      {/* STO-007: bestseller/newest/cheapest sort — only worth showing once
               there's more than one product to reorder. */}
       {products.length > 1 && (
         <div className="flex justify-end mb-4">
-          <SortSelect value={sort} onChange={(next) => setParams(next === "default" ? {} : { sort: next })} />
+          <SortSelect value={sort} allowCheapest={allowCheapest} onChange={onSortChange} />
         </div>
       )}
       {/* STO-018: same fix as the homepage's "Latest products" grid — a

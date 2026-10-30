@@ -322,3 +322,25 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 - Simulasi produksi buatan: `tests/helpers/legacyProductionCatalog.ts` + `apps/order-bot/test/legacy-production-catalog.test.ts` (8/8) mereproduksi bentuk katalog dari screenshot produksi; `game-level-browse.test.ts` pinning jumlah bubble hidup untuk siklus berulang, ketukan lama, ketukan ganda dan Back setelah bubble hilang.
 - Gate pada `91f83b54` (jalur hemat memori; shard 7 dijalankan ulang karena worker mati kehabisan memori, bukan kegagalan tes): build, typecheck semua paket, `tsc -p tsconfig.test.json`, `pnpm run pretest` exit 0; Vitest 8 shard satu worker: **691 file dan 13.252 tes lulus, semua shard exit 0**; `pnpm doctor:full` 655 file, 0 error, 0 warning; `pnpm lint` 655 file tanpa temuan kategori Bugs.
 - Belum terbukti: perilaku Telegram sungguhan (waktu hapus pesan, batas 48 jam, ketukan paralel nyata), format kawat gateway, dan daftar region selain BR/PH/MY (SG, TH, VN, TR, RU, Global, SEA masih draf). Keputusan pemilik: "Delta Force Garena" tetap game tersendiri.
+
+
+## Storefront homepage by product group, Task 5 (HomePage + GroupPage) - 30 Oktober 2026
+
+- Worktree `homepage-group-shelves`. New home catalog (sticky group nav with scrollspy, flash section, per-group sections with "Show more"/"See all") in `components/home/*`, new `/g/:slug` GroupPage with an `aria-pressed` segmented category filter, shared `useSortParam` hook for Category/Flash/Products/Group.
+- `pnpm doctor:full`: **668 files, 0 errors and 0 warnings across both clients and all categories** (a first run flagged `no-high-complexity-react-function` on GroupPage; fixed by splitting the page into `useGroupPages` + `GroupCatalog`, no suppression). `pnpm doctor:changed`: 33 files, no Bugs findings. Storefront client lint clean; all 134 storefront client test files (1,387 tests) pass.
+- Runtime behaviour not yet verified in a real browser: scrollspy band, sticky offsets / `scroll-mt`, horizontal pill auto-scroll, Back-navigation scroll restoration with expanded sections.
+
+
+## Storefront homepage by product group, final review fixes - 30 Oktober 2026
+
+- Worktree `homepage-group-shelves`, fixes from the whole-branch review (`df8d5fef..791fc59e`): Create Product's inline "+ New category" now requires a group; the home crawler shell describes the rendered groups; flash cards prefer a buyable plan; a card whose flash countdown ended shows the plan's regular price and a flash card no longer labels its price "from"; the admin "More Premium Apps" note is conditional and only for 1-2 active products, with the threshold shared through `@app/core` and a pinned admin mirror; the static Catalog info note uses `role="note"`; `/g/<slug>` in the sitemap; the hero fills up to three cards.
+- `pnpm doctor:full` (`react-doctor --project @app/web-admin-client,@app/storefront-client --scope full`): **669 files, 0 errors and 0 warnings across both clients and all categories** ("No issues found!"), first run, no suppressions. `pnpm doctor:bugs`: 669 files, no Bugs findings. `pnpm doctor:changed`: 46 files, no Bugs findings. `pnpm --filter @app/storefront-client lint` exit 0.
+- Typecheck exit 0 for `@app/storefront`, `@app/storefront-client`, `@app/web-admin`, `@app/web-admin-client`, `@app/db`, `@app/core` and `tsc -p tsconfig.test.json`. The 13 touched test files pass together (448 tests). `pnpm test:changed` was stopped by the machine for low memory before it printed any result, so it is **not proven**; the full suite still has to run before merge. Runtime behaviour was not checked in a real browser.
+
+
+## Storefront homepage by product group, final gate - 30 Oktober 2026
+
+- Head `5a8f9248` (adds: home pill/chip/hero jump links scroll without leaving a `#g-…` history entry; a shared `/#g-…` link still jumps then drops the hash).
+- `pnpm doctor:full`: **671 files, 0 errors and 0 warnings across both clients and all categories** ("No issues found!"), no suppressions. `pnpm lint` exit 0 (storefront token lint + Doctor Bugs scan, "No issues found in category Bugs").
+- `pnpm typecheck` exit 0. `pnpm test -- --maxWorkers=3` (includes `pretest`): **700 files, 13,450 tests passed, exit 0**.
+- Runtime check in Playwright against the built app with a copy of the dummy catalog, desktop 1366x900 and mobile 390x844: sticky group nav sits at 64px under the navbar and section headings land below it; scrollspy marks the visible group with `aria-current`; Flash Sale cards show the promo plan and `?d=` preselects it on the product page; Top Up Games "Show more" 10 → 20 → 24 with no duplicates; Back from a product page restores the exact scroll position (3781px) with expanded cards kept, both with and without a prior pill click; `/g/top-up-games?sort=cheapest` is replaced to `/g/top-up-games` with only Best selling / Newest; no horizontal page scroll at 390px. Admin screens were not exercised in a browser (covered by route and RTL tests).

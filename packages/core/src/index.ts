@@ -20,3 +20,4 @@ export * from "./booleanSettings";
 export * from "./regionLabel";
 export * from "./gameIdentity";
 export * from "./paymentReminder";
+export * from "./productGroups";

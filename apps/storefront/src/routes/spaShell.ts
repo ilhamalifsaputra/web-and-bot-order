@@ -20,6 +20,7 @@
  *     token rides in the URL — same Storefront-1 guard as the HTML route).
  */
 import type { FastifyInstance } from "fastify";
+import { productGroupBySlug } from "@app/core";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
 import { formatIdr } from "@app/core/formatters";
@@ -30,12 +31,12 @@ import {
   getCategoryBySlug,
   getCatalogProductBySlugWithDenominations,
   listActiveCategories,
-  listNewestCatalogProducts,
   listCatalogProducts,
   listFlashSaleProducts,
   stockStatusCounts,
   productRatingSummaries,
 } from "@app/db";
+import { homeCatalogData } from "../pageData";
 import { optionalCustomer } from "../plugins/auth";
 import { requestLang } from "../shop";
 import { loadSpaIndexHtml, esc } from "../lib/spaFallback";
@@ -232,6 +233,34 @@ function seoShell(inner: string): string {
   return inner ? `<div id="seo-shell">${inner}</div>` : "";
 }
 
+type HomeGroupData = Awaited<ReturnType<typeof homeCatalogData>>["groups"][number];
+
+/**
+ * One home product group as the crawler sees it — the same heading
+ * (HomeGroupSection.tsx), sub-section titles and first page of cards the page
+ * renders, plus a link to the group's own page (/g/<slug>, named by the group
+ * label the page's group nav shows).
+ */
+function homeGroupShell(group: HomeGroupData, lang: string): string {
+  const label = t(group.label_key, lang);
+  const split = group.layout === "byCategory" && group.sections.length > 1;
+  const sectionTitle = (s: HomeGroupData["sections"][number]) =>
+    s.kind === "others"
+      ? t("web.home_others_section", lang, { group: label })
+      : s.emoji
+        ? `${s.emoji} ${s.title ?? ""}`
+        : (s.title ?? label);
+  const products = (s: HomeGroupData["sections"][number]) =>
+    linkList(s.products.map((p) => ({ href: `/p/${p.slug}`, label: p.name })));
+  return (
+    `<h2>${esc(`${group.emoji} ${label}`)}</h2>` +
+    `<p><a href="/g/${esc(group.slug)}">${esc(label)}</a></p>` +
+    (split
+      ? group.sections.map((s) => `<h3>${esc(sectionTitle(s))}</h3>${products(s)}`).join("")
+      : group.sections.map(products).join(""))
+  );
+}
+
 /** Per-path <title>/OG-meta/body/status. */
 async function headInfo(
   path: string,
@@ -242,10 +271,7 @@ async function headInfo(
   analyticsOn: boolean,
 ): Promise<HeadInfo> {
   if (path === "/") {
-    const [categories, newest] = await Promise.all([
-      listActiveCategories(prisma, "web"),
-      listNewestCatalogProducts(prisma, "web", 12),
-    ]);
+    const { groups } = await homeCatalogData();
     const tagline = t("web.hero_title", lang);
     // The hero subtitle is page copy and free to grow past what a search
     // snippet shows (~160 chars); the meta description is its own key so
@@ -298,10 +324,7 @@ async function headInfo(
           `<ul>${[1, 2, 3, 4]
             .map((n) => `<li>${esc(t(`web.trust_${n}`, lang))}: ${esc(t(`web.trust_${n}_d`, lang))}</li>`)
             .join("")}</ul>` +
-          `<h2>${esc(t("web.categories_page_title", lang))}</h2>` +
-          linkList(categories.map((c) => ({ href: `/c/${c.slug}`, label: c.name }))) +
-          `<h2>${esc(t("web.new_arrivals", lang))}</h2>` +
-          linkList(newest.map((p) => ({ href: `/p/${p.slug}`, label: p.name }))),
+          groups.map((g) => homeGroupShell(g, lang)).join(""),
       ),
       status: 200,
     };
@@ -483,6 +506,25 @@ async function headInfo(
           (category.description ? `<p>${esc(category.description)}</p>` : "") +
           linkList(inCategory.map((p) => ({ href: `/p/${p.slug}`, label: p.name }))),
       ),
+      status: 200,
+    };
+  }
+  // /g/:slug — a product group page (client GroupPage). Only the slug is
+  // checked here (an in-memory registry lookup); the products come from the
+  // JSON API once the SPA boots.
+  const groupSlug = /^\/g\/([^/]+)$/.exec(path)?.[1];
+  if (groupSlug) {
+    // Group slugs are plain ASCII registry keys, so the raw segment is
+    // compared as is (no decodeURIComponent to throw on a malformed %-escape).
+    const group = productGroupBySlug(groupSlug);
+    if (!group) {
+      return { title: `404 — ${shopName}`, meta: "", body: "", status: 404 };
+    }
+    const groupName = t(group.labelKey, lang);
+    return {
+      title: `${groupName} — ${shopName}`,
+      meta: canonicalLink(path),
+      body: seoShell(`<nav><a href="/">${esc(shopName)}</a></nav><h1>${esc(groupName)}</h1>`),
       status: 200,
     };
   }

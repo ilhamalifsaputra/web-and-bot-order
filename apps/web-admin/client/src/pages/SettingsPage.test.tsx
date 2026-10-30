@@ -31,6 +31,10 @@ const SETTINGS_DATA = {
     { id: "game_topup", label: "Top Up Game", enabledBot: true, enabledWeb: true },
     { id: "premium_apps", label: "Premium Apps", enabledBot: false, enabledWeb: true },
   ],
+  groupOrder: [
+    { key: "PREMIUM_APPS", label: "Premium Apps" },
+    { key: "GAME_TOPUP", label: "Top Up Game" },
+  ],
   // Non-nullable verdict shape from evaluatePollHealth (packages/core/src/
   // payments/pollHealth.ts) — the server always returns a verdict, even when
   // the rail is disabled or has never run, so there is no null case here.
@@ -118,6 +122,39 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining("/api/settings/services/toggle"),
       expect.objectContaining({ body: JSON.stringify({ service: "premium_apps", channel: "web", enabled: true }) }),
+    ));
+  });
+
+  it("lists the website group order and saves a move immediately with the full new order", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("Website order")).toBeInTheDocument();
+    expect(screen.getByText("Order of the product groups on the website home page.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Move Premium Apps up" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Top Up Game down" })).toBeDisabled();
+
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await user.click(screen.getByRole("button", { name: "Move Top Up Game up" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/settings/services/order"),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ groups: ["GAME_TOPUP", "PREMIUM_APPS"] }) }),
+    ));
+  });
+
+  it("moves a group down with the full new order", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const user = userEvent.setup();
+
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await user.click(await screen.findByRole("button", { name: "Move Premium Apps down" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/settings/services/order"),
+      expect.objectContaining({ body: JSON.stringify({ groups: ["GAME_TOPUP", "PREMIUM_APPS"] }) }),
     ));
   });
 

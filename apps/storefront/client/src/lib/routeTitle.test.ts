@@ -38,9 +38,10 @@ describe("routeTitle", () => {
     expect(routeTitle("/search", "?q=netflix", SHOP)).toBe('Results for "netflix" — Toko Digital');
   });
 
-  it("returns undefined for /p/:slug and /c/:slug — those pages title themselves", () => {
+  it("returns undefined for /p/:slug, /c/:slug and /g/:slug — those pages title themselves", () => {
     expect(routeTitle("/p/netflix-premium", "", SHOP)).toBeUndefined();
     expect(routeTitle("/c/streaming", "", SHOP)).toBeUndefined();
+    expect(routeTitle("/g/premium-apps", "", SHOP)).toBeUndefined();
   });
 
   it("falls back to a 404 title for a path outside the route table", () => {

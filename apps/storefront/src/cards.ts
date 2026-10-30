@@ -7,11 +7,11 @@
  * cheapest active denomination. Centralising the shaping keeps the three grids
  * identical.
  */
-import type { CatalogProduct } from "@app/db";
+import { compareBestseller, compareNewest, type BestsellerSnapshot, type CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import type { PricingTier } from "@app/core/bulk";
-import { usesLocalInventory } from "@app/core/productAvailability";
+import { hasSellableStock, usesLocalInventory } from "@app/core/productAvailability";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset, type ThumbnailKind } from "./images";
 import { bestTierBadge, type TierBadge } from "./tierView";
 
@@ -69,7 +69,20 @@ export type ProductCard = {
    * provider/manual plans) is purchasable regardless of it, so its card must
    * not present the partial local count as the product's stock. Additive. */
   all_local_inventory: boolean;
+  /** True when the product was created within NEW_PRODUCT_WINDOW_MS of the
+   * pricing instant — the "New" badge. */
+  is_new: boolean;
+  /** Flash cards only (`shapeFlashCards`): the denomination this card
+   * advertises, so its link can preselect it. Null on every other card. */
+  promo_denomination_id: number | null;
+  promo_denomination_name: string | null;
+  /** Flash cards only: how many OTHER denominations of the product are on a
+   * live flash sale ("+N more deals"). 0 on every other card. */
+  other_promo_count: number;
 };
+
+/** How long after creation a product carries the "New" badge. */
+export const NEW_PRODUCT_WINDOW_MS = 14 * 24 * 3600_000;
 
 /** Available stock keyed by denomination id. */
 type StockMap = Record<number, { available: number }>;
@@ -123,10 +136,10 @@ export function shapeProducts(
   ratings: RatingMap,
   tiers: TierMap = {},
   isReseller = false,
+  // One pricing instant for the whole grid.
+  now: Date = new Date(),
 ): ProductCard[] {
   const cards: ProductCard[] = [];
-  // One pricing instant for the whole grid.
-  const now = new Date();
   for (const p of products) {
     const denoms = p.denominations; // active, price-asc (cheapest first)
     if (denoms.length === 0) continue; // listCatalogProducts already filters these out
@@ -136,26 +149,12 @@ export function shapeProducts(
     // flashPrice) is what checkout charges: a reseller pays whichever of their
     // standing price and the flash price is cheaper, so quoting the flash price
     // to a reseller whose own price is lower advertised MORE than they'd pay.
-    const livePrice = (d: (typeof denoms)[number]) => effectiveUnitPrice(d, isReseller);
+    const livePrice = (d: (typeof denoms)[number]) => effectiveUnitPrice(d, isReseller, now);
     let cheapest = denoms[0]!;
     for (const d of denoms) {
       if (livePrice(d).lessThan(livePrice(cheapest))) cheapest = d;
     }
     const fromPrice = livePrice(cheapest);
-    // Only local-inventory SKUs carry a real stock count; a provider SKU's
-    // stray rows (if any) must not inflate the product's figure.
-    const localDenoms = denoms.filter((d) => usesLocalInventory(d));
-    const available = localDenoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
-    // Best volume-tier saving across this product's denominations, priced by
-    // the engine for THIS shopper (a fixed-amount tier's percent depends on
-    // the unit it comes off). Only the effective tier set reaches here
-    // (toggle on, enabled, valid on read — effectiveTiersByDenomination), so
-    // the badge never advertises a tier checkout would refuse to honour.
-    let best: TierBadge | null = null;
-    for (const d of denoms) {
-      const badge = bestTierBadge(d, tiers[d.id] ?? [], isReseller, now);
-      if (badge && (best === null || badge.percent.greaterThan(best.percent))) best = badge;
-    }
     // The flash badge describes the plan behind `from_price` — NOT the biggest
     // discount on the product, the way the bulk badge above does. The two
     // differ deliberately: bulk_discount is a standalone claim ("buy 5+, save
@@ -168,70 +167,202 @@ export function shapeProducts(
     // reseller keeping their cheaper standing price sees no badge, because for
     // them nothing was discounted and the struck-through "was" price would be
     // a number they were never going to pay.
-    const leadSale = flashPrice(cheapest);
-    const leadFlash = leadSale !== null && fromPrice.equals(leadSale) ? activeFlashPercent(cheapest) : null;
-    const flashDiscount = leadFlash ? leadFlash.toString() : null;
-    const fromBasePrice = leadFlash ? new Decimal(cheapest.price).toString() : null;
-    const flashEndsAt = leadFlash ? cheapest.flashEndsAt!.toISOString() : null;
-    // Weighted average rating across every denomination (a review is left
-    // against the specific plan bought, not the product), so the card's star
-    // rating reflects the WHOLE product, never just its cheapest plan.
-    const { avg: rating, count: ratingCount } = aggregateRating(
-      denoms.map((d) => d.id),
-      ratings,
-    );
+    const leadSale = flashPrice(cheapest, now);
+    const leadFlash = leadSale !== null && fromPrice.equals(leadSale) ? activeFlashPercent(cheapest, now) : null;
     cards.push({
-      slug: p.slug,
-      name: p.name,
-      category_name: p.category.name,
+      ...cardBase(p, stock, ratings, tiers, isReseller, now),
       from_price: fromPrice.toString(),
-      variant_count: denoms.length,
-      image: p.webImageUrl ?? null,
-      image_srcset: webpSrcset(p.webImageUrl, PRODUCT_VARIANT_WIDTHS),
-      image_kind: defaultThumbKind(p, p.category),
-      available,
-      rating,
-      rating_count: ratingCount,
-      bulk_discount: best ? best.percent.toString() : null,
-      bulk_min_qty: best ? best.minQuantity : null,
-      bulk_up_to: best?.upTo ?? false,
-      flash_discount: flashDiscount,
-      from_base_price: fromBasePrice,
-      flash_ends_at: flashEndsAt,
-      all_non_auto: localDenoms.length === 0,
-      all_local_inventory: localDenoms.length === denoms.length,
+      flash_discount: leadFlash ? leadFlash.toString() : null,
+      from_base_price: leadFlash ? new Decimal(cheapest.price).toString() : null,
+      flash_ends_at: leadFlash ? cheapest.flashEndsAt!.toISOString() : null,
+      promo_denomination_id: null,
+      promo_denomination_name: null,
+      other_promo_count: 0,
     });
   }
   return cards;
 }
 
-/** STO-007: sort keys offered on the Category/Search grids. */
-export const SORT_KEYS = ["default", "cheapest", "newest", "rating"] as const;
-export type SortKey = (typeof SORT_KEYS)[number];
+/** The card fields that depend on which denomination the card advertises. */
+type LeadFields =
+  | "from_price"
+  | "flash_discount"
+  | "from_base_price"
+  | "flash_ends_at"
+  | "promo_denomination_id"
+  | "promo_denomination_name"
+  | "other_promo_count";
 
-export function isSortKey(value: unknown): value is SortKey {
-  return typeof value === "string" && (SORT_KEYS as readonly string[]).includes(value);
+/**
+ * Every card field that describes the PRODUCT as a whole — identity, image,
+ * stock, rating, bulk badge, "New" badge — shared by grid cards
+ * (`shapeProducts`) and flash cards (`shapeFlashCards`) so the two can never
+ * compute them differently.
+ */
+function cardBase(
+  p: CatalogProduct,
+  stock: StockMap,
+  ratings: RatingMap,
+  tiers: TierMap,
+  isReseller: boolean,
+  now: Date,
+): Omit<ProductCard, LeadFields> {
+  const denoms = p.denominations;
+  // Only local-inventory SKUs carry a real stock count; a provider SKU's
+  // stray rows (if any) must not inflate the product's figure.
+  const localDenoms = denoms.filter((d) => usesLocalInventory(d));
+  const available = localDenoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
+  // Best volume-tier saving across this product's denominations, priced by
+  // the engine for THIS shopper (a fixed-amount tier's percent depends on
+  // the unit it comes off). Only the effective tier set reaches here
+  // (toggle on, enabled, valid on read — effectiveTiersByDenomination), so
+  // the badge never advertises a tier checkout would refuse to honour.
+  let best: TierBadge | null = null;
+  for (const d of denoms) {
+    const badge = bestTierBadge(d, tiers[d.id] ?? [], isReseller, now);
+    if (badge && (best === null || badge.percent.greaterThan(best.percent))) best = badge;
+  }
+  // Weighted average rating across every denomination (a review is left
+  // against the specific plan bought, not the product), so the card's star
+  // rating reflects the WHOLE product, never just its cheapest plan.
+  const { avg: rating, count: ratingCount } = aggregateRating(
+    denoms.map((d) => d.id),
+    ratings,
+  );
+  return {
+    slug: p.slug,
+    name: p.name,
+    category_name: p.category.name,
+    variant_count: denoms.length,
+    image: p.webImageUrl ?? null,
+    image_srcset: webpSrcset(p.webImageUrl, PRODUCT_VARIANT_WIDTHS),
+    image_kind: defaultThumbKind(p, p.category),
+    available,
+    rating,
+    rating_count: ratingCount,
+    bulk_discount: best ? best.percent.toString() : null,
+    bulk_min_qty: best ? best.minQuantity : null,
+    bulk_up_to: best?.upTo ?? false,
+    all_non_auto: localDenoms.length === 0,
+    all_local_inventory: localDenoms.length === denoms.length,
+    is_new: now.getTime() - p.createdAt.getTime() < NEW_PRODUCT_WINDOW_MS,
+  };
 }
 
 /**
- * Re-orders already-shaped cards by the chosen criterion. Runs in memory
- * (not a DB `ORDER BY`) because `from_price`/`rating` are computed across a
- * product's denominations by `shapeProducts` above, not columns the DB can
- * sort on directly; catalog sizes here are small enough (a few dozen active
- * products) that this is cheap. `products` must be the same array (order and
- * length) `shapeProducts` was called with, so `createdAt` can be looked up
- * by slug for the "newest" sort.
+ * Flash-sale cards (home Flash Sale section and /flash). Unlike a grid card,
+ * which leads with the cheapest plan, a flash card advertises the DEAL: the
+ * flash-active denomination with the largest percent off (tie: the sale ending
+ * soonest, then the lowest id), preferring a plan that can be bought
+ * (hasSellableStock) and only falling back to a sold-out one when no deal is
+ * buyable; priced for a non-reseller like every grid. Its id/name ride along
+ * so the card can link straight to that plan, and `other_promo_count` counts
+ * the other deals in the pool it was chosen from. Products with no
+ * live flash sale at `now` produce no card.
  */
-export function sortProductCards(products: CatalogProduct[], cards: ProductCard[], sort: SortKey): ProductCard[] {
-  if (sort === "default") return cards;
-  const createdAtBySlug = new Map(products.map((p) => [p.slug, p.createdAt.getTime()]));
-  const sorted = [...cards];
-  if (sort === "cheapest") {
-    sorted.sort((a, b) => new Decimal(a.from_price).comparedTo(new Decimal(b.from_price)));
-  } else if (sort === "newest") {
-    sorted.sort((a, b) => (createdAtBySlug.get(b.slug) ?? 0) - (createdAtBySlug.get(a.slug) ?? 0));
-  } else if (sort === "rating") {
-    sorted.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+export function shapeFlashCards(
+  products: CatalogProduct[],
+  stock: StockMap,
+  ratings: RatingMap,
+  tiers: TierMap,
+  now: Date,
+): ProductCard[] {
+  const cards: ProductCard[] = [];
+  for (const p of products) {
+    const deals = p.denominations
+      .map((d) => ({ d, percent: activeFlashPercent(d, now) }))
+      .filter((x): x is { d: (typeof x)["d"]; percent: Decimal } => x.percent !== null);
+    if (deals.length === 0) continue;
+    deals.sort(
+      (a, b) =>
+        b.percent.comparedTo(a.percent) ||
+        a.d.flashEndsAt!.getTime() - b.d.flashEndsAt!.getTime() ||
+        a.d.id - b.d.id,
+    );
+    // Never advertise a sold-out plan while a buyable deal exists: choose
+    // among the buyable deals, and only when none is buyable fall back to
+    // every deal. "+N more deals" counts the rest of that same pool.
+    const buyable = deals.filter((x) => hasSellableStock(x.d, stock[x.d.id]?.available ?? 0));
+    const pool = buyable.length > 0 ? buyable : deals;
+    const { d: promo, percent } = pool[0]!;
+    cards.push({
+      ...cardBase(p, stock, ratings, tiers, false, now),
+      from_price: effectiveUnitPrice(promo, false, now).toString(),
+      flash_discount: percent.toString(),
+      from_base_price: new Decimal(promo.price).toString(),
+      flash_ends_at: promo.flashEndsAt!.toISOString(),
+      promo_denomination_id: promo.id,
+      promo_denomination_name: promo.name,
+      other_promo_count: pool.length - 1,
+    });
   }
-  return sorted;
+  return cards;
+}
+
+/** Sort keys offered on the storefront grids; `bestseller` is the default. */
+export const SORT_KEYS = ["bestseller", "newest", "cheapest"] as const;
+export type SortKey = (typeof SORT_KEYS)[number];
+
+/**
+ * A `?sort=` value as the effective sort. Unknown and legacy keys (`default`,
+ * `rating`) fall back to `bestseller`, as does `cheapest` on a page that does
+ * not offer it (Game Top Up) — never an error.
+ */
+export function parseSortKey(raw: unknown, opts: { allowCheapest: boolean }): SortKey {
+  if (raw === "newest") return "newest";
+  if (raw === "cheapest" && opts.allowCheapest) return "cheapest";
+  return "bestseller";
+}
+
+/**
+ * Search's effective sort. With no explicit sort key (missing, legacy or
+ * unknown) search keeps `searchCatalog`'s own relevance order; an explicit
+ * key works as on every other page. Search-only: "relevance" is not a
+ * SortKey and no other page offers it.
+ */
+export type SearchSort = SortKey | "relevance";
+export function parseSearchSort(raw: unknown): SearchSort {
+  return (SORT_KEYS as readonly unknown[]).includes(raw) ? parseSortKey(raw, { allowCheapest: true }) : "relevance";
+}
+
+/** Sold out: every active plan draws from local inventory and none is left
+ * (mirrors the client's StockBadge rule). */
+export function isOutOfStock(card: ProductCard): boolean {
+  return card.all_local_inventory && card.available === 0;
+}
+
+/** Stable partition: sold-out cards move to the back, every other order kept. */
+export function soldOutLast(cards: readonly ProductCard[]): ProductCard[] {
+  return [...cards.filter((c) => !isOutOfStock(c)), ...cards.filter(isOutOfStock)];
+}
+
+/**
+ * The one ordering every grid uses. Sorts in memory (the catalog is loaded
+ * whole and `from_price` is computed per card, not a column): `bestseller` by
+ * the ranking snapshot, `newest` by product creation, `cheapest` by
+ * `from_price` as a Decimal (tie: newest). Then a stable partition moves
+ * out-of-stock cards to the back, keeping their relative order. `products`
+ * must contain the product behind every card (matched by slug).
+ */
+export function rankCards(
+  products: readonly CatalogProduct[],
+  cards: readonly ProductCard[],
+  sort: SortKey,
+  snapshot: BestsellerSnapshot,
+): ProductCard[] {
+  const bySlug = new Map(products.map((p) => [p.slug, p]));
+  const productOf = (card: ProductCard): CatalogProduct => {
+    const p = bySlug.get(card.slug);
+    if (!p) throw new Error(`The card "${card.slug}" was ranked without the product it was shaped from.`);
+    return p;
+  };
+  const bestseller = compareBestseller(snapshot);
+  const compare = (a: ProductCard, b: ProductCard): number => {
+    const pa = productOf(a);
+    const pb = productOf(b);
+    if (sort === "newest") return compareNewest(pa, pb);
+    if (sort === "cheapest") return new Decimal(a.from_price).comparedTo(new Decimal(b.from_price)) || compareNewest(pa, pb);
+    return bestseller(pa, pb);
+  };
+  return soldOutLast([...cards].sort(compare));
 }

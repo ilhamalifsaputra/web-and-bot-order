@@ -33,6 +33,8 @@ import {
   Blocks,
   Bot,
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   CreditCard,
   DatabaseBackup,
@@ -799,6 +801,11 @@ export function SettingsPage() {
       apiPost("/api/settings/services/toggle", { service, channel, enabled }),
     onSuccess: () => { invalidate(); markSaved(); },
   });
+  const reorderGroups = useMutation({
+    mutationFn: (groups: string[]) => apiPost("/api/settings/services/order", { groups }),
+    onSuccess: () => { invalidate(); markSaved(); },
+    onError: (err) => toast.error(describeError(err, "Failed to save the website order.")),
+  });
 
   async function runTest(methodKey: string) {
     const result = await apiPost<TestResult>(`/api/settings/payments/${methodKey}/test`, {});
@@ -861,7 +868,7 @@ export function SettingsPage() {
           {/* General */}
           <SettingsGeneral generalVisible={generalVisible} generalFields={generalFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} />
 
-          <SettingsServices servicesVisible={servicesVisible} data={data} query={query} setPendingService={setPendingService} />
+          <SettingsServices servicesVisible={servicesVisible} data={data} query={query} setPendingService={setPendingService} reorderGroups={reorderGroups} />
 
           {/* Telegram & Bot */}
           <SettingsTelegramAndBot telegramVisible={telegramVisible} telegramFields={telegramFields} fieldQueryFor={fieldQueryFor} onSaved={onSaved} onStatusChange={onStatusChange} setRestartPending={setRestartPending} setPendingTest={setPendingTest} testResults={testResults} restartPending={restartPending} setRestartConfirmOpen={setRestartConfirmOpen} />
@@ -2002,7 +2009,8 @@ function SettingsGeneral({ generalVisible, generalFields, fieldQueryFor, onSaved
   ));
 }
 
-function SettingsServices({ servicesVisible, data, query, setPendingService }: {
+function SettingsServices({ servicesVisible, data, query, setPendingService, reorderGroups }: {
+  reorderGroups: import("@tanstack/react-query").UseMutationResult<unknown, Error, string[], unknown>;
   servicesVisible: boolean;
   data: import("../hooks/useSettings").SettingsData;
   query: string;
@@ -2037,9 +2045,47 @@ function SettingsServices({ servicesVisible, data, query, setPendingService }: {
               </div>
             </div>
           ))}
+        {data.groupOrder && data.groupOrder.length > 1 && (
+          <div className="py-4 last:pb-0">
+            <p className="font-medium text-ink">Website order</p>
+            <p className="text-sm text-ink-soft">Order of the product groups on the website home page.</p>
+            <ol className="mt-2 flex flex-col gap-1">
+              {data.groupOrder.map((group, index, all) => (
+                <li key={group.key} className="flex items-center gap-2 text-sm text-ink">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Move ${group.label} up`}
+                    disabled={reorderGroups.isPending || index === 0}
+                    onClick={() => reorderGroups.mutate(moveKey(all.map((g) => g.key), index, -1))}
+                  >
+                    <ChevronUp className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Move ${group.label} down`}
+                    disabled={reorderGroups.isPending || index === all.length - 1}
+                    onClick={() => reorderGroups.mutate(moveKey(all.map((g) => g.key), index, 1))}
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                  <span>{index + 1}. {group.label}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
       </CardContent>
     </Card>
   ));
+}
+
+/** The key list with the entry at `index` swapped with its neighbour. */
+function moveKey(keys: string[], index: number, direction: -1 | 1): string[] {
+  const next = [...keys];
+  [next[index], next[index + direction]] = [next[index + direction]!, next[index]!];
+  return next;
 }
 
 function SettingsGatewayCard({ g, fieldQueryFor, onSaved, onStatusChange, setPendingToggle, testResults, setPendingTest, data }: {

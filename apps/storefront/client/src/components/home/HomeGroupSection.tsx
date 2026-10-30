@@ -9,6 +9,7 @@
  */
 import type { HomeGroup, HomeSection } from "../../api/types";
 import { t } from "../../lib/i18n";
+import { onHomeAnchorClick } from "./homeAnchors";
 import HomeShelf from "./HomeShelf";
 import {
   HIDDEN_SCROLLBAR_ROW,
@@ -51,7 +52,12 @@ export default function HomeGroupSection({ group, hasGroupNav, rankingVersion, f
           <nav aria-label={label} className="mt-4">
             <div className={`-mx-1 px-1 ${HIDDEN_SCROLLBAR_ROW}`}>
               {group.sections.map((s) => (
-                <a key={s.key} href={`#${sectionAnchor(group.slug, s.key)}`} className={jumpPillClass(false)}>
+                <a
+                  key={s.key}
+                  href={`#${sectionAnchor(group.slug, s.key)}`}
+                  onClick={(e) => onHomeAnchorClick(e, sectionAnchor(group.slug, s.key))}
+                  className={jumpPillClass(false)}
+                >
                   {sectionTitle(s, label)}
                 </a>
               ))}

@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import type { HomeGroup } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { preferredScrollBehavior } from "../../lib/scrollBehavior";
+import { onHomeAnchorClick } from "./homeAnchors";
 import { GROUP_NAV_ID, HIDDEN_SCROLLBAR_ROW, groupAnchor, jumpPillClass } from "./homeLayout";
 
 /** A section is "on screen" while it crosses the band from just below the two
@@ -68,7 +69,7 @@ export default function HomeGroupNav({ groups }: { groups: readonly HomeGroup[] 
             const id = groupAnchor(g.slug);
             const isActive = active === id;
             return (
-              <a key={g.key} href={`#${id}`} aria-current={isActive ? "true" : undefined} className={jumpPillClass(isActive)}>
+              <a key={g.key} href={`#${id}`} onClick={(e) => onHomeAnchorClick(e, id)} aria-current={isActive ? "true" : undefined} className={jumpPillClass(isActive)}>
                 {`${g.emoji} ${t(g.label_key)}`}
               </a>
             );

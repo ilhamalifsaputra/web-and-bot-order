@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi, type Mock } from "vitest";
 import { render, screen, waitFor, act, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -255,6 +255,32 @@ describe("HomePage", () => {
       expect(nav.closest(".sticky")?.className).toContain("top-16");
       // Each section clears the navbar plus the pill bar when jumped to.
       expect(document.getElementById("g-premium-apps")?.className).toContain("scroll-mt-32");
+    });
+
+    // A native #hash jump would leave `/#g-…` in history, and Back from a
+    // product page would then land on the anchor instead of where the
+    // visitor was. Pills, chips and hero CTAs scroll in place instead.
+    it("jumps to a section on pill, chip and hero CTA clicks without a #hash history entry", async () => {
+      const scrollIntoView = vi.fn();
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = scrollIntoView;
+      onTestFinished(() => {
+        Element.prototype.scrollIntoView = original;
+      });
+      renderHome(homeFixture({ groups: [premiumByCategory(), gameGroup()] }));
+      const nav = await screen.findByRole("navigation", { name: "Product types" });
+      const targets = () => scrollIntoView.mock.contexts.map((el) => (el as Element).id);
+
+      const pill = within(nav).getByRole("link", { name: "🎮 Top Up Games" });
+      expect(pill).toHaveAttribute("href", "#g-top-up-games");
+      expect(fireEvent.click(pill)).toBe(false);
+      const chip = within(screen.getByRole("navigation", { name: "Premium Apps" })).getByRole("link", { name: "🎵 Music" });
+      expect(fireEvent.click(chip)).toBe(false);
+      expect(fireEvent.click(screen.getByRole("link", { name: "Browse products" }))).toBe(false);
+      expect(fireEvent.click(screen.getByRole("link", { name: "Shop by type" }))).toBe(false);
+
+      expect(targets()).toEqual(["g-top-up-games", "g-premium-apps-c-music", "g-premium-apps", "home-group-nav"]);
+      expect(window.location.hash).toBe("");
     });
 
     it("is not rendered with a single group", async () => {

@@ -43,6 +43,7 @@ import type { HomePageData } from "../api/types";
 import HomeFlashSection from "../components/home/HomeFlashSection";
 import HomeGroupNav from "../components/home/HomeGroupNav";
 import HomeGroupSection from "../components/home/HomeGroupSection";
+import { onHomeAnchorClick, useHomeAnchorOnLoad } from "../components/home/homeAnchors";
 import { GROUP_NAV_ID, groupAnchor } from "../components/home/homeLayout";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
@@ -106,6 +107,8 @@ export default function HomePage() {
     queryKey: ["home"],
     queryFn: () => apiGet<HomePageData>("/api/v1/pages/home"),
   });
+  // A typed/shared /#g-… URL lands on its section once the sections exist.
+  useHomeAnchorOnLoad(!!data);
 
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection. A full
@@ -441,7 +444,7 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx, browseHref, gro
                 works on bg-ink; the outline CTA keeps a white border/hover
                 rather than .btn-ghost (ink-soft-on-sand is unreadable here).
                 Both keep the white .focus-on-dark ring. */}
-        <m.a href={browseHref} {...hoverLift} className="btn btn-primary focus-on-dark">
+        <m.a href={browseHref} onClick={(e) => onHomeAnchorClick(e, browseHref.slice(1))} {...hoverLift} className="btn btn-primary focus-on-dark">
           <ShoppingBag className="h-5 w-5" />
           {t("web.hero_cta")}
         </m.a>
@@ -450,6 +453,7 @@ function HomeHero({ hero_image, heroProducts, reducedMotion, fx, browseHref, gro
         {groupNavHref && (
           <a
             href={groupNavHref}
+            onClick={(e) => onHomeAnchorClick(e, groupNavHref.slice(1))}
             className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
           >
             <LayoutGrid className="h-5 w-5" />

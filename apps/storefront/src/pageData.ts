@@ -506,7 +506,9 @@ export async function productPageData(rawSlug: string, isReseller = false, displ
 /** Search page data — shaped for the JSON API (GET /api/v1/pages/search). */
 export async function searchPageData(rawQ: string, sort: SearchSort = "relevance") {
   const q = (rawQ ?? "").trim();
-  const products = q ? await searchCatalog(prisma, q, "web", 24) : [];
+  // Passing options selects searchCatalog's ranked, alias-aware search; a plain
+  // call is alphabetical and can push an exact name out of the 24-result window.
+  const products = q ? await searchCatalog(prisma, q, "web", 24, { aliases: true }) : [];
   let cards: ProductCard[];
   if (sort === "relevance") {
     // searchCatalog's own order, with only the sold-out partition applied.

@@ -402,3 +402,18 @@ describe("flash cards", () => {
     expect(page.products).toEqual(flash);
   });
 });
+
+// Last on purpose: these extra products would change the exact orders asserted above.
+describe("GET /api/v1/pages/search — relevance", () => {
+  it("ranks an exact name first, then a name prefix, then a name match, instead of alphabetically", async () => {
+    const category = await prisma.category.create({ data: { name: "Search", slug: "search", sortOrder: 9, group: "PREMIUM_APPS" } });
+    const contains = await seed(category.id, "Alpha Zed", "1000");
+    const prefix = await seed(category.id, "Zed Plus", "1000");
+    const exact = await seed(category.id, "Zed", "1000");
+
+    const body = (await app.inject({ method: "GET", url: "/api/v1/pages/search?q=zed" })).json();
+
+    expect(body.sort).toBe("relevance");
+    expect(body.products.map((p: Card) => p.slug)).toEqual([exact.product.slug, prefix.product.slug, contains.product.slug]);
+  });
+});

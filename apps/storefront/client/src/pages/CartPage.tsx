@@ -40,6 +40,7 @@ import Stepper from "../components/shop/Stepper";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import { TierLineNote, TierUnitPrice } from "../components/shop/TierPricing";
 import { tierApplies } from "../components/shop/TierPricing.helpers";
+import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import IconButton from "../components/ui/IconButton";
@@ -238,6 +239,11 @@ export default function CartPage() {
   useEffect(() => {
     if (data) setCart(data);
   }, [data]);
+  // Whether this visit has seen the cart of a signed-in session (H2 below).
+  // Logout reloads the page, so a later anonymous answer means the session ended.
+  const [signedInSeen, setSignedInSeen] = useState(false);
+  if (cart?.signed_in === true && !signedInSeen) setSignedInSeen(true);
+  const sessionEnded = signedInSeen && cart?.signed_in === false;
   // Fetched only once the cart is known to be empty — never delays the
   // empty-cart card itself, which paints from `cart` alone.
   const { data: suggested } = useSuggestedProducts(!!cart && cart.items.length === 0);
@@ -279,6 +285,21 @@ export default function CartPage() {
           <Skeleton className="h-48 w-full" />
         </div>
       </div>
+    );
+  }
+
+  // H2: GET /cart serves anonymous visitors too, so a signed-in buyer whose
+  // session died gets the empty cookie cart back. Say what happened (their
+  // real cart is still in their account) rather than "your cart is empty".
+  if (sessionEnded) {
+    return (
+      <>
+        <h1 className="page-title mb-5">{t("web.cart_title")}</h1>
+        <Alert variant="banner" tone="warning" role="alert">
+          {t("shop.session_ended_cart")}{" "}
+          <Link to="/login?next=/cart" className="font-medium underline">{t("shop.session_ended_login")}</Link>
+        </Alert>
+      </>
     );
   }
 

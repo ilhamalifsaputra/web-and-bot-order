@@ -803,6 +803,27 @@ describe("/api/v1/auth", () => {
     expect(cart.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
   });
 
+  // H2 (UI-states audit): GET /cart serves anonymous visitors too, so an empty
+  // answer alone cannot tell "your cart is empty" from "your session ended".
+  // `signed_in` (additive) says which cart the answer describes.
+  it("GET /cart says whether it answered for a signed-in session", async () => {
+    await makeUser("cartsessionuser", "cart-pw-1234", "CSUREF");
+    const anonymous = await app.inject({ method: "GET", url: "/api/v1/cart" });
+    expect(anonymous.statusCode).toBe(200);
+    expect(anonymous.json().signed_in).toBe(false);
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { identifier: "cartsessionuser", password: "cart-pw-1234" },
+    });
+    const sessionCookie = (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const signedIn = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(signedIn.json().signed_in).toBe(true);
+  });
+
   // Final-review Batch 1 review finding: the guest cart cookie has no
   // signature, so a caller can present a crafted `shop_cart_v2` cookie
   // directly (bypassing POST /cart's own Digiflazz single-unit guard

@@ -316,6 +316,9 @@ export interface CartPageData {
   bulk_discount?: string;
   /** subtotal − bulk_discount, before any voucher. */
   total?: string;
+  /** Whether this answer is a signed-in session's cart (false: the anonymous
+   * cookie cart). Absent from an older server. */
+  signed_in?: boolean;
 }
 
 /** One volume tier as configured — JSON twin of TierRuleView (apps/storefront/src/tierView.ts). */

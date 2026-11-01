@@ -113,6 +113,35 @@ function newIdempotencyKey(): string {
  * running" — the one 409 that leaves the outcome unknown. */
 const REQUEST_IN_PROGRESS = "error.idempotency_request_in_progress";
 
+/**
+ * What a failed order-creating call says about whether the order exists — the
+ * page-level twin of the hook's own held/dropped decision below, read off the
+ * thrown error (`api/client.ts` attaches `status` whenever a response arrived).
+ *
+ * - `unanswered`: no response at all (fetch's TypeError, an abort, a 2xx whose
+ *   body would not parse), a 5xx, or the in-progress 409. The order may exist.
+ * - `inconclusive`: a 429 (the limiter answered before the route ran) or
+ *   `error.idempotency_key_reused` (an earlier attempt with this key reached the
+ *   server under a different hash). Neither says anything new about an earlier
+ *   attempt, so the caller keeps whatever it already believed.
+ * - `answered`: anything else. The server decided, and no order was made by
+ *   this attempt.
+ */
+export type OrderFailureOutcome = "unanswered" | "inconclusive" | "answered";
+
+export function orderFailureOutcome(err: unknown): OrderFailureOutcome {
+  const status = (err as { status?: unknown } | null | undefined)?.status;
+  const message = err instanceof Error ? err.message : "";
+  if (typeof status !== "number") {
+    const transport = err instanceof TypeError || err instanceof SyntaxError || (err instanceof Error && err.name === "AbortError");
+    return transport ? "unanswered" : "answered";
+  }
+  if (status >= 500) return "unanswered";
+  if (status === 409 && message === REQUEST_IN_PROGRESS) return "unanswered";
+  if (status === 429 || (status === 409 && message === "error.idempotency_key_reused")) return "inconclusive";
+  return "answered";
+}
+
 /** `apiPost`, with the `Idempotency-Key` lifecycle above applied. */
 export type IdempotentPost = <T>(path: string, body: unknown) => Promise<T>;
 

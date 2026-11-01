@@ -259,6 +259,42 @@ describe("useIdempotentPost", () => {
   });
 });
 
+// Review I1/I3 (UI-states audit).
+describe("useIdempotentPost — outcomes the status alone gets wrong", () => {
+  it("holds the key when a 201 arrived but its body could not be read", async () => {
+    vi.mocked(apiPost).mockImplementation(async (_p, _b, o?: PostOptions) => {
+      o?.onResponse?.(201);
+      throw new SyntaxError("Unexpected token < in JSON at position 0");
+    });
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(SyntaxError);
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(SyntaxError);
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+  });
+
+  it("keeps holding a key whose earlier outcome is unknown when the retry gets key_reused", async () => {
+    vi.mocked(apiPost).mockImplementationOnce(neverAnswered());
+    vi.mocked(apiPost).mockImplementation(respondedWith(409, "error.idempotency_key_reused"));
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("error.idempotency_key_reused");
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("error.idempotency_key_reused");
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+    expect(keyOfCall(2)).toBe(keyOfCall(0));
+  });
+
+  it("still drops a fresh key that gets key_reused (nothing was held)", async () => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(409, "error.idempotency_key_reused"));
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+    expect(keyOfCall(1)).not.toBe(keyOfCall(0));
+  });
+});
+
 describe("orderFailureOutcome", () => {
   function withStatus(status: number, message: string): Error {
     const err = new Error(message) as Error & { status?: number };

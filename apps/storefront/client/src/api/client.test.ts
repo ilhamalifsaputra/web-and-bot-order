@@ -131,6 +131,23 @@ describe("csrf_token adoption", () => {
     expect(new Headers(fetchMock.mock.calls[1]![1].headers).get("X-CSRF-Token")).toBe("track-session-token");
   });
 
+  // Review C1 (UI-states audit): a checkout tab whose buyer signed in again in
+  // another tab holds the dead session's token; GET /api/v1/checkout carries
+  // the live session's own token, and the next POST must use it.
+  it("adopts a csrf_token from a GET response (GET /api/v1/checkout after a re-login elsewhere)", async () => {
+    document.head.innerHTML = '<meta name="csrf-token" content="dead-session-token">';
+    const fetchMock = vi.fn(async (_path: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [], csrf_token: "live-session-token" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiGet("/api/v1/checkout");
+    await apiPost("/api/v1/checkout", {});
+    expect(new Headers(fetchMock.mock.calls[1]![1]!.headers).get("X-CSRF-Token")).toBe("live-session-token");
+  });
+
   // Adopting the token meant parsing the body on the success path too. That
   // parse must stay STRICT: a 200 whose body isn't JSON is a broken server, and
   // resolving it as `{}` hands the caller a page-shaped hole (a checkout with

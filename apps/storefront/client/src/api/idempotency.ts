@@ -79,7 +79,11 @@
  * fresh key and the mutation would run twice; a byte-identical retry cannot
  * hit `key_reused`. Only that one 409 is held — it is told apart from every
  * other 409 (`key_reused`, a code already taken, ...) by the server's error
- * code, and those still drop the key as answered.
+ * code, and those still drop the key as answered — with one exception:
+ * `key_reused` against a key HELD from an unknown attempt says only that the
+ * earlier attempt reached the server, so that key stays held. A 2xx whose body
+ * cannot be read also leaves the key held: the order may exist and the buyer
+ * never saw it.
  *
  * The held keys live in a `useRef`, so they survive re-renders and any number
  * of retries within one visit to the page, and are gone when the page unmounts
@@ -99,6 +103,8 @@ const newIdempotencyKey = randomUuid;
 /** The server's error code for "the first attempt with this key is still
  * running" — the one 409 that leaves the outcome unknown. */
 const REQUEST_IN_PROGRESS = "error.idempotency_request_in_progress";
+/** A key the server already holds for a request with a different hash. */
+const KEY_REUSED = "error.idempotency_key_reused";
 
 /**
  * What a failed order-creating call says about whether the order exists — the
@@ -125,7 +131,7 @@ export function orderFailureOutcome(err: unknown): OrderFailureOutcome {
   }
   if (status >= 500) return "unanswered";
   if (status === 409 && message === REQUEST_IN_PROGRESS) return "unanswered";
-  if (status === 429 || (status === 409 && message === "error.idempotency_key_reused")) return "inconclusive";
+  if (status === 429 || (status === 409 && message === KEY_REUSED)) return "inconclusive";
   return "answered";
 }
 
@@ -141,24 +147,39 @@ export function useIdempotentPost(): IdempotentPost {
   return useCallback(async <T>(path: string, body: unknown): Promise<T> => {
     const unanswered = (unansweredRef.current ??= new Map<string, string>());
     const scope = JSON.stringify({ path, body });
-    const key = unanswered.get(scope) ?? newIdempotencyKey();
+    // A key held from an earlier attempt whose outcome is still unknown.
+    const heldKey = unanswered.get(scope);
+    const key = heldKey ?? newIdempotencyKey();
     unanswered.set(scope, key);
     let answered = false;
     let status: number | undefined;
     try {
-      return await apiPost<T>(path, body, {
+      const result = await apiPost<T>(path, body, {
         idempotencyKey: key,
-        // 5xx and 429 are responses that arrived without answering the
-        // question — see the header comment.
         onResponse: (s) => {
           status = s;
-          answered = s < 500 && s !== 429;
         },
       });
+      // Answered only once the body is in hand: a 201 whose body never
+      // arrived intact still leaves the buyer not knowing their order.
+      answered = true;
+      return result;
     } catch (err) {
-      // The in-progress 409 is unanswered too, but only its error code (read
-      // off the thrown error, after the body) tells it from other 409s.
-      if (status === 409 && err instanceof Error && err.message === REQUEST_IN_PROGRESS) answered = false;
+      const message = err instanceof Error ? err.message : "";
+      answered =
+        status !== undefined &&
+        // A 2xx that threw here failed while its body was read (review I1).
+        status >= 300 &&
+        // 5xx and 429 arrived without answering the question — see the header comment.
+        status < 500 &&
+        status !== 429 &&
+        // The in-progress 409 is unanswered too; only its error code tells it from other 409s.
+        message !== REQUEST_IN_PROGRESS &&
+        // key_reused against a key HELD from an unknown attempt says only that
+        // the earlier attempt reached the server: keep holding it so a retry can
+        // still replay that attempt (review I3). A fresh key's key_reused is a
+        // real answer and drops it as before.
+        !(heldKey !== undefined && message === KEY_REUSED);
       throw err;
     } finally {
       if (answered) unanswered.delete(scope);

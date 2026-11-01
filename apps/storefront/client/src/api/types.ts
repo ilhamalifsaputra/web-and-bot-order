@@ -403,6 +403,11 @@ export interface CheckoutData {
   /** True for an anonymous visitor: the checkout collects a contact email and
    * the order is placed against a synthetic guest account (guest checkout). */
   is_guest: boolean;
+  /** A real (password-holding) account's session; false for a guest-checkout
+   * session and an anonymous visitor. Absent from an older server. */
+  signed_in?: boolean;
+  /** The requester's own session CSRF token (any session); adopted by apiGet. */
+  csrf_token?: string;
   /** True when this shop HAS a working gateway but every one of them was
    * filtered out because the total is under its minimum. Distinguishes the one
    * cause the buyer can actually fix (buy a bit more) from the one they cannot

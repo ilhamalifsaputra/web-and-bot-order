@@ -144,7 +144,8 @@ export interface CartPayload {
   bulk_discount: string;
   /** subtotal − bulk_discount: what the cart costs before any voucher. */
   total: string;
-  /** Whether this is a signed-in session's cart. GET /cart also serves anonymous
+  /** Whether this is a real account's cart (a password-less guest-checkout
+   * session is not "signed in"). GET /cart also serves anonymous
    * visitors, so without it a buyer whose session died mid-visit gets the empty
    * cookie cart back and cannot be told that from "your cart is empty" (H2,
    * UI-states audit). Additive. */
@@ -169,7 +170,7 @@ export async function cartPayload(req: FastifyRequest, customer: Customer | null
     subtotal: subtotal.toString(),
     bulk_discount: bulk.toString(),
     total: subtotal.minus(bulk).toString(),
-    signed_in: customer !== null,
+    signed_in: customer !== null && !customer.user.isGuest,
   };
 }
 

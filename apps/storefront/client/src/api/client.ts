@@ -134,7 +134,11 @@ export async function apiGet<T>(path: string, options?: { signal?: AbortSignal }
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     throw apiError(data.error ?? `${path} responded ${res.status}`, res.status, data);
   }
-  return res.json() as Promise<T>;
+  const data = (await res.json()) as T;
+  // GET /api/v1/checkout carries the requester's own session token, so a tab
+  // whose buyer signed in again elsewhere stops posting the dead session's.
+  adoptCsrfToken(data);
+  return data;
 }
 
 /** Everything `apiPost` can be asked to do beyond "POST this body". All three

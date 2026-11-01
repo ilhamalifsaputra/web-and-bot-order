@@ -54,9 +54,12 @@ const DENOM_PRICE = "40000";
 
 /** Validate each additive item, then compare every response field except the
  * canonical timestamp generated independently for each request. */
-function comparableCheckout(body: { items: Array<{ canonical: CanonicalProduct }> }) {
+function comparableCheckout(body: { items: Array<{ canonical: CanonicalProduct }>; signed_in?: unknown; csrf_token?: unknown }) {
+  // GET /api/v1/checkout alone also describes the requesting session
+  // (`signed_in`, `csrf_token`); those are not totals and are compared nowhere here.
+  const { signed_in: _signedIn, csrf_token: _csrfToken, ...rest } = body;
   return {
-    ...body,
+    ...rest,
     items: body.items.map(({ canonical, ...item }) => {
       CanonicalProductSchema.parse(canonical);
       const { generatedAt: _generatedAt, ...stableCanonical } = canonical;

@@ -53,7 +53,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { canonicalPurchaseName } from "../api/canonical";
 import { apiGet, apiPost } from "../api/client";
-import { orderFailureOutcome, useIdempotentPost, type IdempotentPost } from "../api/idempotency";
+import { useIdempotentPost, type IdempotentPost } from "../api/idempotency";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
@@ -71,7 +71,6 @@ import Card from "../components/ui/Card";
 import { cn } from "../components/ui/cn";
 import Input from "../components/ui/Input";
 import Label from "../components/ui/Label";
-import { clearCheckoutDraft, readCheckoutDraft, saveCheckoutDraft } from "../lib/checkoutDraft";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { humanError, isQuoteChanged } from "../lib/errors";
 import { formatPriceFor } from "../lib/format";
@@ -80,6 +79,7 @@ import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useIsWideDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { isSessionEndedRefusal, nextOrderHold, renderedSignedIn, useSessionEndedUntilSignedIn, type OrderHold } from "./CheckoutPage.attempt";
 
 // `humanError` — "turn whatever an API rejection carried into something a shopper
 // can read" — lived here as a local helper taking the rejection's MESSAGE, and
@@ -244,8 +244,7 @@ export function GuestContactCard({
   );
 }
 
-/** The cart lines a checkout form was built for: its React key, and the key a
- * saved draft is matched against. */
+/** The cart lines a checkout form was built for: its React key. */
 function checkoutLines(data: CheckoutData): string {
   return JSON.stringify(data.items.map(item => [item.denomination_id, item.qty, item.additional_fields]));
 }
@@ -276,7 +275,7 @@ export default function CheckoutPage() {
   const [signedInData, setSignedInData] = useState<CheckoutData | null>(null);
   // Tailwind's lg breakpoint (1024px) switches between the in-card desktop
   // submit button and the mobile sticky bar below.
-  const { data, error } = useQuery({
+  const { data, error, dataUpdatedAt } = useQuery({
     queryKey: ["checkout", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
     // Preserve the field schema during a preference refetch so the info step
@@ -284,7 +283,11 @@ export default function CheckoutPage() {
     placeholderData: keepPreviousData,
     retry: false,
   });
-  if (data && !data.is_guest && data !== signedInData) setSignedInData(data);
+  // A real account only (review M1): a password-less guest-checkout session
+  // has nothing to log back into. `signed_in` absent (older server) keeps the
+  // previous reading.
+  const liveSignedIn = data !== undefined && !data.is_guest && data.signed_in !== false;
+  if (data && liveSignedIn && data !== signedInData) setSignedInData(data);
   const sessionEndedByRefetch = signedInData !== null && data?.is_guest === true;
   const frozen = heldForUnknown ?? (sessionEndedByRefetch ? signedInData : null);
 
@@ -295,6 +298,8 @@ export default function CheckoutPage() {
         data={formData}
         idempotentPost={idempotentPost}
         sessionEndedByRefetch={sessionEndedByRefetch}
+        liveSignedIn={liveSignedIn}
+        dataUpdatedAt={dataUpdatedAt}
         onOutcomeUnknownChange={(unknown) => setHeldForUnknown(unknown ? formData : null)}
       />
     );
@@ -353,11 +358,15 @@ export default function CheckoutPage() {
   return renderForm(data);
 }
 
-function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUnknownChange }: {
+function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, liveSignedIn, dataUpdatedAt, onOutcomeUnknownChange }: {
   data: CheckoutData;
   idempotentPost: IdempotentPost;
   /** The page's own read now answers for an anonymous visitor (see CheckoutPage). */
   sessionEndedByRefetch: boolean;
+  /** The page's latest read answers for a real signed-in account. */
+  liveSignedIn: boolean;
+  /** When that read landed (React Query's `dataUpdatedAt`). */
+  dataUpdatedAt: number;
   /** Tells the page whether the last attempt's outcome is unknown, so it can hold this form. */
   onOutcomeUnknownChange: (unknown: boolean) => void;
 }) {
@@ -368,10 +377,7 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
   const [initialPage] = useState(() => data);
   const page = { ...initialPage, items: data.items };
   const [totals, setTotals] = useState<CheckoutData>(() => data);
-  // Answers typed before a forced login (H2), for exactly these cart lines.
-  const [draft] = useState(() => readCheckoutDraft(checkoutLines(data)));
-  useEffect(() => { clearCheckoutDraft(); }, []);
-  const [voucherInput, setVoucherInput] = useState(() => draft?.voucher || (data.voucher_code ?? ""));
+  const [voucherInput, setVoucherInput] = useState(() => data.voucher_code ?? "");
   const [method, setMethod] = useState<string | null>(() => defaultMethod(data));
   // The whole rejection, not just its key: the figures its copy quotes ride on
   // the Error itself (`errorArgs`, F4a). `placeOrderErrorKey` below is derived
@@ -395,8 +401,7 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
   // cart has no such line (the section then renders nothing).
   const [answers, setAnswers] = useState<Array<Record<string, string>>>(() => {
     const item = data.items.find(line => line.additional_fields.length > 0);
-    if (!item) return [];
-    return Array.from({ length: item.qty }, (_, unit) => ({ ...draft?.answers[unit] }));
+    return item ? Array.from({ length: item.qty }, () => ({})) : [];
   });
 
   // No 401 redirect to /login any more: GET /api/v1/checkout serves anonymous
@@ -448,9 +453,13 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
   // (409 error.quote_changed): the summary is re-priced and says so, and the
   // buyer confirms the new figure with another tap. Nothing auto-resubmits.
   const [quoteChanged, setQuoteChanged] = useState(false);
-  // H1: the last attempt's outcome is unknown (no response, 5xx, still in
-  // progress) — the order may exist. Cleared by any answered outcome.
-  const [outcomeUnknown, setOutcomeUnknown] = useState(false);
+  // H1: what the last attempt says about whether the order exists; anything
+  // but "none" freezes the form (see CheckoutPage.attempt.ts).
+  const [hold, setHold] = useState<OrderHold>("none");
+  const frozen = hold !== "none";
+  // H2: a later read for a signed-in account (the buyer logged in again in
+  // another tab) clears the session-ended error; the form keeps what was typed.
+  const markSessionEnded = useSessionEndedUntilSignedIn(liveSignedIn, dataUpdatedAt, () => setPlaceOrderError(null));
   // The exact body of the last attempt: "Try again" resends it byte for byte,
   // which is what makes the hook reuse the held Idempotency-Key and the server
   // replay the first attempt instead of placing a second order.
@@ -480,7 +489,6 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
       setQuoteChanged(false);
     },
     onSuccess: (resp) => {
-      clearCheckoutDraft();
       // The server mails a guest their order code and reports, in
       // `email_sent`, whether the mail actually went out (SMTP is optional per
       // deployment, and a send can fail). Strictly `=== true`: an absent flag
@@ -512,10 +520,16 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
       else navigate(resp.pay_url);
     },
     onError: (err) => {
-      const outcome = orderFailureOutcome(err);
-      const unknown = outcome === "unanswered" || (outcome === "inconclusive" && outcomeUnknown);
-      setOutcomeUnknown(unknown);
-      onOutcomeUnknownChange(unknown);
+      const nextHold = nextOrderHold(hold, err);
+      setHold(nextHold);
+      onOutcomeUnknownChange(nextHold !== "none");
+      if (isSessionEndedRefusal(page, err)) {
+        // H2: the session ended under this page. Re-read so the page sees it
+        // too, and so a re-login in another tab is noticed (and its CSRF
+        // token adopted) on the next read.
+        markSessionEnded();
+        void queryClient.invalidateQueries({ queryKey: ["checkout"] });
+      }
       if (isQuoteChanged(err)) {
         // No order was created. Re-price the summary through the same preview
         // (with the voucher as typed, exactly what the order would apply) and
@@ -570,7 +584,7 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
   // `web.guest_email_invalid` — there is no email field for it to be about) or
   // the page's own read now answers for an anonymous visitor. Nothing can be
   // placed until they log in again; the form keeps what they typed.
-  const sessionEnded = !page.is_guest && (sessionEndedByRefetch || placeOrderErrorKey === "web.guest_email_invalid");
+  const sessionEnded = renderedSignedIn(page) && (sessionEndedByRefetch || placeOrderErrorKey === "web.guest_email_invalid");
   const placeOrderBlocked = status.placeOrderBlocked || sessionEnded;
   const placeOrderDisabled = status.placeOrderDisabled || sessionEnded;
   function placeOrder(): void {
@@ -579,13 +593,17 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
   function retryUnknown(): void {
     placeOrderMutation.mutate(lastBodyRef.current ?? currentBody());
   }
-  function keepDraftForLogin(): void {
-    saveCheckoutDraft({ lines: checkoutLines(data), answers, voucher: voucherInput });
-  }
   const errorBanner = {
-    sessionEnded: sessionEnded ? { onLogin: keepDraftForLogin } : null,
-    unknown: outcomeUnknown && placeOrderError
-      ? { wallet: (lastBodyRef.current?.method ?? "").startsWith("wallet_"), onRetry: retryUnknown, retryPending: placeOrderMutation.isPending }
+    sessionEnded,
+    unknown: frozen
+      ? {
+          wallet: lastBodyRef.current?.method?.startsWith("wallet_") === true,
+          probablyPlaced: hold === "probablyPlaced",
+          onRetry: retryUnknown,
+          retryPending: placeOrderMutation.isPending,
+          // Drops the hold, the held key and everything typed: a fresh page.
+          onStartOver: () => window.location.reload(),
+        }
       : null,
   };
 
@@ -616,7 +634,7 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
         <Stepper step={2} />
         <h1 className="page-title mb-5">{t("web.checkout_title")}</h1>
 
-        <CheckoutPaymentForm checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} onPlaceOrder={placeOrder} errorBanner={errorBanner} quoteChanged={quoteChanged} />
+        <CheckoutPaymentForm checkoutHint={checkoutHint} placeOrderError={placeOrderError} errorBannerRef={errorBannerRef} isDesktop={isDesktop} page={page} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} totals={totals} method={method} setMethod={setMethod} ctx={ctx} voucherInput={voucherInput} setVoucherInput={setVoucherInput} applyVoucher={applyVoucher} onVoucherKeyDown={onVoucherKeyDown} previewMutation={previewMutation} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} placeOrderMutation={placeOrderMutation} onPlaceOrder={placeOrder} errorBanner={errorBanner} frozen={frozen} quoteChanged={quoteChanged} />
       </div>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
@@ -630,7 +648,7 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, onOutcomeUn
           keeps the in-card button below the methods. The IDR figure only, matching the previous
           hand-rolled bar: the USDT hint stays in the summary card, where
           there is room for it without crowding the button off a 320px row. */}
-      <CheckoutMobileTotal checkoutHint={checkoutHint} isDesktop={isDesktop} method={method} totals={totals} ctx={ctx} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} onPlaceOrder={placeOrder} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} />
+      {!frozen && <CheckoutMobileTotal checkoutHint={checkoutHint} isDesktop={isDesktop} method={method} totals={totals} ctx={ctx} barPriceAndPay={barPriceAndPay} placeOrderMutation={placeOrderMutation} onPlaceOrder={placeOrder} placeOrderDisabled={placeOrderDisabled} placeOrderBlocked={placeOrderBlocked} />}
     </>
   );
 }
@@ -673,8 +691,10 @@ function CheckoutBuyerDetails({ page, guestEmail, setGuestEmail, placeOrderError
   </div>);
 }
 
-function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation, onPlaceOrder, errorBanner, quoteChanged }: {
+function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, isDesktop, page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer, totals, method, setMethod, ctx, voucherInput, setVoucherInput, applyVoucher, onVoucherKeyDown, previewMutation, placeOrderDisabled, placeOrderBlocked, placeOrderMutation, onPlaceOrder, errorBanner, frozen, quoteChanged }: {
   quoteChanged: boolean;
+  /** The last attempt's outcome is unknown: nothing here may change the request. */
+  frozen: boolean;
   onPlaceOrder: () => void;
   errorBanner: Pick<import("react").ComponentProps<typeof CheckoutErrorBanner>, "sessionEnded" | "unknown">;
   checkoutHint: string | null;
@@ -710,16 +730,21 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
     // plain utility, not a re-derived env()/calc() of its own.
     className={cn("grid gap-6 items-start", !isDesktop && "pb-28")}
   >
-    <CheckoutBuyerDetails page={{ ...page, items: totals.items }} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} />
+    {/* `disabled` fieldsets freeze every input while an attempt's outcome is
+        unknown (review I2); `contents` keeps them out of the grid layout. */}
+    <fieldset disabled={frozen} className="contents">
+      <CheckoutBuyerDetails page={{ ...page, items: totals.items }} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} />
 
-    {/* Use live totals so voucher discounts update wallet eligibility. */}
-    <div>
-      <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
-    </div>
+      {/* Use live totals so voucher discounts update wallet eligibility. */}
+      <div>
+        <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
+      </div>
+    </fieldset>
 
     <div className="min-w-0">
       <CheckoutErrorBanner error={placeOrderError} isGuest={page.is_guest} anchorRef={errorBannerRef} sessionEnded={errorBanner.sessionEnded} unknown={errorBanner.unknown} />
       {checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
+      <fieldset disabled={frozen} className="contents">
       <OrderSummaryCard
         totals={totals}
         method={method}
@@ -729,7 +754,7 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
         onVoucherApply={applyVoucher}
         onVoucherKeyDown={onVoucherKeyDown}
         voucherPending={previewMutation.isPending}
-        showDesktopSubmit={isDesktop}
+        showDesktopSubmit={isDesktop && !frozen}
         submitLabel={t("web.place_order")}
         submitDisabled={placeOrderDisabled}
         submitBlocked={placeOrderBlocked}
@@ -738,6 +763,7 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
         backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
         quoteChanged={quoteChanged}
       />
+      </fieldset>
     </div>
   </form>);
 }

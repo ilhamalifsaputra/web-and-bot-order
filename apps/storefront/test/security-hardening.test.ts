@@ -60,6 +60,32 @@ describe("hardening boundary", () => {
 
   // H5 (UI-states audit): the scoped session 404s every page outside its one
   // order, so the client needs to know it is in one to explain it.
+  // H2 review C1/M1 (UI-states audit): a checkout tab whose buyer re-logs in
+  // elsewhere needs that session's fresh CSRF token, and "signed in" means a
+  // real account, never a password-less guest-checkout session.
+  it("GET /checkout hands each session only its own CSRF token, and none to an anonymous visitor", async () => {
+    const a = await customer();
+    const b = await customer();
+    const asA = (await app.inject({ url: "/api/v1/checkout", headers: { cookie: a.cookie, "x-forwarded-for": "198.18.0.3" } })).json();
+    const asB = (await app.inject({ url: "/api/v1/checkout", headers: { cookie: b.cookie, "x-forwarded-for": "198.18.0.3" } })).json();
+    expect(asA.csrf_token).toBe(a.csrf);
+    expect(asB.csrf_token).toBe(b.csrf);
+    expect(asA.csrf_token).not.toBe(asB.csrf_token);
+    const anonymous = (await app.inject({ url: "/api/v1/checkout", headers: { "x-forwarded-for": "198.18.0.4" } })).json();
+    expect(anonymous).not.toHaveProperty("csrf_token");
+  });
+
+  it("signed_in on GET /checkout and GET /cart is true only for a real account", async () => {
+    const real = await customer();
+    const guest = await customer(true);
+    const headers = { "x-forwarded-for": "198.18.0.5" };
+    expect((await app.inject({ url: "/api/v1/checkout", headers: { ...headers, cookie: real.cookie } })).json().signed_in).toBe(true);
+    expect((await app.inject({ url: "/api/v1/checkout", headers: { ...headers, cookie: guest.cookie } })).json().signed_in).toBe(false);
+    expect((await app.inject({ url: "/api/v1/checkout", headers })).json().signed_in).toBe(false);
+    expect((await app.inject({ url: "/api/v1/cart", headers: { ...headers, cookie: real.cookie } })).json().signed_in).toBe(true);
+    expect((await app.inject({ url: "/api/v1/cart", headers: { ...headers, cookie: guest.cookie } })).json().signed_in).toBe(false);
+  });
+
   it("the shop context names the recovered order for a scoped session, and nothing otherwise", async () => {
     const a = await customer(true);
     const own = await order(a.user.id);

@@ -68,7 +68,19 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     if (checkoutReadLimited(req, customer)) {
       return reply.code(429).send({ error: "error.rate_limited" });
     }
-    return reply.send(await checkoutView(req, customer, null, null));
+    return reply.send({
+      ...(await checkoutView(req, customer, null, null)),
+      // A real (password-holding) account's session — not a guest-checkout
+      // session, which has nobody to "log in again" (H2, UI-states audit).
+      signed_in: customer !== null && !customer.user.isGuest,
+      // The requester's OWN session CSRF token, so a checkout tab whose buyer
+      // signed in again in another tab picks up the new session's token on
+      // its next read instead of failing every POST with csrf_failed. Never
+      // sent to an anonymous caller (there is no session to protect), and it
+      // is the same value the shell already puts in this session's meta tag.
+      // Additive.
+      ...(customer ? { csrf_token: customer.csrf } : {}),
+    });
   });
 
   // ---- Voucher preview: recompute totals WITHOUT creating an order ----

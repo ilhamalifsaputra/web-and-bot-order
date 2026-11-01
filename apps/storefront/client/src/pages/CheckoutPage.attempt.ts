@@ -54,3 +54,30 @@ export function useSessionEndedUntilSignedIn(liveSignedIn: boolean, dataUpdatedA
   }
   return () => setSeenAt(dataUpdatedAt);
 }
+
+/** What CheckoutErrorBanner shows beyond a plain refusal: the session-ended
+ * notice, or the unknown-outcome notice while the form is held. */
+export function checkoutNotices({ sessionEnded, hold, lastMethod, retryPending, continuePending, onRetry, onContinue }: {
+  sessionEnded: boolean;
+  hold: OrderHold;
+  /** The payment method of the last attempt. */
+  lastMethod: string | null;
+  retryPending: boolean;
+  continuePending: boolean;
+  onRetry: () => void;
+  onContinue: () => void;
+}) {
+  return {
+    sessionEnded: sessionEnded ? { onContinue, continuePending } : null,
+    unknown: hold === "none"
+      ? null
+      : {
+          wallet: lastMethod?.startsWith("wallet_") === true,
+          probablyPlaced: hold === "probablyPlaced",
+          onRetry,
+          retryPending,
+          // Drops the hold, the held key and everything typed: a fresh page.
+          onStartOver: () => window.location.reload(),
+        },
+  };
+}

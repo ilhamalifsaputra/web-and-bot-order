@@ -79,7 +79,7 @@ import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useIsWideDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
-import { isSessionEndedRefusal, nextOrderHold, renderedSignedIn, useSessionEndedUntilSignedIn, type OrderHold } from "./CheckoutPage.attempt";
+import { checkoutNotices, isSessionEndedRefusal, nextOrderHold, renderedSignedIn, useSessionEndedUntilSignedIn, type OrderHold } from "./CheckoutPage.attempt";
 
 // `humanError` — "turn whatever an API rejection carried into something a shopper
 // can read" — lived here as a local helper taking the rejection's MESSAGE, and
@@ -275,7 +275,7 @@ export default function CheckoutPage() {
   const [signedInData, setSignedInData] = useState<CheckoutData | null>(null);
   // Tailwind's lg breakpoint (1024px) switches between the in-card desktop
   // submit button and the mobile sticky bar below.
-  const { data, error, dataUpdatedAt } = useQuery({
+  const { data, error, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["checkout", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
     // Preserve the field schema during a preference refetch so the info step
@@ -300,6 +300,7 @@ export default function CheckoutPage() {
         sessionEndedByRefetch={sessionEndedByRefetch}
         liveSignedIn={liveSignedIn}
         dataUpdatedAt={dataUpdatedAt}
+        checkoutFetching={isFetching}
         onOutcomeUnknownChange={(unknown) => setHeldForUnknown(unknown ? formData : null)}
       />
     );
@@ -358,7 +359,9 @@ export default function CheckoutPage() {
   return renderForm(data);
 }
 
-function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, liveSignedIn, dataUpdatedAt, onOutcomeUnknownChange }: {
+function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, liveSignedIn, dataUpdatedAt, checkoutFetching, onOutcomeUnknownChange }: {
+  /** The page's checkout read is in flight. */
+  checkoutFetching: boolean;
   data: CheckoutData;
   idempotentPost: IdempotentPost;
   /** The page's own read now answers for an anonymous visitor (see CheckoutPage). */
@@ -593,19 +596,15 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, liveSignedI
   function retryUnknown(): void {
     placeOrderMutation.mutate(lastBodyRef.current ?? currentBody());
   }
-  const errorBanner = {
+  const errorBanner = checkoutNotices({
     sessionEnded,
-    unknown: frozen
-      ? {
-          wallet: lastBodyRef.current?.method?.startsWith("wallet_") === true,
-          probablyPlaced: hold === "probablyPlaced",
-          onRetry: retryUnknown,
-          retryPending: placeOrderMutation.isPending,
-          // Drops the hold, the held key and everything typed: a fresh page.
-          onStartOver: () => window.location.reload(),
-        }
-      : null,
-  };
+    hold,
+    lastMethod: lastBodyRef.current?.method ?? null,
+    retryPending: placeOrderMutation.isPending,
+    continuePending: checkoutFetching,
+    onRetry: retryUnknown,
+    onContinue: () => void queryClient.refetchQueries({ queryKey: ["checkout"], type: "active" }),
+  });
 
   // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
   // ever at most one manual_with_info line.
@@ -730,9 +729,10 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
     // plain utility, not a re-derived env()/calc() of its own.
     className={cn("grid gap-6 items-start", !isDesktop && "pb-28")}
   >
-    {/* `disabled` fieldsets freeze every input while an attempt's outcome is
-        unknown (review I2); `contents` keeps them out of the grid layout. */}
-    <fieldset disabled={frozen} className="contents">
+    {/* `disabled` fieldsets freeze every input while an attempt is in flight or
+        its outcome is unknown (review I2/m2), so what Try again resends is
+        always what is on screen; `contents` keeps them out of the grid layout. */}
+    <fieldset disabled={frozen || placeOrderMutation.isPending} className="contents">
       <CheckoutBuyerDetails page={{ ...page, items: totals.items }} guestEmail={guestEmail} setGuestEmail={setGuestEmail} placeOrderErrorKey={placeOrderErrorKey} infoItem={infoItem} answers={answers} setAnswer={setAnswer} />
 
       {/* Use live totals so voucher discounts update wallet eligibility. */}
@@ -744,7 +744,7 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
     <div className="min-w-0">
       <CheckoutErrorBanner error={placeOrderError} isGuest={page.is_guest} anchorRef={errorBannerRef} sessionEnded={errorBanner.sessionEnded} unknown={errorBanner.unknown} />
       {checkoutHint && <p className="mb-3 text-sm text-ink-soft" role="status" data-testid="checkout-hint">{checkoutHint}</p>}
-      <fieldset disabled={frozen} className="contents">
+      <fieldset disabled={frozen || placeOrderMutation.isPending} className="contents">
       <OrderSummaryCard
         totals={totals}
         method={method}

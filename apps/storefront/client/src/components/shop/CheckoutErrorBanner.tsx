@@ -31,13 +31,20 @@ export interface UnknownOutcome {
   onStartOver: () => void;
 }
 
-function SessionEndedNotice() {
+/** `onContinue` re-reads the checkout (adopting the new session's CSRF token)
+ * once the buyer says they have logged in, instead of waiting for a refocus. */
+function SessionEndedNotice({ onContinue, continuePending }: { onContinue: () => void; continuePending: boolean }) {
   return (
     <Alert variant="banner" tone="warning" role="alert">
-      {t("shop.session_ended_checkout")}{" "}
-      <a href="/login?next=/checkout" target="_blank" rel="noopener noreferrer" className="font-medium underline">
-        {t("shop.session_ended_login")}
-      </a>
+      {t("shop.session_ended_checkout")}
+      <span className="mt-2 flex flex-wrap items-center gap-3">
+        <a href="/login?next=/checkout" target="_blank" rel="noopener noreferrer" className="font-medium underline">
+          {t("shop.session_ended_login")}
+        </a>
+        <Button type="button" variant="soft" size="sm" onClick={onContinue} disabled={continuePending}>
+          {t("shop.session_ended_continue")}
+        </Button>
+      </span>
     </Alert>
   );
 }
@@ -58,7 +65,9 @@ function UnknownOutcomeNotice({ unknown, isGuest }: { unknown: UnknownOutcome; i
             {t("shop.checkout_unknown_retry")}
           </Button>
         )}
-        <Button type="button" variant="ghost" size="sm" onClick={unknown.onStartOver}>
+        {/* Not while the retry is in flight: reloading then would throw away
+            the very answer that says whether the order exists. */}
+        <Button type="button" variant="ghost" size="sm" onClick={unknown.onStartOver} disabled={unknown.retryPending}>
           {t("shop.checkout_start_over")}
         </Button>
       </span>
@@ -76,10 +85,10 @@ export default function CheckoutErrorBanner({
   error: unknown;
   isGuest: boolean;
   anchorRef?: Ref<HTMLDivElement>;
-  sessionEnded?: boolean;
+  sessionEnded?: { onContinue: () => void; continuePending: boolean } | null;
   unknown?: UnknownOutcome | null;
 }) {
-  if (sessionEnded) return <div ref={anchorRef}><SessionEndedNotice /></div>;
+  if (sessionEnded) return <div ref={anchorRef}><SessionEndedNotice onContinue={sessionEnded.onContinue} continuePending={sessionEnded.continuePending} /></div>;
   if (unknown) return <div ref={anchorRef}><UnknownOutcomeNotice unknown={unknown} isGuest={isGuest} /></div>;
   const key = error instanceof Error ? error.message : null;
   if (!key || (isGuest && key === "web.guest_email_invalid")) return null;

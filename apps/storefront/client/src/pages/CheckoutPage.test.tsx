@@ -1438,6 +1438,31 @@ describe("CheckoutPage — unknown outcome and an ended session", () => {
     expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Start over" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Check your orders first.");
+  });
+
+  // Review m1: Start over must not throw away a retry that is still in flight.
+  it("disables Try again and Start over while the same-key retry is pending", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+    (apiPost as Mock).mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start over" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+  });
+
+  // Review m2: the first attempt freezes the form too, so the body Try again
+  // resends is always the one on screen.
+  it("freezes every input while the first attempt is still in flight", async () => {
+    renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /BINANCE/ })).toBeDisabled());
+    expect(screen.getByPlaceholderText("Code")).toBeDisabled();
   });
 
   it("freezes the desktop card's Place order too", async () => {
@@ -1656,6 +1681,23 @@ describe("CheckoutPage — unknown outcome and an ended session", () => {
 
     server = signedIn;
     await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+    await waitFor(() => expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument());
+  });
+
+  // Review m3: the buyer can say they are back instead of waiting for a focus refetch.
+  it("'I've logged in — continue' re-reads the checkout once and resumes", async () => {
+    let server: CheckoutData = signedIn;
+    const { queryClient } = renderCheckout(() => server);
+    await screen.findByRole("heading", { name: "Checkout" });
+    server = emptyAnonymous;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+    const alert = await screen.findByRole("alert");
+    const reads = () => (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/checkout").length;
+    const before = reads();
+
+    server = signedIn;
+    fireEvent.click(within(alert).getByRole("button", { name: "I've logged in — continue" }));
+    await waitFor(() => expect(reads()).toBe(before + 1));
     await waitFor(() => expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument());
   });
 

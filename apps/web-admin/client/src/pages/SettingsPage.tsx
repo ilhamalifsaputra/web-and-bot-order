@@ -729,7 +729,7 @@ function QuickActionsMenu({
           Restore Backup
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onRefreshConnections} disabled={refreshing}>
-          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "motion-safe:animate-spin" : ""}`} />
           Refresh Connections
         </DropdownMenuItem>
       </DropdownMenuContent>

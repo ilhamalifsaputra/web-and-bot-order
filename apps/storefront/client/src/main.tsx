@@ -5,6 +5,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
+import ErrorBoundary from "./components/ErrorBoundary";
+import { installStaleChunkReload } from "./lib/chunkReload";
 import "./index.css";
 import ErrorPage from "./pages/ErrorPage";
 import SetupPendingPage from "./pages/SetupPendingPage";
@@ -19,6 +21,8 @@ void consumeTelegramFragment(window.location, {
   navigate: path => window.location.replace(path),
 }).then(callbackHandled => { if (!callbackHandled) mountStorefront(); });
 function mountStorefront() {
+  // A deploy that replaced the lazy chunks under an open tab: one guarded reload.
+  installStaleChunkReload();
   const root = document.getElementById("root");
   if (!root) throw new Error("Missing #root element");
 
@@ -53,11 +57,13 @@ createRoot(root).render(
             <ErrorPage statusCode={special.status} />
           </BrowserRouter>
         ) : (
-          <BrowserRouter>
-            <QueryClientProvider client={queryClient}>
-              <App />
-            </QueryClientProvider>
-          </BrowserRouter>
+          <ErrorBoundary>
+            <BrowserRouter>
+              <QueryClientProvider client={queryClient}>
+                <App />
+              </QueryClientProvider>
+            </BrowserRouter>
+          </ErrorBoundary>
         )}
       </MotionConfig>
     </LazyMotion>

@@ -31,6 +31,7 @@ import { clearTicketDraft, loadTicketDraft } from "../lib/ticketDraft";
 import { buildTicketTimeline } from "../lib/ticketTimeline";
 import { RefreshFailedNotice } from "../components/shop/LoadFailed";
 import { loadFailureView } from "./loadFailureView";
+import { randomUuid } from "../lib/randomId";
 
 const QUICK_REPLY_TEMPLATES: Array<{ key: string; labelKey: string; templateKey: string }> = [
   { key: "still_not_working", labelKey: "web.ticket_quick_still_not_working", templateKey: "web.ticket_template_still_not_working" },
@@ -43,7 +44,7 @@ export default function TicketDetailPage() {
   const ticketId = Number(id);
   const mediaOptions = useQuery({ queryKey: ["support-v2-options"], queryFn: () => apiGet<{ media: { enabled: boolean; imageBytes?: number; videoBytes?: number } }>("/api/v1/account/support/options"), retry: false });
   const uploads = useSupportUploads(ticketId, mediaOptions.data?.media);
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const [requestId, setRequestId] = useState(() => randomUuid());
   const { data: ctx } = useShopContext();
   const location = useLocation();
   const [message, setMessage] = useState(() => loadTicketDraft(ticketId));
@@ -80,7 +81,7 @@ export default function TicketDetailPage() {
       setMessage("");
       setFiles([]);
       uploads.reset();
-      setRequestId(crypto.randomUUID());
+      setRequestId(randomUuid());
       clearTicketDraft(ticketId);
       refetch();
     },

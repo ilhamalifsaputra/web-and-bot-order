@@ -37,6 +37,7 @@ export const SHOP_STRINGS: Record<"en" | "id", Record<string, string>> = {
     "shop.recovery_scope_body": "This browser can open only the order you recovered. Log out to keep browsing the shop.",
     "shop.recovery_scope_view": "View your order",
     "shop.recovery_scope_logout": "Log out",
+    "shop.app_error_body": "This page stopped working. Reloading usually fixes it.",
   },
   id: {
     "shop.tier_ladder_title": "Beli lebih banyak, harga per item lebih murah",
@@ -65,5 +66,6 @@ export const SHOP_STRINGS: Record<"en" | "id", Record<string, string>> = {
     "shop.recovery_scope_body": "Browser ini hanya bisa membuka pesanan yang kamu pulihkan. Keluar untuk lanjut menjelajahi toko.",
     "shop.recovery_scope_view": "Lihat pesananmu",
     "shop.recovery_scope_logout": "Keluar",
+    "shop.app_error_body": "Halaman ini berhenti bekerja. Memuat ulang biasanya memperbaikinya.",
   },
 };

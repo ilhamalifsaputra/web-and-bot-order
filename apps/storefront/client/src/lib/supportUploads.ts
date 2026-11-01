@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiPost } from "../api/client";
 import { t } from "./i18n";
+import { randomUuid } from "./randomId";
 
 
 const UPLOAD_ERROR_KEYS = new Set(["helpdesk.upload_network", "helpdesk.upload_storage_blocked", "helpdesk.upload_timeout", "helpdesk.upload_denied", "helpdesk.media_verification_failed", "helpdesk.media_unavailable", "helpdesk.upload_failed"]);
@@ -23,7 +24,7 @@ const BASE = "/api/v1/account/support/uploads";
 export interface SupportMediaLimits { imageBytes?: number; videoBytes?: number }
 export function useSupportUploads(ticketId?: number, limits?: SupportMediaLimits) {
   const [files, setFiles] = useState<SupportUpload[]>([]);
-  const [draftId, setDraftId] = useState(() => crypto.randomUUID());
+  const [draftId, setDraftId] = useState(() => randomUuid());
   const queue = useRef<Promise<void> | null>(null);
   const controllers = useRef(new Map<string, XMLHttpRequest>());
   const active = useRef(new Set<string>());
@@ -64,7 +65,7 @@ export function useSupportUploads(ticketId?: number, limits?: SupportMediaLimits
       const allowed = ["image/jpeg", "image/png", "image/webp", "video/mp4"].includes(file.type);
       const maximum = file.type.startsWith("image/") ? (limits?.imageBytes ?? 5 * 1024 ** 2) : (limits?.videoBytes ?? 20 * 1024 ** 2);
       const valid = allowed && file.size > 0 && file.size <= maximum;
-      const key = crypto.randomUUID();
+      const key = randomUuid();
       return { key, file, progress: 0, state: valid ? "uploading" : "failed", attempts: valid ? undefined : 3, error: valid ? undefined : !allowed ? t("helpdesk.upload_type") : t("helpdesk.upload_size", { limit: maximum / 1024 ** 2 }) };
     });
     items.forEach((item) => active.current.add(item.key));
@@ -77,6 +78,6 @@ export function useSupportUploads(ticketId?: number, limits?: SupportMediaLimits
     setFiles((previous) => previous.filter((file) => file.key !== item.key));
     if (item.id) void apiPost(`${BASE}/${item.id}/abort`, {}).catch(() => undefined);
   }
-  function reset() { setFiles([]); setDraftId(crypto.randomUUID()); active.current.clear(); }
+  function reset() { setFiles([]); setDraftId(randomUuid()); active.current.clear(); }
   return { files, limits: { imageBytes: limits?.imageBytes ?? 5 * 1024 ** 2, videoBytes: limits?.videoBytes ?? 20 * 1024 ** 2 }, add, remove, retry: (item: SupportUpload) => { if ((item.attempts ?? 0) >= 3) return; active.current.add(item.key); queue.current = (queue.current ?? Promise.resolve()).then(() => upload(item)); }, reset, ids: files.flatMap((f) => f.id && f.state === "ready" ? [f.id] : []), busy: files.some((f) => f.state !== "ready"), failed: files.some((f) => f.state === "failed") };
 }

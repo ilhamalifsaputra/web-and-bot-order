@@ -14,6 +14,7 @@ import Textarea from "../components/ui/Textarea";
 import SupportUploadPicker from "../components/shop/SupportUploadPicker";
 import { TicketCard } from "../components/shop/TicketRow";
 import Spinner from "../components/shop/Spinner";
+import { randomUuid } from "../lib/randomId";
 
 interface Category { key: string; issues: string[]; order: boolean }
 interface Options { categories: Category[]; media: { enabled: boolean; imageBytes?: number; videoBytes?: number } }
@@ -36,7 +37,7 @@ function SupportTicketForm() {
   const [issue, setIssue] = useState("");
   const [order, setOrder] = useState(() => params.get("order") ?? "");
   const [description, setDescription] = useState("");
-  const [requestId] = useState(() => crypto.randomUUID());
+  const [requestId] = useState(() => randomUuid());
   const [formError, setFormError] = useState<string | null>(null);
   const options = useQuery({ queryKey: ["support-v2-options"], queryFn: () => apiGet<Options>("/api/v1/account/support/options"), retry: false });
   const uploads = useSupportUploads(undefined, options.data?.media);

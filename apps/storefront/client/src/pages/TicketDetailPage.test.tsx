@@ -321,3 +321,24 @@ describe("TicketDetailPage — failed loads", () => {
     await waitFor(() => expect(ticketCalls()).toBe(before + 1));
   });
 });
+
+// H6 (UI-states audit): crypto.randomUUID is secure-context only; calling it
+// during render on plain http threw and blanked the page.
+describe("TicketDetailPage on plain http", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    installStorage();
+  });
+
+  it("renders the thread when crypto.randomUUID does not exist", async () => {
+    const real = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
+    try {
+      renderTicket(() => openTicket);
+      expect(await screen.findByRole("heading", { name: "Login issue" })).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

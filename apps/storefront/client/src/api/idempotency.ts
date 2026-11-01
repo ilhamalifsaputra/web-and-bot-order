@@ -88,26 +88,13 @@
  * doubt, which in practice is zero or one entry.
  */
 import { useCallback, useRef } from "react";
+import { randomUuid } from "../lib/randomId";
 import { apiPost } from "./client";
 
-/**
- * A fresh opaque key. `crypto.randomUUID` is the obvious choice but is
- * SECURE-CONTEXT ONLY — a shop served over plain http:// (a LAN box, a staging
- * host without TLS) has no such function, and calling it there would throw a
- * TypeError out of the Place Order button. `getRandomValues`, which carries
- * the actual entropy, has no such restriction, so fall back to formatting a
- * v4 UUID from it by hand. The server treats the key as an opaque string
- * (`normalizeIdempotencyKey`: non-empty, ≤255 chars), so only uniqueness
- * matters, not the UUID formatting.
- */
-function newIdempotencyKey(): string {
-  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 1
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
+/** A fresh opaque key (lib/randomId.ts explains the plain-http fallback). The
+ * server treats it as an opaque string (`normalizeIdempotencyKey`: non-empty,
+ * ≤255 chars), so only uniqueness matters. */
+const newIdempotencyKey = randomUuid;
 
 /** The server's error code for "the first attempt with this key is still
  * running" — the one 409 that leaves the outcome unknown. */

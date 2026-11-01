@@ -11,6 +11,8 @@ import type { ReactNode } from "react"
 import { useEffect, useState } from "react"
 import { EmptyState } from "./EmptyState"
 import { SkeletonRow } from "./SkeletonRow"
+import { LoadingRegion } from "./LoadingRegion"
+import { Skeleton } from "@/components/ui/skeleton"
 
 /** Returns true once mounted on a viewport narrower than `breakpoint` px.
  *  Defaults to false in SSR / test environments (no matchMedia). */
@@ -65,6 +67,9 @@ interface DataTableProps<T> {
   isLoading?: boolean;
   /** Number of skeleton rows shown while loading. Default: 5. */
   skeletonRows?: number;
+  /** What a screen reader hears while `isLoading` ("Loading orders").
+   *  Default: "Loading results". */
+  loadingLabel?: string;
   /** Custom empty-state slot. Falls back to a default message when omitted. */
   empty?: ReactNode;
   keyExtractor: (row: T) => string | number;
@@ -89,6 +94,7 @@ export function DataTable<T>({
   data,
   isLoading,
   skeletonRows = 5,
+  loadingLabel = "Loading results",
   empty,
   keyExtractor,
   onRowClick,
@@ -115,15 +121,17 @@ export function DataTable<T>({
           </div>
         )}
         {isLoading ? (
-          Array.from({ length: skeletonRows }).map((_, i) => (
-            <div
-              key={i}
-              className={cn(
-                "animate-pulse rounded-lg border border-line p-4 h-24",
-                nested ? "bg-sand" : "bg-card"
-              )}
-            />
-          ))
+          <LoadingRegion label={loadingLabel} className="flex flex-col gap-3">
+            {Array.from({ length: skeletonRows }).map((_, i) => (
+              <Skeleton
+                key={i}
+                className={cn(
+                  "h-24 rounded-lg border border-line p-4",
+                  nested ? "bg-sand" : "bg-card"
+                )}
+              />
+            ))}
+          </LoadingRegion>
         ) : data.length === 0 ? (
           emptyNode
         ) : (
@@ -191,7 +199,12 @@ export function DataTable<T>({
   /* ── Desktop: table ─────────────────────────────────────────────── */
   return (
     <div className="w-full max-w-[1100px]">
-      <Table>
+      {isLoading && (
+        <div role="status" className="sr-only">
+          {loadingLabel}
+        </div>
+      )}
+      <Table aria-busy={isLoading ? true : undefined}>
         <TableHeader className={cn(stickyHeader && "sticky top-0 z-10 bg-card")}>
           <TableRow>
             {columns.map((col) => (

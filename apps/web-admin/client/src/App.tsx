@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { RouteFallback } from "./components/shared/RouteFallback";
 import { Routes, Route } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -67,23 +68,9 @@ function NotFoundPage() {
   );
 }
 
-// Suspense fallback for a lazily-loaded route chunk — the moment between a
-// route match and its JS finishing download, which is instant on a warm
-// cache. Kept deliberately minimal, matching NotFoundPage's own bare style:
-// this app has no existing loading/skeleton component shaped for a full
-// page swap (SkeletonRow renders a <tr>, ProgressBar needs a value/tone),
-// so inventing a whole component for a state this brief isn't worth it.
-function RouteFallback() {
-  return (
-    <div className="flex flex-1 items-center justify-center" aria-busy="true">
-      <p className="text-ink-soft">Loading…</p>
-    </div>
-  );
-}
-
 export default function App() {
   return (
-    <Suspense fallback={<RouteFallback />}>
+    <Suspense fallback={<div className="flex flex-1 flex-col p-4 sm:p-6"><RouteFallback /></div>}>
       <Routes>
         {/* Authenticated shell — all pages that need sidebar + topbar */}
         <Route element={<AppShell />}>

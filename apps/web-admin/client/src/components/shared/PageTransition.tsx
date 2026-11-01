@@ -3,6 +3,7 @@ import { useReducedMotion } from "motion/react";
 import * as m from "motion/react-m";
 import { Suspense, useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
+import { RouteFallback } from "./RouteFallback";
 
 /** Keep route content available immediately; lazy chunks preserve the shell. */
 export function PageTransition({ children }: { children: ReactNode }): React.JSX.Element {
@@ -11,7 +12,7 @@ export function PageTransition({ children }: { children: ReactNode }): React.JSX
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; }, []);
   return (
-    <Suspense fallback={<div role="status" aria-busy="true" className="py-10 text-center text-ink-soft">Loading...</div>}>
+    <Suspense fallback={<RouteFallback />}>
       <m.div
         key={location.pathname}
         initial={reduced || !mounted.current ? false : { y: 4, opacity: 1 }}

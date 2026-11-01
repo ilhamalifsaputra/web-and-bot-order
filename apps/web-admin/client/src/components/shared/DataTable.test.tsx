@@ -253,3 +253,31 @@ describe("DataTable mobile card stack", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("DataTable loading state", () => {
+  afterEach(() => {
+    delete (window as any).matchMedia;
+  });
+
+  it("marks the desktop table busy, announces what is loading and shows no empty state", () => {
+    render(<DataTable columns={COLUMNS} data={[]} keyExtractor={(r) => r.id} isLoading loadingLabel="Loading orders" />);
+    expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading orders");
+    expect(screen.queryByText("No results found.")).not.toBeInTheDocument();
+  });
+
+  it("wraps the mobile card skeletons in one busy status region", () => {
+    mockMatchMedia(true);
+    render(<DataTable columns={COLUMNS} data={[]} keyExtractor={(r) => r.id} isLoading />);
+    const region = screen.getByRole("status", { name: "Loading results" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+    expect(region.querySelectorAll("[data-slot=skeleton]")).toHaveLength(5);
+    expect(screen.queryByText("No results found.")).not.toBeInTheDocument();
+  });
+
+  it("drops the busy markers once rows arrive", () => {
+    render(<DataTable columns={COLUMNS} data={ROWS} keyExtractor={(r) => r.id} />);
+    expect(screen.getByRole("table")).not.toHaveAttribute("aria-busy");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});

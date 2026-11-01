@@ -2,7 +2,8 @@
  * Client half of the opt-in `Idempotency-Key` contract the six payment
  * mutations implement (deliver / refund / cancel / match / credit / dismiss in
  * src/routes/api/payments.ts, on top of packages/db/src/crud/idempotency.ts),
- * and the wallet adjustment in src/routes/api/users.ts.
+ * the wallet adjustment in src/routes/api/users.ts, and creating a broadcast in
+ * src/routes/api/broadcast.ts.
  * Clone of the storefront hook (apps/storefront/client/src/api/idempotency.ts),
  * same as api/client.ts is a clone of its storefront twin.
  *

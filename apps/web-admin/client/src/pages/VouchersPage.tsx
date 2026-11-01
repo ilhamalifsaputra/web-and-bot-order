@@ -39,6 +39,7 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { BulkFailuresNotice } from "../components/shared/BulkFailuresNotice";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
@@ -52,6 +53,7 @@ import { ProgressBar } from "../components/shared/ProgressBar";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatCard } from "../components/shared/StatCard";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { bulkFailureLines, toastBulkOutcome, withoutSucceeded, type BulkFailedItem, type BulkFailureLine } from "../lib/bulkOutcome";
 import { describeError } from "../lib/errorMessages";
 import { exactFieldsOf } from "../lib/exactFields";
 import { visibleSelection } from "../lib/selection";
@@ -349,7 +351,8 @@ export function VouchersPage() {
   const { data, isError } = useVouchers(q, status, page);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  useEffect(() => { setSelected(new Set()); }, [q, status, page]);
+  const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
+  useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [q, status, page]);
 
   const vouchers = data?.vouchers ?? [];
   // What the bulk bar counts and the bulk actions act on — never an id whose
@@ -483,16 +486,13 @@ export function VouchersPage() {
 
   const bulkAction = useMutation({
     mutationFn: (vars: { ids: number[]; action: "activate" | "deactivate" | "delete" }) =>
-      apiPost<{ succeeded: number[]; failed: { id: number; error: string }[] }>("/api/vouchers/bulk-action", vars),
+      apiPost<{ succeeded: number[]; failed: BulkFailedItem[] }>("/api/vouchers/bulk-action", vars),
     onSuccess: (result, vars) => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
-      setSelected(new Set());
-      const verb = vars.action === "activate" ? "Activated" : vars.action === "deactivate" ? "Deactivated" : "Deleted";
-      toast.success(
-        result.failed.length > 0
-          ? `${verb} ${result.succeeded.length} of ${vars.ids.length} vouchers — ${result.failed.length} skipped.`
-          : `${verb} ${result.succeeded.length} voucher${result.succeeded.length === 1 ? "" : "s"}.`,
-      );
+      setSelected(current => withoutSucceeded(current, result.succeeded));
+      setBulkFailures(bulkFailureLines(result.failed, id => vouchers.find(v => v.id === id)?.code ?? `Voucher #${id}`));
+      const done = vars.action === "activate" ? "Activated" : vars.action === "deactivate" ? "Deactivated" : "Deleted";
+      toastBulkOutcome({ done, noun: "voucher", succeeded: result.succeeded.length, failed: result.failed.length });
     },
     onError: (e: Error) => toast.error(describeError(e)),
   });
@@ -543,6 +543,8 @@ export function VouchersPage() {
           </Select>
         </div>
       </FilterBar>
+
+      <BulkFailuresNotice failures={bulkFailures} onDismiss={() => setBulkFailures([])} />
 
       <VoucherBulkActions visibleSelected={visibleSelected} bulkAction={bulkAction} setSelected={setSelected} />
 

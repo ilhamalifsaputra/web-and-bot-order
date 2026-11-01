@@ -1771,6 +1771,41 @@ describe("POST /api/orders/bulk-action", () => {
     expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("AVAILABLE");
   });
 
+  // The panel that shows per-order reasons fills `{product}` from these args;
+  // without them the admin reads the placeholder itself.
+  it("bulk deliver: a refusal carries the figures its message names", async () => {
+    const orderId = await makePendingOrder();
+    await prisma.stockItem.updateMany({ where: { productId: seed.productId }, data: { status: "DEAD" } });
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, { ids: [orderId], action: "deliver" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { failed: { id: number; error: string; error_args?: Record<string, string> }[] };
+    expect(body.failed).toEqual([
+      { id: orderId, error: "error.cannot_deliver_out_of_stock", error_args: { product: expect.any(String) } },
+    ]);
+  });
+
+  it("approve says whether the order was delivered or queued for manual fulfilment", async () => {
+    const stockOrder = await makePendingOrder();
+    const delivered = await post(`/api/orders/${stockOrder}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(JSON.parse(delivered.body)).toEqual({ ok: true, settled: "delivered" });
+
+    const manualDenom = await createDenomination(prisma, {
+      productId: seed.catalogProductId,
+      name: `ManualApprove${Math.random()}`,
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "5.00",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+    const user = (await getUser(prisma, seed.customerId))!;
+    const manualOrder = (await createOrderDirect(prisma, { channel: "web", user, productId: manualDenom.id, quantity: 1 }))!;
+    await attachPaymentProof(prisma, manualOrder.id, { fileId: "proof123", txid: "TX1234567890" });
+    const queued = await post(`/api/orders/${manualOrder.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(JSON.parse(queued.body)).toEqual({ ok: true, settled: "processing" });
+  });
+
   it("bulk deliver: eligible PENDING_VERIFICATION orders succeed, a PROCESSING (manual) order is skipped, exactly one summary audit row", async () => {
     setBotIdentity({ publicChannelId: -100123456789 });
     const eligible1 = await makePendingOrder();

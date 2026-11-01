@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { parsePositiveId } from "../../lib/params";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import { normalizeIdempotencyKey } from "../../lib/idempotencyKey";
 import {
   prisma,
   BROADCAST_SEGMENTS,
@@ -14,8 +15,15 @@ import {
   queueDraftBroadcast,
   deleteBroadcast,
   logAdminAction,
+  hashIdempotentRequest,
+  saveIdempotentResponse,
+  IdempotencyClaimTracker,
+  IdempotencyKeyReuseError,
+  IdempotencyRequestInProgressError,
+  type IdempotentReplay,
 } from "@app/db";
 import { localize } from "@app/core/datetime";
+import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { UPLOADS_DIR } from "../../paths";
 import { displayDateTime } from "../../dateDisplay";
@@ -23,8 +31,24 @@ import { displayDateTime } from "../../dateDisplay";
 const MAX_MESSAGE = 4000;
 const MAX_CAPTION = 1024; // Telegram's photo caption limit
 const BROADCAST_IMAGE_RE = /^\/uploads\/broadcasts\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/;
+const CREATE_BROADCAST_IDEMPOTENCY_ENDPOINT = "web-admin.broadcast.create";
 
 export default async function broadcastApiRoutes(app: FastifyInstance): Promise<void> {
+  // Same claim lifecycle as the payment and wallet routes: a duplicate waits for
+  // the first request, and a claim whose handler threw is released so the
+  // admin's retry can run again right away.
+  const idempotencyClaims = new IdempotencyClaimTracker();
+  app.addHook("onResponse", async (req) => {
+    try {
+      await idempotencyClaims.releaseUnsettled(prisma, req);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Could not release an unfinished idempotency claim after a broadcast request failed; a retry with the same key will wait until the claim expires.",
+      );
+    }
+  });
+
   app.get("/api/broadcast", { preHandler: currentAdmin }, async (req, reply) => {
     const counts: Record<string, number> = {};
     for (const s of BROADCAST_SEGMENTS) counts[s] = await countSegment(prisma, s);
@@ -99,26 +123,67 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       scheduledAt = d;
     }
 
+    // Opt-in, as on the payment routes: no header behaves exactly as before.
+    // Claimed after validation, so a refused request stores nothing and a
+    // corrected retry is judged afresh.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? {
+          key: idempotencyKeyHeader,
+          endpoint: CREATE_BROADCAST_IDEMPOTENCY_ENDPOINT,
+          requestHash: hashIdempotentRequest({ message, segment, scheduleRaw, imageUrlRaw, isDraft }),
+        }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await idempotencyClaims.claim(prisma, req, idem);
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
     const total = await countSegment(prisma, segment);
-    const bc = await createBroadcast(prisma, {
-      message,
-      segment,
-      scheduledAt,
-      createdById: req.admin!.userId,
-      total,
-      webImageUrl,
-      status: isDraft ? "DRAFT" : "PENDING",
+    const response = await prisma.$transaction(async (tx) => {
+      const bc = await createBroadcast(tx, {
+        message,
+        segment,
+        scheduledAt,
+        createdById: req.admin!.userId,
+        total,
+        webImageUrl,
+        status: isDraft ? "DRAFT" : "PENDING",
+      });
+      await logAdminAction(tx, {
+        adminId: req.admin!.userId,
+        action: isDraft ? "broadcast_draft_save" : "broadcast_enqueue",
+        targetType: "broadcast",
+        targetId: bc.id,
+        details: isDraft
+          ? `Saved a draft broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}.`
+          : `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}${scheduledAt ? ` for ${localize(scheduledAt)}` : ""}.`,
+      });
+      const created = { broadcast: bc, total };
+      // Stored with the row, as the wallet route does and unlike the payment
+      // routes, which store after commit. Those have an order state that refuses
+      // a repeat; nothing refuses a second broadcast, and a row committed without
+      // its stored response would message the whole segment again on retry.
+      if (idem) {
+        await saveIdempotentResponse(tx, { ...idem, statusCode: 201, responseBody: JSON.stringify(created) });
+      }
+      return created;
     });
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: isDraft ? "broadcast_draft_save" : "broadcast_enqueue",
-      targetType: "broadcast",
-      targetId: bc.id,
-      details: isDraft
-        ? `Saved a draft broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}.`
-        : `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}${scheduledAt ? ` for ${localize(scheduledAt)}` : ""}.`,
-    });
-    return reply.code(201).send({ broadcast: bc, total });
+    return reply.code(201).send(response);
   });
 
   app.post("/api/broadcast/:id/cancel", { preHandler: csrfProtect }, async (req, reply) => {

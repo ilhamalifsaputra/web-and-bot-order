@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom/vitest";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { OrdersPage } from "./OrdersPage";
 
@@ -147,6 +148,16 @@ function mockFetchRouter(overrides: {
     return jsonResponse(ordersResponse);
   });
 }
+
+/** The toast of one kind on screen, read from the attribute sonner puts on it,
+ *  so a test can tell a warning from a success with the same words. */
+function toastOfKind(kind: "success" | "warning" | "error"): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-sonner-toast][data-type="${kind}"]`);
+}
+
+// sonner keeps toasts in a module-level store; clear it so a toast raised by one
+// test is not rendered again by the next test's <Toaster />.
+afterEach(() => { toast.dismiss(); });
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -417,12 +428,158 @@ describe("OrdersPage", () => {
     expect(screen.getByText("2 selected")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /mark delivered/i }));
 
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Deliver order ORD-0001?")).toBeInTheDocument();
+    expect(within(dialog).getByText(/^ORD-0001: stock or credentials go to the buyer/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/cannot be undone/i)).toBeInTheDocument();
+    // ORD-0002 cannot be delivered, and the admin is told it will be left out.
+    expect(within(dialog).getByText(/1 other selected order can't be delivered/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Deliver" }));
+
     await waitFor(() => expect(bulkBody).toEqual({ ids: [1], action: "deliver" }));
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/orders/bulk-action",
       expect.objectContaining({ method: "POST" }),
     );
-    await waitFor(() => expect(screen.getByText(/1 succeeded, 0 failed/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Approved 1 order.")).toBeInTheDocument());
+    expect(toastOfKind("success")).toHaveTextContent("Approved 1 order.");
+  });
+
+  it("names the count instead of the codes when many orders are bulk-delivered", async () => {
+    const user = userEvent.setup();
+    const many = Array.from({ length: 6 }, (_, i) => ({ ...ORDER_CAN_ACT, id: 100 + i, orderCode: `ORD-1${i}` }));
+    mockFetchRouter({ orders: { ...ORDERS_DATA, orders: many, total: 6 } });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-10")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: "Select all orders on this page" }));
+    await user.click(screen.getByRole("button", { name: /mark delivered/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Deliver 6 orders?")).toBeInTheDocument();
+    expect(within(dialog).getByText(/^6 orders:/)).toBeInTheDocument();
+  });
+
+  it("sends nothing when the bulk deliver confirm is cancelled, and keeps the selection", async () => {
+    const user = userEvent.setup();
+    const posts: string[] = [];
+    mockFetchRouter({ onPost: (url) => { posts.push(url); return { succeeded: [], failed: [] }; } });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: "Select order ORD-0001" }));
+    await user.click(screen.getByRole("button", { name: /mark delivered/i }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(posts).toEqual([]);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
+
+  describe("bulk outcome reporting", () => {
+    const TWO_DELIVERABLE = {
+      ...ORDERS_DATA,
+      orders: [ORDER_CAN_ACT, { ...ORDER_CAN_ACT, id: 2, orderCode: "ORD-0002" }],
+      total: 2,
+    };
+
+    async function bulkDeliverBoth(result: unknown) {
+      const user = userEvent.setup();
+      let bulkCalls = 0;
+      mockFetchRouter({
+        orders: TWO_DELIVERABLE,
+        onPost: (url) => {
+          if (url === "/api/orders/bulk-action") bulkCalls += 1;
+          return result;
+        },
+      });
+      render(<OrdersPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+      await user.click(screen.getByRole("checkbox", { name: "Select order ORD-0001" }));
+      await user.click(screen.getByRole("checkbox", { name: "Select order ORD-0002" }));
+      await user.click(screen.getByRole("button", { name: /mark delivered/i }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Deliver" }));
+      await waitFor(() => expect(bulkCalls).toBe(1));
+      return { bulkCalls: () => bulkCalls };
+    }
+
+    it("all succeeded: success toast, selection cleared, no failure panel", async () => {
+      await bulkDeliverBoth({ succeeded: [1, 2], failed: [] });
+      await waitFor(() => expect(toastOfKind("success")).toHaveTextContent("Approved 2 orders."));
+      expect(screen.queryByText(/selected$/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("partial: warning toast, failed row stays selected, its reason is readable", async () => {
+      const { bulkCalls } = await bulkDeliverBoth({
+        succeeded: [1],
+        failed: [{ id: 2, error: "error.cannot_deliver_out_of_stock", error_args: { product: "Netflix 1 Month" } }],
+      });
+      await waitFor(() => expect(toastOfKind("warning")).toHaveTextContent("Approved 1 of 2 orders — 1 failed."));
+      expect(toastOfKind("success")).toBeNull();
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+      expect(screen.getByRole("checkbox", { name: "Select order ORD-0002" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Select order ORD-0001" })).not.toBeChecked();
+      const panel = screen.getByRole("alert");
+      expect(within(panel).getByText("ORD-0002")).toBeInTheDocument();
+      expect(within(panel).getByText(/Netflix 1 Month has no stock/)).toBeInTheDocument();
+      expect(bulkCalls()).toBe(1);
+    });
+
+    it("all failed: error toast, every row stays selected, no raw keys shown", async () => {
+      await bulkDeliverBoth({
+        succeeded: [],
+        failed: [{ id: 1, error: "error.not_eligible" }, { id: 2, error: "error.unexpected" }],
+      });
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent("Approved 0 of 2 orders — 2 failed."));
+      expect(toastOfKind("success")).toBeNull();
+      expect(screen.getByText("2 selected")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).not.toHaveTextContent("error.");
+    });
+
+    it("the failure panel can be closed", async () => {
+      const user = userEvent.setup();
+      await bulkDeliverBoth({ succeeded: [], failed: [{ id: 1, error: "error.not_eligible" }] });
+      await user.click(await screen.findByRole("button", { name: "Dismiss these failures" }));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("bulk cancel: closes the dialog but keeps the failed row selected and its reason", async () => {
+      const user = userEvent.setup();
+      mockFetchRouter({
+        orders: TWO_DELIVERABLE,
+        onPost: () => ({ succeeded: [], failed: [{ id: 1, error: "error.order_paid_needs_credit" }, { id: 2, error: "error.not_eligible" }] }),
+      });
+      render(<OrdersPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+      await user.click(screen.getByRole("checkbox", { name: "Select order ORD-0001" }));
+      await user.click(screen.getByRole("checkbox", { name: "Select order ORD-0002" }));
+      await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+      const dialog = await screen.findByRole("dialog");
+      await user.type(within(dialog).getByPlaceholderText(/cancellation reason/i), "duplicate");
+      await user.click(within(dialog).getByRole("button", { name: /^cancel order$/i }));
+
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent("Cancelled 0 of 2 orders — 2 failed."));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.getByText("2 selected")).toBeInTheDocument();
+      expect(within(screen.getByRole("alert")).getByText(/Credit to Balance/)).toBeInTheDocument();
+    });
+
+    it("single cancel keeps its own wording and leaves other selected rows selected", async () => {
+      const user = userEvent.setup();
+      mockFetchRouter({ orders: TWO_DELIVERABLE });
+      render(<OrdersPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+      await user.click(screen.getByRole("checkbox", { name: "Select order ORD-0002" }));
+      await user.click(screen.getByRole("button", { name: "Actions for ORD-0001" }));
+      await user.click(within(await screen.findByRole("menu")).getByText("Cancel Order"));
+      const dialog = await screen.findByRole("dialog");
+      await user.type(within(dialog).getByPlaceholderText(/cancellation reason/i), "duplicate");
+      await user.click(within(dialog).getByRole("button", { name: /^cancel order$/i }));
+
+      await waitFor(() => expect(toastOfKind("success")).toHaveTextContent("Order cancelled."));
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+    });
   });
 
   it("row-action menu contents vary by eligibility: canAct shows Deliver", async () => {
@@ -445,7 +602,74 @@ describe("OrdersPage", () => {
     expect(within(menu).getByText("Cancel Order")).toBeInTheDocument();
 
     await user.click(within(menu).getByText("Deliver"));
+
+    // One click on an irreversible action must not reach the server.
+    const dialog = await screen.findByRole("dialog");
+    expect(approveCalled).toBe(false);
+    expect(within(dialog).getByText("Deliver order ORD-0001?")).toBeInTheDocument();
+    expect(within(dialog).getByText(/stock or credentials go to the buyer/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/cannot be undone/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Deliver" }));
     await waitFor(() => expect(approveCalled).toBe(true));
+    await waitFor(() => expect(toastOfKind("success")).toHaveTextContent("Order approved and delivered."));
+  });
+
+  it("row Deliver: cancelling the confirm sends nothing", async () => {
+    const user = userEvent.setup();
+    const posts: string[] = [];
+    mockFetchRouter({ onPost: (url) => { posts.push(url); return { ok: true }; } });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ORD-0001" }));
+    await user.click(within(await screen.findByRole("menu")).getByText("Deliver"));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(posts).toEqual([]);
+  });
+
+  it("row Deliver: says so when the order went to the manual queue rather than to the buyer", async () => {
+    const user = userEvent.setup();
+    mockFetchRouter({ onPost: () => ({ ok: true, settled: "processing" }) });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ORD-0001" }));
+    await user.click(within(await screen.findByRole("menu")).getByText("Deliver"));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Deliver" }));
+
+    await waitFor(() => expect(toastOfKind("success")).toHaveTextContent(/queued for fulfilment/i));
+  });
+
+  it("row Deliver is disabled while a delivery is in flight", async () => {
+    const user = userEvent.setup();
+    let release!: (r: Response) => void;
+    const inFlight = new Promise<Response>((resolve) => { release = resolve; });
+    const fetchSpy = mockFetchRouter();
+    const route = fetchSpy.getMockImplementation()!;
+    let posts = 0;
+    fetchSpy.mockImplementation((input, init) => {
+      if (init?.method === "POST") { posts += 1; return inFlight; }
+      return route(input, init);
+    });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ORD-0001" }));
+    await user.click(within(await screen.findByRole("menu")).getByText("Deliver"));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Deliver" }));
+    await waitFor(() => expect(posts).toBe(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ORD-0001" }));
+    const item = within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Deliver" });
+    expect(item).toHaveAttribute("aria-disabled", "true");
+
+    await user.keyboard("{Escape}");
+    release(jsonResponse({ ok: true }));
+    await waitFor(() => expect(toastOfKind("success")).toHaveTextContent("Order approved and delivered."));
+    expect(posts).toBe(1);
   });
 
   it("row-action menu: canFulfill shows Fulfill Manually and navigates instead of posting", async () => {

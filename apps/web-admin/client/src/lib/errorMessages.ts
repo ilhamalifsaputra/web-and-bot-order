@@ -161,6 +161,20 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "No payment provider recorded the buyer overpaying on this order, so there is no excess to return. If they really did pay too much, the provider's own record is what needs checking first.",
   "error.order_not_found":
     "That order could not be found — it may have just been removed. Refresh the page.",
+  // Per-item reasons from the bulk routes (orders.ts /bulk-action, and
+  // bulkDeleteVouchers, whose two reasons are plain text rather than keys).
+  "error.not_eligible":
+    "This order can't take that action in its current state. Refresh the page to see where it stands.",
+  "error.unexpected":
+    "Something went wrong on the server, so this one was not completed. Check it before trying again.",
+  "error.order_not_pending_verification":
+    "This order is no longer waiting for verification — it may have already been processed.",
+  "error.order_is_wallet_topup":
+    "This is a wallet top-up, not a product order, so it can only be settled by crediting the balance.",
+  "voucher not found":
+    "This voucher could not be found — it may have just been removed.",
+  "cannot delete a voucher that has been used":
+    "This voucher has already been used, so it can't be deleted. Disable it instead.",
 };
 
 /** What a failure with no message of its own earns, when the caller named no

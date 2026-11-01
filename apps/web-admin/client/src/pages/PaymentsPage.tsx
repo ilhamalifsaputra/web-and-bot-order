@@ -29,8 +29,9 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet } from "../api/client";
-import { useIdempotentPost } from "../api/idempotency";
+import { isOutcomeUnknown, useIdempotentPost } from "../api/idempotency";
 import type { HealthLevel } from "../api/types";
+import { BulkFailuresNotice } from "../components/shared/BulkFailuresNotice";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
@@ -45,6 +46,7 @@ import { StatCard } from "../components/shared/StatCard";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { statusLabel } from "../components/shared/StatusBadge.helpers";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
+import { sendSequentially, toastBulkOutcome, withoutSucceeded, type BulkFailureLine } from "../lib/bulkOutcome";
 import { describeError } from "../lib/errorMessages";
 import { HEALTH_DOT } from "../lib/healthDot";
 import { visibleSelection } from "../lib/selection";
@@ -119,6 +121,13 @@ function isPositiveAmount(amount: string | null): boolean {
  * gateway — dismissing it would block that delivery. Mirrors the server's
  * refusal (`dismissUnmatchedLedgerTx`, packages/db/src/crud/manualMatch.ts).
  */
+/** Shown for a dismiss that got no answer. It stays selected and its idempotency
+ * key is held, so trying again replays the first attempt rather than repeating it. */
+const DISMISS_OUTCOME_UNKNOWN =
+  "No answer from the server, so this one may have gone through. Dismiss it again without changing anything: it will not run twice.";
+
+const isRateLimited = (error: unknown) => (error as { status?: number } | null)?.status === 429;
+
 function dismissBlocked(tx: TxRow): boolean {
   if (!DISMISS_GUARDED_GATEWAYS.has(tx.gateway)) return false;
   return !isPositiveAmount(tx.amount) || tx.suggestedOrderStatus === "PENDING_PAYMENT";
@@ -327,11 +336,12 @@ export function PaymentsPage() {
   const [pendingCredit, setPendingCredit] = useState<TxRow | null>(null);
   const [creditOrderCode, setCreditOrderCode] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
   useEffect(() => {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [qDraft]);
-  useEffect(() => { setSelected(new Set()); }, [outcome, kind, q, page]);
+  useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [outcome, kind, q, page]);
   const actionableApplied = actionable && isActionableOutcome(outcome);
   const { data, isError } = usePayments(outcome, kind, q, page, actionableApplied);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
@@ -400,18 +410,32 @@ export function PaymentsPage() {
     });
   }
 
+  // One at a time, stopping at the first 429: all six payment routes share one
+  // per-admin quota (paymentsMutationRateLimited), so firing the whole selection
+  // in parallel spends it at once and locks this admin out of refund and match
+  // as well, for nothing. A 429 ran nothing, so that transfer and the ones behind
+  // it count as not attempted and stay selected for another go.
   const bulkDismiss = useMutation({
-    mutationFn: async (ids: number[]) => {
+    mutationFn: (ids: number[]) => {
       const selectedIds = new Set(ids);
-      const rows = ledgerRows.filter(tx => selectedIds.has(tx.id));
-      const results = await Promise.allSettled(rows.map(tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway })));
-      const failed = results.filter(r => r.status === "rejected").length;
-      return { succeeded: results.length - failed, failed };
+      return sendSequentially(
+        ledgerRows.filter(tx => selectedIds.has(tx.id)),
+        tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway }),
+        isRateLimited,
+      );
     },
-    onSuccess: ({ succeeded, failed }) => {
+    onSuccess: ({ succeeded, failed, stopped, notAttempted }) => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
-      setSelected(new Set());
-      toast.success(failed > 0 ? `Dismissed ${succeeded} of ${succeeded + failed} transfers — ${failed} failed.` : `Dismissed ${succeeded} transfer${succeeded === 1 ? "" : "s"}.`);
+      setSelected(current => withoutSucceeded(current, succeeded.map(tx => tx.id)));
+      const lines: BulkFailureLine[] = failed.map(({ item, error }) => ({
+        label: item.reference,
+        reason: isOutcomeUnknown(error) ? DISMISS_OUTCOME_UNKNOWN : describeError(error),
+      }));
+      if (stopped !== null) {
+        lines.push({ label: `Not attempted (${notAttempted.length})`, reason: `${describeError(stopped)} These transfers stay selected.` });
+      }
+      setBulkFailures(lines);
+      toastBulkOutcome({ done: "Dismissed", noun: "transfer", succeeded: succeeded.length, failed: failed.length, notAttempted: notAttempted.length });
     },
   });
 
@@ -444,6 +468,8 @@ export function PaymentsPage() {
 
       {/* Ledger search + outcome filter */}
       <PaymentsLedgerSearchOutcomeFilter qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} outcome={outcome} changeOutcome={changeOutcome} data={data} kind={kind} setKind={setKind} setPage={setPage} />
+
+      <BulkFailuresNotice failures={bulkFailures} onDismiss={() => setBulkFailures([])} />
 
       <PaymentBulkDismissBar visibleSelected={visibleSelected} bulkDismiss={bulkDismiss} setSelected={setSelected} />
 
@@ -1204,20 +1230,20 @@ function ActionablePaymentsNotice({ actionableApplied, clearActionable }: {
 
 function PaymentBulkDismissBar({ visibleSelected, bulkDismiss, setSelected }: {
   visibleSelected: Set<number>;
-  bulkDismiss: import("@tanstack/react-query").UseMutationResult<{ succeeded: number; failed: number; }, Error, number[], unknown>;
+  bulkDismiss: import("@tanstack/react-query").UseMutationResult<unknown, Error, number[], unknown>;
   setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
 }) {
+  const count = `${visibleSelected.size} transfer${visibleSelected.size === 1 ? "" : "s"}`;
   return (visibleSelected.size > 0 && (
     <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
       <span className="text-ink-soft">{visibleSelected.size} selected</span>
-      <Button
-        size="sm"
-        variant="destructive"
-        disabled={bulkDismiss.isPending}
-        onClick={() => bulkDismiss.mutate(Array.from(visibleSelected))}
-      >
-        Dismiss {visibleSelected.size} transfer{visibleSelected.size === 1 ? "" : "s"}
-      </Button>
+      <ConfirmDialog
+        trigger={<Button size="sm" variant="destructive" disabled={bulkDismiss.isPending}>Dismiss {count}</Button>}
+        title={`Dismiss ${count}?`}
+        description={`Mark ${count} as dismissed. They are sent one at a time; if the rate limit is reached, the rest stay selected and are not attempted.`}
+        confirmLabel="Dismiss"
+        onConfirm={() => bulkDismiss.mutate(Array.from(visibleSelected))}
+      />
       <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
     </div>
   ));

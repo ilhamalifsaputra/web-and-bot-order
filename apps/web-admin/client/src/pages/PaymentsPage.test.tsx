@@ -507,10 +507,124 @@ describe("PaymentsPage", () => {
     expect(screen.getByText("2 selected")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Dismiss 2 transfers?")).toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
 
     await waitFor(() => {
       expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK1", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
       expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK2", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
+    });
+  });
+
+  describe("bulk dismiss outcomes", () => {
+    const row = (id: number) => ({ id, gateway: "binance", reference: `REF${id}`, amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" });
+    const toastOfKind = (kind: string) => document.querySelector<HTMLElement>(`[data-sonner-toast][data-type="${kind}"]`);
+    const dismissCalls = () => vi.mocked(apiPost).mock.calls.filter(([path]) => path === "/api/payments/dismiss");
+    const refOf = (call: unknown[]) => (call[1] as { binance_tx_id: string }).binance_tx_id;
+
+    async function selectAll(count: number) {
+      const user = userEvent.setup();
+      const ledger = Array.from({ length: count }, (_, i) => row(i + 1));
+      mockPaymentsFetch({ enabled: true, ledger, total: count, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+      render(<PaymentsPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("REF1")).toBeInTheDocument());
+      await user.click(screen.getByRole("checkbox", { name: /select all eligible transfers/i }));
+      return user;
+    }
+
+    async function confirm(user: ReturnType<typeof userEvent.setup>, count: number) {
+      await user.click(screen.getByRole("button", { name: new RegExp(`dismiss ${count} transfer`, "i") }));
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
+    }
+
+    function respondWith(handler: (ref: string) => unknown) {
+      vi.mocked(apiPost).mockImplementation(async (_path, body) => handler((body as { binance_tx_id: string }).binance_tx_id) as never);
+    }
+    const rateLimited = () => Object.assign(new Error("error.rate_limited"), { status: 429 });
+    const refused = () => Object.assign(new Error("error.tx_not_unmatched"), { status: 422 });
+
+    it("cancelling the confirm sends nothing and keeps the selection", async () => {
+      const user = await selectAll(2);
+      await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(dismissCalls()).toHaveLength(0);
+      expect(screen.getByText("2 selected")).toBeInTheDocument();
+    });
+
+    it("sends one at a time: the next request waits for the previous answer", async () => {
+      const releases: Array<() => void> = [];
+      vi.mocked(apiPost).mockImplementation(() => new Promise((resolve) => { releases.push(() => resolve({ ok: true } as never)); }));
+      const user = await selectAll(3);
+      await confirm(user, 3);
+
+      await waitFor(() => expect(dismissCalls()).toHaveLength(1));
+      releases[0]!();
+      await waitFor(() => expect(dismissCalls()).toHaveLength(2));
+      releases[1]!();
+      await waitFor(() => expect(dismissCalls()).toHaveLength(3));
+      releases[2]!();
+      await waitFor(() => expect(toastOfKind("success")).toHaveTextContent("Dismissed 3 transfers."));
+      expect(dismissCalls().map(refOf)).toEqual(["REF1", "REF2", "REF3"]);
+      expect(screen.queryByText(/selected$/)).not.toBeInTheDocument();
+    });
+
+    it("partial: warning toast, the failed row stays selected, its reason is readable", async () => {
+      respondWith((ref) => { if (ref === "REF2") throw refused(); return { ok: true }; });
+      const user = await selectAll(3);
+      await confirm(user, 3);
+
+      await waitFor(() => expect(toastOfKind("warning")).toHaveTextContent("Dismissed 2 of 3 transfers — 1 failed."));
+      expect(toastOfKind("success")).toBeNull();
+      expect(dismissCalls()).toHaveLength(3);
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+      expect(screen.getByRole("checkbox", { name: /select transfer ref2/i })).toBeChecked();
+      const panel = screen.getByRole("alert");
+      expect(within(panel).getByText("REF2")).toBeInTheDocument();
+      expect(within(panel).getByText(/no longer unmatched/)).toBeInTheDocument();
+    });
+
+    it("all failed: error toast, all rows stay selected", async () => {
+      respondWith(() => { throw refused(); });
+      const user = await selectAll(2);
+      await confirm(user, 2);
+
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent("Dismissed 0 of 2 transfers — 2 failed."));
+      expect(toastOfKind("success")).toBeNull();
+      expect(screen.getByText("2 selected")).toBeInTheDocument();
+    });
+
+    it("stops at the first 429, sends nothing further, and reports the rest as not attempted", async () => {
+      respondWith((ref) => { if (ref === "REF3") throw rateLimited(); return { ok: true }; });
+      const user = await selectAll(5);
+      await confirm(user, 5);
+
+      await waitFor(() => expect(toastOfKind("warning")).toHaveTextContent("Dismissed 2 of 5 transfers — 3 not attempted."));
+      expect(dismissCalls().map(refOf)).toEqual(["REF1", "REF2", "REF3"]);
+      expect(screen.getByText("3 selected")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent(/wait a minute/i);
+    });
+
+    it("a 429 on the very first transfer is an error, not a success", async () => {
+      respondWith(() => { throw rateLimited(); });
+      const user = await selectAll(4);
+      await confirm(user, 4);
+
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent("Dismissed 0 of 4 transfers — 4 not attempted."));
+      expect(dismissCalls()).toHaveLength(1);
+      expect(screen.getByText("4 selected")).toBeInTheDocument();
+    });
+
+    it("says a transfer with no answer may have gone through and is safe to try again", async () => {
+      respondWith((ref) => { if (ref === "REF1") throw new Error("Failed to fetch"); return { ok: true }; });
+      const user = await selectAll(2);
+      await confirm(user, 2);
+
+      await waitFor(() => expect(toastOfKind("warning")).toHaveTextContent("Dismissed 1 of 2 transfers — 1 failed."));
+      expect(screen.getByRole("alert")).toHaveTextContent(/may have gone through/i);
+      expect(screen.getByRole("alert")).not.toHaveTextContent("Failed to fetch");
     });
   });
 
@@ -565,6 +679,7 @@ describe("PaymentsPage", () => {
     vi.mocked(apiPost).mockResolvedValue({ ok: true });
     mockPaymentsFetch({ ...base, ledger: [stays, { ...getsMatched, outcome: "matched" }] });
     await user.click(screen.getByRole("button", { name: /dismiss 1 transfer/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
 
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "STAYS", gateway: "binance" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
@@ -855,6 +970,7 @@ describe("PaymentsPage", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Select transfer NP-9" }));
     await user.click(screen.getByRole("button", { name: /dismiss 1 transfer/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "NP-9", gateway: "nowpayments" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
@@ -1280,11 +1396,14 @@ describe("PaymentsPage — Idempotency-Key", () => {
     return user;
   }
 
-  /** Select BULK1 and dismiss it. The selection is cleared after each run, so
+  /** Dismiss BULK1, selecting it first unless a failed run left it selected, so
    * calling this twice is the admin retrying the same transfer. */
   async function dismissBulk1(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(await screen.findByRole("checkbox", { name: /select transfer bulk1/i }));
+    const checkbox = await screen.findByRole("checkbox", { name: /select transfer bulk1/i });
+    if (checkbox.getAttribute("aria-checked") !== "true") await user.click(checkbox);
     await user.click(await screen.findByRole("button", { name: /dismiss 1 transfer/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   }
 
   it("retrying a dismiss whose request never came back sends the byte-identical key", async () => {
@@ -1353,6 +1472,7 @@ describe("PaymentsPage — Idempotency-Key", () => {
     await user.click(screen.getByRole("checkbox", { name: /select transfer bulk1/i }));
     await user.click(screen.getByRole("checkbox", { name: /select transfer bulk2/i }));
     await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Dismiss" }));
 
     await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(2));
     const [first, second] = keysFor(DISMISS_PATH);

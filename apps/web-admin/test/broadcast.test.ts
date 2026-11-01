@@ -138,6 +138,77 @@ describe("POST /api/broadcast", () => {
   });
 });
 
+describe("POST /api/broadcast — Idempotency-Key", () => {
+  function postKeyed(key: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url: "/api/broadcast",
+      headers: {
+        "content-type": "application/json",
+        "x-csrf-token": csrf,
+        ...(key ? { "idempotency-key": key } : {}),
+      },
+      cookies: { [COOKIE]: cookie },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  const BODY = { message: "Flash sale", segment: "ALL", scheduled_at: "", image_url: "" };
+
+  it("the same key twice creates one broadcast and one audit row, and replays the first response", async () => {
+    const first = await postKeyed("bc-same", BODY);
+    expect(first.statusCode).toBe(201);
+    const second = await postKeyed("bc-same", BODY);
+    expect(second.statusCode).toBe(201);
+    expect(second.json()).toEqual(first.json());
+
+    expect(await prisma.broadcast.count()).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "broadcast_enqueue" } })).toBe(1);
+    // The web only queues the Broadcast row; the order-bot drains it. Nothing
+    // reaches the outbox from this route, whether it runs once or is replayed.
+    expect(await prisma.notificationOutbox.count()).toBe(0);
+  });
+
+  it("two different keys are two deliberate broadcasts", async () => {
+    expect((await postKeyed("bc-one", BODY)).statusCode).toBe(201);
+    expect((await postKeyed("bc-two", BODY)).statusCode).toBe(201);
+    expect(await prisma.broadcast.count()).toBe(2);
+  });
+
+  it("refuses the same key with a different body and creates nothing more", async () => {
+    expect((await postKeyed("bc-reused", BODY)).statusCode).toBe(201);
+    const other = await postKeyed("bc-reused", { ...BODY, message: "A different message" });
+    expect(other.statusCode).toBe(409);
+    expect(other.json()).toEqual({ error: "idempotency_key_reused" });
+    expect(await prisma.broadcast.count()).toBe(1);
+  });
+
+  it("a key is bound to draft versus send: the same key cannot turn a draft into a send", async () => {
+    expect((await postKeyed("bc-draft", { ...BODY, draft: true })).statusCode).toBe(201);
+    expect((await postKeyed("bc-draft", BODY)).statusCode).toBe(409);
+    expect(await prisma.broadcast.count()).toBe(1);
+  });
+
+  it("two concurrent requests with one key create one broadcast", async () => {
+    const [a, b] = await Promise.all([postKeyed("bc-race", BODY), postKeyed("bc-race", BODY)]);
+    expect(a.statusCode).toBe(201);
+    expect(b.statusCode).toBe(201);
+    expect(await prisma.broadcast.count()).toBe(1);
+  });
+
+  it("a refused request stores nothing, so it cannot answer the corrected retry", async () => {
+    expect((await postKeyed("bc-invalid", { ...BODY, message: "" })).statusCode).toBe(400);
+    expect(await prisma.idempotencyRecord.count({ where: { key: "bc-invalid" } })).toBe(0);
+    expect(await prisma.broadcast.count()).toBe(0);
+  });
+
+  it("a request with no key still creates a row each time", async () => {
+    await postKeyed(null, BODY);
+    await postKeyed(null, BODY);
+    expect(await prisma.broadcast.count()).toBe(2);
+  });
+});
+
 describe("POST /api/broadcast/:id/queue", () => {
   it("happy path: queues a real draft to PENDING and audits", async () => {
     const draftRes = await postJson("/api/broadcast", cookie, csrf, {

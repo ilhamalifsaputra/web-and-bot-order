@@ -27,7 +27,7 @@ describe("StockHistoryDialog", () => {
   it("shows a loading state, then requests the item's history", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockReturnValueOnce(new Promise(() => {}));
     renderDialog();
-    expect(screen.getByText("Loading history").closest("[role=status]")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Loading history" })).toHaveAttribute("aria-busy", "true");
     expect(String(fetchSpy.mock.calls[0]![0])).toContain("/api/stock/item/7/history");
   });
 

@@ -52,7 +52,7 @@ describe("OrdersKpiCard loading", () => {
         <OrdersKpiCard />
       </QueryClientProvider>,
     );
-    expect(screen.getByText("Loading orders").closest("[role=status]")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Loading orders" })).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText("0")).not.toBeInTheDocument();
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });

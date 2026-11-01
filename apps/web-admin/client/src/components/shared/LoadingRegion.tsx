@@ -1,12 +1,13 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 /** The accessible wrapper every loading skeleton sits in: a busy `status`
  * live region whose only readable content is visually-hidden text saying
- * what is loading ("Loading orders"), so a screen reader announces it once.
- * No `aria-label` on top: it would repeat the same words. The skeleton
- * blocks inside stay `aria-hidden`. */
+ * what is loading ("Loading orders"). That same span names the region via
+ * `aria-labelledby` (a status can't take its name from content), so the words
+ * exist once and are announced once — no `aria-label` copy. The skeleton
+ * blocks inside stay `aria-hidden`. Same contract as the storefront's. */
 export function LoadingRegion({
   label,
   className,
@@ -16,9 +17,10 @@ export function LoadingRegion({
   className?: string;
   children: ReactNode;
 }): React.JSX.Element {
+  const id = useId();
   return (
-    <div role="status" aria-busy="true" className={className}>
-      <span className="sr-only">{label}</span>
+    <div role="status" aria-busy="true" aria-labelledby={id} className={className}>
+      <span id={id} className="sr-only">{label}</span>
       {children}
     </div>
   );

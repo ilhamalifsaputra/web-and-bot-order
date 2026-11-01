@@ -701,8 +701,8 @@ describe("DigiflazzSyncPage — Deteksi panel", () => {
       return Promise.resolve({ categories: [{ id: 1, name: "Top Up Game" }] });
     });
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
-    expect(screen.getByText("Memuat ringkasan deteksi").closest("[role=status]")).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByText("Memuat isu deteksi").closest("[role=status]")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Memuat ringkasan deteksi" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Memuat isu deteksi" })).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText(/antrean tinjauan \(0\)/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/tidak ada isu deteksi yang perlu ditinjau/i)).not.toBeInTheDocument();
   });

@@ -269,9 +269,9 @@ describe("DataTable loading state", () => {
   it("wraps the mobile card skeletons in one busy status region", () => {
     mockMatchMedia(true);
     render(<DataTable columns={COLUMNS} data={[]} keyExtractor={(r) => r.id} isLoading />);
-    const region = screen.getByText("Loading results").closest("[role=status]");
+    const region = screen.getByRole("status", { name: "Loading results" });
     expect(region).toHaveAttribute("aria-busy", "true");
-    expect(region!.querySelectorAll("[data-slot=skeleton]")).toHaveLength(5);
+    expect(region.querySelectorAll("[data-slot=skeleton]")).toHaveLength(5);
     expect(screen.queryByText("No results found.")).not.toBeInTheDocument();
   });
 

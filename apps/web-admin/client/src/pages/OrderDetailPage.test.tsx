@@ -1566,7 +1566,7 @@ describe("OrderDetailPage loading", () => {
   it("shows a busy page skeleton, not a bare Loading… line, while the order loads", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise(() => {}));
     render(<OrderDetailPage />, { wrapper: Wrapper });
-    expect(screen.getByText("Loading order").closest("[role=status]")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Loading order" })).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 });

@@ -15,7 +15,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
-import { useIdempotentPost } from "../api/idempotency";
+import { isOutcomeUnknown, useIdempotentPost } from "../api/idempotency";
 import { CardRow } from "../components/shared/CardRow";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
@@ -68,6 +68,10 @@ function countLabel(shown: number, total: number | undefined): string {
   return String(total);
 }
 
+/** Editing the form mints a new key, so a changed retry is a second adjustment. */
+const WALLET_OUTCOME_UNKNOWN =
+  "The outcome of this adjustment is unknown. Check the Wallet Ledger below. If the adjustment is not there, retry without changing anything.";
+
 function useUserDetail(userId: string) {
   return useQuery<UserDetail>({
     queryKey: ["user", userId],
@@ -94,7 +98,12 @@ export function UserDetailPage() {
       setWalletCurrency("IDR");
       toast.success("Wallet adjusted.");
     },
-    onError: (e: Error) => toast.error(describeError(e)),
+    onError: (e: Error) => {
+      // The balance and ledger may have moved even though the post failed, so
+      // reload them. They are how the admin settles an unknown outcome.
+      void qc.invalidateQueries({ queryKey: ["user", userId] });
+      toast.error(isOutcomeUnknown(e) ? WALLET_OUTCOME_UNKNOWN : describeError(e));
+    },
   });
 
   const setRole = useMutation({

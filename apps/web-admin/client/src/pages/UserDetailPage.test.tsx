@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { UserDetailPage } from "./UserDetailPage";
 import { apiPost } from "../api/client";
@@ -330,12 +331,44 @@ describe("UserDetailPage — wallet adjustment confirmation and retry", () => {
     expect(second).toBe(first);
   });
 
+  it.each([
+    ["no response", new TypeError("Failed to fetch")],
+    ["a 502", Object.assign(new Error("/api/users/7/wallet responded 502"), { status: 502 })],
+    ["a 429", Object.assign(new Error("error.rate_limited"), { status: 429 })],
+  ])("reloads the customer and calls the outcome unknown after %s", async (_label, failure) => {
+    // Spied rather than read from the DOM: sonner's toasts outlive a test's render.
+    const showError = vi.spyOn(toast, "error");
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    const loads = vi.mocked(globalThis.fetch).mock.calls.length;
+    vi.mocked(apiPost).mockRejectedValueOnce(failure);
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+
+    await waitFor(() => expect(showError).toHaveBeenCalledTimes(1));
+    expect(showError.mock.calls[0]?.[0]).toMatch(/outcome.*unknown.*ledger.*without changing anything/i);
+    await waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.length).toBe(loads + 1));
+    expect(screen.getByPlaceholderText("Amount (+ or −)")).toHaveValue("5");
+  });
+
+  it("keeps an answered refusal's own message and does not call it unknown", async () => {
+    const showError = vi.spyOn(toast, "error");
+    const user = await openPage();
+    await fillForm(user, "-5", "correction");
+    vi.mocked(apiPost).mockRejectedValueOnce(Object.assign(new Error("Amount cannot be zero."), { status: 422 }));
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Debit wallet" }));
+
+    await waitFor(() => expect(showError).toHaveBeenCalledTimes(1));
+    expect(showError).toHaveBeenCalledWith("Amount cannot be zero.");
+  });
+
   it("holds the key and says so plainly while the first attempt is still running", async () => {
     const user = await openPage();
     await fillForm(user, "5", "goodwill");
     vi.mocked(apiPost).mockImplementationOnce(async (_path, _body, options) => {
       options?.onResponse?.(409);
-      throw new Error("idempotency_request_in_progress");
+      throw Object.assign(new Error("idempotency_request_in_progress"), { status: 409 });
     });
     await user.click(screen.getByRole("button", { name: "Adjust" }));
     await user.click(await screen.findByRole("button", { name: "Credit wallet" }));

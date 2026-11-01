@@ -106,7 +106,7 @@ const STALE_SESSION_MESSAGE = "Your session was refreshed in another tab. Reload
 async function throwForResponse(res: Response, path: string): Promise<never> {
   const text = await res.text().catch(() => "");
   if (res.status === 403 && text.trim() === CSRF_FAILURE_BODY) {
-    throw new Error(STALE_SESSION_MESSAGE);
+    throw apiError(STALE_SESSION_MESSAGE, null, res.status);
   }
   let data: { error?: string } = {};
   try {

@@ -70,6 +70,14 @@ describe("apiPost", () => {
     );
   });
 
+  it("keeps the 403 status on that reload message, since the server did answer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 403, text: async () => "CSRF check failed" })),
+    );
+    await expect(apiPost("/api/dashboard/something", {})).rejects.toMatchObject({ status: 403 });
+  });
+
   it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);

@@ -78,6 +78,10 @@ import { useShopContext } from "../lib/useShopContext";
 import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
 
+/** POST .../cancel. `cancelled` is absent from an older server during rollout,
+ * which keeps that server's meaning: any success counted as cancelled. */
+type CancelResult = { ok: boolean; cancelled?: boolean };
+
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
  * migration (Task 14): now `Badge`-driven. Tone-per-state is UNCHANGED from
@@ -229,9 +233,31 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // (null for every other order type).
   const { isGame, retryHref, retryLabelKey, deliveredLabelKey } = paymentDestinations({ poll, data, isTopup });
 
+  // The one logic addition Task 14 makes: the cancel button no longer fires
+  // cancelMutation directly (Global Constraints / Task 1 audit §F item 3) —
+  // it opens this dialog first. onConfirm below calls the exact same
+  // mutate() call the old onClick did.
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
+  // A cancel that did not end the record leaves the page standing: the payment
+  // may have landed, so the buyer is shown the real state rather than sent off
+  // to buy again. Both reads matter: the big card ignores a polled `expired`
+  // until /pay itself says so. A session that went stale is caught by the /pay
+  // read's own 401 redirect (usePaymentStatus).
+  const stayAndReread = () => {
+    setCancelDialogOpen(false);
+    void queryClient.refetchQueries({ queryKey: ["pay", apiBase, code], exact: true });
+    void queryClient.refetchQueries({ queryKey: ["pay-status", apiBase, code], exact: true });
+  };
+
   const cancelMutation = useMutation({
-    mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
-    onSuccess: () => {
+    mutationFn: () => apiPost<CancelResult>(`/api/v1${apiBase}/${code}/cancel`, {}),
+    onError: stayAndReread,
+    onSuccess: ({ cancelled }) => {
+      if (cancelled === false) {
+        stayAndReread();
+        return;
+      }
       // Retire the payable invoice snapshots; revisiting must read the backend
       // rather than briefly offering the cancelled invoice again.
       queryClient.removeQueries({ queryKey: ["pay", apiBase, code], exact: true });
@@ -248,11 +274,12 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
     },
   });
 
-  // The one logic addition Task 14 makes: the cancel button no longer fires
-  // cancelMutation directly (Global Constraints / Task 1 audit §F item 3) —
-  // it opens this dialog first. onConfirm below calls the exact same
-  // mutate() call the old onClick did.
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  // Derived from the mutation, so a new attempt clears the last outcome.
+  const cancelNoticeKey = cancelMutation.isError
+    ? (isTopup ? "web.cancel_topup_unknown" : "web.cancel_order_unknown")
+    : cancelMutation.data?.cancelled === false
+      ? (isTopup ? "web.cancel_topup_status_changed" : "web.cancel_order_status_changed")
+      : null;
 
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
 
@@ -319,7 +346,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       {/* Cart → Pay → Done describes the Premium catalog checkout only: a Game
           Top Up (InstantBuy) and a wallet top-up never had a cart step. */}
       {!isGame && !isTopup && <Stepper step={state === "delivered" ? 3 : 2} />}
-      <PaymentPageContent emailedTo={emailedTo} isTopup={isTopup} order={order} data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} stripState={stripState} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} retryHref={retryHref} retryLabelKey={retryLabelKey} closedHref={closedHref} closedLabelKey={closedLabelKey} />
+      <PaymentPageContent emailedTo={emailedTo} isTopup={isTopup} order={order} data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} stripState={stripState} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} retryHref={retryHref} retryLabelKey={retryLabelKey} closedHref={closedHref} closedLabelKey={closedLabelKey} cancelNoticeKey={cancelNoticeKey} />
     </>
   );
 }
@@ -366,7 +393,7 @@ function PendingPayment({ state, data, order, priceAndPayLine, payPagePath, coun
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
   countdownText: string;
-  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<CancelResult, Error, void, unknown>;
   setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   cancelDialogOpen: boolean;
 }) {
@@ -381,7 +408,7 @@ function PendingPaymentPanel({ data, order, priceAndPayLine, payPagePath, countd
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
   countdownText: string;
-  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<CancelResult, Error, void, unknown>;
   setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   cancelDialogOpen: boolean;
 }) {
@@ -418,7 +445,7 @@ function PendingPaymentPanel({ data, order, priceAndPayLine, payPagePath, countd
   </>);
 }
 
-function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, underpayment, state, isGame, deliveredHref, deliveredLabelKey, stripState, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen, retryHref, retryLabelKey, closedHref, closedLabelKey }: {
+function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, underpayment, state, isGame, deliveredHref, deliveredLabelKey, stripState, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen, retryHref, retryLabelKey, closedHref, closedLabelKey, cancelNoticeKey }: {
   emailedTo: string | null;
   isTopup: boolean;
   order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
@@ -433,13 +460,14 @@ function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, und
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
   countdownText: string;
-  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<CancelResult, Error, void, unknown>;
   setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   cancelDialogOpen: boolean;
   retryHref: string;
   retryLabelKey: "web.wallet_topup_retry" | "web.back_to_product" | "web.back_to_cart";
   closedHref: "/account" | "/account/orders";
   closedLabelKey: "web.account_title" | "web.account_orders";
+  cancelNoticeKey: string | null;
 }) {
   return (<div className="max-w-2xl mx-auto">
     <h1 className="page-title mb-1">{t("web.pay_title")}</h1>
@@ -458,6 +486,10 @@ function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, und
     )}
 
     <PayPayStatus data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} isTopup={isTopup} stripState={stripState} />
+
+    {/* Here and not by the cancel button: that button leaves with the invoice
+          once the real state arrives, and this explains why it did. */}
+    {cancelNoticeKey && <Alert variant="banner" tone="warning">{t(cancelNoticeKey)}</Alert>}
 
     <PendingPayment state={state} data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} />
 

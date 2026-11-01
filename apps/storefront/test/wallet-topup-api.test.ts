@@ -566,8 +566,125 @@ describe("wallet-topup pay/status/cancel wrappers — ownership + kind checks", 
       headers: { cookie: ownerCookie, "x-csrf-token": ownerCsrf },
     });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toEqual({ ok: true });
+    expect(ok.json()).toEqual({ ok: true, cancelled: true });
     const status = await app.inject({ method: "GET", url: `/api/v1/wallet/topup/${topupCode}/status`, headers: { cookie: ownerCookie } });
     expect(status.json().state).toBe("closed");
+  });
+});
+
+// The cancel answer must say what the database says, not that nothing threw: a
+// payment landing between the last poll and the tap used to read as a success,
+// so the buyer left believing a paid order was cancelled. `ok: true` stays for
+// callers of the older contract; `cancelled` is the fact.
+describe.each([
+  { variant: "product order", cancelUrl: (code: string) => `/api/v1/orders/${code}/cancel` },
+  { variant: "wallet top-up", cancelUrl: (code: string) => `/api/v1/wallet/topup/${code}/cancel` },
+])("POST cancel reports what the database holds — $variant", ({ variant, cancelUrl }) => {
+  const isTopup = variant === "wallet top-up";
+  const handle = isTopup ? "wtcxtopup" : "wtcxorder";
+  let cookie: string;
+  let csrf: string;
+  let userId: number;
+
+  async function createPending(): Promise<string> {
+    if (isTopup) {
+      // Seeded directly: the create route's rate limit is not what is under test.
+      const order = await prisma.order.create({ data: {
+        userId, orderCode: `WTCX-${++topupSeq}`, kind: "WALLET_TOPUP", status: "PENDING_PAYMENT",
+        currency: "IDR", subtotalAmount: "50000", totalAmount: "50000",
+      } });
+      return order.orderCode;
+    }
+    await addToCart(prisma, userId, denomId, 1);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+    return res.json().order_code;
+  }
+  let topupSeq = 0;
+
+  const cancel = (code: string, as = { cookie, csrf }) =>
+    app.inject({ method: "POST", url: cancelUrl(code), headers: { cookie: as.cookie, "x-csrf-token": as.csrf } });
+
+  /** Everything a wrongly honoured cancel would move. */
+  async function moneyAndStock(code: string) {
+    const order = await prisma.order.findUniqueOrThrow({ where: { orderCode: code } });
+    return {
+      status: order.status,
+      paymentState: order.paymentState,
+      availableStock: await prisma.stockItem.count({ where: { productId: denomId, status: "AVAILABLE" } }),
+      walletEntries: await prisma.walletTransaction.count({ where: { userId } }),
+      user: await prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+    };
+  }
+
+  beforeAll(async () => {
+    userId = await makeUser(handle, `${handle}-pw-123`, handle.toUpperCase());
+    ({ cookie, csrf } = await loginAs(handle, `${handle}-pw-123`));
+  });
+
+  it("a pending record is cancelled and says so", async () => {
+    const code = await createPending();
+    const res = await cancel(code);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, cancelled: true });
+    expect((await prisma.order.findUniqueOrThrow({ where: { orderCode: code } })).status).toBe("CANCELLED");
+  });
+
+  it("an already cancelled record still answers cancelled", async () => {
+    const code = await createPending();
+    await cancel(code);
+    const again = await cancel(code);
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toEqual({ ok: true, cancelled: true });
+  });
+
+  it.each([
+    ["paid and processing", { status: "PROCESSING", paymentState: "PAID", paidAt: new Date() }],
+    ["delivered", { status: "DELIVERED", paymentState: "PAID", paidAt: new Date() }],
+  ])("a %s record is left alone and answers not cancelled", async (_label, paid) => {
+    const code = await createPending();
+    await prisma.order.update({ where: { orderCode: code }, data: paid });
+    const before = await moneyAndStock(code);
+    const res = await cancel(code);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, cancelled: false });
+    expect(await moneyAndStock(code)).toEqual(before);
+  });
+
+  // cancelOrder returns quietly for an expired order, so "nothing threw" would
+  // have claimed a cancellation that never happened.
+  it("an expired record answers not cancelled even though nothing was refused", async () => {
+    const code = await createPending();
+    await prisma.order.update({ where: { orderCode: code }, data: { status: "EXPIRED" } });
+    const res = await cancel(code);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, cancelled: false });
+    expect((await prisma.order.findUniqueOrThrow({ where: { orderCode: code } })).status).toBe("EXPIRED");
+  });
+
+  it("a foreign code and an unknown code get the same answer, and the foreign record is untouched", async () => {
+    const code = await createPending();
+    const strangerHandle = `${handle}x`;
+    await makeUser(strangerHandle, `${strangerHandle}-pw-123`, strangerHandle.toUpperCase());
+    const stranger = await loginAs(strangerHandle, `${strangerHandle}-pw-123`);
+    const foreign = await cancel(code, stranger);
+    const unknown = await cancel("NO-SUCH-CODE", stranger);
+    expect(foreign.statusCode).toBe(unknown.statusCode);
+    expect(foreign.body).toBe(unknown.body);
+    // Each route's answer stays what it was: the order route never revealed a
+    // miss, the top-up route has always answered 404 for both.
+    if (isTopup) {
+      expect(foreign.statusCode).toBe(404);
+      expect(foreign.json()).toEqual({ error: "not_found" });
+    } else {
+      expect(foreign.statusCode).toBe(200);
+      expect(foreign.json()).toEqual({ ok: true, cancelled: false });
+    }
+    expect((await prisma.order.findUniqueOrThrow({ where: { orderCode: code } })).status).toBe("PENDING_PAYMENT");
   });
 });

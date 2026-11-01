@@ -14,12 +14,11 @@
  * ownership-checked wrappers around those shared helpers.
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { OrderKind, PaymentMethod, StockActorType } from "@app/core/enums";
+import { OrderKind, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import {
   prisma,
   getOrderByCode,
-  cancelOrder,
   getUsdIdrRate,
   getTokopayCreds,
   resolveBybitConfig,
@@ -38,6 +37,7 @@ import {
 import { Decimal } from "@app/core/money";
 import { readCanonicalMoney } from "@app/core/moneyFormat";
 import { optionalCustomer, type Customer } from "../plugins/auth";
+import { cancelAsBuyer } from "./buyerCancel";
 import { constantTimeEqual } from "../auth";
 import { errorBody } from "@app/core/errorBody";
 import { payView, payState, transactionStatusView } from "./checkout";
@@ -335,17 +335,7 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     const order = await loadOwnedTopup(req.params.code, customer);
     if (!order) return reply.code(404).send({ error: "not_found" });
-    try {
-      await prisma.$transaction((tx) =>
-        cancelOrder(tx, order.id, "user_cancelled", {
-          type: StockActorType.CUSTOMER,
-          customerId: customer.userId,
-        }),
-      );
-    } catch (e) {
-      if (!(e instanceof ValidationError)) throw e; // already paid/delivered → just bounce
-    }
-    return reply.send({ ok: true });
+    return reply.send({ ok: true, cancelled: await cancelAsBuyer(order.id, customer.userId) });
   });
 };
 

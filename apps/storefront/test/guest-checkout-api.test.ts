@@ -340,7 +340,7 @@ describe("POST /api/v1/checkout — guest responses carry the new CSRF token", (
       headers: { cookie, "x-csrf-token": body.csrf_token },
     });
     expect(cancel.statusCode).toBe(200);
-    expect(cancel.json()).toEqual({ ok: true });
+    expect(cancel.json()).toEqual({ ok: true, cancelled: true });
 
     // Same mutation without the handed-back token is still refused, so the
     // 200 above proves the token, not a loosened gate.

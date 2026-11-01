@@ -1,4 +1,5 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -131,7 +132,7 @@ export function PricingPage() {
     } catch (e) { setCategoryError((e as Error).message); } finally { setCategorySaving(false); }
   }
   return <PageLayout title="Pricing & Margins"><PageHeader title="Pricing & Margins" description="Atur markup Digiflazz, pembulatan, dan pantau estimasi margin." />
-    {query.isPending ? <p role="status">Memuat kebijakan harga…</p> : query.error ? <Alert variant="destructive"><AlertDescription>{query.error.message}</AlertDescription></Alert> : <>
+    {query.isPending ? <LinesSkeleton label="Memuat kebijakan harga" lines={4} /> : query.error ? <Alert variant="destructive"><AlertDescription>{query.error.message}</AlertDescription></Alert> : <>
       <p className="mb-5 text-sm text-ink-soft">{query.data.categories.length} kategori · {query.data.categories.filter(c => c.markupType).length} aturan khusus. Perubahan berlaku pada sync berikutnya atau saat diterapkan.</p>
       {!owner && <Alert><AlertDescription>Akses baca saja. Hanya super-admin dapat mengubah harga.</AlertDescription></Alert>}
       {notice && <p role="status" className="mb-4 text-sm text-pine">{notice}</p>}
@@ -149,7 +150,7 @@ export function PricingPage() {
     <SaveConfirmDialog open={saveOpen} onOpenChange={setSaveOpen} title="Simpan default harga?" description="Harga aktif berubah pada sync berikutnya atau saat Anda menerapkan aturan." onConfirm={saveGlobal} />
     <Dialog open={!!editCategory} onOpenChange={v => { if (!v && !categorySaving) setEditCategory(null); }}><DialogContent><DialogHeader><DialogTitle>Aturan {editCategory?.name}</DialogTitle><DialogDescription>Menggantikan markup global untuk kategori ini.</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={e => { e.preventDefault(); void saveCategory(); }}>
       <TypeSelect value={categoryType} label="Jenis markup kategori" allowNone={false} onChange={v => { setCategoryType(v); setCategoryValue("0"); }} /><label htmlFor="category-markup">Markup {categoryType === "flat" ? "(IDR)" : "(%)"}</label><Input id="category-markup" value={categoryValue} onChange={e => setCategoryValue(e.target.value)} inputMode="decimal" />
-      {categoryError && <p role="alert" className="text-sm text-rust">{categoryError}</p>}<Button type="submit" disabled={categorySaving || !categoryValue.trim()}>Simpan aturan</Button>
+      {categoryError && <p role="alert" className="text-sm text-rust">{categoryError}</p>}<Button type="submit" pending={categorySaving} disabled={!categoryValue.trim()}>Simpan aturan</Button>
     </form></DialogContent></Dialog>
     <ConfirmDialog open={!!remove} onOpenChange={v => { if (!v) setRemove(null); }} title="Hapus aturan kategori?" description="Kategori kembali mengikuti default global pada sync atau penerapan berikutnya." onConfirm={async () => { if (!remove) return; try { await apiDelete(`/api/pricing/categories/${remove.id}`); await reload(); } catch (e) { setError((e as Error).message); } }} />
   </PageLayout>;
@@ -202,7 +203,7 @@ function PricingApplyNow({ categories, owner, dirty, reload }: { categories: Cat
     <Card id="apply-pricing"><CardHeader><CardTitle as="h2">Terapkan harga sekarang</CardTitle><CardDescription>Lihat dampaknya sebelum memperbarui SKU otomatis. SKU manual dan riwayat pesanan tetap dipertahankan.</CardDescription></CardHeader><CardContent className="space-y-4">
       <Select value={scope} onValueChange={v => { setScope(v); setImpact(null); setImpactError(null); }} disabled={!owner}><SelectTrigger className="sm:max-w-sm" aria-label="Cakupan harga"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Semua SKU otomatis</SelectItem>{categories.filter(isGameCategory).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select>
       {impactError && <Alert variant="destructive" className={ERROR_ALERT_CLASS}><AlertCircle aria-hidden="true" /><AlertDescription>{impactError}</AlertDescription></Alert>}
-      <Button disabled={!owner || impactLoading || dirty} onClick={checkImpact}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
+      <Button pending={impactLoading} disabled={!owner || impactLoading || dirty} onClick={checkImpact}>{impactLoading ? "Memeriksa dampak…" : "Lihat dampak & terapkan"}</Button>
       {dirty && <p className="text-xs text-ink-soft">Simpan perubahan default terlebih dahulu.</p>}
     </CardContent></Card>
     <SaveConfirmDialog open={!!impact} onOpenChange={v => { if (!v) setImpact(null); }} title="Terapkan aturan tersimpan sekarang?" confirmLabel="Terapkan sekarang" description={impact ? <ImpactDescription impact={impact} /> : null} onConfirm={apply} />

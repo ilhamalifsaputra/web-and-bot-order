@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -183,7 +184,7 @@ function DetectionPanel() {
         <CardTitle>Deteksi</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {metricsQuery.isLoading && <p className="text-sm text-ink-soft">Memuat ringkasan deteksi…</p>}
+        {metricsQuery.isLoading && <LinesSkeleton label="Memuat ringkasan deteksi" lines={3} />}
         {!metricsQuery.isLoading && !metrics && (
           <p className="text-sm text-ink-soft">Deteksi katalog belum pernah dijalankan.</p>
         )}
@@ -208,7 +209,7 @@ function DetectionPanel() {
 
         <div>
           <p className="mb-2 text-sm font-medium text-ink">Antrean tinjauan ({issues.length})</p>
-          {issuesQuery.isLoading && <p className="text-sm text-ink-soft">Memuat isu deteksi…</p>}
+          {issuesQuery.isLoading && <LinesSkeleton label="Memuat isu deteksi" lines={3} />}
           {!issuesQuery.isLoading && issues.length === 0 && (
             <p className="text-sm text-ink-soft">Tidak ada isu deteksi yang perlu ditinjau.</p>
           )}
@@ -509,7 +510,7 @@ function DigiflazzSyncHourlySyncStatus({ syncStatus }: {
     </CardHeader>
     <CardContent>
       {syncStatus.data === undefined && (
-        <p className="text-sm text-ink-soft">Loading sync status…</p>
+        <LinesSkeleton label="Loading sync status" lines={2} />
       )}
       {syncStatus.data === null && (
         <p className="text-sm text-ink-soft">
@@ -680,7 +681,7 @@ function DigiflazzSyncSudahAda({ preview, filter, setFilter, categoryId, changeC
 
       {newGroups.length > 0 && (
         <div className="flex flex-col items-start gap-1">
-          <Button onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
+          <Button pending={importing} onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
             {importing ? "Importing…" : "Impor Terpilih"}
           </Button>
           {hasInvalidCheckedPrice && (

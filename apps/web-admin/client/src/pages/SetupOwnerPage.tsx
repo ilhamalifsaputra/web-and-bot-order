@@ -118,7 +118,7 @@ export function SetupOwnerPage() {
             />
           </div>
 
-          <Button type="submit" disabled={loading} className="w-full">
+          <Button pending={loading} type="submit" disabled={loading} className="w-full">
             {loading ? "Creating account…" : "Create account and continue"}
           </Button>
         </form>

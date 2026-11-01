@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -253,7 +255,7 @@ export function ProductDetailPage() {
   if (!data) {
     return (
       <PageLayout title="Product Detail">
-        <p>Loading…</p>
+        <DetailPageSkeleton label="Loading product" />
       </PageLayout>
     );
   }
@@ -724,7 +726,7 @@ function ProductDenominationsSection({ product, navigate, productId, visibleSele
       </Button>
       {showDeleted && (
         <div className="mt-3 space-y-2">
-          {deletedQuery.isPending && <p role="status">Loading deleted denominations…</p>}
+          {deletedQuery.isPending && <LinesSkeleton label="Loading deleted denominations" lines={2} />}
           {deletedQuery.isError && <p role="alert">Failed to load deleted denominations.</p>}
           {deletedQuery.data?.denominations.length === 0 && <p>No deleted denominations.</p>}
           {deletedQuery.data?.denominations.map(row => (
@@ -874,7 +876,7 @@ function ProductEditorActions({ nameDraft, savingProduct, saveProduct, setEditin
   setProductError: import("react").Dispatch<import("react").SetStateAction<string | null>>;
 }) {
   return (<div className="flex gap-2">
-    <Button size="sm" disabled={!nameDraft.trim() || savingProduct} onClick={() => void saveProduct()}>
+    <Button size="sm" pending={savingProduct} disabled={!nameDraft.trim()} onClick={() => void saveProduct()}>
       <Save className="h-4 w-4" />
       {savingProduct ? "Saving…" : "Save"}
     </Button>

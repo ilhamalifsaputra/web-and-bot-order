@@ -412,7 +412,7 @@ export function TicketDetailReply({ uploads, optionsState, onRetryOptions, reply
             and it does not advance the ticket's status. */}
       <SettingsToggle id="TicketDetailPage-mode" label="Internal note (not visible to the customer)" checked={internal} onCheckedChange={setInternal} disabled={sendReply.isPending} />
       {uploads.failed && <p className="basis-full text-xs text-ink-soft" role="status">Remove or retry the failed file to send.</p>}
-      <Button onClick={() => sendReply.mutate()} disabled={(!reply.trim() && !uploads.ids.length) || sendReply.isPending || uploads.busy}>
+      <Button onClick={() => sendReply.mutate()} pending={sendReply.isPending} disabled={(!reply.trim() && !uploads.ids.length) || uploads.busy}>
         {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
         {sendReply.isPending ? "Saving…" : internal ? "Save internal note" : "Send reply"}
       </Button>
@@ -429,7 +429,7 @@ function TicketResolutionActions({ ticket, isClosed, progress, resolve, reopen, 
   close: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
 }) {
   return (<>
-    {["OPEN", "WAITING_ADMIN"].includes(ticket.status) && <Button variant="outline" disabled={progress.isPending} onClick={() => progress.mutate()}>Start processing</Button>}
+    {["OPEN", "WAITING_ADMIN"].includes(ticket.status) && <Button variant="outline" pending={progress.isPending} onClick={() => progress.mutate()}>Start processing</Button>}
     {/* Mirrors the backend's resolveTicket guard (status NOT IN
                 [RESOLVED, CLOSED]). */}
     {ticket.status !== "RESOLVED" && !isClosed && (
@@ -718,7 +718,7 @@ function ticketAdminLabels({ adminsData }: {
 function EvidenceHold({ ticketId, held }: { ticketId: number; held: boolean }) {
   const qc = useQueryClient();
   const hold = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/evidence-hold`, { held: !held }), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
-  return <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft"><Button variant="outline" size="sm" disabled={hold.isPending} aria-pressed={held} onClick={() => hold.mutate()}><Lock className="h-3.5 w-3.5" />{held ? "Release evidence hold" : "Preserve evidence"}</Button><span>{held ? "Retention paused for this ticket." : "Closed-ticket evidence follows the retention policy."}</span></div>;
+  return <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft"><Button variant="outline" size="sm" pending={hold.isPending} aria-pressed={held} onClick={() => hold.mutate()}><Lock className="h-3.5 w-3.5" />{held ? "Release evidence hold" : "Preserve evidence"}</Button><span>{held ? "Retention paused for this ticket." : "Closed-ticket evidence follows the retention policy."}</span></div>;
 }
 
 function TicketTitleEditor({ ticketId, initialTitle }: { ticketId: number; initialTitle: string }) {
@@ -726,5 +726,5 @@ function TicketTitleEditor({ ticketId, initialTitle }: { ticketId: number; initi
   const [title, setTitle] = useState(initialTitle);
   const qc = useQueryClient();
   const save = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/title`, { title }), onSuccess: () => { setOpen(false); void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
-  return <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpen(true)}>Edit title</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogTitle>Edit ticket title</DialogTitle><DialogDescription>Correct the issue title without changing the public ticket number.</DialogDescription><form className="space-y-3" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label htmlFor="support-title" className="text-sm">Title</label><Input id="support-title" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={100} disabled={save.isPending} /><Button type="submit" disabled={!title.trim() || save.isPending}>Save title</Button></form></DialogContent></Dialog></>;
+  return <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpen(true)}>Edit title</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogTitle>Edit ticket title</DialogTitle><DialogDescription>Correct the issue title without changing the public ticket number.</DialogDescription><form className="space-y-3" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label htmlFor="support-title" className="text-sm">Title</label><Input id="support-title" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={100} disabled={save.isPending} /><Button type="submit" pending={save.isPending} disabled={!title.trim()}>Save title</Button></form></DialogContent></Dialog></>;
 }

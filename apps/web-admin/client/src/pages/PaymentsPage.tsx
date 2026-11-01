@@ -597,7 +597,7 @@ function PaymentsManualMatch({ matchCardRef, matchError, matchForm, setMatchForm
             )}
           </div>
           <ConfirmDialog
-            trigger={<Button variant="outline" disabled={match.isPending || !canSubmitMatch}>Match</Button>}
+            trigger={<Button variant="outline" pending={match.isPending} disabled={!canSubmitMatch}>Match</Button>}
             title="Confirm manual match?"
             description={`Match transfer ${matchForm.binance_tx_id} to order ${matchForm.order_code}.`}
             confirmLabel="Match"
@@ -1215,7 +1215,7 @@ function PaymentOverrideDialog({ pendingDeliver, setPendingDeliver, deliverReaso
       </label>
       <DialogFooter>
         <Button variant="outline" onClick={() => setPendingDeliver(null)}>Cancel</Button>
-        <Button disabled={!deliverReason.trim() || deliverAnyway.isPending} onClick={() => {
+        <Button pending={deliverAnyway.isPending} disabled={!deliverReason.trim()} onClick={() => {
           deliverAnyway.mutate(pendingDeliver.id, { onSuccess: () => setPendingDeliver(null) });
         }}>Deliver anyway</Button>
       </DialogFooter>
@@ -1247,7 +1247,7 @@ function PaymentBulkDismissBar({ visibleSelected, bulkDismiss, setSelected }: {
     <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
       <span className="text-ink-soft">{visibleSelected.size} selected</span>
       <ConfirmDialog
-        trigger={<Button size="sm" variant="destructive" disabled={bulkDismiss.isPending}>Dismiss {count}</Button>}
+        trigger={<Button size="sm" variant="destructive" pending={bulkDismiss.isPending}>Dismiss {count}</Button>}
         title={`Dismiss ${count}?`}
         description={`Mark ${count} as dismissed. They are sent one at a time; if the rate limit is reached, the rest stay selected and are not attempted.`}
         confirmLabel="Dismiss"

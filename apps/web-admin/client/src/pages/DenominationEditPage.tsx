@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -279,7 +280,7 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
 
         {error && <p className="text-sm text-rust">{error}</p>}
 
-        <Button disabled={!canSubmit || save.isPending} onClick={() => save.mutate()}>
+        <Button pending={save.isPending} disabled={!canSubmit || save.isPending} onClick={() => save.mutate()}>
           {save.isPending ? "Saving…" : "Save Changes"}
         </Button>
 
@@ -373,6 +374,9 @@ export function DenominationEditPage() {
     enabled: !!productId,
   });
   if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
-  if (!data?.product.denominations.some(d => d.id === Number(denomId))) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
+  if (!data) return <PageLayout title="Edit Denomination"><DetailPageSkeleton label="Loading denomination" /></PageLayout>;
+  // A loaded product without this denomination (deleted, or a stale link) is
+  // a final answer, not a load still in flight.
+  if (!data.product.denominations.some(d => d.id === Number(denomId))) return <PageLayout title="Edit Denomination"><p className="text-sm text-ink-soft">This denomination no longer exists.</p></PageLayout>;
   return <DenominationEditForm key={denomId} data={data} />;
 }

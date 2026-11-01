@@ -84,3 +84,21 @@ describe("LoginPage", () => {
     expect(passwordInput.type).toBe("password");
   });
 });
+
+describe("LoginPage pending sign-in", () => {
+  it("keeps a labelled, disabled, busy button with a spinner while signing in", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText(/telegram id/i), { target: { value: "123456789" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    const button = await screen.findByRole("button", { name: "Signing in…" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector("[data-slot=spinner]")).toBeInTheDocument();
+  });
+});

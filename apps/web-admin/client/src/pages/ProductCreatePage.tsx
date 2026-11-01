@@ -126,7 +126,7 @@ export function ProductCreatePage() {
               </Select>
               {categoryError && <p className="text-sm text-rust">{categoryError}</p>}
               <div className="flex gap-2">
-                <Button
+                <Button pending={createCategory.isPending}
                   size="sm"
                   disabled={
                     newCategoryName.trim().length === 0 ||
@@ -307,7 +307,7 @@ export function ProductCreatePage() {
 
         {error && <p className="text-sm text-rust">{error}</p>}
 
-        <Button
+        <Button pending={create.isPending}
           disabled={!canSubmit || create.isPending}
           onClick={() => create.mutate()}
         >

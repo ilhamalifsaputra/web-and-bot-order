@@ -1,4 +1,6 @@
 import { lazy, Suspense } from "react";
+import { Skeleton } from "../ui/skeleton";
+import { LoadingRegion } from "../shared/LoadingRegion";
 type ChartProps = { daily: { day: string; revenue_idr: string }[] };
 const Chart = lazy(async () => {
   const { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } = await import("recharts");
@@ -17,5 +19,5 @@ const Chart = lazy(async () => {
   };
 });
 export function RevenueChart(props: ChartProps) {
-  return <Suspense fallback={<p role="status">Loading chart...</p>}><Chart {...props} /></Suspense>;
+  return <Suspense fallback={<LoadingRegion label="Loading chart" className="h-[180px] w-full"><Skeleton className="h-full w-full" /></LoadingRegion>}><Chart {...props} /></Suspense>;
 }

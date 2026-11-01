@@ -1,4 +1,5 @@
 import type { HealthEntry } from "@/api/types";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { SettingsHealthCard, type HealthSection } from "@/components/shared/SettingsHealthCard";
 import { SettingsNav, type SettingsNavLink } from "@/components/shared/SettingsNav";
 import { SettingsSaveStatus } from "@/components/shared/SettingsSaveStatus";
@@ -826,7 +827,7 @@ export function SettingsPage() {
     return (
       <PageLayout title="Settings">
         <PageHeader title="Settings" />
-        {isLoading && <p className="text-ink-soft">Loading settings…</p>}
+        {isLoading && <LinesSkeleton label="Loading settings" lines={6} className="max-w-3xl" />}
         {isError && <p className="text-rust">Failed to load settings.</p>}
       </PageLayout>
     );
@@ -1487,12 +1488,12 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
         <p className="text-sm text-ink-soft mb-3">
           2FA is not enabled. Enable it for extra account security.
         </p>
-        <Button
+        <Button pending={tfaSaving}
           onClick={() => tfaAction("/api/settings/2fa/begin", {})}
           disabled={tfaSaving}
           variant="outline"
         >
-          {tfaSaving ? "…" : "Enable 2FA"}
+          Enable 2FA
         </Button>
       </div>
     )}

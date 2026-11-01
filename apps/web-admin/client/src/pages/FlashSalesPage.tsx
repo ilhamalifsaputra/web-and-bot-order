@@ -410,7 +410,7 @@ function FlashSalesSetFlashSaleOn({ dialogOpen, setDialogOpen, openNewFlashSale,
         <DialogClose asChild>
           <Button variant="outline">Cancel</Button>
         </DialogClose>
-        <Button disabled={!canSubmit || bulkApply.isPending} onClick={() => bulkApply.mutate()}>
+        <Button pending={bulkApply.isPending} disabled={!canSubmit || bulkApply.isPending} onClick={() => bulkApply.mutate()}>
           {bulkApply.isPending ? "Applying…" : "Apply"}
         </Button>
       </DialogFooter>

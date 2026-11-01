@@ -85,7 +85,7 @@ export function ForgotPage() {
             />
           </div>
 
-          <Button className="w-full" type="submit" disabled={loading}>
+          <Button pending={loading} className="w-full" type="submit" disabled={loading}>
             {loading ? "Sending…" : "Send reset code"}
           </Button>
 

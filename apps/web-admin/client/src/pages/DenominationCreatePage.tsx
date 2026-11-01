@@ -220,7 +220,7 @@ export function DenominationCreatePage() {
 
         {error && <p className="text-sm text-rust">{error}</p>}
 
-        <Button disabled={!canSubmit || create.isPending} onClick={() => create.mutate()}>
+        <Button pending={create.isPending} disabled={!canSubmit || create.isPending} onClick={() => create.mutate()}>
           {create.isPending ? "Creating…" : "Create Denomination"}
         </Button>
       </div>

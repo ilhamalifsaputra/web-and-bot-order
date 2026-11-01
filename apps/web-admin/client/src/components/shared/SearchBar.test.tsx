@@ -23,7 +23,8 @@ describe("SearchBar", () => {
 
     rerender(<SearchBar value="" onChange={() => {}} loading />);
     expect(container.querySelector(".lucide-loader-circle")).toBeInTheDocument();
-    expect(container.querySelector(".lucide-loader-circle")).toHaveClass("animate-spin");
+    expect(container.querySelector(".lucide-loader-circle")).toHaveClass("motion-safe:animate-spin");
+    expect(screen.getByRole("status")).toHaveTextContent("Searching…");
     expect(container.querySelector(".lucide-search")).not.toBeInTheDocument();
   });
 });

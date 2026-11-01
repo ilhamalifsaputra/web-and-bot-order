@@ -1,4 +1,5 @@
 import { SettingsToggle } from "@/components/shared/SettingsToggle";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { StockEmailThresholds } from "@/components/shared/StockEmailThresholds";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -300,7 +301,7 @@ export function StockProductPage() {
   if (!data) {
     return (
       <PageLayout title="Stock — Product">
-        <p>Loading…</p>
+        <DetailPageSkeleton label="Loading stock" />
       </PageLayout>
     );
   }
@@ -428,7 +429,7 @@ function StockProductBulkAddCredentials({ bulkMsg, bulkError, credentials, setCr
         rows={6}
         className="font-mono text-sm"
       />
-      <Button onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
+      <Button pending={bulkAdd.isPending} onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
         {bulkAdd.isPending ? "Adding…" : "Add Stock"}
       </Button>
       <SettingsToggle id="StockProductPage-mode" label="Broadcast to all customers when I add stock to this product" checked={product.broadcastOnRestock} onCheckedChange={(checked) => toggleBroadcast.mutate(checked)} pending={toggleBroadcast.isPending} />

@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { LinesSkeleton } from "../shared/LoadingRegion";
 import { UrgencyDot } from "../shared/UrgencyDot";
 import { useHealth } from "../../hooks/useHealth";
 import { HEALTH_DOT } from "../../lib/healthDot";
@@ -31,7 +32,7 @@ export function BusinessHealthGrid() {
         <CardTitle as="h2">Business Health</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LinesSkeleton label="Loading service health" lines={5} />}
         {isError && <p className="text-sm text-rust">Couldn't load service health.</p>}
         {data && (
           <ul className="flex flex-col divide-y divide-line">

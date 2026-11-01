@@ -711,7 +711,7 @@ function Orders({ cancelTarget, setCancelTarget, cancelReason, setCancelReason, 
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setCancelTarget(null)}>Back</Button>
-          <Button variant="destructive" disabled={cancelMutation.isPending} onClick={confirmCancel}>
+          <Button pending={cancelMutation.isPending} variant="destructive" disabled={cancelMutation.isPending} onClick={confirmCancel}>
             {cancelMutation.isPending ? "Cancelling…" : "Cancel Order"}
           </Button>
         </DialogFooter>

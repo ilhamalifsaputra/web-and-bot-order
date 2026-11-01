@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LinesSkeleton } from "../../components/shared/LoadingRegion";
 import { Star } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
@@ -104,7 +105,7 @@ export function ProductRatingsCard({ summaries, isLoading, loadFailed }: Product
 
 function ProductRatingsBody({ top5, isLoading, loadFailed }: { top5: ProductRatingSummary[]; isLoading?: boolean; loadFailed?: boolean }) {
   if (loadFailed) return <p className="py-2 text-sm text-ink-soft">Couldn't load product ratings.</p>;
-  if (isLoading) return <p className="py-2 text-sm text-ink-soft">Loading…</p>;
+  if (isLoading) return <LinesSkeleton label="Loading product ratings" lines={5} className="py-2" />;
   if (top5.length === 0) return <p className="py-2 text-sm text-ink-soft">No rated products yet.</p>;
   return (
     <>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { apiGet, apiPost } from "@/api/client";
@@ -41,7 +42,7 @@ function ReportScheduleForm({ schedule }: { schedule: ReportSchedule }) {
       <p className="text-xs text-ink-soft sm:col-span-2">Reports summarize closed periods. Enable daily and weekly emails separately below.</p>
       {save.isError && <p role="alert" className="text-xs text-rust sm:col-span-2">{save.error.message}</p>}
       {save.isSuccess && <p role="status" className="text-xs text-grass-dark">Schedule saved.</p>}
-      <Button type="submit" disabled={save.isPending} className="justify-self-start">{save.isPending ? "Saving…" : "Save report schedule"}</Button>
+      <Button pending={save.isPending} type="submit" disabled={save.isPending} className="justify-self-start">{save.isPending ? "Saving…" : "Save report schedule"}</Button>
     </form>
   </CardContent></Card>;
 }
@@ -71,7 +72,7 @@ function EmailEventPreview({ event }: { event: EmailEventRow }) {
     <Button variant="ghost" size="sm" aria-label={`Preview ${event.label}`} aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>Preview template</Button>
     {open && <div id={id} className="mt-2 space-y-2 rounded-lg border border-line bg-sand p-3">
       <p className="text-xs text-ink-soft">Example content only. This preview does not send email.</p>
-      {preview.isPending && <p role="status" className="text-xs text-ink-soft">Loading preview…</p>}
+      {preview.isPending && <LinesSkeleton label="Loading preview" lines={2} />}
       {preview.isError && <p role="alert" className="text-xs text-rust">{preview.error.message}</p>}
       {preview.data && <><p className="text-sm font-medium text-ink">Subject: {preview.data.subject}</p><pre className="whitespace-pre-wrap break-words font-sans text-xs text-ink-soft">{preview.data.text}</pre></>}
     </div>}
@@ -111,7 +112,7 @@ export function EmailNotificationsPage() {
   const groups = query.data ? Array.from(new Set(query.data.events.map((event) => event.category))) : [];
   return <PageLayout title="Email Notifications">
     <PageHeader title="Email Notifications" description="Choose which business events send email. Preferences and SMTP readiness are separate." actions={<Link to="/settings#settings-email" className="text-sm text-pine underline">Email configuration</Link>} />
-    {query.isPending && <p role="status" className="text-sm text-ink-soft">Loading email preferences…</p>}
+    {query.isPending && <LinesSkeleton label="Loading email preferences" lines={4} className="max-w-3xl" />}
     {query.isError && <p role="alert" className="text-sm text-rust">{query.error.message}</p>}
     {query.data && <div className="flex max-w-3xl flex-col gap-6">
       <Card><CardContent className="space-y-2 pt-5">

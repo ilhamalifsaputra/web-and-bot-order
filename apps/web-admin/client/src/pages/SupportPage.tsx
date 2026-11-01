@@ -592,7 +592,7 @@ function SupportAssignSelectedTicketsTo({ visibleSelected, bulkAction, assignabl
 
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+          <Button size="sm" variant="destructive" pending={bulkAction.isPending}>
             Close {visibleSelected.size} ticket{visibleSelected.size === 1 ? "" : "s"}
           </Button>
         }

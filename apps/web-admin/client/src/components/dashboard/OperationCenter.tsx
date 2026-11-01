@@ -1,4 +1,6 @@
 import { Link } from "react-router-dom";
+import { LoadingRegion } from "../shared/LoadingRegion";
+import { Skeleton } from "../ui/skeleton";
 import { Card, CardContent } from "../ui/card";
 import { UrgencyDot } from "../shared/UrgencyDot";
 import { AWAITING_FULFILLMENT_HINT } from "../../lib/awaitingFulfillment";
@@ -72,7 +74,9 @@ export function OperationCenter() {
         </Link>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LoadingRegion label="Loading operations" className="col-span-full grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-[4.25rem] rounded-xl" />)}
+          </LoadingRegion>}
         {isError && <p className="text-sm text-rust">Couldn't load operations.</p>}
         {data &&
           CARDS.map((c) => {

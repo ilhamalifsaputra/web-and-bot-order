@@ -81,7 +81,7 @@ export function ConfirmDialog({
           <DialogClose asChild>
             <Button variant="outline" disabled={busy}>{cancelLabel}</Button>
           </DialogClose>
-          <Button variant={variant} onClick={handleConfirm} disabled={busy} aria-busy={busy}>
+          <Button pending={busy} variant={variant} onClick={handleConfirm} disabled={busy}>
             {busy ? "Processing…" : confirmLabel}
           </Button>
         </DialogFooter>

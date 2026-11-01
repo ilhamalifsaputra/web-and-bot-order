@@ -115,7 +115,7 @@ export function StoragePage() {
             </div>
             <ConfirmDialog
               trigger={
-                <Button variant="outline" disabled={cleanupMutation.isPending}>
+                <Button pending={cleanupMutation.isPending} variant="outline" disabled={cleanupMutation.isPending}>
                   {cleanupMutation.isPending ? "Cleaning up…" : "Run cleanup now"}
                 </Button>
               }

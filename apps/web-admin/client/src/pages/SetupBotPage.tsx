@@ -62,7 +62,7 @@ export function SetupBotPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-          <Button
+          <Button pending={loading}
             type="button"
             onClick={() => void handleSubmit(false)}
             disabled={loading || !botToken.trim()}

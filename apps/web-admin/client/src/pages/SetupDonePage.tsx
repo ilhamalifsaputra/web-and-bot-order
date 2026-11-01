@@ -72,7 +72,7 @@ export function SetupDonePage() {
               </div>
             )}
             <div className="mt-6 flex flex-col gap-3">
-              <Button
+              <Button pending={loading}
                 type="button"
                 onClick={() => void handleRestart()}
                 disabled={loading}

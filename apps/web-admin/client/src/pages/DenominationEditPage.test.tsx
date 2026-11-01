@@ -544,3 +544,19 @@ describe("pricing family separation", () => {
     expect(vi.mocked(apiPatch).mock.calls.at(-1)![1]).not.toHaveProperty("pricingMode");
   });
 });
+
+describe("DenominationEditPage loading", () => {
+  it("shows a busy page skeleton while the product loads", () => {
+    vi.mocked(apiGet).mockReturnValue(new Promise(() => {}));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    expect(screen.getByRole("status", { name: "Loading denomination" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
+
+  it("ends in a final message, not endless loading, when the product has no such denomination", async () => {
+    vi.mocked(apiGet).mockResolvedValue({ product: { ...PRODUCT_DETAIL.product, denominations: [] } });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("This denomination no longer exists.")).toBeInTheDocument());
+    expect(screen.queryByRole("status", { name: "Loading denomination" })).not.toBeInTheDocument();
+  });
+});

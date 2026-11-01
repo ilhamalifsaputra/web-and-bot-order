@@ -1,4 +1,5 @@
 import { useTopProducts } from "../../hooks/useTopProducts";
+import { LinesSkeleton } from "../shared/LoadingRegion";
 import { formatCurrencyDisplay } from "../shared/CurrencyAmount.helpers";
 import { EmptyState } from "../shared/EmptyState";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -12,7 +13,7 @@ export function TopProductsList() {
         <CardTitle as="h2">Top Products · Last 30 Days</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LinesSkeleton label="Loading top products" lines={5} />}
         {isError && <p className="text-sm text-rust">Couldn't load top products.</p>}
         {data && data.length === 0 && <EmptyState title="No sales in this period." />}
         {data && data.length > 0 && (

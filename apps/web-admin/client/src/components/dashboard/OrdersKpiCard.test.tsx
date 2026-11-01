@@ -42,3 +42,18 @@ describe("OrdersKpiCard", () => {
     expect(screen.getByText(/product orders created today/i)).toBeInTheDocument();
   });
 });
+
+describe("OrdersKpiCard loading", () => {
+  it("shows a busy KPI skeleton, never a zero, while the numbers load", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <OrdersKpiCard />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("status", { name: "Loading orders" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
+});

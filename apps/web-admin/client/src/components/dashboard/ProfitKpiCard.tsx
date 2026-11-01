@@ -1,4 +1,5 @@
 import type { CurrencyProfit } from "../../api/types";
+import { KpiSkeleton } from "../shared/LoadingRegion";
 import { useDashboardKpis } from "../../hooks/useDashboardKpis";
 import { CurrencyStack, type CurrencyAmount } from "../shared/CurrencyAmount";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -32,7 +33,7 @@ function ProfitCardStatus({ isLoading, isError, data }: {
   data: NoInfer<import("../../api/types").DashboardKpis> | undefined;
 }) {
   return (<CardContent>
-    {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+    {isLoading && <KpiSkeleton label="Loading profit" />}
     {isError && <p className="text-sm text-rust">Couldn't load profit.</p>}
     {!isError && data && !data.profit.idr && !data.profit.usdt && (
       <p className="text-sm text-ink-soft">No profit yet today.</p>

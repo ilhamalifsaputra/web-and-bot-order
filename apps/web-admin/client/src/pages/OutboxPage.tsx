@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
@@ -207,7 +208,7 @@ export function OutboxPage() {
           </Select>
         </FilterBar>
 
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LinesSkeleton label="Loading outbox" lines={6} />}
         {isError && <p className="text-sm text-rust">Failed to load outbox.</p>}
 
         {data && (

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -290,7 +291,7 @@ function ProductScopePicker({
           aria-label="Search products"
         />
         <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
-          {isLoading && <p className="px-1 py-2 text-sm text-ink-soft">Loading products...</p>}
+          {isLoading && <LinesSkeleton label="Loading products" lines={3} className="px-1 py-2" />}
           {!isLoading && filtered.length === 0 && (
             <p className="px-1 py-2 text-sm text-ink-soft">No products found.</p>
           )}
@@ -735,7 +736,7 @@ function VouchersVoucherCode({ showForm, mode, editingId, update, create, form, 
               />
             </div>
           )}
-          <Button type="submit" disabled={create.isPending || update.isPending} className="self-end">
+          <Button type="submit" pending={create.isPending || update.isPending} className="self-end">
             {mode === "edit"
               ? (update.isPending ? "Saving…" : "Save Changes")
               : (create.isPending ? "Creating…" : "Create")}
@@ -772,7 +773,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       </Button>
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+          <Button size="sm" variant="destructive" pending={bulkAction.isPending}>
             Delete {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
           </Button>
         }

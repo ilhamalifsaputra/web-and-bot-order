@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LinesSkeleton } from "../shared/LoadingRegion";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,7 @@ function ThresholdForm({ denominationId, initial }: { denominationId: number; in
     <p className="text-xs text-ink-soft sm:col-span-2">Critical and out-of-stock alerts follow available local stock. Recovery must exceed the critical threshold. Enable the email events in Email Notifications.</p>
     {save.isError && <p role="alert" className="text-xs text-rust sm:col-span-2">{save.error.message}</p>}
     {save.isSuccess && <p role="status" className="text-xs text-grass-dark">Thresholds saved.</p>}
-    <Button type="submit" className="justify-self-start" disabled={save.isPending || !valid}>{save.isPending ? "Saving…" : "Save stock thresholds"}</Button>
+    <Button pending={save.isPending} type="submit" className="justify-self-start" disabled={save.isPending || !valid}>{save.isPending ? "Saving…" : "Save stock thresholds"}</Button>
   </form>;
 }
 
@@ -28,7 +29,7 @@ export function StockEmailThresholds({ denominationId }: { denominationId: numbe
   const query = useQuery({ queryKey: ["stock-email-thresholds", denominationId], queryFn: () => apiGet<Thresholds>(`/api/settings/email-notifications/inventory/${denominationId}`), enabled: open });
   return <Card className="mb-6"><CardHeader><CardTitle as="h2">Stock email alerts</CardTitle></CardHeader><CardContent>
     {!open && <Button variant="outline" onClick={() => setOpen(true)}>Configure stock email thresholds</Button>}
-    {open && query.isPending && <p role="status" className="text-sm text-ink-soft">Loading thresholds…</p>}
+    {open && query.isPending && <LinesSkeleton label="Loading thresholds" lines={2} />}
     {query.isError && <p role="alert" className="text-sm text-rust">{query.error.message}</p>}
     {query.data && <ThresholdForm denominationId={denominationId} initial={query.data} />}
   </CardContent></Card>;

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -127,7 +128,7 @@ export function UserDetailPage() {
   });
 
   if (isError && !data) return <PageLayout title="Customer"><QueryErrorNotice what="user" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
-  if (!data) return <PageLayout title="Customer"><p>Loading…</p></PageLayout>;
+  if (!data) return <PageLayout title="Customer"><DetailPageSkeleton label="Loading customer" /></PageLayout>;
 
   const { user } = data;
   return (
@@ -362,7 +363,7 @@ function WalletAdjustConfirm({ user, adjustment, currency, note, wallet }: {
 }) {
   return (
     <ConfirmDialog
-      trigger={<Button disabled={wallet.isPending}>Adjust</Button>}
+      trigger={<Button pending={wallet.isPending}>Adjust</Button>}
       title={adjustment.credit ? "Credit this wallet?" : "Debit this wallet?"}
       description={adjustment.credit ? "This adds money to the customer's wallet." : "This takes money out of the customer's wallet."}
       confirmLabel={adjustment.credit ? "Credit wallet" : "Debit wallet"}

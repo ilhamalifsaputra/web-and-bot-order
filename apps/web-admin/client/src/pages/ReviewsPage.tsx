@@ -35,6 +35,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { Stars } from "../components/shared/Stars";
@@ -191,7 +192,7 @@ export function ReviewsPage() {
     setFilters((f) => (f.q === debouncedQ ? f : { ...f, q: debouncedQ, page: 1 }));
   }, [debouncedQ]);
 
-  const { data, isLoading, isFetching, isError, refetch } = useReviews(filters);
+  const { data, isLoading, isFetching, isError, error, refetch } = useReviews(filters);
 
   const [replyReview, setReplyReview] = useState<ReplyDialogReview | null>(null);
   const [replyOpen, setReplyOpen] = useState(false);
@@ -279,10 +280,10 @@ export function ReviewsPage() {
     setReplyOpen(true);
   }
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Reviews">
-        <p className="text-rust">Failed to load reviews.</p>
+        <QueryErrorNotice what="reviews" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -293,6 +294,8 @@ export function ReviewsPage() {
         title="Reviews"
         description="Moderate customer reviews, track sentiment and reply to feedback."
       />
+
+      <QueryErrorNotice isError={isError} what="reviews" hasData error={error} onRetry={() => void refetch()} />
 
       <ReviewsKpiRow
         onPendingReplyClick={() => quickFilter({ status: "PENDING_REPLY", hidden: "0" })}

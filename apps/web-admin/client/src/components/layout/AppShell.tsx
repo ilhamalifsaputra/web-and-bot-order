@@ -3,6 +3,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { SearchModal } from "./SearchModal";
+import { SessionExpiredBanner } from "./SessionExpiredBanner";
 import { Toaster } from "@/components/ui/sonner";
 import { ErrorBoundary } from "../shared/ErrorBoundary";
 import { PageTransition } from "../shared/PageTransition";
@@ -50,6 +51,7 @@ export function AppShell(): React.JSX.Element {
           />
           <main className="flex min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden bg-paper">
             <div className="mx-auto w-full min-w-0 max-w-[1440px] flex-1 px-4 py-4 sm:px-5 sm:py-6 lg:px-6 xl:px-8">
+              <SessionExpiredBanner />
               <PageTransition>
                 <ErrorBoundary key={location.pathname}>
                   <Outlet />

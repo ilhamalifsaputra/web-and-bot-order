@@ -48,6 +48,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -348,7 +349,7 @@ export function VouchersPage() {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [qDraft]);
-  const { data, isError } = useVouchers(q, status, page);
+  const { data, isError, error, refetch } = useVouchers(q, status, page);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
@@ -497,7 +498,7 @@ export function VouchersPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Vouchers"><QueryErrorNotice what="vouchers" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
 
   const now = new Date();
 
@@ -513,6 +514,8 @@ export function VouchersPage() {
           </Button>
         }
       />
+
+      <QueryErrorNotice isError={isError} what="vouchers" hasData error={error} onRetry={() => void refetch()} />
 
       <VoucherStats data={data} />
 

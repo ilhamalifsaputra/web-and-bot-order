@@ -25,6 +25,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
 import { readWalletDelta } from "../lib/walletAdjustment";
@@ -83,7 +84,7 @@ export function UserDetailPage() {
   const { userId } = useParams<{ userId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data, isError } = useUserDetail(userId ?? "");
+  const { data, isError, error, refetch } = useUserDetail(userId ?? "");
   const [walletForm, setWalletForm] = useState({ delta: "", note: "" });
   const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
   const [banReason, setBanReason] = useState("");
@@ -125,7 +126,7 @@ export function UserDetailPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Customer"><p className="text-sm text-rust">Failed to load user.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Customer"><QueryErrorNotice what="user" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
   if (!data) return <PageLayout title="Customer"><p>Loading…</p></PageLayout>;
 
   const { user } = data;
@@ -135,6 +136,8 @@ export function UserDetailPage() {
         title={user.fullName ?? user.username ?? `User #${user.id}`}
         breadcrumb={[{ label: "Customers", href: "/users" }]}
       />
+
+      <QueryErrorNotice isError={isError} what="user" hasData error={error} onRetry={() => void refetch()} />
 
       {/* User info */}
       <UserDetailProfile user={user} setRole={setRole} data={data} walletCurrency={walletCurrency} setWalletCurrency={setWalletCurrency} walletForm={walletForm} setWalletForm={setWalletForm} wallet={wallet} ban={ban} banReason={banReason} setBanReason={setBanReason} />

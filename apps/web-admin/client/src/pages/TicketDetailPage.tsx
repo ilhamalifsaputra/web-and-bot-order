@@ -26,6 +26,7 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
 import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
 import { TicketConversation, type ConversationMessage } from "../components/support/TicketConversation";
@@ -222,7 +223,7 @@ export function TicketDetailPage() {
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const mediaOptions = useQuery({ queryKey: ["support-media-options"], queryFn: () => apiGet<{ enabled: boolean; imageBytes?: number; videoBytes?: number }>("/api/support/media/options") });
   const uploads = useSupportUploads(Number(ticketId), mediaOptions.data);
-  const { data, isError } = useTicket(ticketId ?? "");
+  const { data, isError, error, refetch } = useTicket(ticketId ?? "");
   const { data: adminsData } = useAdmins();
   const linkedOrder = useLinkedOrderUnits(data?.ticket.orderId ?? null);
   const [reply, setReply] = useState("");
@@ -317,7 +318,7 @@ export function TicketDetailPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Ticket"><QueryErrorNotice what="ticket" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
   if (!data) return <PageLayout title="Ticket"><TicketDetailSkeleton /></PageLayout>;
 
   const { ticket, messages, user, customer, timeline } = data;
@@ -353,6 +354,8 @@ export function TicketDetailPage() {
           <TicketResolutionActions ticket={ticket} isClosed={isClosed} progress={progress} resolve={resolve} reopen={reopen} close={close} />
         }
       />
+
+      <QueryErrorNotice isError={isError} what="ticket" hasData error={error} onRetry={() => void refetch()} />
 
       <TicketTitleEditor key={ticket.subject} ticketId={ticket.id} initialTitle={ticket.subject} />
       <EvidenceHold ticketId={ticket.id} held={ticket.legalHold ?? false} />

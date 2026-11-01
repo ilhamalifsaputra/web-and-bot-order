@@ -29,6 +29,7 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -120,7 +121,7 @@ export function FlashSalesPage() {
   const fieldId = useId();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data, isLoading, isError } = useFlashSaleDenominations();
+  const { data, isLoading, isError, error, refetch } = useFlashSaleDenominations();
   // Computed once per render (not a ticking clock) — same convention as
   // VouchersPage's own `isExpiringSoon` "now", good enough for a countdown
   // that only needs to be roughly right between refetches.
@@ -290,10 +291,10 @@ export function FlashSalesPage() {
     },
   });
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Flash Sales">
-        <p className="text-sm text-rust">Failed to load denominations.</p>
+        <QueryErrorNotice what="denominations" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -307,6 +308,8 @@ export function FlashSalesPage() {
           <FlashSalesSetFlashSaleOn dialogOpen={dialogOpen} setDialogOpen={setDialogOpen} openNewFlashSale={openNewFlashSale} visibleSelected={visibleSelected} alreadyScheduledCount={alreadyScheduledCount} fieldId={fieldId} discountPercent={discountPercent} setDiscountPercent={setDiscountPercent} startsAt={startsAt} setStartsAt={setStartsAt} endsAt={endsAt} setEndsAt={setEndsAt} formError={formError} canSubmit={canSubmit} bulkApply={bulkApply} />
         }
       />
+
+      <QueryErrorNotice isError={isError} what="denominations" hasData error={error} onRetry={() => void refetch()} />
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Scheduled" value={scheduledCount} icon={Clock} isLoading={isLoading} />

@@ -44,6 +44,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { SelectFilter } from "../components/shared/SelectFilter";
@@ -233,7 +234,7 @@ export function SupportPage() {
     return () => clearTimeout(timer);
   }, [qDraft]);
 
-  const { data, isError, refetch } = useTickets(q, filters);
+  const { data, isError, error, refetch } = useTickets(q, filters);
   // Super-admin-only data source (mirrors AdminsPage) — a non-super admin
   // simply won't see assignee names/options here; the Assigned controls
   // still work off ticket.adminId for the "assigned" state (same convention
@@ -265,10 +266,10 @@ export function SupportPage() {
    *  branch in the first place. A ticket genuinely closed by a *different*
    *  admin (not seeded here) still surfaces its diff-toast normally. */
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Support Tickets">
-        <p className="text-sm text-rust">Failed to load tickets.</p>
+        <QueryErrorNotice what="tickets" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -375,6 +376,8 @@ export function SupportPage() {
           </a>
         }
       />
+
+      <QueryErrorNotice isError={isError} what="tickets" hasData error={error} onRetry={() => void refetch()} />
 
       <SupportStats data={data} toggleOverdueFilter={toggleOverdueFilter} />
 

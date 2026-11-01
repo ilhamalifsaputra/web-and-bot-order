@@ -39,6 +39,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -343,7 +344,7 @@ export function PaymentsPage() {
   }, [qDraft]);
   useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [outcome, kind, q, page]);
   const actionableApplied = actionable && isActionableOutcome(outcome);
-  const { data, isError } = usePayments(outcome, kind, q, page, actionableApplied);
+  const { data, isError, error, refetch } = usePayments(outcome, kind, q, page, actionableApplied);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
@@ -439,7 +440,7 @@ export function PaymentsPage() {
     },
   });
 
-  if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Payments"><QueryErrorNotice what="payments" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
 
   const { canSubmitMatch, showSuggestions } = paymentMatchingAvailability({ matchForm, orderCodeFocused, suggestLoading, searched });
 
@@ -453,6 +454,8 @@ export function PaymentsPage() {
           {data.health.detail}
         </div>
       )}
+
+      <QueryErrorNotice isError={isError} what="payments" hasData error={error} onRetry={() => void refetch()} />
 
       <PaymentStats data={data} />
 

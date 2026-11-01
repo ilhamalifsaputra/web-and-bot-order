@@ -69,8 +69,11 @@
  * underlying state has moved on.
  *
  * 401/403 need no special case: both short-circuit before the idempotency
- * block too, but both drive a full page reload in this codebase, which takes
- * the whole ref map with it regardless of what this decided.
+ * block too (a 401 means the session ended, a 403 that this admin may not run
+ * the action), so the server stored nothing under the key. They count as
+ * answered, so the key is dropped like any other known outcome. Nothing reloads
+ * the page for them: a 401 only raises the session-expired banner
+ * (api/sessionExpiry.ts) and the admin's draft stays where it is.
  *
  * TWO REQUESTS IN FLIGHT AT ONCE (a double-tapped confirm that outruns the
  * button's disabled state) are deduped too: the server reserves the key on the

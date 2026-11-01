@@ -41,6 +41,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { OrderStatusBadge } from "../components/shared/OrderStatusBadge";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -208,7 +209,7 @@ export function OrdersPage() {
   });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
-  const { data, isLoading, isError, refetch } = useOrders(filters);
+  const { data, isLoading, isError, error, refetch } = useOrders(filters);
   const { data: kpis } = useOrdersKpis();
   const pageOrders = data?.orders ?? [];
   const actions = useOrderActions({ orders: pageOrders, setSelected, setBulkFailures });
@@ -221,10 +222,10 @@ export function OrdersPage() {
     setBulkFailures([]);
   }, [filters]);
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Orders">
-        <p className="text-rust">Failed to load orders.</p>
+        <QueryErrorNotice what="orders" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -311,6 +312,8 @@ export function OrdersPage() {
           </a>
         }
       />
+
+      <QueryErrorNotice isError={isError} what="orders" hasData error={error} onRetry={() => void refetch()} />
 
       {kpis && (
         <p className="mb-4 text-xs text-ink-soft">

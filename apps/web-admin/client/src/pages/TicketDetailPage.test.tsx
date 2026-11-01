@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -751,5 +751,66 @@ describe("ticket title correction", () => {
     await user.clear(input); await user.type(input, "Payment confirmation delayed");
     await user.click(screen.getByRole("button", { name: "Save title" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/title", { title: "Payment confirmation delayed" }));
+  });
+});
+
+describe("TicketDetailPage — a failed background refresh keeps the page", () => {
+  function renderWithClient() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<TicketDetailPage />, { wrapper: ({ children }) => <CachedWrapper client={client}>{children}</CachedWrapper> });
+    return client;
+  }
+
+  function failTicketRefetch(fetchSpy: ReturnType<typeof mockFetches>, status: number) {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/admins")) return Promise.resolve(jsonResponse({ admins: [ADMIN_ROW] }));
+      return Promise.resolve(jsonResponse({ error: "x" }, status));
+    });
+  }
+
+  it.each([[401], [500]])("keeps the reply composer mounted and its text intact when the refetch fails with %i", async (status) => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetches(BASE_DETAIL);
+    const client = renderWithClient();
+    await screen.findByRole("heading", { name: "Conversation" });
+    const reply = screen.getByRole("textbox", { name: "Reply" });
+    await user.type(reply, "Sedang kami cek ya");
+
+    failTicketRefetch(fetchSpy, status);
+    await act(async () => { await client.refetchQueries({ queryKey: ["ticket", "1"] }); });
+
+    expect(await screen.findByText(/Couldn't refresh ticket/)).toBeInTheDocument();
+    expect(screen.queryByText("Failed to load ticket.")).not.toBeInTheDocument();
+    const stillThere = screen.getByRole("textbox", { name: "Reply" });
+    expect(stillThere).toBe(reply);
+    expect(stillThere).toHaveValue("Sedang kami cek ya");
+    await user.type(stillThere, " dulu");
+    expect(stillThere).toHaveValue("Sedang kami cek ya dulu");
+  });
+
+  it("Retry refetches the ticket and clears the notice", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetches(BASE_DETAIL);
+    const client = renderWithClient();
+    await screen.findByRole("heading", { name: "Conversation" });
+    failTicketRefetch(fetchSpy, 500);
+    await act(async () => { await client.refetchQueries({ queryKey: ["ticket", "1"] }); });
+    await screen.findByText(/Couldn't refresh ticket/);
+
+    mockFetches(BASE_DETAIL);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh ticket/)).not.toBeInTheDocument());
+    expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
+  });
+
+  it("a first-load failure offers Retry", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.resolve(jsonResponse({ error: "x" }, 500)));
+    renderWithClient();
+    expect(await screen.findByText("Failed to load ticket.")).toBeInTheDocument();
+    mockFetches(BASE_DETAIL);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("heading", { name: "Conversation" });
   });
 });

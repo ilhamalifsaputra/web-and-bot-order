@@ -1,16 +1,17 @@
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { domAnimation, LazyMotion, MotionConfig } from "motion/react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { createAppQueryClient } from "./api/queryClient";
 import App from "./App";
 import "./index.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing #root element");
 
-const queryClient = new QueryClient();
+const queryClient = createAppQueryClient();
 
 // A tab left open across a deploy still references the old hashed chunks,
 // which the new build deleted — reload once so it picks up the current

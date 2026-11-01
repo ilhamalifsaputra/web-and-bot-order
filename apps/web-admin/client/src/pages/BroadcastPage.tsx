@@ -27,6 +27,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
 
@@ -124,7 +125,7 @@ export function BroadcastPage() {
   const fieldId = useId();
   const qc = useQueryClient();
   const idempotentPost = useIdempotentPost();
-  const { data, isError } = useBroadcast();
+  const { data, isError, error, refetch } = useBroadcast();
   const [form, setForm] = useState({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
   const maxMessage = form.webImageUrl ? 1024 : 4000;
   const overLimit = form.message.length > maxMessage;
@@ -199,7 +200,7 @@ export function BroadcastPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Broadcast"><p className="text-sm text-rust">Failed to load broadcast.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Broadcast"><QueryErrorNotice what="broadcast" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
 
   return (
     <PageLayout title="Broadcast">
@@ -207,6 +208,8 @@ export function BroadcastPage() {
         title="Broadcast"
         description="Send announcements, promotions, product updates, and offers to selected customer segments."
       />
+
+      <QueryErrorNotice isError={isError} what="broadcast" hasData error={error} onRetry={() => void refetch()} />
 
       <BroadcastEditorLayout setForm={setForm} form={form} overLimit={overLimit} maxMessage={maxMessage} fieldId={fieldId} data={data} send={send} saveDraft={saveDraft} />
 

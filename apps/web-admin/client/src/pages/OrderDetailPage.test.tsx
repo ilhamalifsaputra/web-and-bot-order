@@ -1513,3 +1513,51 @@ describe("OrderDetailPage — unresolved at the supplier", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("OrderDetailPage — a failed background refresh keeps the page", () => {
+  function ok(body: unknown) {
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  function renderWithClient() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<OrderDetailPage />, {
+      wrapper: ({ children }) => (
+        <MemoryRouter initialEntries={["/orders/1"]}>
+          <QueryClientProvider client={client}>
+            <Routes><Route path="/orders/:orderId" element={children} /></Routes>
+          </QueryClientProvider>
+        </MemoryRouter>
+      ),
+    });
+    return client;
+  }
+
+  it("keeps the order on screen when the refetch fails, and Retry recovers", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.resolve(ok(ORDER_DETAIL_DATA)));
+    const client = renderWithClient();
+    await screen.findByText("CapCut Pro 1M");
+
+    fetchSpy.mockImplementation(() => Promise.resolve(new Response("{}", { status: 401, headers: { "Content-Type": "application/json" } })));
+    await act(async () => { await client.refetchQueries({ queryKey: ["order", "1"] }); });
+    expect(await screen.findByText(/Couldn't refresh order/)).toBeInTheDocument();
+    expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument();
+    expect(screen.queryByText("Failed to load order.")).not.toBeInTheDocument();
+
+    fetchSpy.mockImplementation(() => Promise.resolve(ok(ORDER_DETAIL_DATA)));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh order/)).not.toBeInTheDocument());
+    expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument();
+  });
+
+  it("a first-load failure shows the message with a Retry button", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.reject(new Error("network")));
+    renderWithClient();
+    expect(await screen.findByText("Failed to load order.")).toBeInTheDocument();
+    fetchSpy.mockImplementation(() => Promise.resolve(ok(ORDER_DETAIL_DATA)));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("CapCut Pro 1M");
+  });
+});

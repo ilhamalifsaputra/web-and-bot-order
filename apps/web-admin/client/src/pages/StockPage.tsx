@@ -14,6 +14,7 @@ import { useNavigate } from "react-router-dom";
 import { apiGet } from "../api/client";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -119,17 +120,17 @@ function useStock() {
 export function StockPage() {
   const fieldId = useId();
   const navigate = useNavigate();
-  const { data, isLoading, isError } = useStock();
+  const { data, isLoading, isError, error, refetch } = useStock();
   const [filter, setFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [familyFilter, setFamilyFilter] = useState<FamilyTab>(ALL_TAB);
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Stock">
-        <p className="text-rust">Failed to load stock.</p>
+        <QueryErrorNotice what="stock" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -207,6 +208,8 @@ export function StockPage() {
           </a>
         }
       />
+
+      <QueryErrorNotice isError={isError} what="stock" hasData error={error} onRetry={() => void refetch()} />
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} />

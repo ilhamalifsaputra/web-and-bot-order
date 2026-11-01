@@ -26,6 +26,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
@@ -207,7 +208,7 @@ export function UsersPage() {
     setSearchParams(debouncedQ ? { q: debouncedQ } : {}, { replace: true });
   }, [debouncedQ, setSearchParams]);
 
-  const { data, isLoading, isFetching, isError, refetch } = useCustomers(filters);
+  const { data, isLoading, isFetching, isError, error, refetch } = useCustomers(filters);
 
   // Selection is owned by its query context; a new filter/page immediately
   // renders without the old ids, including when cached results are reused.
@@ -224,10 +225,10 @@ export function UsersPage() {
 
   const banTarget = data?.users.find((u) => u.id === banTargetId) ?? null;
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Customers">
-        <p className="text-rust">Failed to load customers.</p>
+        <QueryErrorNotice what="customers" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -299,6 +300,8 @@ export function UsersPage() {
           </a>
         }
       />
+
+      <QueryErrorNotice isError={isError} what="customers" hasData error={error} onRetry={() => void refetch()} />
 
       <CustomersKpiRow />
 

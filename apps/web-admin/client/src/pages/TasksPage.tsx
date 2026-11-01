@@ -35,6 +35,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SelectFilter } from "../components/shared/SelectFilter";
 import { StatCard } from "../components/shared/StatCard";
@@ -214,7 +215,7 @@ export function TasksPage() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [completeTarget, setCompleteTarget] = useState<number | null>(null);
 
-  const { data, isError, refetch } = useAdminTasks(filters);
+  const { data, isError, error, refetch } = useAdminTasks(filters);
   const { data: adminsData } = useTaskAssignees();
 
   const assignableAdmins = adminsData?.admins ?? [];
@@ -263,10 +264,10 @@ export function TasksPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Tasks">
-        <p className="text-sm text-rust">Failed to load tasks.</p>
+        <QueryErrorNotice what="tasks" hasData={false} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -290,6 +291,8 @@ export function TasksPage() {
         title="Tasks"
         description="Manual operations queue: manual deliveries, account assignments, failed top-up and refund reviews."
       />
+
+      <QueryErrorNotice isError={isError} what="tasks" hasData error={error} onRetry={() => void refetch()} />
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Pending" value={data?.stats.pending ?? 0} icon={Clock} isLoading={!data} />

@@ -18,6 +18,7 @@ import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpe
 import { EmptyState } from "../components/shared/EmptyState";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { useSse } from "../hooks/useSse";
 import { describeError } from "../lib/errorMessages";
@@ -201,9 +202,17 @@ export function OrderDetailPage() {
   return <OrderDetailSession key={orderId} orderId={orderId} />;
 }
 
+/** What stands in for the order while there is no data yet: the load failed
+ * (with Retry) or is still in flight. */
+function OrderDetailUnavailable({ isError, error, onRetry }: { isError: boolean; error: unknown; onRetry: () => void }) {
+  return isError
+    ? <QueryErrorNotice what="order" hasData={false} error={error} onRetry={onRetry} />
+    : <p>Loading…</p>;
+}
+
 function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
   const qc = useQueryClient();
-  const { data, isError } = useOrderDetail(orderId ?? "");
+  const { data, isError, error, refetch } = useOrderDetail(orderId ?? "");
   useOrderProviderStream({ orderId, qc });
   const [rejectReason, setRejectReason] = useState("");
   const [fulfillContent, setFulfillContent] = useState("");
@@ -321,17 +330,10 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
     }
   }
 
-  if (isError) {
-    return (
-      <PageLayout title="Order Detail">
-        <p className="text-sm text-rust">Failed to load order.</p>
-      </PageLayout>
-    );
-  }
   if (!data) {
     return (
       <PageLayout title="Order Detail">
-        <p>Loading…</p>
+        <OrderDetailUnavailable isError={isError} error={error} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -391,6 +393,8 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
         title={`Order ${order.orderCode}`}
         breadcrumb={[{ label: "Orders", href: "/orders" }]}
       />
+
+      <QueryErrorNotice isError={isError} what="order" hasData error={error} onRetry={() => void refetch()} />
 
       {actionError && <p className="mb-4 text-sm text-rust">{actionError}</p>}
 

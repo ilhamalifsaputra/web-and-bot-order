@@ -1,3 +1,5 @@
+import { clearSessionExpired, markSessionExpired } from "./sessionExpiry";
+
 /** Read fresh on every call (not cached at module-load time) — this is what
  * makes the CSRF token testable independent of when this module happens to
  * be imported relative to the meta tag existing in the DOM. */
@@ -97,6 +99,8 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
  * The fix is a full reload to pick up the current session's token, so we
  * surface that instead of the bare, unexplained server string. */
 const CSRF_FAILURE_BODY = "CSRF check failed";
+const PERMISSION_DENIED_MESSAGE =
+  "You don't have permission to do this. Ask a super admin if you need access.";
 const STALE_SESSION_MESSAGE = "Your session was refreshed in another tab. Reload this page to continue.";
 
 /** Shared failure path for every helper below: read the body as text first
@@ -114,6 +118,12 @@ async function throwForResponse(res: Response, path: string): Promise<never> {
   } catch {
     // Not JSON — fall through to the generic message below.
   }
+  // A 401 means the session ended: tell the shell (one banner) and still throw,
+  // so the caller's own failure handling runs and no input is cleared.
+  if (res.status === 401) markSessionExpired();
+  // roleGate / requireSuper / blockReadonlyReads refuse with a bare text body,
+  // which would otherwise surface as "/api/users/5/wallet responded 403".
+  if (res.status === 403 && !data.error) throw apiError(PERMISSION_DENIED_MESSAGE, null, res.status);
   throw apiError(data.error ?? `${path} responded ${res.status}`, data, res.status);
 }
 
@@ -126,6 +136,8 @@ async function throwForResponse(res: Response, path: string): Promise<never> {
  * error, never a redirect) should mean this never fires — this is
  * defense-in-depth for any other 2xx-non-JSON edge case. */
 async function parseJsonOrThrow<T>(res: Response, path: string): Promise<T> {
+  // An answered request proves the session works again (e.g. logged in elsewhere).
+  clearSessionExpired();
   try {
     return (await res.json()) as T;
   } catch {

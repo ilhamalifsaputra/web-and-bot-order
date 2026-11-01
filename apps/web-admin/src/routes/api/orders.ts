@@ -50,6 +50,7 @@ import {
 } from "@app/db";
 import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
+import { readonlyOrderListRow } from "../../lib/readonlyOrders";
 import { orderMoneyView } from "../orderMoneyView";
 import { displayDate, displayDateTime } from "../../dateDisplay";
 import { MASKED_CREDENTIAL, CREDENTIAL_KEY_ERROR_MESSAGE } from "./stock";
@@ -181,11 +182,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       countOrders(prisma, filter),
     ]);
 
-    const ordersWithDisplay = orders.map((o) => ({
-      ...o,
-      createdAtDisplay: displayDate(o.createdAt),
-      eligibility: computeOrderEligibility(o.status, o.user?.telegramId ?? null, { digiflazzInFlight: isDigiflazzInFlight(o) }),
-    }));
+    const isReadonly = req.admin!.role === "readonly";
+    const ordersWithDisplay = orders.map((o) => {
+      const eligibility = computeOrderEligibility(o.status, o.user?.telegramId ?? null, { digiflazzInFlight: isDigiflazzInFlight(o) });
+      return isReadonly
+        ? readonlyOrderListRow(o, eligibility)
+        : { ...o, createdAtDisplay: displayDate(o.createdAt), eligibility };
+    });
     return reply.send({
       orders: ordersWithDisplay,
       total,

@@ -38,6 +38,7 @@ import {
   type UserSort,
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
+import { readonlyOrderSummary } from "../../lib/readonlyOrders";
 import { displayDate, displayDateTime } from "../../dateDisplay";
 
 const ROLES = [UserRole.CUSTOMER, UserRole.RESELLER] as string[];
@@ -235,6 +236,7 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     if (userId === null) return reply.code(400).send({ error: "Invalid user id." });
     const user = await getUser(prisma, userId);
     if (!user) return reply.code(404).send({ error: "User not found." });
+    const isReadonly = req.admin!.role === "readonly";
     const [totalSpent, orders, ordersTotal, tickets, ticketsTotal, ledger, ledgerTotal] = await Promise.all([
       userTotalSpent(prisma, userId),
       listUserOrders(prisma, userId, 20),
@@ -251,7 +253,9 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
         lastSeenAtDisplay: displayDateTime(user.lastSeenAt),
       },
       totalSpent,
-      orders: orders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
+      orders: orders.map((o) =>
+        isReadonly ? readonlyOrderSummary(o) : { ...o, createdAtDisplay: displayDate(o.createdAt) },
+      ),
       ordersTotal,
       // No `subject` field — SupportTicket has no such column, and nothing on
       // the frontend (UserDetailPage.tsx) reads it; `message` (already on

@@ -1009,6 +1009,182 @@ describe("GET /api/support/:ticketId linked order by role", () => {
   });
 });
 
+describe("readonly order rows on the list routes", () => {
+  const SENTINEL = "LIST-SENTINEL-must-stay-with-the-order-route";
+  const COST = "987654.32";
+  const PROTECTED = {
+    customerData: SENTINEL,
+    adminNote: `note-${SENTINEL}`,
+    paymentProofFileId: `proof-${SENTINEL}`,
+    inputConfigSnapshot: `input-${SENTINEL}`,
+    binanceTxid: `binance-${SENTINEL}`,
+    digiflazzFailureDetail: `failure-${SENTINEL}`,
+    accountDiagnosticNote: `diagnostic-${SENTINEL}`,
+  };
+  const OLD_FIELDS = { customerData: SENTINEL, adminNote: PROTECTED.adminNote, paymentProofFileId: PROTECTED.paymentProofFileId };
+
+  async function seedDenomination(group: "PREMIUM_APPS" | "GAME_TOPUP") {
+    const category = await prisma.category.create({ data: { name: group, slug: group.toLowerCase(), group } });
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `${group} product` });
+    return createDenomination(prisma, {
+      productId: product.id,
+      name: `${group} plan`,
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "18000",
+      costPrice: COST,
+    });
+  }
+
+  async function seedOrder(
+    group: "PREMIUM_APPS" | "GAME_TOPUP",
+    overrides: { status?: string; paymentMethod?: string; paymentRef?: string; expiresAt?: Date } = {},
+  ) {
+    const denomination = await seedDenomination(group);
+    return prisma.order.create({
+      data: {
+        orderCode: `ORD-${group}`,
+        userId: customerId,
+        subtotalAmount: "18000",
+        totalAmount: "18000",
+        currency: "IDR",
+        paymentMethod: "TOKOPAY",
+        ...PROTECTED,
+        ...overrides,
+        items: {
+          create: { productId: denomination.id, quantity: 1, unitPrice: "18000", costSnapshot: COST, warrantyDaysSnapshot: 7 },
+        },
+      },
+    });
+  }
+
+  function expectNothingProtected(body: string) {
+    expect(body).not.toContain(SENTINEL);
+    expect(body).not.toContain(COST);
+  }
+
+  async function asRole(role: "support" | "super", url: string) {
+    await setAdminRole(role);
+    const res = await get(url, cookie);
+    expect(res.statusCode).toBe(200);
+    return res;
+  }
+
+  it("requires auth on all three routes (anon → 401)", async () => {
+    for (const url of ["/api/orders", `/api/users/${customerId}`, "/api/payments"]) {
+      expect((await get(url, null)).statusCode).toBe(401);
+    }
+  });
+
+  it.each(["PREMIUM_APPS", "GAME_TOPUP"] as const)("GET /api/orders gives readonly only the list columns for a %s order", async (group) => {
+    await seedOrder(group);
+    await setAdminRole("readonly");
+
+    const res = await get("/api/orders", cookie);
+
+    expect(res.statusCode).toBe(200);
+    expectNothingProtected(res.body);
+    const [row] = (res.json() as { orders: (Record<string, unknown> & { user: object; items: unknown[] })[] }).orders;
+    expect(Object.keys(row!).sort()).toEqual([
+      "createdAt", "createdAtDisplay", "currency", "digiflazzStatus", "eligibility", "id", "items", "kind",
+      "orderCode", "paymentMethod", "status", "totalAmount", "user",
+    ]);
+    expect(Object.keys(row!.user).sort()).toEqual(["fullName", "guestEmail", "id", "isGuest", "telegramId", "username"]);
+    expect(row!.items).toEqual([{ id: expect.any(Number), quantity: 1, product: { id: expect.any(Number), name: `${group} plan` } }]);
+    expect(row).toMatchObject({ orderCode: `ORD-${group}`, totalAmount: "18000", paymentMethod: "TOKOPAY" });
+  });
+
+  it.each(["PREMIUM_APPS", "GAME_TOPUP"] as const)("GET /api/orders keeps the full row for support and super on a %s order", async (group) => {
+    await seedOrder(group);
+    const support = (await asRole("support", "/api/orders")).json() as { orders: Record<string, unknown>[] };
+    const superAdmin = (await asRole("super", "/api/orders")).json();
+    expect(support).toEqual(superAdmin);
+    expect(support.orders[0]).toMatchObject({
+      ...OLD_FIELDS,
+      items: [{ costSnapshot: COST, product: { costPrice: COST } }],
+    });
+  });
+
+  it.each(["PREMIUM_APPS", "GAME_TOPUP"] as const)("GET /api/users/:userId gives readonly only the order summary for a %s order", async (group) => {
+    await seedOrder(group);
+    await setAdminRole("readonly");
+
+    const res = await get(`/api/users/${customerId}`, cookie);
+
+    expect(res.statusCode).toBe(200);
+    expectNothingProtected(res.body);
+    const body = res.json() as { orders: Record<string, unknown>[]; ordersTotal: number };
+    expect(body.ordersTotal).toBe(1);
+    expect(Object.keys(body.orders[0]!).sort()).toEqual(
+      ["createdAt", "createdAtDisplay", "currency", "id", "orderCode", "status", "totalAmount"],
+    );
+  });
+
+  it("GET /api/users/:userId keeps the full rows for support and super", async () => {
+    await seedOrder("PREMIUM_APPS");
+    const url = `/api/users/${customerId}`;
+    const support = (await asRole("support", url)).json() as { orders: Record<string, unknown>[] };
+    const superAdmin = (await asRole("super", url)).json();
+    expect(support).toEqual(superAdmin);
+    expect(support.orders[0]).toMatchObject({ ...OLD_FIELDS, items: [{ costSnapshot: COST }] });
+  });
+
+  async function seedPayments() {
+    const underpaid = await seedOrder("PREMIUM_APPS", { status: "UNDERPAID", paymentRef: `ref-${SENTINEL}` });
+    await seedOrder("GAME_TOPUP", {
+      paymentMethod: "BINANCE_INTERNAL",
+      paymentRef: "INTERNAL-TRANSFER-REF",
+      expiresAt: addMinutes(new Date(), 30),
+    });
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: `LEDGER-TX-${underpaid.id}-${Date.now()}`, orderId: underpaid.id, amount: "10", outcome: "underpaid" },
+    });
+  }
+
+  it("GET /api/payments gives readonly only the page's columns for underpaid and pending internal orders", async () => {
+    await seedPayments();
+    await setAdminRole("readonly");
+
+    const res = await get("/api/payments", cookie);
+
+    expect(res.statusCode).toBe(200);
+    expectNothingProtected(res.body);
+    const body = res.json() as {
+      underpaid: Record<string, unknown>[];
+      pendingInternal: Record<string, unknown>[];
+      ledger: Record<string, unknown>[];
+    };
+    expect(Object.keys(body.underpaid[0]!).sort()).toEqual(
+      ["createdAt", "createdAtDisplay", "currency", "id", "kind", "orderCode", "totalAmount", "user"],
+    );
+    expect(body.underpaid[0]!.user).toEqual({ fullName: "Buyer", username: "buyer" });
+    expect(Object.keys(body.pendingInternal[0]!).sort()).toEqual(
+      ["currency", "expiresAt", "expiresAtDisplay", "id", "orderCode", "paymentRef", "totalAmount", "user"],
+    );
+    expect(body.pendingInternal[0]).toMatchObject({ paymentRef: "INTERNAL-TRANSFER-REF" });
+    expect(body.pendingInternal[0]!.user).toEqual({ fullName: "Buyer", username: "buyer" });
+    // The ledger is built column by column in listCombinedLedger, so it needs no projection.
+    expect(Object.keys(body.ledger[0]!).sort()).toEqual([
+      "amount", "createdAt", "currency", "gateway", "id", "orderCode", "orderId", "orderKind", "orderStatus", "outcome",
+      "processedAt", "processedAtDisplay", "reference", "suggestedOrderCode", "suggestedOrderId", "suggestedOrderKind",
+      "suggestedOrderStatus",
+    ]);
+  });
+
+  it("GET /api/payments keeps the full rows for support and super", async () => {
+    await seedPayments();
+    const stable = (body: object) => ({ ...body, health: null });
+    const support = (await asRole("support", "/api/payments")).json() as {
+      underpaid: Record<string, unknown>[];
+      pendingInternal: Record<string, unknown>[];
+    };
+    const superAdmin = (await asRole("super", "/api/payments")).json() as object;
+    expect(stable(support)).toEqual(stable(superAdmin));
+    expect(support.underpaid[0]).toMatchObject({ ...OLD_FIELDS, items: [{ costSnapshot: COST }] });
+    expect(support.pendingInternal[0]).toMatchObject(OLD_FIELDS);
+  });
+});
+
 describe("POST /api/support/:ticketId/priority", () => {
   it("happy path: sets priority and audits", async () => {
     const ticket = await createTicket(prisma, customerId, "Help please");

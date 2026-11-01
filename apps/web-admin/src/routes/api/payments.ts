@@ -42,6 +42,7 @@ import {
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { paymentsMutationRateLimited } from "../../auth";
 import { displayDateTime } from "../../dateDisplay";
+import { readonlyPendingInternalOrder, readonlyUnderpaidOrder } from "../../lib/readonlyOrders";
 
 const PAGE_SIZE = 50;
 
@@ -170,8 +171,13 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       processedAt: r.createdAt.toISOString(),
       processedAtDisplay: displayDateTime(r.createdAt),
     }));
-    const underpaidWithDisplay = underpaid.map((o) => ({ ...o, createdAtDisplay: displayDateTime(o.createdAt) }));
-    const pendingInternalWithDisplay = pendingInternal.map((o) => ({ ...o, expiresAtDisplay: displayDateTime(o.expiresAt) }));
+    const isReadonly = req.admin!.role === "readonly";
+    const underpaidWithDisplay = underpaid.map((o) =>
+      isReadonly ? readonlyUnderpaidOrder(o) : { ...o, createdAtDisplay: displayDateTime(o.createdAt) },
+    );
+    const pendingInternalWithDisplay = pendingInternal.map((o) =>
+      isReadonly ? readonlyPendingInternalOrder(o) : { ...o, expiresAtDisplay: displayDateTime(o.expiresAt) },
+    );
 
     return reply.send({
       enabled: binanceEnabled,

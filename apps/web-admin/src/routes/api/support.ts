@@ -47,6 +47,7 @@ import { BodyTooLargeError, readBodyWithLimit } from "@app/core/boundedBody";
 const MAX_SUPPORT_PHOTO_BYTES = 20 * 1024 * 1024;
 import { displayDate, displayDateTime, displayShortDateTime } from "../../dateDisplay";
 import { parseStatusChange } from "../../lib/ticketStatusChange";
+import { readonlyLinkedOrder, readonlyOrderSummary } from "../../lib/readonlyOrders";
 
 /** Telegram file ids are URL-safe base64-ish tokens; anything else is not one. */
 const TELEGRAM_FILE_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
@@ -187,41 +188,6 @@ function ticketPartyUser(
       : {}),
     ...(contact?.isGuest && contact.guestEmail ? { guestEmail: contact.guestEmail } : {}),
     isGuest: contact?.isGuest ?? false,
-  };
-}
-
-type LinkedTicketOrder = NonNullable<NonNullable<Awaited<ReturnType<typeof getTicketWithOrder>>>["order"]>;
-
-/** The only order fields a readonly admin receives through a ticket. An
- * allow-list because `GET /api/orders/:orderId` refuses readonly, so every
- * other Order column (buyer checkout answers, payment references, staff notes,
- * supplier diagnostics) stays out, including any column added later. */
-function readonlyOrderSummary(
-  order: Pick<LinkedTicketOrder, "id" | "orderCode" | "status" | "currency" | "totalAmount" | "createdAt">,
-) {
-  return {
-    id: order.id,
-    orderCode: order.orderCode,
-    status: order.status,
-    currency: order.currency,
-    totalAmount: order.totalAmount,
-    createdAt: order.createdAt,
-    createdAtDisplay: displayDate(order.createdAt),
-  };
-}
-
-/** `readonlyOrderSummary` plus what TicketIssueContext renders for a linked
- * order: item lines by name and price, and the voucher's code and type. */
-function readonlyLinkedOrder(order: LinkedTicketOrder) {
-  return {
-    ...readonlyOrderSummary(order),
-    items: order.items.map((item) => ({
-      id: item.id,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      product: { id: item.product.id, name: item.product.name },
-    })),
-    voucher: order.voucher ? { code: order.voucher.code, type: order.voucher.type } : null,
   };
 }
 

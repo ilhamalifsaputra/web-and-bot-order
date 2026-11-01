@@ -57,8 +57,9 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // set of GET routes that return credentials or full CSV/JSON exports (order
 // detail, stock credentials, orders/users/settings/support exports, support
 // attachments) is gated even for reads, refusing the `readonly` role
-// specifically. `GET /api/support/:ticketId` stays open but sends readonly only
-// an allow-listed order summary.
+// specifically. Routes that stay open but list orders (`/api/orders`,
+// `/api/users/:userId`, `/api/payments`, `/api/support/:ticketId`) send readonly
+// only the allow-listed rows in lib/readonlyOrders.ts.
 
 // Structural / money / account / high-impact routes — super only. All
 // mutations now arrive at the JSON /api/* surface (the legacy form routes
@@ -236,10 +237,9 @@ export const requireSuper: preHandlerHookHandler[] = [
 /**
  * Guard a read route that exposes account credentials or a bulk export:
  * `readonly` is refused, `support` and `super` keep today's full access.
- * Reads were previously open to every authenticated admin (see the RBAC
- * note above `canMutate`); this narrows exactly the five credential/export
- * routes named in the C-1 finding (security audit 2026-08-21), rather than
- * changing what any read route or role can do more broadly.
+ * Reads are otherwise open to every authenticated admin (see the RBAC note
+ * above `canMutate`); this guards only the routes that use it, not read routes
+ * or roles in general.
  */
 export const blockReadonlyReads: preHandlerHookHandler[] = [
   currentAdmin,

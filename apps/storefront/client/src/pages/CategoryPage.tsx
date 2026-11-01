@@ -4,6 +4,7 @@
  * Restyled onto the design system in Task 10 (page-templates.md §2).
  */
 import { useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { PackageSearch } from "lucide-react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
@@ -64,7 +65,7 @@ export default function CategoryPage() {
   // skeleton shaped like the loaded layout instead (see AccountPage).
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-48" />
@@ -79,7 +80,7 @@ export default function CategoryPage() {
             <ProductCardSkeleton key={i} />
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

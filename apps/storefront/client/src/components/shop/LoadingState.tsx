@@ -7,12 +7,29 @@
  * that already ship a good page-shaped skeleton (ReviewsPage et al.) keep it;
  * this is the default for the ones that don't, not a mandate to replace them.
  *
- * Same `aria-busy` + `aria-label` treatment as `RouteFallback` and every other
- * loading skeleton in the app, so assistive tech announces it identically
- * rather than as a new, unlabelled state. `variant` picks the silhouette.
+ * Wrapped in `LoadingRegion`, like `RouteFallback` and every other loading
+ * skeleton in the app, so assistive tech announces it identically rather than
+ * as a new, unlabelled state. `variant` picks the silhouette.
  */
+import { useId, type ReactNode } from "react";
 import { t } from "../../lib/i18n";
 import Skeleton from "../ui/Skeleton";
+
+/**
+ * The accessible wrapper for any loading skeleton: a busy `status` live
+ * region whose one readable child is visually-hidden text ("Loading…"),
+ * which also names the region through `aria-labelledby` — one copy of the
+ * words, announced once. The skeleton blocks inside stay `aria-hidden`.
+ */
+export function LoadingRegion({ label, className, children }: { label?: string; className?: string; children: ReactNode }) {
+  const id = useId();
+  return (
+    <div role="status" aria-busy="true" aria-labelledby={id} className={className}>
+      <span id={id} className="sr-only">{label ?? t("web.loading")}</span>
+      {children}
+    </div>
+  );
+}
 
 export type LoadingStateVariant = "page" | "list" | "detail" | "form";
 
@@ -25,7 +42,7 @@ export interface LoadingStateProps {
 
 export default function LoadingState({ variant = "page", label }: LoadingStateProps) {
   return (
-    <div aria-busy="true" aria-label={label ?? t("web.loading")} className="space-y-4">
+    <LoadingRegion label={label} className="space-y-4">
       {variant === "page" && (
         <>
           <Skeleton className="h-8 w-1/2" />
@@ -71,6 +88,6 @@ export default function LoadingState({ variant = "page", label }: LoadingStatePr
           <Skeleton className="h-11 w-full" />
         </div>
       )}
-    </div>
+    </LoadingRegion>
   );
 }

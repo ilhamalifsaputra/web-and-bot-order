@@ -1,4 +1,5 @@
 import { useSupportUploads } from "../lib/supportUploads";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import SupportUploadPicker from "../components/shop/SupportUploadPicker";
 /**
  * Two-column support workspace: conversation thread (merged via
@@ -125,7 +126,7 @@ export default function TicketDetailPage() {
   if (failure !== undefined) return failure;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-16 w-full" />
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="space-y-3">
@@ -134,7 +135,7 @@ export default function TicketDetailPage() {
           </div>
           <Skeleton className="h-64 w-full" />
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

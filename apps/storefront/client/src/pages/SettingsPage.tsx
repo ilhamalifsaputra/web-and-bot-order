@@ -31,6 +31,7 @@
  * changes" row) — see deviations.md §17-support.
  */
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
@@ -63,11 +64,11 @@ interface CredentialsVars {
 function SettingsPlaceholder({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   if (error && !isUnauthorized(error)) return <LoadFailedState onRetry={onRetry} />;
   return (
-    <div aria-busy="true" aria-label={t("web.loading")} className="max-w-md space-y-3">
+    <LoadingRegion className="max-w-md space-y-3">
       <Skeleton className="h-8 w-48" />
       <Skeleton className="h-10 w-full" />
       <Skeleton className="h-10 w-full" />
-    </div>
+    </LoadingRegion>
   );
 }
 

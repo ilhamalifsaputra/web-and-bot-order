@@ -537,7 +537,7 @@ describe("OrderDetailPage — canonical automatic fulfillment", () => {
       expect(progress.querySelector('[aria-current="step"]')).toBeInTheDocument();
     } else {
       expect(progress.querySelector('[aria-current="step"]')).not.toBeInTheDocument();
-      expect(progress.querySelector(".animate-spin")).not.toBeInTheDocument();
+      expect(progress.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     }
     expect(screen.queryByRole("button", { name: /Edit/ })).not.toBeInTheDocument();
   });
@@ -642,7 +642,7 @@ describe("OrderDetailPage — status card, layout and refresh demotion", () => {
     unmount();
     const second = renderDetail(() => data("SUCCESS"));
     await screen.findByRole("heading", { name: "Top-up completed" });
-    expect(second.container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(second.container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
   });
 

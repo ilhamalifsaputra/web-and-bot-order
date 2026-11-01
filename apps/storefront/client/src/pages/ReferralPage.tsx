@@ -24,6 +24,7 @@
  * pre-formatted on the server.
  */
 import { useEffect } from "react";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { useQuery } from "@tanstack/react-query";
 import { Copy, Gift, Users } from "lucide-react";
 import { apiGet } from "../api/client";
@@ -53,10 +54,10 @@ export default function ReferralPage() {
   if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-48" />
         <Skeleton className="h-40 w-full" />
-      </div>
+      </LoadingRegion>
     );
   }
 

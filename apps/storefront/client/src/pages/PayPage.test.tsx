@@ -87,7 +87,7 @@ describe("canonical transaction presentation", () => {
   it("stops every transaction spinner while a paid manual order waits", async () => {
     const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation({ phase: "MANUAL_WAITING", spinner: false, progress: null, topUp: false, transactionType: "PREMIUM_APPS", titleKey: "web.order_processing_title", bodyKey: "web.order_processing_body" }) }));
     await screen.findByRole("heading", { name: "Waiting to be prepared" });
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
   it("renders the status title as a section-title and the page title without a forced size (H-41, H-36)", async () => {
@@ -107,7 +107,7 @@ describe("canonical transaction presentation", () => {
     expect(await screen.findByRole("heading", { name: "Paid too little" })).toBeInTheDocument();
     expect(screen.getByText("5.1 USDT")).toBeInTheDocument();
     expect(screen.getByText("3 USDT")).toBeInTheDocument();
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Contact admin/ })).toHaveAttribute("href", "https://t.me/shopsupport");
   });

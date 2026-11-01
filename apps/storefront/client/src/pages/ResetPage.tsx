@@ -24,6 +24,7 @@
  * are byte-for-byte unchanged.
  */
 import { type FormEvent } from "react";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { LockKeyhole } from "lucide-react";
@@ -113,7 +114,7 @@ export default function ResetPage() {
           </Link>
 
           {checkQuery.isPending ? (
-            <div className="mt-6 space-y-4" aria-busy="true" aria-label={t("web.loading")}>
+            <LoadingRegion className="mt-6 space-y-4">
               {Array.from({ length: 2 }).map((_, i) => (
                 <div key={i} className="space-y-2">
                   <Skeleton className="h-4 w-24" />
@@ -121,7 +122,7 @@ export default function ResetPage() {
                 </div>
               ))}
               <Skeleton className="h-11 w-full" />
-            </div>
+            </LoadingRegion>
           ) : tokenKnownInvalid ? (
             <>
               <Alert variant="banner" tone="error" className="mt-4">

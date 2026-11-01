@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from "react";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Send } from "lucide-react";
@@ -82,7 +83,7 @@ function SupportTicketHistory() {
   return (<section className="card min-w-0 p-4 sm:p-5" aria-labelledby="ticket-history-title">
         <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="ticket-history-title" className="text-base font-semibold">{t("helpdesk.history")} <span className="text-sm font-normal text-ink-soft">{list.data?.total ?? ""}</span></h2><select className="field max-w-full text-sm" aria-label={t("helpdesk.filter")} value={filter} onChange={(event) => { setFilter(event.target.value); setPage(1); }}><option value="all">{t("helpdesk.all")}</option><option value="waiting_for_support">{t("helpdesk.status_new")}</option><option value="in_progress">{t("helpdesk.status_progress")}</option><option value="waiting_for_you">{t("helpdesk.status_waiting")}</option><option value="resolved">{t("helpdesk.resolved")}</option><option value="closed">{t("helpdesk.closed")}</option></select></div>
         <input type="search" className="field my-3 w-full" aria-label={t("web.help_search_tickets")} placeholder={t("web.help_search_tickets")} value={search} onChange={(event) => setSearch(event.target.value)} />
-        {list.isLoading && <div aria-busy="true" aria-label={t("web.loading")} className="space-y-2 py-1">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)}</div>}
+        {list.isLoading && <LoadingRegion className="space-y-2 py-1">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)}</LoadingRegion>}
         {list.isError && <div role="alert" className="space-y-2"><p className="text-sm">{tError(list.error)}</p><Button variant="soft" size="sm" onClick={() => void list.refetch()}>{t("helpdesk.retry")}</Button></div>}
         {!list.isLoading && !list.isError && !list.data?.tickets.length && <p className="py-6 text-center text-sm text-ink-soft">{t("web.no_tickets_desc")}</p>}
         <ul className="space-y-2">{list.data?.tickets.map((ticket) => <li key={ticket.id}><TicketCard ticket={ticket} onSelect={(id) => navigate(`/account/support/${id}`)} /></li>)}</ul>

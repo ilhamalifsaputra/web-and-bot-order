@@ -16,6 +16,7 @@ export default function Spinner() {
   return (
     <span
       aria-hidden="true"
+      data-slot="spinner"
       className="mr-1.5 inline-block h-3.5 w-3.5 motion-safe:animate-spin rounded-full border-2 border-current border-r-transparent align-[-0.125em]"
     />
   );

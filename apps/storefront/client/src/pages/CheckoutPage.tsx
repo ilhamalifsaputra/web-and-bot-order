@@ -1,4 +1,5 @@
 import CheckoutErrorBanner from "../components/shop/CheckoutErrorBanner";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * TSX port of apps/storefront/views/checkout.njk + its embedded totals
  * partial views/_checkout_totals.njk. checkout.njk's inline <script>
@@ -313,7 +314,7 @@ export default function CheckoutPage() {
   if (!data) {
     if (!error) {
       return (
-        <div aria-busy="true" aria-label={t("web.loading")}>
+        <LoadingRegion>
           <Skeleton className="mb-5 h-8 w-48" />
           <div className="grid items-start gap-6">
             <div className="space-y-6">
@@ -335,7 +336,7 @@ export default function CheckoutPage() {
               <Skeleton className="h-10 w-full" />
             </Card>
           </div>
-        </div>
+        </LoadingRegion>
       );
     }
     // The checkout payload never arrived — most likely the anonymous read

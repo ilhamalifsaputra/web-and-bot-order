@@ -1,4 +1,5 @@
 import { advanceCardState } from "./PayPage.helpers";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * TSX port of apps/storefront/views/pay.njk + its polled fragment
  * views/_pay_status.njk. Two independent data sources, exactly like the NJK:
@@ -262,10 +263,10 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   }
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-56" />
         <Skeleton className="mx-auto h-72 w-full max-w-md" />
-      </div>
+      </LoadingRegion>
     );
   }
 

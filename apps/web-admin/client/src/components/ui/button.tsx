@@ -18,7 +18,7 @@ type ButtonProps = Omit<
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
     /** The admin's one pending-button pattern: a spinner in place of the
-     * leading icon (or before the label), the label kept (callers may pass a
+     * leading icon (or before the label; a trailing icon stays), the label kept (callers may pass a
      * "Saving…" label), the button disabled and `aria-busy`, and its width
      * held at least at its idle width so the row doesn't jump. Ignored with
      * `asChild` (a Slot can't take the extra spinner child). */
@@ -78,7 +78,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       disabled={showPending || disabled}
       className={cn(
         buttonVariants({ variant, size, className }),
-        showPending && "[&>svg:not([data-slot=spinner])]:hidden"
+        showPending && "[&>[data-slot=spinner]+svg]:hidden"
       )}
       {...pressable}
       {...props}

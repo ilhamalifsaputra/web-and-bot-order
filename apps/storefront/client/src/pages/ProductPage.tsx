@@ -6,6 +6,7 @@
  * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import {
   Bell,
   Package,
@@ -178,7 +179,7 @@ function ProductSession({ slug }: { slug: string }) {
   }
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-4 w-48" />
         <div className="grid gap-8 lg:grid-cols-2">
           <Skeleton className="h-48 w-full sm:h-56 lg:h-64 xl:h-72" />
@@ -189,7 +190,7 @@ function ProductSession({ slug }: { slug: string }) {
             <Skeleton className="h-12 w-full" />
           </div>
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

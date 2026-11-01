@@ -28,7 +28,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Stretch to the container width — auth flow + mobile sticky purchase bar. */
   fullWidth?: boolean;
   /** The storefront's one pending-button pattern: a spinner in place of the
-   * leading icon (or before the label), the label kept, the button disabled
+   * leading icon (or before the label; a trailing icon stays), the label kept, the button disabled
    * and `aria-busy`, its idle width held as a minimum so it doesn't jump. */
   pending?: boolean;
 }
@@ -82,7 +82,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
         `btn-${variant}`,
         size === "sm" && "btn-sm",
         fullWidth && "w-full",
-        pending && "[&>svg]:hidden",
+        pending && "[&>[data-slot=spinner]+svg]:hidden",
         className,
       )}
       disabled={pending || disabled}

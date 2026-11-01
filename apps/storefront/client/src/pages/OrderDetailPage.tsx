@@ -1,4 +1,5 @@
 import { keyedContent } from "../lib/keyedContent";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /** Order detail uses canonical backend fulfillment, full-detail SSE refetches
  * and five-second polling while payment or delivery is outstanding.
  * Historical amounts preserve their settlement and central-IDR bases. */
@@ -93,7 +94,7 @@ export default function OrderDetailPage() {
   if (failure !== undefined) return failure;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-56" />
         <div className="card mb-5 space-y-3 p-4">
           <Skeleton className="h-4 w-2/3" />
@@ -101,7 +102,7 @@ export default function OrderDetailPage() {
         </div>
         <Skeleton className="mb-5 h-40 w-full" />
         <Skeleton className="ml-auto h-32 w-full max-w-md" />
-      </div>
+      </LoadingRegion>
     );
   }
 

@@ -12,6 +12,7 @@
  * self-contained component).
  */
 import { useEffect, useMemo, useState } from "react";
+import { LoadingRegion } from "./LoadingState";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ExternalLink, RotateCcw } from "lucide-react";
@@ -145,11 +146,11 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
       <div className="mb-4">{backLink}</div>
 
       {!data && !error && (
-        <div aria-busy="true" aria-label={t("web.loading")} className="space-y-3">
+        <LoadingRegion className="space-y-3">
           <Skeleton className="h-6 w-1/3" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-3/4" />
-        </div>
+        </LoadingRegion>
       )}
 
       {error && (error as Error & { status?: number }).status !== 401 && !data && (

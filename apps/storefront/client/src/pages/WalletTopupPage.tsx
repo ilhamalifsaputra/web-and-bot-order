@@ -21,6 +21,7 @@
  * changed.
  */
 import { useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { AlertTriangle, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -266,7 +267,7 @@ export default function WalletTopupPage() {
   if (!data) {
     if (!error) {
       return (
-        <div aria-busy="true" aria-label={t("web.loading")}>
+        <LoadingRegion>
           <Skeleton className="mb-5 h-8 w-48" />
           <Card className="space-y-3 max-w-lg">
             <Skeleton className="h-10 w-full" />
@@ -275,7 +276,7 @@ export default function WalletTopupPage() {
               <Skeleton key={i} className="h-14 w-full rounded-xl" />
             ))}
           </Card>
-        </div>
+        </LoadingRegion>
       );
     }
     return (

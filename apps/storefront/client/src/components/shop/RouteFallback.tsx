@@ -1,4 +1,4 @@
-import { t } from "../../lib/i18n";
+import { LoadingRegion } from "./LoadingState";
 import Skeleton from "./Skeleton";
 
 /**
@@ -11,15 +11,15 @@ import Skeleton from "./Skeleton";
  * here would make navigation feel slower, not faster, than the pages it
  * sits beside that never show one at all.
  *
- * Same `aria-busy`/`aria-label` treatment as every data-loading skeleton in
+ * Same `LoadingRegion` (busy `status`, one sr-only label) as every data-loading skeleton in
  * this app, so assistive tech announces this exactly like any other loading
  * state rather than a new, unannounced one.
  */
 export default function RouteFallback() {
   return (
-    <div aria-busy="true" aria-label={t("web.loading")}>
+    <LoadingRegion>
       <Skeleton className="mb-3 h-6 w-40" />
       <Skeleton className="h-24 w-full max-w-md" />
-    </div>
+    </LoadingRegion>
   );
 }

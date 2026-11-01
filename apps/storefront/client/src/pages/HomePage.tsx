@@ -1,4 +1,5 @@
 import * as m from "motion/react-m";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * TSX port of apps/storefront/views/home.njk (design.md §4.8) — hero, the
  * catalog by product group (sticky group nav, flash sale, one section per
@@ -119,7 +120,7 @@ export default function HomePage() {
   if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <div className="rounded-3xl bg-ink px-6 py-12 sm:px-10 sm:py-16 mb-12">
           <Skeleton className="h-5 w-28 bg-white/10" />
           <Skeleton className="mt-5 h-10 w-3/4 max-w-md bg-white/10" />
@@ -134,7 +135,7 @@ export default function HomePage() {
             <ProductCardSkeleton key={i} />
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

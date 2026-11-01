@@ -1,4 +1,5 @@
 import { guestMenuGroups, MenuGroup, MenuItem } from "./AccountPage.helpers";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * TSX port of apps/storefront/views/account.njk, since restructured for the
  * phone: the page used to be one undifferentiated wall of five identical link
@@ -288,11 +289,7 @@ export default function AccountPage() {
   if (!data) {
     return (
       <div className="lg:relative lg:left-1/2 lg:w-screen lg:-translate-x-1/2">
-        <div
-          aria-busy="true"
-          aria-label={t("web.loading")}
-          className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6"
-        >
+        <LoadingRegion className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6">
           <div className="card card-pad flex items-center gap-4">
             <Skeleton className="h-14 w-14 rounded-full" />
             <div className="min-w-0 flex-1 space-y-2">
@@ -330,7 +327,7 @@ export default function AccountPage() {
               </div>
             ))}
           </div>
-        </div>
+        </LoadingRegion>
       </div>
     );
   }

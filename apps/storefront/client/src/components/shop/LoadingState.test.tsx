@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import LoadingState from "./LoadingState";
+import LoadingState, { LoadingRegion } from "./LoadingState";
+import RouteFallback from "./RouteFallback";
 
 describe("LoadingState", () => {
   it("announces itself with aria-busy + a localised label", () => {
@@ -37,5 +38,29 @@ describe("LoadingState", () => {
     expect(page.querySelector(".max-w-md")).not.toBeInTheDocument();
     expect(page.querySelectorAll(".h-16").length).toBe(0);
     expect(page.querySelector(".h-64")).toBeInTheDocument();
+  });
+});
+
+describe("LoadingState as a live region", () => {
+  it("is a busy status region named by its one visually-hidden label", () => {
+    render(<LoadingState />);
+    const region = screen.getByRole("status", { name: "Loading…" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+    expect(region).toHaveTextContent("Loading…");
+    // Named by reference to its own text, not a second copy in aria-label.
+    expect(region).not.toHaveAttribute("aria-label");
+    expect(screen.getAllByText("Loading…")).toHaveLength(1);
+  });
+
+  it("LoadingRegion wraps a page's own skeleton the same way", () => {
+    render(<LoadingRegion className="space-y-3"><div /></LoadingRegion>);
+    const region = screen.getByRole("status", { name: "Loading…" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+    expect(region).toHaveClass("space-y-3");
+  });
+
+  it("RouteFallback is a busy status region too", () => {
+    render(<RouteFallback />);
+    expect(screen.getByRole("status", { name: "Loading…" })).toHaveAttribute("aria-busy", "true");
   });
 });

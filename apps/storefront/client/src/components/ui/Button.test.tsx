@@ -81,9 +81,14 @@ describe("Button pending", () => {
     expect(btn.querySelector("span[aria-hidden='true'].rounded-full")).toBeInTheDocument();
   });
 
-  it("swaps a leading icon for the spinner instead of showing both", () => {
-    render(<Button pending><svg data-testid="icon" />Send</Button>);
-    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("[&>svg]:hidden");
+  it("swaps a leading icon for the spinner instead of showing both, keeping a trailing icon", () => {
+    render(<Button pending><svg data-testid="lead" />Next<svg data-testid="trail" /></Button>);
+    const btn = screen.getByRole("button", { name: "Next" });
+    // Hides only the svg right after the spinner (the leading icon).
+    expect(btn).toHaveClass("[&>[data-slot=spinner]+svg]:hidden");
+    expect(btn).not.toHaveClass("[&>svg]:hidden");
+    expect(btn.firstElementChild).toHaveAttribute("data-slot", "spinner");
+    expect(btn.lastElementChild).toHaveAttribute("data-testid", "trail");
   });
 
   it("does not fire clicks while pending", () => {

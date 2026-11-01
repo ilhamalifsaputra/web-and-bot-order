@@ -94,3 +94,12 @@ describe("help center on plain http", () => {
     }
   });
 });
+
+describe("help center ticket history loading", () => {
+  it("shows a busy status region, not an empty list, while history loads", async () => {
+    vi.mocked(apiGet).mockImplementation(async (path) => path.endsWith("/options") ? options : new Promise(() => {}));
+    show();
+    const region = await screen.findByRole("status", { name: "Loading…" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+  });
+});

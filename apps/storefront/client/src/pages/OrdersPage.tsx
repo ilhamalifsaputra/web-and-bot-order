@@ -15,6 +15,7 @@
  * out).
  */
 import { useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { Receipt } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -97,7 +98,7 @@ export default function OrdersPage() {
   if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-48" />
         <div className="space-y-3">
           {SKELETON_ROWS.map((i) => (
@@ -111,7 +112,7 @@ export default function OrdersPage() {
             </div>
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

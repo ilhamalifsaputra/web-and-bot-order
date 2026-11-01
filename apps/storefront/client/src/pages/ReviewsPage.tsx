@@ -13,6 +13,7 @@
  * width. Rating/comment payload is unchanged.
  */
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { Star } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet, apiPost } from "../api/client";
@@ -137,13 +138,13 @@ export default function ReviewsPage() {
   if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-48" />
         <div className="space-y-3">
           <Skeleton className="h-32 w-full" />
           <Skeleton className="h-32 w-full" />
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

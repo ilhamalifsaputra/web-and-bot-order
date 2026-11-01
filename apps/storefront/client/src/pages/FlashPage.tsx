@@ -1,4 +1,5 @@
 import * as m from "motion/react-m";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * "Flash sale" — the products whose sale window is open right now. The nav
  * drawer only links here when `flash_active` says a sale is running, but the
@@ -44,7 +45,7 @@ export default function FlashPage() {
   if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-40" />
@@ -54,7 +55,7 @@ export default function FlashPage() {
             <ProductCardSkeleton key={i} />
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

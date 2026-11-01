@@ -24,6 +24,7 @@
  * element type. See deviations.md §13-checkout.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { ChevronRight, Package, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -250,7 +251,7 @@ function CartSessionEnded() {
 function CartPlaceholder({ failed, onRetry }: { failed: boolean; onRetry: () => void }) {
   if (failed) return <LoadFailedState onRetry={onRetry} />;
   return (
-    <div aria-busy="true" aria-label={t("web.loading")}>
+    <LoadingRegion>
       <Skeleton className="mb-6 h-6 w-56" />
       <div className="grid items-start gap-6 lg:grid-cols-3">
         <Card padded={false} className="lg:col-span-2 divide-y divide-line">
@@ -266,7 +267,7 @@ function CartPlaceholder({ failed, onRetry }: { failed: boolean; onRetry: () => 
         </Card>
         <Skeleton className="h-48 w-full" />
       </div>
-    </div>
+    </LoadingRegion>
   );
 }
 

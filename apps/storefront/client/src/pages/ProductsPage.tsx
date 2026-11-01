@@ -5,6 +5,7 @@
  * uses, so prices here can't drift from the ones checkout charges.
  */
 import { useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { PackageSearch } from "lucide-react";
 import { apiGet } from "../api/client";
 import type { ShelfPageData } from "../api/types";
@@ -39,7 +40,7 @@ export default function ProductsPage() {
   if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-48" />
@@ -49,7 +50,7 @@ export default function ProductsPage() {
             <ProductCardSkeleton key={i} />
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

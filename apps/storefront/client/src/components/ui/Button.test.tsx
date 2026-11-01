@@ -70,3 +70,47 @@ describe("Button", () => {
     expect(btn).toHaveAttribute("aria-pressed", "true");
   });
 });
+
+describe("Button pending", () => {
+  it("keeps its label, shows a spinner, is disabled and busy", () => {
+    render(<Button pending>Save</Button>);
+    const btn = screen.getByRole("button", { name: "Save" });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("aria-busy", "true");
+    expect(btn).toHaveAttribute("data-pending", "true");
+    expect(btn.querySelector("span[aria-hidden='true'].rounded-full")).toBeInTheDocument();
+  });
+
+  it("swaps a leading icon for the spinner instead of showing both", () => {
+    render(<Button pending><svg data-testid="icon" />Send</Button>);
+    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("[&>svg]:hidden");
+  });
+
+  it("does not fire clicks while pending", () => {
+    const onClick = vi.fn();
+    render(<Button pending onClick={onClick}>Save</Button>);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("is a normal button when not pending, and keeps an explicit disabled", () => {
+    const { rerender } = render(<Button pending={false}>Save</Button>);
+    const btn = screen.getByRole("button", { name: "Save" });
+    expect(btn).toBeEnabled();
+    expect(btn).not.toHaveAttribute("aria-busy");
+    expect(btn.querySelector(".rounded-full")).not.toBeInTheDocument();
+    rerender(<Button pending={false} disabled>Save</Button>);
+    expect(btn).toBeDisabled();
+  });
+
+  it("never shrinks while pending: holds the idle width as a minimum", () => {
+    const { rerender } = render(<Button pending={false}>Pay now</Button>);
+    const btn = screen.getByRole("button", { name: "Pay now" });
+    vi.spyOn(btn, "getBoundingClientRect").mockReturnValue({ width: 140 } as DOMRect);
+    rerender(<Button pending={false}>Pay now</Button>);
+    rerender(<Button pending>Processing…</Button>);
+    expect(btn.style.minWidth).toBe("140px");
+    rerender(<Button pending={false}>Pay now</Button>);
+    expect(btn.style.minWidth).toBe("");
+  });
+});

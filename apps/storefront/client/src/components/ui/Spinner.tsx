@@ -8,12 +8,15 @@
  * The optical baseline nudge uses `-0.125em` (the same value app.css's
  * `svg.lucide` rule uses) rather than the old hard-coded `-2px`, so it tracks
  * font size and clears the ESLint gate's px ban without an allowlist entry.
+ *
+ * Rotates only under `motion-safe`: a reduced-motion viewer sees a still
+ * ring. Prefer `<Button pending>` over placing this by hand in a button.
  */
 export default function Spinner() {
   return (
     <span
       aria-hidden="true"
-      className="mr-1.5 inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent align-[-0.125em]"
+      className="mr-1.5 inline-block h-3.5 w-3.5 motion-safe:animate-spin rounded-full border-2 border-current border-r-transparent align-[-0.125em]"
     />
   );
 }

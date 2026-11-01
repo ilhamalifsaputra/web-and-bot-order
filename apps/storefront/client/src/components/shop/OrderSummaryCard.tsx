@@ -45,7 +45,6 @@ import { cn } from "../ui/cn";
 import FlashBadge from "./FlashBadge";
 import { flashPercentLabel } from "./FlashBadge.helpers";
 import Price from "./Price";
-import Spinner from "./Spinner";
 import { TierLineNote } from "./TierPricing";
 import { tierApplies } from "./TierPricing.helpers";
 
@@ -170,7 +169,7 @@ export default function OrderSummaryCard({
           {/* The caller decides whether this in-flow CTA is offered;
               instant checkout observes this actual button for its mobile bar. */}
           {showDesktopSubmit && (
-            <Button
+            <Button pending={submitPending}
               ref={submitRef}
               id={submitId}
               variant="primary"
@@ -179,7 +178,6 @@ export default function OrderSummaryCard({
               disabled={submitDisabled}
               onClick={onSubmit}
             >
-              {submitPending && <Spinner />}
               {submitPending ? t("web.checkout_processing") : submitLabel}
               {!submitPending && submitPrice && <> · {submitPrice}</>}
               {!submitPending && (submitIcon ?? <ChevronRight className="w-4 h-4" />)}
@@ -222,10 +220,9 @@ function OrderSummaryCardVoucherCode({ voucherInput, onVoucherInputChange, onVou
         id="voucher_apply"
         variant="soft"
         className="shrink-0"
-        disabled={voucherPending}
+        pending={voucherPending}
         onClick={onVoucherApply}
       >
-        {voucherPending && <Spinner />}
         {t("web.voucher_apply")}
       </Button>
     </div>

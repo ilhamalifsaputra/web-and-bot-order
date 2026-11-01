@@ -12,7 +12,6 @@ import Button from "../ui/Button";
 import Textarea from "../ui/Textarea";
 import AttachmentPicker from "./AttachmentPicker";
 import ProgressBar from "./ProgressBar";
-import Spinner from "./Spinner";
 
 const MAX_MESSAGE_LENGTH = 2000;
 const DRAFT_SAVE_DEBOUNCE_MS = 500;
@@ -91,7 +90,7 @@ export default function TicketComposer({
         </span>
       </div>
       {uploadSlot ?? <AttachmentPicker files={files} onChange={onFilesChange} disabled={pending} />}
-      {pending && files.length > 0 && (
+      {pending && files.length > 0 && uploadProgress > 0 && (
         <div className="mt-2">
           <ProgressBar value={uploadProgress} />
         </div>
@@ -102,8 +101,7 @@ export default function TicketComposer({
             {t("helpdesk.upload_failed_blocks_send")}
           </p>
         )}
-        <Button type="submit" variant="primary" size="sm" disabled={pending || uploadBusy || (!message.trim() && !hasUploads)}>
-          {pending && <Spinner />}
+        <Button pending={pending} type="submit" variant="primary" size="sm" disabled={pending || uploadBusy || (!message.trim() && !hasUploads)}>
           <Send className="w-3.5 h-3.5" /> {t("web.support_reply")}
         </Button>
       </div>

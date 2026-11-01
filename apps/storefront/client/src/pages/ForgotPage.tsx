@@ -29,7 +29,6 @@ import { Link } from "react-router-dom";
 import { KeyRound } from "lucide-react";
 import { publicPost } from "../api/client";
 import AuthBrandPanel from "../components/AuthBrandPanel";
-import Spinner from "../components/shop/Spinner";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
@@ -102,8 +101,7 @@ export default function ForgotPage() {
               <FormField label={t("web.register_email")} htmlFor="email">
                 <Input id="email" type="email" name="email" autoComplete="email" required />
               </FormField>
-              <Button type="submit" variant="primary" fullWidth disabled={pending}>
-                {pending && <Spinner />}
+              <Button type="submit" variant="primary" fullWidth pending={pending}>
                 {t("web.forgot_submit")}
               </Button>
             </form>

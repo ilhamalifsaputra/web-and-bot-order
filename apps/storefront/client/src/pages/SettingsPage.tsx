@@ -38,7 +38,6 @@ import type { SettingsData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import CurrencyToggle from "../components/layout/CurrencyToggle";
 import PasswordInput from "../components/shop/PasswordInput";
-import Spinner from "../components/shop/Spinner";
 import TelegramLoginButton from "../components/shop/TelegramLoginButton";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
@@ -282,9 +281,8 @@ function SettingsUsername({ onSubmit, username, setUsername, email, setEmail, pa
           type="submit"
           variant="primary"
           className="w-full sm:w-auto"
-          disabled={credentialsMutation.isPending}
+          pending={credentialsMutation.isPending}
         >
-          {credentialsMutation.isPending && <Spinner />}
           {t("web.settings_save")}
         </Button>
       </form>

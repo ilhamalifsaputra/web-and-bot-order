@@ -61,8 +61,10 @@ describe("AlertDialog", () => {
     const cancel = screen.getByRole("button", { name: "Keep it" });
     expect(confirm).toBeDisabled();
     expect(cancel).toBeDisabled();
-    // Spinner renders an aria-hidden spinning span inside the confirm button
-    expect(confirm.querySelector(".animate-spin")).toBeInTheDocument();
+    // Button pending: an aria-hidden spinner ring (spins under motion-safe)
+    // inside the busy confirm button
+    expect(confirm.querySelector("span[aria-hidden='true'].rounded-full")).toBeInTheDocument();
+    expect(confirm).toHaveAttribute("aria-busy", "true");
   });
 
   it("has no header close button (actions row only)", () => {

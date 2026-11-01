@@ -30,7 +30,6 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import Spinner from "./Spinner";
 import Button, { type ButtonVariant } from "../ui/Button";
 import { cn } from "../ui/cn";
 
@@ -77,13 +76,12 @@ export interface StickyPurchaseBarProps {
 
 function ActionButton({ action }: { action: StickyPurchaseAction }) {
   return (
-    <Button
+    <Button pending={action.pending}
       variant={action.variant ?? "primary"}
       className={cn("shrink-0", action.blocked && "opacity-60")}
       disabled={action.disabled}
       onClick={action.onClick}
     >
-      {action.pending && <Spinner />}
       {action.icon}
       {action.label}
     </Button>

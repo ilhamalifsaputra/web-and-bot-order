@@ -31,7 +31,7 @@ import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
 import PasswordInput from "../components/shop/PasswordInput";
-import Spinner from "../components/shop/Spinner";
+import Skeleton from "../components/ui/Skeleton";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
@@ -113,8 +113,14 @@ export default function ResetPage() {
           </Link>
 
           {checkQuery.isPending ? (
-            <div className="mt-6 flex justify-center" aria-busy="true" aria-label={t("web.loading")}>
-              <Spinner />
+            <div className="mt-6 space-y-4" aria-busy="true" aria-label={t("web.loading")}>
+              {Array.from({ length: 2 }).map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-11 w-full" />
+                </div>
+              ))}
+              <Skeleton className="h-11 w-full" />
             </div>
           ) : tokenKnownInvalid ? (
             <>
@@ -150,8 +156,7 @@ export default function ResetPage() {
                     minLength={8}
                   />
                 </FormField>
-                <Button type="submit" variant="primary" fullWidth disabled={resetMutation.isPending}>
-                  {resetMutation.isPending && <Spinner />}
+                <Button type="submit" variant="primary" fullWidth pending={resetMutation.isPending}>
                   {t("web.reset_submit")}
                 </Button>
               </form>

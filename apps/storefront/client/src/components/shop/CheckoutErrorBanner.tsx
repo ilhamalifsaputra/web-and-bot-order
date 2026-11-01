@@ -41,7 +41,7 @@ function SessionEndedNotice({ onContinue, continuePending }: { onContinue: () =>
         <a href="/login?next=/checkout" target="_blank" rel="noopener noreferrer" className="font-medium underline">
           {t("shop.session_ended_login")}
         </a>
-        <Button type="button" variant="soft" size="sm" onClick={onContinue} disabled={continuePending}>
+        <Button type="button" variant="soft" size="sm" onClick={onContinue} pending={continuePending}>
           {t("shop.session_ended_continue")}
         </Button>
       </span>
@@ -61,7 +61,7 @@ function UnknownOutcomeNotice({ unknown, isGuest }: { unknown: UnknownOutcome; i
           {isGuest ? t("web.track_title") : t("shop.checkout_unknown_orders")}
         </Link>
         {!unknown.probablyPlaced && (
-          <Button type="button" variant="soft" size="sm" onClick={unknown.onRetry} disabled={unknown.retryPending}>
+          <Button type="button" variant="soft" size="sm" onClick={unknown.onRetry} pending={unknown.retryPending}>
             {t("shop.checkout_unknown_retry")}
           </Button>
         )}

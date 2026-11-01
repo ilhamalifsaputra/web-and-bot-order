@@ -8,7 +8,9 @@ describe("Spinner", () => {
     const { container } = render(<Spinner />);
     const el = container.firstElementChild as HTMLElement;
     expect(el.tagName).toBe("SPAN");
-    expect(el).toHaveClass("animate-spin", "rounded-full", "border-2");
+    expect(el).toHaveClass("motion-safe:animate-spin", "rounded-full", "border-2");
+    // Reduced motion: no rotation class applies, the ring stays still.
+    expect(el).not.toHaveClass("animate-spin");
     expect(el).toHaveAttribute("aria-hidden", "true");
   });
 });

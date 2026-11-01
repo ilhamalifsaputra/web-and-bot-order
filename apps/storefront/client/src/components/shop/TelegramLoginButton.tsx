@@ -11,7 +11,6 @@ import { useEffect, useState } from "react";
 import { t } from "../../lib/i18n";
 import { buildTelegramOAuthUrl } from "../../lib/telegramOAuth";
 import Button from "../ui/Button";
-import Spinner from "./Spinner";
 import TelegramIcon from "./TelegramIcon";
 
 export interface TelegramLoginButtonProps {
@@ -62,12 +61,9 @@ export default function TelegramLoginButton({ botId, authUrl, beforeNavigate }: 
   }
 
   return (
-    <Button variant="soft" fullWidth onClick={handleClick} disabled={connecting}>
+    <Button variant="soft" fullWidth onClick={handleClick} pending={connecting}>
       {connecting ? (
-        <>
-          <Spinner />
-          {t("web.tg_connecting")}
-        </>
+        t("web.tg_connecting")
       ) : (
         <>
           <TelegramIcon />

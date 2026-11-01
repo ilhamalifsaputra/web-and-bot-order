@@ -7,7 +7,9 @@ describe("Skeleton", () => {
   it("renders a decorative pulsing block and merges className", () => {
     const { container } = render(<Skeleton className="h-4 w-1/2" />);
     const el = container.firstElementChild as HTMLElement;
-    expect(el).toHaveClass("animate-pulse", "rounded-xl", "bg-sand", "h-4", "w-1/2");
+    expect(el).toHaveClass("motion-safe:animate-pulse", "rounded-xl", "bg-sand", "h-4", "w-1/2");
+    // Reduced motion: no pulse class applies, the block stays still.
+    expect(el).not.toHaveClass("animate-pulse");
     expect(el).toHaveAttribute("aria-hidden", "true");
   });
 });

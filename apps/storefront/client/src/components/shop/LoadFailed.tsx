@@ -34,7 +34,7 @@ export function RefreshFailedNotice({ onRetry, pending }: { onRetry: () => void;
       className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amberx/30 bg-amberx-tint px-4 py-2 text-sm text-ink-soft"
     >
       <span>{t("shop.refresh_failed")}</span>
-      <Button type="button" variant="ghost" size="sm" onClick={onRetry} disabled={pending}>
+      <Button type="button" variant="ghost" size="sm" onClick={onRetry} pending={pending}>
         <RefreshCw className="h-4 w-4" aria-hidden="true" /> {t("web.state_retry")}
       </Button>
     </div>

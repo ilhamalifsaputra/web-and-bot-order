@@ -30,7 +30,6 @@ import type { WalletTopupCreateResponse, WalletTopupData } from "../api/types";
 import EmptyState from "../components/shop/EmptyState";
 import { PaymentMethodRow } from "../components/shop/PaymentMethodSelector";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
@@ -402,14 +401,13 @@ function WalletTopupTopupAmount({ currency, setCurrency, hint, amountUnreadable,
       </div>
     </Card>
 
-    <Button
+    <Button pending={submitting}
       variant="primary"
       fullWidth
       className={cn(submitBlocked && "opacity-50")}
       disabled={submitDisabled}
       onClick={() => void submitTopup()}
     >
-      {submitting && <Spinner />}
       {t("web.wallet_topup_submit")}
     </Button>
   </form>);

@@ -17,7 +17,7 @@ describe("LoadingState", () => {
 
   it("renders a skeleton silhouette, never a bare spinner", () => {
     const { container } = render(<LoadingState />);
-    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(1);
+    expect(container.querySelectorAll("[class~='motion-safe:animate-pulse']").length).toBeGreaterThan(1);
   });
 
   it("each variant renders a distinct shape", () => {

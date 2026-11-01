@@ -170,10 +170,9 @@ function CartLine({ item, fx, issueTicket, onMutated, onFailed }: CartLineProps)
           <Button
             variant="danger"
             size="sm"
-            disabled={removeMutation.isPending}
+            pending={removeMutation.isPending}
             onClick={() => removeMutation.mutate()}
           >
-            {removeMutation.isPending && <Spinner />}
             {t("web.remove")}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setConfirmingRemove(false)}>
@@ -201,6 +200,7 @@ function CartLine({ item, fx, issueTicket, onMutated, onFailed }: CartLineProps)
               size="sm"
               aria-label={t("web.update")}
               disabled={updateMutation.isPending}
+              aria-busy={updateMutation.isPending || undefined}
               onClick={() => updateMutation.mutate(qty)}
             >
               {updateMutation.isPending && <Spinner />}

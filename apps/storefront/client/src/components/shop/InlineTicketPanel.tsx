@@ -27,7 +27,6 @@ import TicketStatusBadge from "./TicketStatusBadge";
 import TicketMessageThread from "./TicketMessageThread";
 import TicketComposer from "./TicketComposer";
 import Skeleton from "./Skeleton";
-import Spinner from "./Spinner";
 import Toast from "./Toast";
 
 const SUBJECT_MAX = 80;
@@ -263,10 +262,9 @@ function TicketActions({
           <Button
             variant="soft"
             size="sm"
-            disabled={reopenMutation.isPending}
+            pending={reopenMutation.isPending}
             onClick={() => reopenMutation.mutate()}
           >
-            {reopenMutation.isPending && <Spinner />}
             <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
           </Button>
         )}
@@ -281,10 +279,9 @@ function TicketActions({
           <Button
             variant="soft"
             size="sm"
-            disabled={closeMutation.isPending}
+            pending={closeMutation.isPending}
             onClick={() => closeMutation.mutate()}
           >
-            {closeMutation.isPending && <Spinner />}
             <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
           </Button>
         </div>

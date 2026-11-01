@@ -29,7 +29,7 @@ import ProductDescription from "../components/shop/ProductDescription";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
+import Button from "../components/ui/Button";
 import Stars from "../components/shop/Stars";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import StockBadge from "../components/shop/StockBadge";
@@ -410,26 +410,24 @@ function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addM
           }}
         />
       </div>
-      <button
-        type="button"
+      <Button
         id="btn-cart"
-        className="btn btn-soft"
+        variant="soft"
+        pending={addMutation.isPending}
         disabled={buying}
         onClick={() => addMutation.mutate({ denomination_id: selected.id, qty })}
       >
-        {addMutation.isPending && <Spinner />}
         <ShoppingCart className="w-4 h-4" /> {t("web.add_to_cart")}
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
         id="btn-buy"
-        className="btn btn-primary"
+        variant="primary"
+        pending={buyMutation.isPending}
         disabled={buying}
         onClick={() => buyMutation.mutate({ denomination_id: selected.id, qty })}
       >
-        {buyMutation.isPending && <Spinner />}
         <Zap className="w-4 h-4" /> {t("web.buy_now")}
-      </button>
+      </Button>
     </form>
   ) : !selectedUsesStock ? (
     // Unavailable for a reason other than stock: a provider or
@@ -441,15 +439,14 @@ function ProductBuyForm({ selected, qty, selectedUsesStock, setQty, buying, addM
       {needsTelegram ? (
         <p className="text-sm text-ink-soft">{t("web.restock_needs_telegram")}</p>
       ) : (
-        <button
-          type="button"
-          className="btn btn-soft"
-          disabled={restockPending || restockDone}
+        <Button
+          variant="soft"
+          pending={restockPending}
+          disabled={restockDone}
           onClick={() => void requestRestock(selected.id)}
         >
-          {restockPending && <Spinner />}
           <Bell className="w-4 h-4" /> {t("web.notify_restock")}
-        </button>
+        </Button>
       )}
       {restockFeedbackKey && (
         <p role="status" className="mt-2 text-sm text-ink-soft">

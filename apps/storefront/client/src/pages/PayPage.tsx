@@ -99,14 +99,14 @@ function StatusStrip({ state }: { state: PayState }) {
   }
   if (state === "confirming") {
     return (
-      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />}>
         {t("web.status_confirming")}
       </Badge>
     );
   }
   if (state === "processing") {
     return (
-      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />}>
         {t("web.status_processing")}
       </Badge>
     );

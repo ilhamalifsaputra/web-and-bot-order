@@ -20,7 +20,6 @@ import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import Stars from "../components/shop/Stars";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
@@ -87,8 +86,7 @@ function PendingReviewCard({
         placeholder={t("web.review_placeholder")}
       />
       <div className="mt-3 text-right">
-        <Button type="submit" variant="primary" size="sm" disabled={submitting}>
-          {submitting && <Spinner />}
+        <Button type="submit" variant="primary" size="sm" pending={submitting}>
           {t("web.review_submit")}
         </Button>
       </div>

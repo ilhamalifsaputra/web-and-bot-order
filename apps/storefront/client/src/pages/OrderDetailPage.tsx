@@ -12,7 +12,6 @@ import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 import OrderProgress from "../components/shop/OrderProgress";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import StatusBadge from "../components/shop/StatusBadge";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
@@ -256,13 +255,12 @@ function CustomerInfoSection({ fields, canEdit, editMode, startEdit, infoError, 
             ))}
           </div>
           <div className="flex flex-wrap gap-2 mt-4">
-            <Button
+            <Button pending={infoMutation.isPending}
               variant="primary"
               className="min-h-11"
               disabled={!canEdit || !infoValid || infoMutation.isPending}
               onClick={() => infoMutation.mutate(answers)}
             >
-              {infoMutation.isPending && <Spinner />}
               {t("web.order_info_save_btn")}
             </Button>
             <Button

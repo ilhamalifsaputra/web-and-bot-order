@@ -17,7 +17,6 @@ import type { SupportData, TicketDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import TicketComposer from "../components/shop/TicketComposer";
 import TicketMessageThread from "../components/shop/TicketMessageThread";
 import TicketSidebar from "../components/shop/TicketSidebar";
@@ -207,10 +206,9 @@ function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportRe
           <Button
             variant="soft"
             size="sm"
-            disabled={reopenMutation.isPending}
+            pending={reopenMutation.isPending}
             onClick={() => reopenMutation.mutate()}
           >
-            {reopenMutation.isPending && <Spinner />}
             <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
           </Button>
         )}
@@ -222,7 +220,7 @@ function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportRe
             <Button
               variant="soft"
               size="sm"
-              disabled={closeMutation.isPending}
+              pending={closeMutation.isPending}
               onClick={() => closeMutation.mutate()}
             >
               <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}

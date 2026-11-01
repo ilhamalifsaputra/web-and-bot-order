@@ -30,7 +30,6 @@ import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
 import PasswordInput from "../components/shop/PasswordInput";
-import Spinner from "../components/shop/Spinner";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
@@ -188,8 +187,7 @@ export default function RegisterPage() {
               </Link>
               .
             </p>
-            <Button type="submit" variant="primary" fullWidth disabled={registerMutation.isPending}>
-              {registerMutation.isPending && <Spinner />}
+            <Button type="submit" variant="primary" fullWidth pending={registerMutation.isPending}>
               {t("web.register_submit")}
             </Button>
             <div className="text-center text-sm">

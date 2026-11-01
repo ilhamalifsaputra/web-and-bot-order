@@ -31,7 +31,7 @@ export default function RecoveryScopeNotice({ orderCode }: { orderCode: string }
         <Link to={`/account/orders/${encodeURIComponent(orderCode)}`} className="btn btn-ghost">
           {t("shop.recovery_scope_view")}
         </Link>
-        <Button type="button" onClick={() => logout.mutate()} disabled={logout.isPending}>
+        <Button type="button" onClick={() => logout.mutate()} pending={logout.isPending}>
           {t("shop.recovery_scope_logout")}
         </Button>
       </div>

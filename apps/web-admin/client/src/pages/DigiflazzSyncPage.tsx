@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -157,10 +158,10 @@ function DetectionPanel() {
     queryFn: () =>
       apiGet<{ issues: DetectionIssue[] }>("/api/catalog/detection/issues?reviewStatus=OPEN"),
   });
-  const [busyId, setBusyId] = useState<number | null>(null);
+  const [busy, setBusy] = useState<{ id: number; action: "resolve" | "dismiss" } | null>(null);
 
   async function review(id: number, action: "resolve" | "dismiss") {
-    setBusyId(id);
+    setBusy({ id, action });
     try {
       await apiPost(`/api/catalog/detection/issues/${id}/${action}`, {});
       toast.success(action === "resolve" ? "Isu deteksi ditandai selesai." : "Isu deteksi diabaikan.");
@@ -171,12 +172,15 @@ function DetectionPanel() {
     } catch (err) {
       toast.error(describeError(err, "Gagal memperbarui isu deteksi."));
     } finally {
-      setBusyId(null);
+      setBusy(null);
     }
   }
 
   const metrics = metricsQuery.data?.metrics ?? null;
   const issues = issuesQuery.data?.issues ?? [];
+  // Empty sentences and the queue count only describe data that loaded.
+  const metricsLoaded = metricsQuery.data !== undefined;
+  const issuesLoaded = issuesQuery.data !== undefined;
 
   return (
     <Card className="mb-6">
@@ -185,7 +189,8 @@ function DetectionPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         {metricsQuery.isLoading && <LinesSkeleton label="Memuat ringkasan deteksi" lines={3} />}
-        {!metricsQuery.isLoading && !metrics && (
+        <QueryErrorNotice what="detection summary" hasData={metricsLoaded} isError={metricsQuery.isError} onRetry={() => void metricsQuery.refetch()} />
+        {metricsLoaded && !metrics && (
           <p className="text-sm text-ink-soft">Deteksi katalog belum pernah dijalankan.</p>
         )}
         {metrics && (
@@ -208,9 +213,10 @@ function DetectionPanel() {
         )}
 
         <div>
-          <p className="mb-2 text-sm font-medium text-ink">Antrean tinjauan ({issues.length})</p>
+          <p className="mb-2 text-sm font-medium text-ink">Antrean tinjauan{issuesLoaded ? ` (${issues.length})` : ""}</p>
           {issuesQuery.isLoading && <LinesSkeleton label="Memuat isu deteksi" lines={3} />}
-          {!issuesQuery.isLoading && issues.length === 0 && (
+          <QueryErrorNotice what="detection issues" hasData={issuesLoaded} isError={issuesQuery.isError} onRetry={() => void issuesQuery.refetch()} />
+          {issuesLoaded && issues.length === 0 && (
             <p className="text-sm text-ink-soft">Tidak ada isu deteksi yang perlu ditinjau.</p>
           )}
           <ul className="space-y-2">
@@ -232,7 +238,8 @@ function DetectionPanel() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={busyId === issue.id}
+                    pending={busy?.id === issue.id && busy.action === "resolve"}
+                    disabled={busy?.id === issue.id}
                     onClick={() => void review(issue.id, "resolve")}
                   >
                     Resolve
@@ -240,7 +247,8 @@ function DetectionPanel() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={busyId === issue.id}
+                    pending={busy?.id === issue.id && busy.action === "dismiss"}
+                    disabled={busy?.id === issue.id}
                     onClick={() => void review(issue.id, "dismiss")}
                   >
                     Dismiss
@@ -486,7 +494,7 @@ export function DigiflazzSyncPage() {
         title="Sync Digiflazz"
         description="Pull Digiflazz's Game price list, review, and bulk-import new titles into the catalog."
         actions={
-          <Button size="sm" onClick={() => void runSync()} disabled={loadingPreview}>
+          <Button size="sm" onClick={() => void runSync()} pending={loadingPreview}>
             {loadingPreview ? `Syncing… ${Math.floor(elapsedMs / 1000)}s` : "Sync dari Digiflazz"}
           </Button>
         }

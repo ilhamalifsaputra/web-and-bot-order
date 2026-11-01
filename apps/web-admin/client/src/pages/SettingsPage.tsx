@@ -803,7 +803,9 @@ export function SettingsPage() {
     onSuccess: () => { invalidate(); markSaved(); },
   });
   const reorderGroups = useMutation({
-    mutationFn: (groups: string[]) => apiPost("/api/settings/services/order", { groups }),
+    // `moved` names the clicked arrow ("<group>:up"), so only that button
+    // shows as pending; a swap changes both groups' slots.
+    mutationFn: ({ groups }: { groups: string[]; moved: string }) => apiPost("/api/settings/services/order", { groups }),
     onSuccess: () => { invalidate(); markSaved(); },
     onError: (err) => toast.error(describeError(err, "Failed to save the website order.")),
   });
@@ -1519,7 +1521,7 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
             className="w-36"
             maxLength={6}
           />
-          <Button onClick={() => setTfaEnableConfirmOpen(true)} disabled={tfaSaving}>
+          <Button onClick={() => setTfaEnableConfirmOpen(true)} pending={tfaSaving}>
             Confirm
           </Button>
           <Button
@@ -1559,7 +1561,7 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
           <Button
             variant="destructive"
             onClick={() => setTfaDisableConfirmOpen(true)}
-            disabled={tfaSaving}
+            pending={tfaSaving}
             className="self-start"
           >
             Disable 2FA
@@ -2011,7 +2013,7 @@ function SettingsGeneral({ generalVisible, generalFields, fieldQueryFor, onSaved
 }
 
 function SettingsServices({ servicesVisible, data, query, setPendingService, reorderGroups }: {
-  reorderGroups: import("@tanstack/react-query").UseMutationResult<unknown, Error, string[], unknown>;
+  reorderGroups: import("@tanstack/react-query").UseMutationResult<unknown, Error, { groups: string[]; moved: string }, unknown>;
   servicesVisible: boolean;
   data: import("../hooks/useSettings").SettingsData;
   query: string;
@@ -2057,8 +2059,9 @@ function SettingsServices({ servicesVisible, data, query, setPendingService, reo
                     variant="ghost"
                     size="icon-xs"
                     aria-label={`Move ${group.label} up`}
+                    pending={reorderGroups.isPending && reorderGroups.variables?.moved === `${group.key}:up`}
                     disabled={reorderGroups.isPending || index === 0}
-                    onClick={() => reorderGroups.mutate(moveKey(all.map((g) => g.key), index, -1))}
+                    onClick={() => reorderGroups.mutate({ groups: moveKey(all.map((g) => g.key), index, -1), moved: `${group.key}:up` })}
                   >
                     <ChevronUp className="h-4 w-4" />
                   </Button>
@@ -2066,8 +2069,9 @@ function SettingsServices({ servicesVisible, data, query, setPendingService, reo
                     variant="ghost"
                     size="icon-xs"
                     aria-label={`Move ${group.label} down`}
+                    pending={reorderGroups.isPending && reorderGroups.variables?.moved === `${group.key}:down`}
                     disabled={reorderGroups.isPending || index === all.length - 1}
-                    onClick={() => reorderGroups.mutate(moveKey(all.map((g) => g.key), index, 1))}
+                    onClick={() => reorderGroups.mutate({ groups: moveKey(all.map((g) => g.key), index, 1), moved: `${group.key}:down` })}
                   >
                     <ChevronDown className="h-4 w-4" />
                   </Button>

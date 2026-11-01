@@ -144,6 +144,20 @@ describe("SettingsPage", () => {
     ));
   });
 
+  it("shows only the clicked move button as pending while the order saves", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const user = userEvent.setup();
+    expect(await screen.findByText("Website order")).toBeInTheDocument();
+    fetchSpy.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: "Move Top Up Game up" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Move Top Up Game up" })).toHaveAttribute("aria-busy", "true"));
+    const other = screen.getByRole("button", { name: "Move Premium Apps down" });
+    expect(other).toBeDisabled();
+    expect(other).not.toHaveAttribute("aria-busy");
+  });
+
   it("moves a group down with the full new order", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));

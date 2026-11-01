@@ -550,11 +550,9 @@ function CatalogImportDenominationsFromCSV({ showImport, csv, setCsv, setPreview
                 size="sm"
                 className="mt-3"
                 onClick={() => void handleApply()}
-                disabled={importing}
+                pending={importing}
               >
-                {importing
-                  ? "Importing…"
-                  : `Import ${preview.validCount} denomination(s)`}
+                {`Import ${preview.validCount} denomination(s)`}
               </Button>
             )}
           </div>

@@ -87,7 +87,7 @@ export function AdminsPage() {
             className="w-44"
           />
         </div>
-        <Button onClick={() => add.mutate()} disabled={!addId || add.isPending}>
+        <Button onClick={() => add.mutate()} pending={add.isPending} disabled={!addId}>
           <Plus className="h-4 w-4" />
           Add Admin
         </Button>

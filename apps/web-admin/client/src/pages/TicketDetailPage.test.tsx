@@ -443,6 +443,16 @@ describe("TicketDetailPage — ticket controls", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/resolve", {}));
   });
 
+  it("shows Resolve as pending, label kept, while it posts", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockReturnValue(new Promise(() => {}));
+    await renderLoaded();
+    await user.click(screen.getByRole("button", { name: /^resolve$/i }));
+    const resolve = screen.getByRole("button", { name: /^resolve$/i });
+    expect(resolve).toBeDisabled();
+    expect(resolve).toHaveAttribute("aria-busy", "true");
+  });
+
   it("offers Reopen (not Resolve, Close, or the reply form) for a CLOSED ticket, and posts to /reopen", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });

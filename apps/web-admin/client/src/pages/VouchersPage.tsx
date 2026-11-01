@@ -758,6 +758,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       <Button
         size="sm"
         variant="outline"
+        pending={bulkAction.isPending && bulkAction.variables?.action === "activate"}
         disabled={bulkAction.isPending}
         onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "activate" })}
       >
@@ -766,6 +767,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       <Button
         size="sm"
         variant="outline"
+        pending={bulkAction.isPending && bulkAction.variables?.action === "deactivate"}
         disabled={bulkAction.isPending}
         onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "deactivate" })}
       >
@@ -773,7 +775,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       </Button>
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="destructive" pending={bulkAction.isPending}>
+          <Button size="sm" variant="destructive" pending={bulkAction.isPending && bulkAction.variables?.action === "delete"} disabled={bulkAction.isPending}>
             Delete {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
           </Button>
         }

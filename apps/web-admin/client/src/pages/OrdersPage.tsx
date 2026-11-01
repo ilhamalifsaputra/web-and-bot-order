@@ -736,6 +736,7 @@ function OrdersBulkActions({ visibleSelected, bulkMutation, resendSelected, askB
       <Button
         size="sm"
         variant="outline"
+        pending={bulkMutation.isPending && bulkMutation.variables?.action === "deliver"}
         disabled={bulkMutation.isPending}
         onClick={askBulkDeliver}
       >
@@ -744,6 +745,7 @@ function OrdersBulkActions({ visibleSelected, bulkMutation, resendSelected, askB
       <Button
         size="sm"
         variant="outline"
+        pending={bulkMutation.isPending && bulkMutation.variables?.action === "resend"}
         disabled={bulkMutation.isPending}
         onClick={resendSelected}
       >

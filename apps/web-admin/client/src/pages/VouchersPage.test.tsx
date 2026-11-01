@@ -820,3 +820,22 @@ describe("VouchersPage — search resets the page", () => {
     await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
   });
 });
+
+describe("VouchersPage bulk bar pending", () => {
+  it("marks only the clicked bulk action as pending", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const vouchers = [{ ...VOUCHER, id: 1, code: "BULKV1" }];
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse(vouchers, { total: 1 }));
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("BULKV1")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: /select voucher bulkv1/i }));
+    spy.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: /deactivate 1 voucher/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /deactivate 1 voucher/i })).toHaveAttribute("aria-busy", "true"));
+    for (const name of [/^activate 1 voucher/i, /delete 1 voucher/i]) {
+      const other = screen.getByRole("button", { name });
+      expect(other).toBeDisabled();
+      expect(other).not.toHaveAttribute("aria-busy");
+    }
+  });
+});

@@ -109,7 +109,9 @@ describe("CatalogPage", () => {
       'On the website home page, products that were ordered and delivered most often in the last 30 days are shown first in each section. New products get a "New" badge for 14 days and appear under "Show more" until they start selling. The bot\'s Popular menu uses all-time sales.',
     );
     // A static explanation, not a live region: it must not be announced as a
-    // status update or an alert when the page loads.
+    // status update or an alert when the page loads. (Wait for the rows: the
+    // table's own "Loading results" status is legitimately live until then.)
+    await screen.findByText("CapCut Pro");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(note.closest('[data-slot="alert"]')).toHaveAttribute("role", "note");

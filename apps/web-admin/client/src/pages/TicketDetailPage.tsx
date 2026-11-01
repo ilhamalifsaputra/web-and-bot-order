@@ -433,13 +433,13 @@ function TicketResolutionActions({ ticket, isClosed, progress, resolve, reopen, 
     {/* Mirrors the backend's resolveTicket guard (status NOT IN
                 [RESOLVED, CLOSED]). */}
     {ticket.status !== "RESOLVED" && !isClosed && (
-      <Button variant="outline" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
+      <Button variant="outline" onClick={() => resolve.mutate()} pending={resolve.isPending}>
         <CheckCircle2 className="h-4 w-4" />
         Resolve
       </Button>
     )}
     {isClosed && (
-      <Button variant="outline" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
+      <Button variant="outline" onClick={() => reopen.mutate()} pending={reopen.isPending}>
         <RotateCcw className="h-4 w-4" />
         Reopen
       </Button>

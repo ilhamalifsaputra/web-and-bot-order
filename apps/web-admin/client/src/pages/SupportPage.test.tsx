@@ -942,3 +942,22 @@ describe("SupportPage — search resets the page", () => {
     await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
   });
 });
+
+describe("SupportPage bulk bar pending", () => {
+  it("marks only the clicked bulk action as pending", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const router = mockFetchRouter();
+    const base = router.getMockImplementation()!;
+    router.mockImplementation((input, init) =>
+      (init?.method ?? "GET") === "POST" ? new Promise(() => {}) : base(input, init),
+    );
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "Select ticket #1" }));
+    await user.click(screen.getByRole("button", { name: /^resolve$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^resolve$/i })).toHaveAttribute("aria-busy", "true"));
+    const close = screen.getByRole("button", { name: /close 1 ticket/i });
+    expect(close).toBeDisabled();
+    expect(close).not.toHaveAttribute("aria-busy");
+  });
+});

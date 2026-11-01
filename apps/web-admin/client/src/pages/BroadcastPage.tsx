@@ -526,7 +526,8 @@ function BroadcastActions({ form, overLimit, send, data, saveDraft }: {
     />
     <Button
       type="button" variant="secondary"
-      disabled={!form.message || !form.segment || overLimit || saveDraft.isPending}
+      pending={saveDraft.isPending}
+      disabled={!form.message || !form.segment || overLimit}
       onClick={() => saveDraft.mutate()}
     >
       Save Draft

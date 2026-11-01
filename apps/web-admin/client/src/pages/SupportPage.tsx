@@ -584,6 +584,7 @@ function SupportAssignSelectedTicketsTo({ visibleSelected, bulkAction, assignabl
       <Button
         size="sm"
         variant="outline"
+        pending={bulkAction.isPending && bulkAction.variables?.action === "resolve"}
         disabled={bulkAction.isPending}
         onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "resolve" })}
       >
@@ -592,7 +593,7 @@ function SupportAssignSelectedTicketsTo({ visibleSelected, bulkAction, assignabl
 
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="destructive" pending={bulkAction.isPending}>
+          <Button size="sm" variant="destructive" pending={bulkAction.isPending && bulkAction.variables?.action === "close"} disabled={bulkAction.isPending}>
             Close {visibleSelected.size} ticket{visibleSelected.size === 1 ? "" : "s"}
           </Button>
         }

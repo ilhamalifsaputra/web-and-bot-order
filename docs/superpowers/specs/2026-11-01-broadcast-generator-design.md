@@ -44,7 +44,12 @@ that the CSV existed only to build broadcast text.
 2. The header carries the date, time and zone (`· 1 Nov 2026, 14.30 WIB`), plus the line "Stok bisa berubah, cek terbaru di bot."
 3. **DM shows only ✅ items.** The channel also shows ⛔/🔧 items. In the channel, a product whose variants are all sold out collapses to one line ("Netflix Premium: ⛔ Habis semua").
 4. Within a product, available variants are listed first.
-5. Each DM carries inline buttons **🛒 Beli sekarang** and **🏠 Menu**. With exactly one product, 🛒 deep-links `?start=prod_<id>`. Otherwise it opens the catalog. The channel post ends with a `t.me/<bot>?start=channel` link.
+5. DM inline buttons:
+   - When exactly **one denomination** is shown, the DM has two buttons, each on its own row: **🛒 Beli sekarang** (URL `https://t.me/<bot>?start=prod_<denominationId>`, the existing deep link) and **🏠 Menu** (callback `v1:menu:main`).
+   - Otherwise the DM has one button, **🛒 Beli sekarang**, with callback `v1:menu:main`. A second button that does the same thing is not added.
+   - A **Gangguan** DM only ever has **🏠 Menu**. It lists SKUs that cannot be bought, so it never offers a buy button.
+
+   The channel post ends with a `https://t.me/<bot>?start=channel` link.
 6. No template promises an outcome ("pesanan tetap diproses"). Gangguan uses "Status pesanan kami kabari lewat bot."
 7. Gangguan and Layanan Pulih times carry the zone: "Sejak 14.00 WIB · perkiraan pulih 15.00 WIB."
 8. Per-type selection defaults:
@@ -72,7 +77,8 @@ that the CSV existed only to build broadcast text.
 ### Gaps found in code
 
 - **G1.** `resolveDenominationAvailability` returns AVAILABLE for every MANUAL and PROVIDER_API SKU. A manual Netflix SKU can therefore never show ⛔. → Per-post override **Tandai Habis di pesan ini**. It is stored in the post and applied at every re-resolve. The catalog is never touched.
-- **G2.** No "last successful catalog sync" timestamp exists. → New setting `digiflazz_catalog_last_synced_at`, written by `resyncDigiflazzCatalog` on success. If it is missing, the UI shows "Belum pernah sinkron" as stale.
+- **G2.** (Resolved during planning.) `getDigiflazzSyncStatus` in `packages/db/src/crud/digiflazzSyncStatus.ts` already stores the last run's `status` and `finishedAt`. Data age = `finishedAt` when `status === "success"`. A non-success last run, or no run at all, counts as stale ("Sinkron terakhir gagal" / "Belum pernah sinkron"). No new setting is needed.
+- **G5.** The admin client may not import `@app/core`. → Preview text and length are rendered **server-side** by `POST /api/broadcast/posts/preview` (debounced on the client), so the counter is the server's own number.
 - **G3.** `drainBroadcasts` sends plain text with no `parse_mode` and no buttons. → New branch for generated broadcasts only. Legacy rows are unchanged.
 - **G4.** The server limit is `MAX_MESSAGE = 4000` and `MAX_CAPTION = 1024`, measured on the stored string. → The generator measures rendered HTML with the same rule. The client counter calls the same shared function.
 
@@ -118,7 +124,6 @@ New settings:
 
 - `broadcast_footer_id`, `broadcast_footer_en`
 - `broadcast_stale_minutes` (default 90)
-- `digiflazz_catalog_last_synced_at`
 
 ### Snapshot shape (no credentials, no raw stock counts)
 
@@ -178,7 +183,7 @@ product name.
   - `POST /api/broadcast/posts/send`: segment, `scheduled_at`, optional `image_url` (reuses the existing image checks)
   - `GET|POST|DELETE /api/broadcast/posts/presets`
   - `GET /api/broadcast/posts/history`
-  - `POST /api/broadcast/posts/sync-now`: calls `resyncDigiflazzCatalog` under its lease
+  - **Sinkron sekarang** reuses the existing `POST /api/catalog/digiflazz/sync/run`, which already handles credentials, rc 83 and errors. No new sync endpoint.
 
   Every mutation goes through `csrfProtect`, `canMutate` under the `/api/broadcast` prefix, and an idempotency key. Each one is audited with a plain sentence, for example `"Queued a stock-update broadcast with 12 products to 340 recipients in segment ALL."`
 - **Order-bot `drainBroadcasts`**: a generated row rebuilds the snapshot from `post.items`, drops non-AVAILABLE items, and writes `sentSnapshot`. It renders once per language (ID and EN) and sends each recipient their language with `parse_mode: "HTML"` and the inline keyboard. With a photo, the text goes as a caption. If no items are left, the row becomes `CANCELLED` with `failureReason` "Semua item habis saat jam kirim", an audit row is written, and nothing is sent. Legacy rows keep the current plain-text path exactly.

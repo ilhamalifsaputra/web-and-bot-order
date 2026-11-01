@@ -1,5 +1,5 @@
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { isSessionExpiredError } from "../../api/sessionExpiry";
 
 interface QueryErrorNoticeProps {
   /** What failed to load, lower case, e.g. "orders". */
@@ -7,7 +7,6 @@ interface QueryErrorNoticeProps {
   /** True when the query still holds earlier data, i.e. this was a background refresh. */
   hasData: boolean;
   onRetry: () => void;
-  error?: unknown;
   /** Lets a page render the notice unconditionally; it draws nothing unless this is true (default). */
   isError?: boolean;
 }
@@ -19,27 +18,47 @@ interface QueryErrorNoticeProps {
  * must not unmount the page: the admin may be halfway through a reply or a
  * refund reason. That case shows a small "Couldn't refresh" line with Retry.
  * With no data at all there is nothing to keep, so it says the load failed,
- * with Retry. The session-ended banner in AppShell explains a 401, so this
- * notice does not repeat it.
+ * with Retry. A 401 is explained once by the session-ended banner in AppShell
+ * (components/layout/SessionExpiredBanner.tsx), so this notice never repeats it.
  */
-export function QueryErrorNotice({ what, hasData, onRetry, error, isError = true }: QueryErrorNoticeProps): React.JSX.Element | null {
-  const sessionEnded = isSessionExpiredError(error);
+export function QueryErrorNotice({ what, hasData, onRetry, isError = true }: QueryErrorNoticeProps): React.JSX.Element | null {
+  if (!isError) return null;
   const text = hasData
     ? `Couldn't refresh ${what}. Showing what was loaded earlier.`
     : `Failed to load ${what}.`;
-  if (!isError) return null;
   return (
     <div
       role={hasData ? "status" : "alert"}
       className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-rust/30 bg-rust/5 px-3 py-2 text-sm text-rust"
     >
-      <p className="min-w-0 flex-1">
-        {text}
-        {sessionEnded ? " Your session has ended." : ""}
-      </p>
+      <p className="min-w-0 flex-1">{text}</p>
       <Button size="sm" variant="outline" onClick={onRetry}>
         Retry
       </Button>
     </div>
+  );
+}
+
+interface QueryFailureGateProps extends Omit<QueryErrorNoticeProps, "isError"> {
+  isError: boolean;
+  children: ReactNode;
+}
+
+/**
+ * Wraps the part of a list page that shows the query's rows (table, empty
+ * state). The header, search, filters and tabs stay outside it, so a filter
+ * that fails to load can still be changed.
+ *
+ * - no error: the rows, untouched;
+ * - error with data (a failed refresh): the notice above the rows we still have;
+ * - error and no data (first load): the notice INSTEAD of the rows, so the page
+ *   never claims "No orders found" about a list it could not load.
+ */
+export function QueryFailureGate({ children, hasData, ...notice }: QueryFailureGateProps): React.JSX.Element {
+  return (
+    <>
+      <QueryErrorNotice {...notice} hasData={hasData} />
+      {hasData || !notice.isError ? children : null}
+    </>
   );
 }

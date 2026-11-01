@@ -492,3 +492,30 @@ describe("StockPage", () => {
     expect(productEl.className).toMatch(/max-w-\[240px\]/);
   });
 });
+
+describe("StockPage — first-load failure keeps the page usable", () => {
+  it("keeps the search and filters, never claims there are no denominations, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      listUrls.push(String(input));
+      return new Response(JSON.stringify(failing ? { error: "Database unavailable" } : STOCK_DATA), {
+        status: failing ? 500 : 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load stock.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Filter by denomination, product, or category…")).toBeInTheDocument();
+    expect(screen.queryByText("No denominations found")).not.toBeInTheDocument();
+    expect(listUrls).toEqual(["/api/stock"]);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getAllByText("CapCut Pro").length).toBeGreaterThan(0));
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load stock.")).not.toBeInTheDocument();
+  });
+});

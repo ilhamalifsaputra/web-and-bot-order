@@ -41,7 +41,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { OrderStatusBadge } from "../components/shared/OrderStatusBadge";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
-import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -209,7 +209,7 @@ export function OrdersPage() {
   });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
-  const { data, isLoading, isError, error, refetch } = useOrders(filters);
+  const { data, isLoading, isError, refetch } = useOrders(filters);
   const { data: kpis } = useOrdersKpis();
   const pageOrders = data?.orders ?? [];
   const actions = useOrderActions({ orders: pageOrders, setSelected, setBulkFailures });
@@ -221,14 +221,6 @@ export function OrdersPage() {
     setSelected(new Set());
     setBulkFailures([]);
   }, [filters]);
-
-  if (isError && !data) {
-    return (
-      <PageLayout title="Orders">
-        <QueryErrorNotice what="orders" hasData={false} error={error} onRetry={() => void refetch()} />
-      </PageLayout>
-    );
-  }
 
   const statuses = data?.statuses ?? [];
   // What the bulk bar counts and the export link carries. The bulk actions
@@ -313,8 +305,6 @@ export function OrdersPage() {
         }
       />
 
-      <QueryErrorNotice isError={isError} what="orders" hasData error={error} onRetry={() => void refetch()} />
-
       {kpis && (
         <p className="mb-4 text-xs text-ink-soft">
           {kpis.totalOrders} Orders · {kpis.awaitingFulfillment} Awaiting Fulfillment ·{" "}
@@ -348,7 +338,9 @@ export function OrdersPage() {
 
       <OrdersBulkActions visibleSelected={visibleSelected} bulkMutation={actions.bulkMutation} resendSelected={() => actions.resendRows(selectedRows)} askBulkDeliver={() => actions.askBulkDeliver(selectedRows)} cancelMutation={actions.cancelMutation} eligibleSelectedIds={eligibleSelectedIds} openCancelDialog={actions.openCancelDialog} setSelected={setSelected} />
 
-      <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverPending={actions.deliverPending} askDeliver={(row) => actions.setDeliverTarget({ rows: [row], bulk: false, skipped: 0 })} resendingIds={actions.resendingIds} resendDelivery={actions.resendDelivery} openCancelDialog={actions.openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="orders" onRetry={() => void refetch()}>
+        <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverPending={actions.deliverPending} askDeliver={(row) => actions.setDeliverTarget({ rows: [row], bulk: false, skipped: 0 })} resendingIds={actions.resendingIds} resendDelivery={actions.resendDelivery} openCancelDialog={actions.openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">

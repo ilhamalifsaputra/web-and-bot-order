@@ -84,7 +84,7 @@ export function UserDetailPage() {
   const { userId } = useParams<{ userId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data, isError, error, refetch } = useUserDetail(userId ?? "");
+  const { data, isError, refetch } = useUserDetail(userId ?? "");
   const [walletForm, setWalletForm] = useState({ delta: "", note: "" });
   const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
   const [banReason, setBanReason] = useState("");
@@ -126,7 +126,7 @@ export function UserDetailPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError && !data) return <PageLayout title="Customer"><QueryErrorNotice what="user" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
+  if (isError && !data) return <PageLayout title="Customer"><QueryErrorNotice what="user" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
   if (!data) return <PageLayout title="Customer"><p>Loading…</p></PageLayout>;
 
   const { user } = data;
@@ -137,7 +137,7 @@ export function UserDetailPage() {
         breadcrumb={[{ label: "Customers", href: "/users" }]}
       />
 
-      <QueryErrorNotice isError={isError} what="user" hasData error={error} onRetry={() => void refetch()} />
+      <QueryErrorNotice isError={isError} what="user" hasData onRetry={() => void refetch()} />
 
       {/* User info */}
       <UserDetailProfile user={user} setRole={setRole} data={data} walletCurrency={walletCurrency} setWalletCurrency={setWalletCurrency} walletForm={walletForm} setWalletForm={setWalletForm} wallet={wallet} ban={ban} banReason={banReason} setBanReason={setBanReason} />

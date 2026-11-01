@@ -125,7 +125,7 @@ export function BroadcastPage() {
   const fieldId = useId();
   const qc = useQueryClient();
   const idempotentPost = useIdempotentPost();
-  const { data, isError, error, refetch } = useBroadcast();
+  const { data, isError, refetch } = useBroadcast();
   const [form, setForm] = useState({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
   const maxMessage = form.webImageUrl ? 1024 : 4000;
   const overLimit = form.message.length > maxMessage;
@@ -200,7 +200,7 @@ export function BroadcastPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError && !data) return <PageLayout title="Broadcast"><QueryErrorNotice what="broadcast" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
+  if (isError && !data) return <PageLayout title="Broadcast"><QueryErrorNotice what="broadcast" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
 
   return (
     <PageLayout title="Broadcast">
@@ -209,7 +209,7 @@ export function BroadcastPage() {
         description="Send announcements, promotions, product updates, and offers to selected customer segments."
       />
 
-      <QueryErrorNotice isError={isError} what="broadcast" hasData error={error} onRetry={() => void refetch()} />
+      <QueryErrorNotice isError={isError} what="broadcast" hasData onRetry={() => void refetch()} />
 
       <BroadcastEditorLayout setForm={setForm} form={form} overLimit={overLimit} maxMessage={maxMessage} fieldId={fieldId} data={data} send={send} saveDraft={saveDraft} />
 

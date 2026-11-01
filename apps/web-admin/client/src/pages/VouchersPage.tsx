@@ -48,7 +48,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
-import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -349,7 +349,7 @@ export function VouchersPage() {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [qDraft]);
-  const { data, isError, error, refetch } = useVouchers(q, status, page);
+  const { data, isError, refetch } = useVouchers(q, status, page);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
@@ -498,8 +498,6 @@ export function VouchersPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError && !data) return <PageLayout title="Vouchers"><QueryErrorNotice what="vouchers" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
-
   const now = new Date();
 
   return (
@@ -514,8 +512,6 @@ export function VouchersPage() {
           </Button>
         }
       />
-
-      <QueryErrorNotice isError={isError} what="vouchers" hasData error={error} onRetry={() => void refetch()} />
 
       <VoucherStats data={data} />
 
@@ -551,7 +547,9 @@ export function VouchersPage() {
 
       <VoucherBulkActions visibleSelected={visibleSelected} bulkAction={bulkAction} setSelected={setSelected} />
 
-      <VouchersTable allSelected={allSelected} toggleSelectAll={toggleSelectAll} vouchers={vouchers} selected={selected} toggleSelected={toggleSelected} handleCopy={handleCopy} copiedId={copiedId} now={now} setViewing={setViewing} openEditForm={openEditForm} openDuplicateForm={openDuplicateForm} toggle={toggle} setPendingDelete={setPendingDelete} data={data} status={status} q={q} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="vouchers" onRetry={() => void refetch()}>
+        <VouchersTable allSelected={allSelected} toggleSelectAll={toggleSelectAll} vouchers={vouchers} selected={selected} toggleSelected={toggleSelected} handleCopy={handleCopy} copiedId={copiedId} now={now} setViewing={setViewing} openEditForm={openEditForm} openDuplicateForm={openDuplicateForm} toggle={toggle} setPendingDelete={setPendingDelete} data={data} status={status} q={q} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">

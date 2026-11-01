@@ -204,15 +204,15 @@ export function OrderDetailPage() {
 
 /** What stands in for the order while there is no data yet: the load failed
  * (with Retry) or is still in flight. */
-function OrderDetailUnavailable({ isError, error, onRetry }: { isError: boolean; error: unknown; onRetry: () => void }) {
+function OrderDetailUnavailable({ isError, onRetry }: { isError: boolean; onRetry: () => void }) {
   return isError
-    ? <QueryErrorNotice what="order" hasData={false} error={error} onRetry={onRetry} />
+    ? <QueryErrorNotice what="order" hasData={false} onRetry={onRetry} />
     : <p>Loading…</p>;
 }
 
 function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
   const qc = useQueryClient();
-  const { data, isError, error, refetch } = useOrderDetail(orderId ?? "");
+  const { data, isError, refetch } = useOrderDetail(orderId ?? "");
   useOrderProviderStream({ orderId, qc });
   const [rejectReason, setRejectReason] = useState("");
   const [fulfillContent, setFulfillContent] = useState("");
@@ -333,7 +333,7 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
   if (!data) {
     return (
       <PageLayout title="Order Detail">
-        <OrderDetailUnavailable isError={isError} error={error} onRetry={() => void refetch()} />
+        <OrderDetailUnavailable isError={isError} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -394,7 +394,7 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
         breadcrumb={[{ label: "Orders", href: "/orders" }]}
       />
 
-      <QueryErrorNotice isError={isError} what="order" hasData error={error} onRetry={() => void refetch()} />
+      <QueryErrorNotice isError={isError} what="order" hasData onRetry={() => void refetch()} />
 
       {actionError && <p className="mb-4 text-sm text-rust">{actionError}</p>}
 

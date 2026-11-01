@@ -325,3 +325,31 @@ describe("TasksPage", () => {
     await waitFor(() => expect(screen.getByText("order-detail-page")).toBeInTheDocument());
   });
 });
+
+describe("TasksPage — first-load failure keeps the page usable", () => {
+  it("keeps the filters, never claims there are no tasks, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admin-tasks/assignees")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      return failing ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse(tasksData([TASK_PENDING]));
+    });
+    render(<TasksPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load tasks.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Status filter" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.queryByText("No admin tasks")).not.toBeInTheDocument();
+    expect(screen.queryByText("No matching tasks")).not.toBeInTheDocument();
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("ORD-010")).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load tasks.")).not.toBeInTheDocument();
+  });
+});

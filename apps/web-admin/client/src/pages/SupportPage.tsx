@@ -44,7 +44,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
-import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { SelectFilter } from "../components/shared/SelectFilter";
@@ -234,7 +234,7 @@ export function SupportPage() {
     return () => clearTimeout(timer);
   }, [qDraft]);
 
-  const { data, isError, error, refetch } = useTickets(q, filters);
+  const { data, isError, refetch } = useTickets(q, filters);
   // Super-admin-only data source (mirrors AdminsPage) — a non-super admin
   // simply won't see assignee names/options here; the Assigned controls
   // still work off ticket.adminId for the "assigned" state (same convention
@@ -265,14 +265,6 @@ export function SupportPage() {
    *  touch `status`, so they can never trigger the diffing effect's status
    *  branch in the first place. A ticket genuinely closed by a *different*
    *  admin (not seeded here) still surfaces its diff-toast normally. */
-
-  if (isError && !data) {
-    return (
-      <PageLayout title="Support Tickets">
-        <QueryErrorNotice what="tickets" hasData={false} error={error} onRetry={() => void refetch()} />
-      </PageLayout>
-    );
-  }
 
   const items = data?.items ?? [];
   const allOnPageSelected = items.length > 0 && items.every((t) => selected.has(t.id));
@@ -377,15 +369,15 @@ export function SupportPage() {
         }
       />
 
-      <QueryErrorNotice isError={isError} what="tickets" hasData error={error} onRetry={() => void refetch()} />
-
       <SupportStats data={data} toggleOverdueFilter={toggleOverdueFilter} />
 
       <SupportStatusFilter applyFilters={applyFilters} clearFilters={clearFilters} qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} draft={draft} setDraft={setDraft} />
 
       <SupportAssignSelectedTicketsTo visibleSelected={visibleSelected} bulkAction={bulkAction} assignableAdmins={assignableAdmins} setSelected={setSelected} />
 
-      <SupportTicketsTable allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} items={items} selected={selected} toggleSelected={toggleSelected} hoveredMessageId={hoveredMessageId} setHoveredMessageId={setHoveredMessageId} assign={assign} adminNameById={adminNameById} assignableAdmins={assignableAdmins} navigate={navigate} classify={classify} resolve={resolve} reopen={reopen} setCloseTarget={setCloseTarget} data={data} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="tickets" onRetry={() => void refetch()}>
+        <SupportTicketsTable allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} items={items} selected={selected} toggleSelected={toggleSelected} hoveredMessageId={hoveredMessageId} setHoveredMessageId={setHoveredMessageId} assign={assign} adminNameById={adminNameById} assignableAdmins={assignableAdmins} navigate={navigate} classify={classify} resolve={resolve} reopen={reopen} setCloseTarget={setCloseTarget} data={data} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">

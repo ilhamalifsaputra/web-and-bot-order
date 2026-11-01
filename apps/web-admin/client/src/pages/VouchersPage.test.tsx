@@ -740,3 +740,33 @@ describe("VouchersPage", () => {
     expect(screen.getByText(/showing 1–50 of 120/i)).toBeInTheDocument();
   });
 });
+
+describe("VouchersPage — first-load failure keeps the page usable", () => {
+  it("keeps the search and status filter, never claims there are no vouchers, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (!url.startsWith("/api/vouchers?")) return jsonResponse({ products: [] });
+      listUrls.push(url);
+      return failing
+        ? new Response(JSON.stringify({ error: "Database unavailable" }), { status: 500, headers: { "Content-Type": "application/json" } })
+        : listResponse([VOUCHER]);
+    });
+    render(<VouchersPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load vouchers.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search voucher code...")).toBeInTheDocument();
+    expect(screen.getByLabelText("Status")).toBeInTheDocument();
+    expect(screen.queryByText("No vouchers found")).not.toBeInTheDocument();
+    expect(screen.queryByText("No matching vouchers")).not.toBeInTheDocument();
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load vouchers.")).not.toBeInTheDocument();
+  });
+});

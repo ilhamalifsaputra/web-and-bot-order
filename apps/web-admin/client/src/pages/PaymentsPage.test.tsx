@@ -1481,3 +1481,30 @@ describe("PaymentsPage — Idempotency-Key", () => {
     expect(second).not.toBe(first);
   });
 });
+
+describe("PaymentsPage — first-load failure keeps the page usable", () => {
+  it("keeps the ledger search and filters, never claims there are no transactions, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listPaths: string[] = [];
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (!path.startsWith("/api/payments")) return searchPayload;
+      listPaths.push(path);
+      if (failing) throw new Error("Database unavailable");
+      return { enabled: true, ledger: [TX], total: 1, page: 1, hasNext: false, outcomes: ["MATCHED"], counts: { MATCHED: 1 } };
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load payments.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search Transfer ID...")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Outcome" })).toBeInTheDocument();
+    expect(screen.queryByText("No transactions found")).not.toBeInTheDocument();
+    expect(listPaths).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
+    expect(listPaths).toHaveLength(2);
+    expect(screen.queryByText("Failed to load payments.")).not.toBeInTheDocument();
+  });
+});

@@ -39,7 +39,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
-import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -344,7 +344,7 @@ export function PaymentsPage() {
   }, [qDraft]);
   useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [outcome, kind, q, page]);
   const actionableApplied = actionable && isActionableOutcome(outcome);
-  const { data, isError, error, refetch } = usePayments(outcome, kind, q, page, actionableApplied);
+  const { data, isError, refetch } = usePayments(outcome, kind, q, page, actionableApplied);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
@@ -440,8 +440,6 @@ export function PaymentsPage() {
     },
   });
 
-  if (isError && !data) return <PageLayout title="Payments"><QueryErrorNotice what="payments" hasData={false} error={error} onRetry={() => void refetch()} /></PageLayout>;
-
   const { canSubmitMatch, showSuggestions } = paymentMatchingAvailability({ matchForm, orderCodeFocused, suggestLoading, searched });
 
   return (
@@ -454,8 +452,6 @@ export function PaymentsPage() {
           {data.health.detail}
         </div>
       )}
-
-      <QueryErrorNotice isError={isError} what="payments" hasData error={error} onRetry={() => void refetch()} />
 
       <PaymentStats data={data} />
 
@@ -476,7 +472,9 @@ export function PaymentsPage() {
 
       <PaymentBulkDismissBar visibleSelected={visibleSelected} bulkDismiss={bulkDismiss} setSelected={setSelected} />
 
-      <PaymentsSelectAllEligibleTransfers allEligibleSelected={allEligibleSelected} toggleSelectAllEligible={toggleSelectAllEligible} eligibleRows={eligibleRows} selected={selected} toggleSelected={toggleSelected} startMatchFromRow={startMatchFromRow} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} setPendingDismiss={setPendingDismiss} data={data} outcome={outcome} kind={kind} changeOutcome={changeOutcome} setKind={setKind} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="payments" onRetry={() => void refetch()}>
+        <PaymentsSelectAllEligibleTransfers allEligibleSelected={allEligibleSelected} toggleSelectAllEligible={toggleSelectAllEligible} eligibleRows={eligibleRows} selected={selected} toggleSelected={toggleSelected} startMatchFromRow={startMatchFromRow} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} setPendingDismiss={setPendingDismiss} data={data} outcome={outcome} kind={kind} changeOutcome={changeOutcome} setKind={setKind} />
+      </QueryFailureGate>
 
       <PaymentsPagination data={data} page={page} setPage={setPage} />
 

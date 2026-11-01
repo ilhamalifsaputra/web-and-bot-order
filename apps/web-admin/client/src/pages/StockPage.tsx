@@ -14,7 +14,7 @@ import { useNavigate } from "react-router-dom";
 import { apiGet } from "../api/client";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
-import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -120,20 +120,12 @@ function useStock() {
 export function StockPage() {
   const fieldId = useId();
   const navigate = useNavigate();
-  const { data, isLoading, isError, error, refetch } = useStock();
+  const { data, isLoading, isError, refetch } = useStock();
   const [filter, setFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [familyFilter, setFamilyFilter] = useState<FamilyTab>(ALL_TAB);
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
-
-  if (isError && !data) {
-    return (
-      <PageLayout title="Stock">
-        <QueryErrorNotice what="stock" hasData={false} error={error} onRetry={() => void refetch()} />
-      </PageLayout>
-    );
-  }
 
   const denominations = data?.denominations ?? [];
   const counts = data?.counts ?? {};
@@ -209,8 +201,6 @@ export function StockPage() {
         }
       />
 
-      <QueryErrorNotice isError={isError} what="stock" hasData error={error} onRetry={() => void refetch()} />
-
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} />
         <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} />
@@ -220,7 +210,9 @@ export function StockPage() {
 
       <StockFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} familyFilter={familyFilter} setFamilyFilter={setFamilyFilter} activeCategoryFilter={activeCategoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} availabilityFilter={availabilityFilter} setAvailabilityFilter={setAvailabilityFilter} sortBy={sortBy} setSortBy={setSortBy} />
 
-      <StockSummary counts={counts} lowStockThreshold={lowStockThreshold} data={data} navigate={navigate} filtered={filtered} isLoading={isLoading} isGenuinelyEmpty={isGenuinelyEmpty} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="stock" onRetry={() => void refetch()}>
+        <StockSummary counts={counts} lowStockThreshold={lowStockThreshold} data={data} navigate={navigate} filtered={filtered} isLoading={isLoading} isGenuinelyEmpty={isGenuinelyEmpty} clearFilters={clearFilters} />
+      </QueryFailureGate>
     </PageLayout>
   );
 }

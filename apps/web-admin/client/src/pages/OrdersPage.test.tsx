@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -817,5 +817,91 @@ describe("OrdersPage — guest buyers", () => {
 
     expect(screen.getByText("Guest")).toBeInTheDocument();
     expect(screen.getByText(/no contact email/i)).toBeInTheDocument();
+  });
+});
+
+describe("OrdersPage — failed loads keep the page usable", () => {
+  const SEARCH = "Search order code, customer or product...";
+
+  /** Serves kpis normally and fails the orders list while `failing()` is true.
+   *  Returns the orders-list URLs requested, in order. */
+  function mockFailingOrders(failing: () => boolean) {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/orders/kpis")) return jsonResponse(KPIS_DATA);
+      listUrls.push(url);
+      return failing() ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse(ORDERS_DATA);
+    });
+    return listUrls;
+  }
+
+  it("first-load failure keeps the search and filters, never claims there are no orders, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls = mockFailingOrders(() => failing);
+    render(<OrdersPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load orders.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(SEARCH)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.queryByText("No orders found.")).not.toBeInTheDocument();
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getAllByText("ORD-0001").length).toBeGreaterThan(0));
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load orders.")).not.toBeInTheDocument();
+  });
+
+  it("a filter applied while the list is failing survives Retry", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls = mockFailingOrders(() => failing);
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await screen.findByText("Failed to load orders.");
+
+    await user.type(screen.getByPlaceholderText(SEARCH), "ORD-0001");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(listUrls).toHaveLength(2));
+    expect(listUrls[1]).toContain("q=ORD-0001");
+    expect(await screen.findByText("Failed to load orders.")).toBeInTheDocument();
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getAllByText("ORD-0001").length).toBeGreaterThan(0));
+    expect(listUrls).toHaveLength(3);
+    expect(listUrls[2]).toContain("q=ORD-0001");
+    expect(screen.getByPlaceholderText(SEARCH)).toHaveValue("ORD-0001");
+  });
+
+  it("a failed refresh keeps the rows on screen with a Couldn't refresh notice, and Retry clears it", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let failing = false;
+    const listUrls = mockFailingOrders(() => failing);
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <OrdersPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getAllByText("ORD-0001").length).toBeGreaterThan(0));
+    expect(listUrls).toHaveLength(1);
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["orders"] }); });
+    expect(await screen.findByText(/Couldn't refresh orders/)).toBeInTheDocument();
+    expect(screen.getAllByText("ORD-0001").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Failed to load orders.")).not.toBeInTheDocument();
+    expect(listUrls).toHaveLength(2);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh orders/)).not.toBeInTheDocument());
+    expect(listUrls).toHaveLength(3);
+    expect(screen.getAllByText("ORD-0001").length).toBeGreaterThan(0);
   });
 });

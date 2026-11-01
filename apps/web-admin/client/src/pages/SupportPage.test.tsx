@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -809,5 +809,85 @@ describe("SupportPage", () => {
     await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Classify")).toBeInTheDocument();
+  });
+});
+
+describe("SupportPage — failed loads keep the page usable", () => {
+  const SEARCH = /ticket, order, or customer/i;
+
+  /** Serves admins normally and fails the ticket list while `failing()` is
+   *  true. Returns the ticket-list URLs requested, in order. */
+  function mockFailingTickets(failing: () => boolean) {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      return failing() ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse(supportData([TICKET_OPEN]));
+    });
+    return listUrls;
+  }
+
+  it("first-load failure keeps the search and filters, never claims there are no tickets, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls = mockFailingTickets(() => failing);
+    render(<SupportPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load tickets.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(SEARCH)).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Status filter" })).toBeInTheDocument();
+    expect(screen.queryByText(/no support tickets/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no matching tickets/i)).not.toBeInTheDocument();
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load tickets.")).not.toBeInTheDocument();
+  });
+
+  it("a search typed while the list is failing survives Retry", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls = mockFailingTickets(() => failing);
+    render(<SupportPage />, { wrapper: Wrapper });
+    await screen.findByText("Failed to load tickets.");
+
+    await user.type(screen.getByPlaceholderText(SEARCH), "budi");
+    // The search applies itself after a 300 ms debounce.
+    await waitFor(() => expect(listUrls).toHaveLength(2));
+    expect(listUrls[1]).toContain("q=budi");
+    expect(await screen.findByText("Failed to load tickets.")).toBeInTheDocument();
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(3);
+    expect(listUrls[2]).toContain("q=budi");
+    expect(screen.getByPlaceholderText(SEARCH)).toHaveValue("budi");
+  });
+
+  it("a failed 30 s poll keeps the rows on screen with a Couldn't refresh notice, and Retry clears it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let failing = false;
+    const listUrls = mockFailingTickets(() => failing);
+    render(<SupportPage />, { wrapper: Wrapper });
+    await vi.waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(1);
+
+    failing = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await vi.waitFor(() => expect(screen.getByText(/Couldn't refresh tickets/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument();
+    expect(screen.queryByText("Failed to load tickets.")).not.toBeInTheDocument();
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await vi.waitFor(() => expect(screen.queryByText(/Couldn't refresh tickets/)).not.toBeInTheDocument());
+    expect(listUrls).toHaveLength(3);
+    expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument();
   });
 });

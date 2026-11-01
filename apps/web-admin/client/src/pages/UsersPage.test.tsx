@@ -652,3 +652,31 @@ describe("UsersPage", () => {
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
   });
 });
+
+describe("UsersPage — first-load failure keeps the page usable", () => {
+  it("keeps the search and filters, never claims there are no customers, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/users/kpis")) return jsonResponse(KPIS_DATA);
+      listUrls.push(url);
+      return failing ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse(USERS_DATA);
+    });
+    render(<UsersPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load customers.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search by name, username, Telegram ID…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.queryByText("No customers yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No customers match these filters.")).not.toBeInTheDocument();
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getAllByText("Andi Santoso").length).toBeGreaterThan(0));
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load customers.")).not.toBeInTheDocument();
+  });
+});

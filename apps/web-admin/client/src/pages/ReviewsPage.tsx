@@ -35,7 +35,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
-import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { Stars } from "../components/shared/Stars";
@@ -192,7 +192,7 @@ export function ReviewsPage() {
     setFilters((f) => (f.q === debouncedQ ? f : { ...f, q: debouncedQ, page: 1 }));
   }, [debouncedQ]);
 
-  const { data, isLoading, isFetching, isError, error, refetch } = useReviews(filters);
+  const { data, isLoading, isFetching, isError, refetch } = useReviews(filters);
 
   const [replyReview, setReplyReview] = useState<ReplyDialogReview | null>(null);
   const [replyOpen, setReplyOpen] = useState(false);
@@ -280,13 +280,9 @@ export function ReviewsPage() {
     setReplyOpen(true);
   }
 
-  if (isError && !data) {
-    return (
-      <PageLayout title="Reviews">
-        <QueryErrorNotice what="reviews" hasData={false} error={error} onRetry={() => void refetch()} />
-      </PageLayout>
-    );
-  }
+  // A first load that failed has no summaries to show; the card would
+  // otherwise claim "No rated products yet." about data it never got.
+  const firstLoadFailed = isError && !data;
 
   return (
     <PageLayout title="Reviews">
@@ -294,8 +290,6 @@ export function ReviewsPage() {
         title="Reviews"
         description="Moderate customer reviews, track sentiment and reply to feedback."
       />
-
-      <QueryErrorNotice isError={isError} what="reviews" hasData error={error} onRetry={() => void refetch()} />
 
       <ReviewsKpiRow
         onPendingReplyClick={() => quickFilter({ status: "PENDING_REPLY", hidden: "0" })}
@@ -306,13 +300,15 @@ export function ReviewsPage() {
       <div className="mb-6 grid gap-4 lg:grid-cols-3">
         <RatingDistributionCard />
         <div className="lg:col-span-2">
-          <ProductRatingsCard summaries={summaries} isLoading={isLoading} />
+          {firstLoadFailed ? null : <ProductRatingsCard summaries={summaries} isLoading={isLoading} />}
         </div>
       </div>
 
       <ReviewsRating applyFilters={applyFilters} clearFilters={clearFilters} searchInput={searchInput} setSearchInput={setSearchInput} isFetching={isFetching} fieldId={fieldId} draft={draft} setDraft={setDraft} productOptions={productOptions} />
 
-      <ReviewsSummary navigate={navigate} openReply={openReply} deleteReply={deleteReply} setStatus={setStatus} toggleHide={toggleHide} setDeleteTargetId={setDeleteTargetId} reviews={reviews} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="reviews" onRetry={() => void refetch()}>
+        <ReviewsSummary navigate={navigate} openReply={openReply} deleteReply={deleteReply} setStatus={setStatus} toggleHide={toggleHide} setDeleteTargetId={setDeleteTargetId} reviews={reviews} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">

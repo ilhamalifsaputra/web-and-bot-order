@@ -12,11 +12,13 @@ interface BotPostResult {
 export function SetupBotPage() {
   const [botToken, setBotToken] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Which button is in flight, so only that one shows the spinner.
+  const [pendingAction, setPendingAction] = useState<"save" | "skip" | null>(null);
+  const loading = pendingAction !== null;
 
   async function handleSubmit(skip: boolean) {
     setError(null);
-    setLoading(true);
+    setPendingAction(skip ? "skip" : "save");
     try {
       const body = skip ? { skip: "1" } : { bot_token: botToken };
       const result = await publicPost<BotPostResult>("/setup/bot", body);
@@ -26,7 +28,7 @@ export function SetupBotPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
-      setLoading(false);
+      setPendingAction(null);
     }
   }
 
@@ -62,18 +64,19 @@ export function SetupBotPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-          <Button pending={loading}
+          <Button pending={pendingAction === "save"}
             type="button"
             onClick={() => void handleSubmit(false)}
             disabled={loading || !botToken.trim()}
             className="w-full"
           >
-            {loading ? "Saving…" : "Save and continue"}
+            {pendingAction === "save" ? "Saving…" : "Save and continue"}
           </Button>
           <Button
             type="button"
             variant="outline"
             onClick={() => void handleSubmit(true)}
+            pending={pendingAction === "skip"}
             disabled={loading}
             className="w-full"
           >

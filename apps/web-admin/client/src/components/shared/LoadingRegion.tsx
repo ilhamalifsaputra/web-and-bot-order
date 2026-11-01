@@ -3,8 +3,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 /** The accessible wrapper every loading skeleton sits in: a busy `status`
- * region named by what is loading ("Loading orders"), with the same words as
- * visually-hidden text so a screen reader announces it once. The skeleton
+ * live region whose only readable content is visually-hidden text saying
+ * what is loading ("Loading orders"), so a screen reader announces it once.
+ * No `aria-label` on top: it would repeat the same words. The skeleton
  * blocks inside stay `aria-hidden`. */
 export function LoadingRegion({
   label,
@@ -16,7 +17,7 @@ export function LoadingRegion({
   children: ReactNode;
 }): React.JSX.Element {
   return (
-    <div role="status" aria-busy="true" aria-label={label} className={className}>
+    <div role="status" aria-busy="true" className={className}>
       <span className="sr-only">{label}</span>
       {children}
     </div>

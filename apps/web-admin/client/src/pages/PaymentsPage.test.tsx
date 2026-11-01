@@ -207,6 +207,29 @@ describe("PaymentsPage", () => {
     expect((orderInput as HTMLInputElement).value).toBe("ABC-1");
   });
 
+  it("announces the order-code lookup in a status region while it runs", async () => {
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+    vi.mocked(apiGet).mockImplementation((path: string) =>
+      path.startsWith("/api/payments") ? Promise.resolve(paymentsPayload) : new Promise(() => {}),
+    );
+    const orderInput = screen.getByPlaceholderText("Order code");
+    fireEvent.focus(orderInput);
+    fireEvent.change(orderInput, { target: { value: "abc-1" } });
+    await waitFor(() => expect(screen.getByText("Searching…").closest("[role=status]")).not.toBeNull());
+  });
+
+  it("lists an outcome without a made-up (0) when the server sent no count for it", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockPaymentsFetch({ enabled: true, ledger: [TX], total: 1, page: 1, hasNext: false, outcomes: ["MATCHED", "UNMATCHED"], counts: { MATCHED: 1 } });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
+    await user.click(screen.getByRole("combobox", { name: "Outcome" }));
+    expect(await screen.findByRole("option", { name: "MATCHED (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "UNMATCHED" })).toBeInTheDocument();
+    expect(screen.queryByText(/\(0\)/)).not.toBeInTheDocument();
+  });
+
   it("truncates a long order-code suggestion inside the bounded autocomplete dropdown, keeping the full code in title (Task 4)", async () => {
     const longCode = "ABC-VERY-LONG-ORDER-CODE-1234567890";
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} });

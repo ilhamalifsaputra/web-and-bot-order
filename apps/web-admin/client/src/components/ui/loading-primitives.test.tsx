@@ -30,18 +30,20 @@ describe("Skeleton", () => {
 });
 
 describe("LoadingRegion", () => {
-  it("is a busy status region named by what is loading", () => {
+  it("is a busy status region that says what is loading", () => {
     render(<LoadingRegion label="Loading orders"><Skeleton /></LoadingRegion>);
-    const region = screen.getByRole("status", { name: "Loading orders" });
+    const region = screen.getByText("Loading orders").closest("[role=status]");
     expect(region).toHaveAttribute("aria-busy", "true");
     expect(region).toHaveTextContent("Loading orders");
+    // Named once, by its sr-only text: no aria-label repeating the words.
+    expect(region).not.toHaveAttribute("aria-label");
   });
 });
 
 describe("RouteFallback", () => {
   it("is the one busy page-shaped loader for a lazy route", () => {
     render(<RouteFallback />);
-    const region = screen.getByRole("status", { name: "Loading page" });
+    const region = screen.getByText("Loading page").closest("[role=status]");
     expect(region).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });

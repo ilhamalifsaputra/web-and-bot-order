@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -572,7 +573,7 @@ function PaymentsManualMatch({ matchCardRef, matchError, matchForm, setMatchForm
             {showSuggestions && (
               <div className="absolute left-0 right-0 top-full z-10 mt-1 rounded-md border border-line bg-card shadow-lift">
                 {suggestLoading && (
-                  <div className="px-3 py-2 text-xs text-ink-faint">Searching…</div>
+                  <div role="status" className="flex items-center gap-1.5 px-3 py-2 text-xs text-ink-faint"><Spinner className="size-3" />Searching…</div>
                 )}
                 {!suggestLoading && suggestion && (
                   <button
@@ -743,7 +744,7 @@ function PaymentsLedgerSearchOutcomeFilter({ qDraft, setQDraft, fieldId, outcome
         <SelectContent>
           <SelectItem value="_all_">All</SelectItem>
           {(data?.outcomes ?? []).map(o => (
-            <SelectItem key={o} value={o}>{o} ({data?.counts[o] ?? 0})</SelectItem>
+            <SelectItem key={o} value={o}>{o}{data?.counts[o] !== undefined ? ` (${data.counts[o]})` : ""}</SelectItem>
           ))}
         </SelectContent>
       </Select>
@@ -993,7 +994,7 @@ function PaymentsAddToBuyerAposS({ pendingCredit, setPendingCredit, setCreditOrd
             onChange={e => setCreditOrderCode(e.target.value)}
             autoComplete="off"
           />
-          {creditSuggestLoading && <p className="text-xs text-ink-faint">Searching…</p>}
+          {creditSuggestLoading && <p role="status" className="flex items-center gap-1.5 text-xs text-ink-faint"><Spinner className="size-3" />Searching…</p>}
           {!creditSuggestLoading && creditOrderCode.trim() && !creditSuggestion && (
             <p className="text-xs text-ink-faint">No matching order code</p>
           )}
@@ -1001,7 +1002,8 @@ function PaymentsAddToBuyerAposS({ pendingCredit, setPendingCredit, setCreditOrd
         <DialogFooter>
           <Button variant="outline" onClick={() => { setPendingCredit(null); setCreditOrderCode(""); }}>Back</Button>
           <Button
-            disabled={!creditSuggestion || creditToBalance.isPending}
+            pending={creditToBalance.isPending}
+            disabled={!creditSuggestion}
             onClick={() => creditToBalance.mutate()}
           >
             Add to credit balance

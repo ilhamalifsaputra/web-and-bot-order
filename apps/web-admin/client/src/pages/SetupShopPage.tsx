@@ -13,11 +13,13 @@ export function SetupShopPage() {
   const [shopName, setShopName] = useState("");
   const [shopTagline, setShopTagline] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Which button is in flight, so only that one shows the spinner.
+  const [pendingAction, setPendingAction] = useState<"save" | "skip" | null>(null);
+  const loading = pendingAction !== null;
 
   async function handleSubmit(skip: boolean) {
     setError(null);
-    setLoading(true);
+    setPendingAction(skip ? "skip" : "save");
     try {
       const body = skip ? { skip: "1" } : { shop_name: shopName, shop_tagline: shopTagline };
       const result = await publicPost<ShopPostResult>("/setup/shop", body);
@@ -29,7 +31,7 @@ export function SetupShopPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
-      setLoading(false);
+      setPendingAction(null);
     }
   }
 
@@ -79,18 +81,19 @@ export function SetupShopPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-          <Button pending={loading}
+          <Button pending={pendingAction === "save"}
             type="button"
             onClick={() => void handleSubmit(false)}
             disabled={loading}
             className="w-full"
           >
-            {loading ? "Saving…" : "Save & finish"}
+            {pendingAction === "save" ? "Saving…" : "Save & finish"}
           </Button>
           <Button
             type="button"
             variant="outline"
             onClick={() => void handleSubmit(true)}
+            pending={pendingAction === "skip"}
             disabled={loading}
             className="w-full"
           >

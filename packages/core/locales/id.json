@@ -1641,6 +1641,8 @@
   "helpdesk.retention_busy": "Pembersihan bukti sedang berlangsung. Coba lagi sebentar.",
   "helpdesk.media_limits_dynamic": "Maksimal 3 file. JPG/PNG/WebP: {image} MB. MP4: {video} MB.",
   "helpdesk.upload_network": "Jaringan tidak tersedia. Periksa koneksi lalu coba lagi.",
+  "helpdesk.upload_storage_blocked": "Koneksi Anda terlihat normal, tetapi browser tidak dapat menjangkau penyimpanan file. Coba lagi. Jika terus terjadi, hubungi pihak toko.",
+  "helpdesk.upload_failed_blocks_send": "Hapus atau coba ulang file yang gagal untuk mengirim.",
   "helpdesk.upload_timeout": "Waktu unggah habis. Periksa koneksi lalu coba lagi.",
   "helpdesk.upload_denied": "Akses unggah kedaluwarsa atau ditolak. Coba lagi, atau muat ulang untuk login kembali.",
   "helpdesk.upload_server": "Penyimpanan sedang tidak tersedia. Coba lagi sebentar.",

@@ -28,6 +28,8 @@ export interface TicketComposerProps {
   uploadProgress: number;
   uploadSlot?: ReactNode;
   uploadBusy?: boolean;
+  /** True while a file has failed: it keeps Send disabled, so say why. */
+  uploadFailed?: boolean;
   hasUploads?: boolean;
 }
 
@@ -42,6 +44,7 @@ export default function TicketComposer({
   uploadProgress,
   uploadSlot,
   uploadBusy = false,
+  uploadFailed = false,
   hasUploads = false,
 }: TicketComposerProps) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,6 +97,11 @@ export default function TicketComposer({
         </div>
       )}
       <div className="mt-3 text-right">
+        {uploadFailed && (
+          <p role="status" className="mb-2 text-xs text-ink-soft">
+            {t("helpdesk.upload_failed_blocks_send")}
+          </p>
+        )}
         <Button type="submit" variant="primary" size="sm" disabled={pending || uploadBusy || (!message.trim() && !hasUploads)}>
           {pending && <Spinner />}
           <Send className="w-3.5 h-3.5" /> {t("web.support_reply")}

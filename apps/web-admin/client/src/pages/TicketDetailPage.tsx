@@ -1,6 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { useSupportUploads } from "../lib/supportUploads";
-import { SupportUploadPicker } from "../components/support/SupportUploadPicker";
+import { SupportUploadPicker, type SupportUploadOptionsState } from "../components/support/SupportUploadPicker";
 import { SettingsToggle } from "@/components/shared/SettingsToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -340,7 +340,7 @@ export function TicketDetailPage() {
   const identity = describeTicketCustomer(user);
 
   const composer = isClosed ? null : (
-    <TicketDetailReply uploads={uploads} mediaEnabled={mediaOptions.data?.enabled ?? false} replyError={replyError} reply={reply} setReply={setReply} internal={internal} setInternal={setInternal} sendReply={sendReply} />
+    <TicketDetailReply uploads={uploads} optionsState={uploadOptionsState(mediaOptions)} onRetryOptions={() => void mediaOptions.refetch()} replyError={replyError} reply={reply} setReply={setReply} internal={internal} setInternal={setInternal} sendReply={sendReply} />
   );
 
   return (
@@ -374,9 +374,16 @@ export function TicketDetailPage() {
   );
 }
 
-function TicketDetailReply({ uploads, mediaEnabled, replyError, reply, setReply, internal, setInternal, sendReply }: {
+function uploadOptionsState(query: { isError: boolean; isPending: boolean; data?: { enabled: boolean } }): SupportUploadOptionsState {
+  if (query.isError) return "error";
+  if (query.isPending) return "loading";
+  return query.data?.enabled ? "enabled" : "disabled";
+}
+
+export function TicketDetailReply({ uploads, optionsState, onRetryOptions, replyError, reply, setReply, internal, setInternal, sendReply }: {
   uploads: ReturnType<typeof useSupportUploads>;
-  mediaEnabled: boolean;
+  optionsState: SupportUploadOptionsState;
+  onRetryOptions: () => void;
   replyError: string | null;
   reply: string;
   setReply: import("react").Dispatch<import("react").SetStateAction<string>>;
@@ -395,12 +402,13 @@ function TicketDetailReply({ uploads, mediaEnabled, replyError, reply, setReply,
       maxLength={2000}
       disabled={sendReply.isPending}
     />
-    <SupportUploadPicker uploads={uploads} enabled={mediaEnabled} disabled={sendReply.isPending} />
+    <SupportUploadPicker uploads={uploads} optionsState={optionsState} onRetryOptions={onRetryOptions} disabled={sendReply.isPending} />
     {internal && <p className="rounded-md border border-dashed border-line bg-sand p-2 text-xs" role="status">Internal note: visible to admins only. No customer notification.</p>}
     <div className="flex flex-wrap items-center justify-between gap-3">
       {/* Internal note: stored and audited, never sent to the customer,
             and it does not advance the ticket's status. */}
       <SettingsToggle id="TicketDetailPage-mode" label="Internal note (not visible to the customer)" checked={internal} onCheckedChange={setInternal} disabled={sendReply.isPending} />
+      {uploads.failed && <p className="basis-full text-xs text-ink-soft" role="status">Remove or retry the failed file to send.</p>}
       <Button onClick={() => sendReply.mutate()} disabled={(!reply.trim() && !uploads.ids.length) || sendReply.isPending || uploads.busy}>
         {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
         {sendReply.isPending ? "Saving…" : internal ? "Save internal note" : "Send reply"}

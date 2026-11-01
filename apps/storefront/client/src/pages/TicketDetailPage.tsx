@@ -238,7 +238,7 @@ function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportRe
           onSubmit={submitReply}
           pending={replyMutation.isPending}
           uploadSlot={<SupportUploadPicker uploads={uploads} enabled={mediaEnabled} disabled={replyMutation.isPending} />}
-      uploadBusy={uploads.busy} hasUploads={uploads.ids.length > 0}
+      uploadBusy={uploads.busy} uploadFailed={uploads.failed}hasUploads={uploads.ids.length > 0}
       uploadProgress={uploadProgress}
         />
       </>

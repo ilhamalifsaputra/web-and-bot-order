@@ -5,6 +5,7 @@ const UPLOAD_LABELS: Record<string, string> = {
   "helpdesk.media_verification_failed": "The file could not be verified. Remove it and choose a valid photo or MP4.",
   "helpdesk.media_unavailable": "Support uploads are unavailable.",
   "helpdesk.upload_network": "Network unavailable. Check your connection and retry.",
+  "helpdesk.upload_storage_blocked": "Your connection is working, but this browser could not reach file storage. Retry; if it keeps happening, check that this site is allowed to access file storage (storage CORS settings).",
   "helpdesk.upload_timeout": "Upload timed out. Check your connection and retry.",
   "helpdesk.upload_denied": "Upload access expired or was denied. Retry, or reload to sign in again.",
   "helpdesk.upload_server": "Storage is temporarily unavailable. Please retry shortly.",
@@ -16,7 +17,7 @@ const UPLOAD_LABELS: Record<string, string> = {
 const t = (key: string, args?: { limit: number }) => (UPLOAD_LABELS[key] ?? key).replace("{limit}", String(args?.limit ?? ""));
 
 
-const UPLOAD_ERROR_KEYS = new Set(["helpdesk.upload_network", "helpdesk.upload_timeout", "helpdesk.upload_denied", "helpdesk.media_verification_failed", "helpdesk.media_unavailable", "helpdesk.upload_failed"]);
+const UPLOAD_ERROR_KEYS = new Set(["helpdesk.upload_network", "helpdesk.upload_storage_blocked", "helpdesk.upload_timeout", "helpdesk.upload_denied", "helpdesk.media_verification_failed", "helpdesk.media_unavailable", "helpdesk.upload_failed"]);
 export function supportUploadErrorKey(error: unknown): string {
   if (!(error instanceof Error)) return "helpdesk.upload_failed";
   if (UPLOAD_ERROR_KEYS.has(error.message)) return error.message;
@@ -61,7 +62,7 @@ export function useSupportUploads(ticketId?: number, limits?: SupportMediaLimits
         Object.entries(intent.headers).forEach(([key, value]) => xhr.setRequestHeader(key, value));
         xhr.upload.onprogress = (event) => { if (event.lengthComputable) update(item.key, { progress: Math.round(event.loaded / event.total * 100) }); };
         xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(Object.assign(new Error("Storage upload refused."), { status: xhr.status }));
-        xhr.onerror = () => reject(new Error("helpdesk.upload_network"));
+        xhr.onerror = () => reject(new Error(navigator.onLine === false ? "helpdesk.upload_network" : "helpdesk.upload_storage_blocked"));
         xhr.ontimeout = () => reject(new Error("helpdesk.upload_timeout"));
         xhr.onabort = () => reject(new Error("helpdesk.upload_failed"));
         xhr.send(item.file);
@@ -91,5 +92,5 @@ export function useSupportUploads(ticketId?: number, limits?: SupportMediaLimits
     if (item.id) void apiPost(`${BASE}/${item.id}/abort`, {}).catch(() => undefined);
   }
   function reset() { setFiles([]); setDraftId(crypto.randomUUID()); active.current.clear(); }
-  return { files, limits: { imageBytes: limits?.imageBytes ?? 5 * 1024 ** 2, videoBytes: limits?.videoBytes ?? 20 * 1024 ** 2 }, add, remove, retry: (item: SupportUpload) => { if ((item.attempts ?? 0) >= 3) return; active.current.add(item.key); queue.current = (queue.current ?? Promise.resolve()).then(() => upload(item)); }, reset, ids: files.flatMap((f) => f.id && f.state === "ready" ? [f.id] : []), busy: files.some((f) => f.state !== "ready") };
+  return { files, limits: { imageBytes: limits?.imageBytes ?? 5 * 1024 ** 2, videoBytes: limits?.videoBytes ?? 20 * 1024 ** 2 }, add, remove, retry: (item: SupportUpload) => { if ((item.attempts ?? 0) >= 3) return; active.current.add(item.key); queue.current = (queue.current ?? Promise.resolve()).then(() => upload(item)); }, reset, ids: files.flatMap((f) => f.id && f.state === "ready" ? [f.id] : []), busy: files.some((f) => f.state !== "ready"), failed: files.some((f) => f.state === "failed") };
 }

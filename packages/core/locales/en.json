@@ -1641,6 +1641,8 @@
   "helpdesk.retention_busy": "Evidence cleanup is in progress. Try again shortly.",
   "helpdesk.media_limits_dynamic": "Up to 3 files. JPG/PNG/WebP: {image} MB. MP4: {video} MB.",
   "helpdesk.upload_network": "Network unavailable. Check your connection and retry.",
+  "helpdesk.upload_storage_blocked": "Your connection looks fine, but your browser could not reach file storage. Retry. If it keeps happening, contact the shop.",
+  "helpdesk.upload_failed_blocks_send": "Remove or retry the failed file to send.",
   "helpdesk.upload_timeout": "Upload timed out. Check your connection and retry.",
   "helpdesk.upload_denied": "Upload access expired or was denied. Retry, or reload to sign in again.",
   "helpdesk.upload_server": "Storage is temporarily unavailable. Please retry shortly.",

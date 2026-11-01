@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { advanceCardState } from "./PayPage.helpers";
 /**
  * TSX port of apps/storefront/views/pay.njk + its polled fragment
@@ -42,7 +41,7 @@ import { advanceCardState } from "./PayPage.helpers";
  * itself, and every fetch/poll/state-machine/countdown mechanism below, is
  * byte-unchanged.
  */
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   BadgeCheck,
@@ -58,7 +57,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet } from "../api/client";
 import type { PayData, PayState, PayStatusData } from "../api/types";
 import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 import Skeleton from "../components/shop/Skeleton";
@@ -77,10 +76,7 @@ import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import { useShopContext } from "../lib/useShopContext";
 import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
-
-/** POST .../cancel. `cancelled` is absent from an older server during rollout,
- * which keeps that server's meaning: any success counted as cancelled. */
-type CancelResult = { ok: boolean; cancelled?: boolean };
+import { usePaymentCancel, type CancelResult } from "./usePaymentCancel";
 
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
@@ -212,8 +208,6 @@ function useCountdown(expiresAtIso: string | null): string {
 
 export default function PayPage({ variant = "order" }: { variant?: "order" | "topup" } = {}) {
   const { code = "" } = useParams<{ code: string }>();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const isTopup = variant === "topup";
   // The only seam between the two order kinds — see the file header.
   const { apiBase, loginNextBase, deliveredHref, closedHref, closedLabelKey, payPagePath } = paymentRoutePaths({ isTopup, code });
@@ -233,53 +227,13 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // (null for every other order type).
   const { isGame, retryHref, retryLabelKey, deliveredLabelKey } = paymentDestinations({ poll, data, isTopup });
 
-  // The one logic addition Task 14 makes: the cancel button no longer fires
-  // cancelMutation directly (Global Constraints / Task 1 audit §F item 3) —
-  // it opens this dialog first. onConfirm below calls the exact same
-  // mutate() call the old onClick did.
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
-
-  // A cancel that did not end the record leaves the page standing: the payment
-  // may have landed, so the buyer is shown the real state rather than sent off
-  // to buy again. Both reads matter: the big card ignores a polled `expired`
-  // until /pay itself says so. A session that went stale is caught by the /pay
-  // read's own 401 redirect (usePaymentStatus).
-  const stayAndReread = () => {
-    setCancelDialogOpen(false);
-    void queryClient.refetchQueries({ queryKey: ["pay", apiBase, code], exact: true });
-    void queryClient.refetchQueries({ queryKey: ["pay-status", apiBase, code], exact: true });
-  };
-
-  const cancelMutation = useMutation({
-    mutationFn: () => apiPost<CancelResult>(`/api/v1${apiBase}/${code}/cancel`, {}),
-    onError: stayAndReread,
-    onSuccess: ({ cancelled }) => {
-      if (cancelled === false) {
-        stayAndReread();
-        return;
-      }
-      // Retire the payable invoice snapshots; revisiting must read the backend
-      // rather than briefly offering the cancelled invoice again.
-      queryClient.removeQueries({ queryKey: ["pay", apiBase, code], exact: true });
-      queryClient.removeQueries({ queryKey: ["pay-status", apiBase, code], exact: true });
-      if (!isTopup) {
-        void queryClient.invalidateQueries({ queryKey: ["account-order", code] });
-        void queryClient.invalidateQueries({ queryKey: ["account-orders"] });
-        void queryClient.invalidateQueries({ queryKey: ["account-orders-preview"] });
-        if (data?.product_slug) {
-          void queryClient.invalidateQueries({ queryKey: ["product", data.product_slug] });
-        }
-      }
-      navigate(retryHref);
-    },
+  const { cancelMutation, cancelDialogOpen, setCancelDialogOpen, cancelNoticeKey } = usePaymentCancel({
+    apiBase,
+    code,
+    isTopup,
+    productSlug: data?.product_slug,
+    retryHref,
   });
-
-  // Derived from the mutation, so a new attempt clears the last outcome.
-  const cancelNoticeKey = cancelMutation.isError
-    ? (isTopup ? "web.cancel_topup_unknown" : "web.cancel_order_unknown")
-    : cancelMutation.data?.cancelled === false
-      ? (isTopup ? "web.cancel_topup_status_changed" : "web.cancel_order_status_changed")
-      : null;
 
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
 

@@ -171,6 +171,11 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This order is no longer waiting for verification — it may have already been processed.",
   "error.order_is_wallet_topup":
     "This is a wallet top-up, not a product order, so it can only be settled by crediting the balance.",
+  "error.order_already_delivered":
+    "This order has already been delivered, so it can't take that action. Refresh the page to see where it stands.",
+  // `{from}`/`{to}` are always passed by both throw sites (crud/orderStatus.ts).
+  "error.illegal_status_transition":
+    "This order's status can't move from {from} to {to}. Refresh the page to see where it stands.",
   "voucher not found":
     "This voucher could not be found — it may have just been removed.",
   "cannot delete a voucher that has been used":

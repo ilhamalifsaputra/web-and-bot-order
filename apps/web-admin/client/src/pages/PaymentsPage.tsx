@@ -114,13 +114,6 @@ function isPositiveAmount(amount: string | null): boolean {
   return !s.startsWith("-") && /[1-9]/.test(s);
 }
 
-/**
- * True when Dismiss must not be offered on this unmatched row: on TokoPay,
- * PayDisini and NOWPayments, a row with no confirmed amount, or whose
- * suggested order is still awaiting payment, may still be settled by the
- * gateway — dismissing it would block that delivery. Mirrors the server's
- * refusal (`dismissUnmatchedLedgerTx`, packages/db/src/crud/manualMatch.ts).
- */
 /** Shown for a dismiss that got no answer. It stays selected and its idempotency
  * key is held, so trying again replays the first attempt rather than repeating it. */
 const DISMISS_OUTCOME_UNKNOWN =
@@ -128,6 +121,13 @@ const DISMISS_OUTCOME_UNKNOWN =
 
 const isRateLimited = (error: unknown) => (error as { status?: number } | null)?.status === 429;
 
+/**
+ * True when Dismiss must not be offered on this unmatched row: on TokoPay,
+ * PayDisini and NOWPayments, a row with no confirmed amount, or whose
+ * suggested order is still awaiting payment, may still be settled by the
+ * gateway — dismissing it would block that delivery. Mirrors the server's
+ * refusal (`dismissUnmatchedLedgerTx`, packages/db/src/crud/manualMatch.ts).
+ */
 function dismissBlocked(tx: TxRow): boolean {
   if (!DISMISS_GUARDED_GATEWAYS.has(tx.gateway)) return false;
   return !isPositiveAmount(tx.amount) || tx.suggestedOrderStatus === "PENDING_PAYMENT";

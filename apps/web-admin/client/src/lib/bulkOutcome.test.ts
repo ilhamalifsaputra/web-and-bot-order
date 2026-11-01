@@ -89,10 +89,24 @@ describe("bulkFailureLines", () => {
   });
 
   it("has hand-written copy for every key the bulk routes send", () => {
-    const keys = ["error.not_eligible", "error.unexpected", "error.order_not_found", "error.order_not_pending_verification", "error.order_is_wallet_topup"];
+    const keys = [
+      "error.not_eligible",
+      "error.unexpected",
+      "error.order_not_found",
+      "error.order_not_pending_verification",
+      "error.order_is_wallet_topup",
+      "error.order_already_delivered",
+    ];
     for (const key of keys) {
       expect(bulkFailureLines([{ id: 1, error: key }], String)[0]!.reason).not.toContain("error.");
     }
+    const [illegal] = bulkFailureLines(
+      [{ id: 1, error: "error.illegal_status_transition", error_args: { from: "DELIVERED", to: "CANCELLED" } }],
+      String,
+    );
+    expect(illegal!.reason).not.toContain("error.");
+    expect(illegal!.reason).toContain("DELIVERED");
+    expect(illegal!.reason).toContain("CANCELLED");
   });
 });
 

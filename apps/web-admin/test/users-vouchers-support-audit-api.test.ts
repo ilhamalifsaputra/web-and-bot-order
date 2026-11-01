@@ -6,7 +6,7 @@ import { addMinutes } from "@app/core/datetime";
 import { SenderType } from "@app/core/enums";
 import { prisma, initDb, upsertUser, setSetting, createTicket, addTicketMessage, assignTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect, setUserPreferredCurrency, createWebUser } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
-import { makeSession, sessionJtiKey, newJti } from "../src/auth";
+import { makeSession, sessionJtiKey, newJti, webRoleKey } from "../src/auth";
 import { buildApp } from "../src/server";
 import { setFileResolver, getFileResolver } from "../src/lib/telegramCheck";
 
@@ -54,6 +54,10 @@ function postJson(url: string, c: string | null, csrfToken: string, body: Record
 
 function get(url: string, c: string | null) {
   return app.inject({ method: "GET", url, cookies: c ? { [COOKIE]: c } : {} });
+}
+
+function setAdminRole(role: "super" | "support" | "readonly") {
+  return setSetting(prisma, webRoleKey(ADMIN_TG), role);
 }
 
 describe("POST /api/users/:userId/role", () => {
@@ -853,6 +857,158 @@ describe("GET /api/support/:ticketId", () => {
   });
 });
 
+describe("GET /api/support/export role access", () => {
+  it("refuses anonymous, refuses readonly, serves support and super", async () => {
+    await createTicket(prisma, customerId, "EXPORT-SENTINEL subject");
+
+    expect((await get("/api/support/export", null)).statusCode).toBe(401);
+
+    await setAdminRole("readonly");
+    const refused = await get("/api/support/export", cookie);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.body).not.toContain("EXPORT-SENTINEL");
+
+    for (const role of ["support", "super"] as const) {
+      await setAdminRole(role);
+      const res = await get("/api/support/export", cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/csv");
+      expect(res.body).toContain("EXPORT-SENTINEL");
+    }
+  });
+});
+
+describe("GET /api/support/:ticketId linked order by role", () => {
+  const SENTINEL = "ORDER-SENTINEL-must-stay-with-the-order-route";
+  /** Every order value below is protected by the readonly block on GET /api/orders/:orderId. */
+  const PROTECTED_ORDER_FIELDS = {
+    customerData: SENTINEL,
+    deliveredContent: `delivered-${SENTINEL}`,
+    inputConfigSnapshot: `input-${SENTINEL}`,
+    adminNote: `note-${SENTINEL}`,
+    rejectionReason: `rejection-${SENTINEL}`,
+    completionReason: `completion-${SENTINEL}`,
+    paymentRef: `ref-${SENTINEL}`,
+    paymentProofFileId: `proof-${SENTINEL}`,
+    binanceTxid: `binance-${SENTINEL}`,
+    bybitTxid: `bybit-${SENTINEL}`,
+    digiflazzFailureDetail: `failure-${SENTINEL}`,
+    accountDiagnosticNote: `diagnostic-${SENTINEL}`,
+    fulfillmentSku: `sku-${SENTINEL}`,
+    checkoutIntentId: `intent-${SENTINEL}`,
+  };
+
+  async function linkedTicket(group: "PREMIUM_APPS" | "GAME_TOPUP") {
+    const category = await prisma.category.create({ data: { name: group, slug: group.toLowerCase(), group } });
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `${group} product` });
+    const denomination = await createDenomination(prisma, {
+      productId: product.id,
+      name: `${group} plan`,
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "18000",
+      costPrice: "987654.32",
+    });
+    const stock = await bulkAddStock(prisma, denomination.id, [`stock-${SENTINEL}`]);
+    expect(stock).toBeTruthy();
+    const voucher = await prisma.voucher.create({ data: { code: `V-${group}`, type: "PERCENT", value: "10" } });
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-${group}`,
+        userId: customerId,
+        subtotalAmount: "18000",
+        totalAmount: "18000",
+        currency: "IDR",
+        voucherId: voucher.id,
+        ...PROTECTED_ORDER_FIELDS,
+        items: {
+          create: { productId: denomination.id, quantity: 1, unitPrice: "18000", costSnapshot: "987654.32", warrantyDaysSnapshot: 7 },
+        },
+      },
+    });
+    return createTicket(prisma, customerId, "Order issue", null, null, order.id);
+  }
+
+  it("requires auth (anon → 401)", async () => {
+    const ticket = await linkedTicket("PREMIUM_APPS");
+    expect((await get(`/api/support/${ticket.id}`, null)).statusCode).toBe(401);
+  });
+
+  it.each(["PREMIUM_APPS", "GAME_TOPUP"] as const)(
+    "gives readonly only the ticket page's order summary for a %s order",
+    async (group) => {
+      const ticket = await linkedTicket(group);
+      await setAdminRole("readonly");
+
+      const res = await get(`/api/support/${ticket.id}`, cookie);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(SENTINEL);
+      expect(res.body).not.toContain("987654.32"); // Supplier cost is not a ticket concern.
+      const body = res.json() as {
+        ticket: { order: Record<string, unknown> & { items: Record<string, unknown>[] } };
+        customer: { recentOrders: Record<string, unknown>[]; orderCount: number };
+      };
+      expect(Object.keys(body.ticket.order).sort()).toEqual(
+        ["createdAt", "createdAtDisplay", "currency", "id", "items", "orderCode", "status", "totalAmount", "voucher"],
+      );
+      expect(body.ticket.order).toMatchObject({
+        orderCode: `ORD-${group}`,
+        currency: "IDR",
+        totalAmount: "18000",
+        voucher: { code: `V-${group}`, type: "PERCENT" },
+      });
+      expect(body.ticket.order.createdAtDisplay).toEqual(expect.any(String));
+      expect(body.ticket.order.voucher).toEqual({ code: `V-${group}`, type: "PERCENT" });
+      expect(body.ticket.order.items).toEqual([
+        { id: expect.any(Number), quantity: 1, unitPrice: "18000", product: { id: expect.any(Number), name: `${group} plan` } },
+      ]);
+      expect(body.customer.orderCount).toBe(1);
+      expect(Object.keys(body.customer.recentOrders[0]!).sort()).toEqual(
+        ["createdAt", "createdAtDisplay", "currency", "id", "orderCode", "status", "totalAmount"],
+      );
+    },
+  );
+
+  it.each(["PREMIUM_APPS", "GAME_TOPUP"] as const)(
+    "keeps the full order payload for support and super on a %s order",
+    async (group) => {
+      const ticket = await linkedTicket(group);
+
+      await setAdminRole("support");
+      const support = await get(`/api/support/${ticket.id}`, cookie);
+      await setAdminRole("super");
+      const superAdmin = await get(`/api/support/${ticket.id}`, cookie);
+
+      expect(support.statusCode).toBe(200);
+      expect(superAdmin.statusCode).toBe(200);
+      const supportBody = support.json() as {
+        ticket: { order: Record<string, unknown> & { items: { costSnapshot: string; product: { costPrice: string } }[] } };
+        customer: { recentOrders: Record<string, unknown>[] };
+      };
+      expect(supportBody).toEqual(superAdmin.json());
+      expect(supportBody.ticket.order).toMatchObject({
+        customerData: SENTINEL,
+        adminNote: PROTECTED_ORDER_FIELDS.adminNote,
+        paymentRef: PROTECTED_ORDER_FIELDS.paymentRef,
+      });
+      expect(supportBody.ticket.order.items[0]?.costSnapshot).toBe("987654.32");
+      expect(supportBody.ticket.order.items[0]?.product.costPrice).toBe("987654.32");
+      expect(supportBody.customer.recentOrders[0]).toMatchObject({ customerData: SENTINEL });
+      // Already withheld from every role by withoutDeliveredContent.
+      expect(support.body).not.toContain(PROTECTED_ORDER_FIELDS.deliveredContent);
+    },
+  );
+
+  it("still gives readonly a null order on an unlinked ticket", async () => {
+    const ticket = await createTicket(prisma, customerId, "No order");
+    await setAdminRole("readonly");
+    const res = await get(`/api/support/${ticket.id}`, cookie);
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { ticket: { order: unknown } }).ticket.order).toBeNull();
+  });
+});
+
 describe("POST /api/support/:ticketId/priority", () => {
   it("happy path: sets priority and audits", async () => {
     const ticket = await createTicket(prisma, customerId, "Help please");
@@ -1229,6 +1385,30 @@ describe("GET /api/support/photo/:fileId", () => {
     setFileResolver(async () => ({ ok: false }));
     const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
     expect(res.statusCode).toBe(502);
+  });
+
+  it("refuses a readonly admin (403) without asking Telegram, like the media route", async () => {
+    let asked = false;
+    setFileResolver(async () => {
+      asked = true;
+      return { ok: true, filePath: "photos/a.jpg" };
+    });
+    await setAdminRole("readonly");
+    const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+    expect(res.statusCode).toBe(403);
+    expect(asked).toBe(false);
+  });
+
+  it.each(["support", "super"] as const)("serves an attached photo to a %s admin", async (role) => {
+    const restore = stubTelegram("photos/a.jpg", "image/jpeg");
+    try {
+      await setAdminRole(role);
+      const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("image/jpeg");
+    } finally {
+      restore();
+    }
   });
 
   it("requires auth (anon → 401)", async () => {

@@ -85,3 +85,9 @@ export function humanError(err: unknown, genericKey = "web.error_message"): stri
 export function isQuoteChanged(err: unknown): boolean {
   return messageOf(err) === "error.quote_changed" && (err as { status?: unknown } | null)?.status === 409;
 }
+
+/** A 401: the page is (or should be) redirecting to /login, so it is not a
+ * failure to show the buyer (H3/H4, UI-states audit). */
+export function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: unknown } | null | undefined)?.status === 401;
+}

@@ -58,6 +58,22 @@ describe("hardening boundary", () => {
     expect((await app.inject({ method: "POST", url: "/api/v1/account/settings/credentials", headers: { cookie, "x-csrf-token": result.json().csrf_token }, payload: { role: "ADMIN" } })).statusCode).toBe(404);
   });
 
+  // H5 (UI-states audit): the scoped session 404s every page outside its one
+  // order, so the client needs to know it is in one to explain it.
+  it("the shop context names the recovered order for a scoped session, and nothing otherwise", async () => {
+    const a = await customer(true);
+    const own = await order(a.user.id);
+    const headers = { "x-forwarded-for": "198.18.0.2" };
+    const result = await app.inject({ method: "POST", url: "/api/v1/track", headers, payload: { order_code: own.orderCode, access_token: mintGuestOrderAccess(own.orderCode) } });
+    expect(result.statusCode).toBe(200);
+    const cookie = String(result.headers["set-cookie"]).split(";")[0]!;
+    const scoped = await app.inject({ url: "/api/v1/pages/context", headers: { cookie } });
+    expect(scoped.statusCode).toBe(200);
+    expect(scoped.json().order_scope).toBe(own.orderCode);
+    expect((await app.inject({ url: "/api/v1/pages/context", headers: { cookie: a.cookie } })).json().order_scope).toBeNull();
+    expect((await app.inject({ url: "/api/v1/pages/context" })).json().order_scope).toBeNull();
+  });
+
   it("attachment privat di kedua host: owner/admin boleh, anonim/akun B tidak", async () => {
     const a = await customer(); const b = await customer();
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");

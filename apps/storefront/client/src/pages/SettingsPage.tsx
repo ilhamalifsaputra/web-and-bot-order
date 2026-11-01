@@ -47,6 +47,9 @@ import FormField from "../components/ui/FormField";
 import Input from "../components/ui/Input";
 import { tError } from "../lib/errors";
 import { currentLang, t } from "../lib/i18n";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
+import Skeleton from "../components/shop/Skeleton";
 
 interface CredentialsVars {
   username: string;
@@ -57,10 +60,22 @@ interface CredentialsVars {
   guest_email?: string;
 }
 
+/** Before the first answer: a skeleton, or the failure with a retry (a 401 is mid-redirect). */
+function SettingsPlaceholder({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  if (error && !isUnauthorized(error)) return <LoadFailedState onRetry={onRetry} />;
+  return (
+    <div aria-busy="true" aria-label={t("web.loading")} className="max-w-md space-y-3">
+      <Skeleton className="h-8 w-48" />
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-10 w-full" />
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [params] = useSearchParams();
   const { data: ctx } = useShopContext();
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["account-settings"],
     queryFn: () => apiGet<SettingsData>("/api/v1/account/settings"),
     retry: false,
@@ -105,7 +120,8 @@ export default function SettingsPage() {
     });
   }
 
-  if (!page) return null;
+  // H3: a failed first load used to render nothing at all, forever.
+  if (!page) return <SettingsPlaceholder error={error} onRetry={() => void refetch()} />;
 
   const tgErr = params.get("err");
   const queryErrorText =

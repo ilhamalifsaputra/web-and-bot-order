@@ -34,9 +34,11 @@ import Skeleton from "../components/shop/Skeleton";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 export default function ReferralPage() {
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["account-referral"],
     queryFn: () => apiGet<ReferralData>("/api/v1/account/referral"),
     retry: false,
@@ -48,6 +50,7 @@ export default function ReferralPage() {
     }
   }, [error]);
 
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>

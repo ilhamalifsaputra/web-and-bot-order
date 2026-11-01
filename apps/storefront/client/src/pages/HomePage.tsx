@@ -62,6 +62,7 @@ import TrustBadgeRow from "../components/ui/TrustBadgeRow";
 import { t } from "../lib/i18n";
 import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import "./HomePage.css";
+import { LoadFailedState } from "../components/shop/LoadFailed";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 // One topic icon per question, for scanability — severity (if any) is
@@ -103,7 +104,7 @@ export default function HomePage() {
   // straight from the cache (with the sections' expanded pages, see
   // HomeShelf) at full height, so the browser's own scroll restoration works,
   // while a background refetch keeps stock and sales current.
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["home"],
     queryFn: () => apiGet<HomePageData>("/api/v1/pages/home"),
   });
@@ -115,6 +116,7 @@ export default function HomePage() {
   // section-by-section skeleton would over-mimic a page this long — a
   // hero + featured-products placeholder (the above-the-fold content) is
   // enough to signal "loading" rather than "broken" (see AccountPage).
+  if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>

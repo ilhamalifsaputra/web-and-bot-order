@@ -31,6 +31,8 @@ import Textarea from "../components/ui/Textarea";
 import { humanError } from "../lib/errors";
 import { t } from "../lib/i18n";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 interface ReviewSubmission {
   order_id: number;
@@ -134,6 +136,7 @@ export default function ReviewsPage() {
     onError: () => refetch(),
   });
 
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>

@@ -32,6 +32,11 @@ export const SHOP_STRINGS: Record<"en" | "id", Record<string, string>> = {
     "shop.session_ended_checkout": "Your session ended. Log in again to finish checkout.",
     "shop.session_ended_cart": "Your session ended. Log in again to see your cart.",
     "shop.session_ended_login": "Log in",
+    "shop.refresh_failed": "Couldn't refresh. What you see may be out of date.",
+    "shop.recovery_scope_title": "You're viewing a recovered order",
+    "shop.recovery_scope_body": "This browser can open only the order you recovered. Log out to keep browsing the shop.",
+    "shop.recovery_scope_view": "View your order",
+    "shop.recovery_scope_logout": "Log out",
   },
   id: {
     "shop.tier_ladder_title": "Beli lebih banyak, harga per item lebih murah",
@@ -55,5 +60,10 @@ export const SHOP_STRINGS: Record<"en" | "id", Record<string, string>> = {
     "shop.session_ended_checkout": "Sesimu sudah berakhir. Masuk lagi untuk menyelesaikan pembayaran.",
     "shop.session_ended_cart": "Sesimu sudah berakhir. Masuk lagi untuk melihat keranjangmu.",
     "shop.session_ended_login": "Masuk",
+    "shop.refresh_failed": "Gagal memperbarui. Yang tampil mungkin belum terbaru.",
+    "shop.recovery_scope_title": "Kamu sedang melihat pesanan yang dipulihkan",
+    "shop.recovery_scope_body": "Browser ini hanya bisa membuka pesanan yang kamu pulihkan. Keluar untuk lanjut menjelajahi toko.",
+    "shop.recovery_scope_view": "Lihat pesananmu",
+    "shop.recovery_scope_logout": "Keluar",
   },
 };

@@ -33,6 +33,8 @@ import { formatOrderAmount } from "../lib/format";
 import { t } from "../lib/i18n";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 const SKELETON_ROWS = Array.from({ length: 4 }, (_, i) => i);
 
@@ -75,7 +77,7 @@ export default function OrdersPage() {
   const isDesktop = useIsDesktop();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["account-orders"],
     queryFn: () => apiGet<AccountOrdersData>("/api/v1/account/orders"),
     retry: false,
@@ -92,6 +94,7 @@ export default function OrdersPage() {
 
   // A placeholder shaped like the loaded page, rather than the blank screen
   // this rendered while the query was in flight.
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>

@@ -32,6 +32,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
+import { LoadFailedState } from "../components/shop/LoadFailed";
 import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
@@ -220,6 +221,55 @@ function CartLine({ item, fx, issueTicket, onMutated, onFailed }: CartLineProps)
   );
 }
 
+/**
+ * H2: GET /cart serves anonymous visitors too, so a signed-in buyer whose
+ * session died gets the empty cookie cart back. True once this visit has seen a
+ * signed-in cart and then an anonymous one. Logout reloads the page, so it never
+ * gets here.
+ */
+function useSessionEndedUnder(cart: CartPageData | null): boolean {
+  const [signedInSeen, setSignedInSeen] = useState(false);
+  if (cart?.signed_in === true && !signedInSeen) setSignedInSeen(true);
+  return signedInSeen && cart?.signed_in === false;
+}
+
+/** Say what happened (the real cart is still in the account) rather than "your cart is empty". */
+function CartSessionEnded() {
+  return (
+    <>
+      <h1 className="page-title mb-5">{t("web.cart_title")}</h1>
+      <Alert variant="banner" tone="warning" role="alert">
+        {t("shop.session_ended_cart")}{" "}
+        <Link to="/login?next=/cart" className="font-medium underline">{t("shop.session_ended_login")}</Link>
+      </Alert>
+    </>
+  );
+}
+
+/** The cart before its first answer: a skeleton while loading, or the failure with a retry. */
+function CartPlaceholder({ failed, onRetry }: { failed: boolean; onRetry: () => void }) {
+  if (failed) return <LoadFailedState onRetry={onRetry} />;
+  return (
+    <div aria-busy="true" aria-label={t("web.loading")}>
+      <Skeleton className="mb-6 h-6 w-56" />
+      <div className="grid items-start gap-6 lg:grid-cols-3">
+        <Card padded={false} className="lg:col-span-2 divide-y divide-line">
+          {[0, 1].map((i) => (
+            <div key={i} className="flex items-center gap-3 p-4">
+              <Skeleton className="h-16 w-16 shrink-0" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-20" />
+              </div>
+            </div>
+          ))}
+        </Card>
+        <Skeleton className="h-48 w-full" />
+      </div>
+    </div>
+  );
+}
+
 export default function CartPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -228,7 +278,7 @@ export default function CartPage() {
   // two-column (lines + summary). At this width, the summary stays in view beside
   // the lines while scrolling, so it doesn't need the mobile sticky bar.
   const isDesktop = useIsWideDesktop();
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["cart", ctx?.currency ?? null, ctx?.lang, ctx?.pricing_context],
     queryFn: () => apiGet<CartPageData>("/api/v1/cart"),
   });
@@ -239,11 +289,7 @@ export default function CartPage() {
   useEffect(() => {
     if (data) setCart(data);
   }, [data]);
-  // Whether this visit has seen the cart of a signed-in session (H2 below).
-  // Logout reloads the page, so a later anonymous answer means the session ended.
-  const [signedInSeen, setSignedInSeen] = useState(false);
-  if (cart?.signed_in === true && !signedInSeen) setSignedInSeen(true);
-  const sessionEnded = signedInSeen && cart?.signed_in === false;
+  const sessionEnded = useSessionEndedUnder(cart);
   // Fetched only once the cart is known to be empty — never delays the
   // empty-cart card itself, which paints from `cart` alone.
   const { data: suggested } = useSuggestedProducts(!!cart && cart.items.length === 0);
@@ -266,42 +312,9 @@ export default function CartPage() {
     void queryClient.invalidateQueries({ queryKey: ["cart"] });
   }
 
-  if (!cart) {
-    return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
-        <Skeleton className="mb-6 h-6 w-56" />
-        <div className="grid items-start gap-6 lg:grid-cols-3">
-          <Card padded={false} className="lg:col-span-2 divide-y divide-line">
-            {[0, 1].map((i) => (
-              <div key={i} className="flex items-center gap-3 p-4">
-                <Skeleton className="h-16 w-16 shrink-0" />
-                <div className="min-w-0 flex-1 space-y-2">
-                  <Skeleton className="h-4 w-3/4" />
-                  <Skeleton className="h-4 w-20" />
-                </div>
-              </div>
-            ))}
-          </Card>
-          <Skeleton className="h-48 w-full" />
-        </div>
-      </div>
-    );
-  }
-
-  // H2: GET /cart serves anonymous visitors too, so a signed-in buyer whose
-  // session died gets the empty cookie cart back. Say what happened (their
-  // real cart is still in their account) rather than "your cart is empty".
-  if (sessionEnded) {
-    return (
-      <>
-        <h1 className="page-title mb-5">{t("web.cart_title")}</h1>
-        <Alert variant="banner" tone="warning" role="alert">
-          {t("shop.session_ended_cart")}{" "}
-          <Link to="/login?next=/cart" className="font-medium underline">{t("shop.session_ended_login")}</Link>
-        </Alert>
-      </>
-    );
-  }
+  // H3: a failed first load is said, with a retry, not a skeleton forever.
+  if (!cart) return <CartPlaceholder failed={Boolean(error)} onRetry={() => void refetch()} />;
+  if (sessionEnded) return <CartSessionEnded />;
 
   const { items, subtotal } = cart;
   // Older payloads carry no tier totals; the subtotal is then the total.

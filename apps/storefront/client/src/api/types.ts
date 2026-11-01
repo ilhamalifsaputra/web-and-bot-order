@@ -651,6 +651,9 @@ export interface ShopContext {
    * older/mocked payload reads as "a normal registered customer", which keeps
    * the full menu — the safe direction to be wrong in for a signed-in user. */
   is_guest?: boolean;
+  /** The one order an order-recovery (/track) session may open, else null.
+   * Absent from an older server. */
+  order_scope?: string | null;
   /** Display-currency preference (Task 4): account preference > the
    * `shop_currency` cookie > null when neither is set. `null` means "no
    * preference chosen yet" — renders exactly like today (Rp primary + "≈ $"

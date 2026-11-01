@@ -25,7 +25,8 @@ import { currentLang, t } from "../lib/i18n";
 import { isOrderLive } from "../lib/orderFulfillment";
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useIsDesktop } from "../lib/useMediaQuery";
-import ErrorPage from "./ErrorPage";
+import { RefreshFailedNotice } from "../components/shop/LoadFailed";
+import { loadFailureView } from "./loadFailureView";
 
 export default function OrderDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
@@ -86,10 +87,11 @@ export default function OrderDetailPage() {
     }
   }, [data]);
 
-  if (error) {
-    if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
-  }
+  // H4: only a failed FIRST load replaces the page (404 and 401 as before). A
+  // failed poll or refetch keeps what is on screen (credentials, an unsent
+  // edit) and says the view may be stale (`refreshFailed` below).
+  const failure = loadFailureView(error, data !== undefined, () => void refetch());
+  if (failure !== undefined) return failure;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
@@ -104,6 +106,7 @@ export default function OrderDetailPage() {
     );
   }
 
+  const refreshFailed = Boolean(error);
   const { order, delivered, pending_payment: pendingPayment, processing } = data;
   const showBulk = Boolean(order.bulk_discount) && order.bulk_discount !== "0";
   const showVoucher = Boolean(order.discount) && order.discount !== "0";
@@ -169,6 +172,7 @@ export default function OrderDetailPage() {
 
   return (
     <div className="min-w-0">
+      {refreshFailed && <RefreshFailedNotice onRetry={() => void refetch()} pending={isFetching} />}
       <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0 flex-1">
           <div className="text-xs text-ink-faint mb-2 break-words">

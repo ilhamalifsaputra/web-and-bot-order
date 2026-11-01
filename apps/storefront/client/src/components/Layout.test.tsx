@@ -537,3 +537,53 @@ describe("Layout", () => {
     });
   });
 });
+
+// H5 (UI-states audit): an order-recovery (/track) session can open only its
+// one order; every other page's data answers 404. Explain it with a way out.
+describe("Layout — order-recovery session", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  function renderScoped(path: string) {
+    (apiGet as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ...context, customer: { username: "guest", email: null, telegram_linked: false }, order_scope: "ORD-77" });
+    return render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/" element={<Layout />}>
+              <Route index element={<div>home content</div>} />
+              <Route path="products" element={<div>products content</div>} />
+              <Route path="account/orders/:code" element={<div>order content</div>} />
+              <Route path="terms" element={<div>terms content</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it.each(["/", "/products"])("explains %s instead of rendering a page that cannot load, and offers log out", async (path) => {
+    renderScoped(path);
+    expect(await screen.findByRole("heading", { name: "You're viewing a recovered order" })).toBeInTheDocument();
+    expect(screen.queryByText("home content")).not.toBeInTheDocument();
+    expect(screen.queryByText("products content")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View your order" })).toHaveAttribute("href", "/account/orders/ORD-77");
+    (apiPost as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledExactlyOnceWith("/api/v1/auth/logout", {}));
+  });
+
+  it.each([["/account/orders/ORD-77", "order content"], ["/terms", "terms content"]])("leaves %s alone", async (path, content) => {
+    renderScoped(path);
+    expect(await screen.findByText(content)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "You're viewing a recovered order" })).not.toBeInTheDocument();
+  });
+
+  it("a normal session never sees the notice", async () => {
+    renderLayout({}, "/products");
+    expect(await screen.findByText("products content")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "You're viewing a recovered order" })).not.toBeInTheDocument();
+  });
+});

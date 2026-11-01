@@ -255,3 +255,69 @@ describe("TicketDetailPage", () => {
     expect(screen.getByPlaceholderText("Tell us what's wrong…")).toHaveValue("resuming my draft");
   });
 });
+
+// H4 (UI-states audit): a failed refetch used to unmount the thread and the
+// composer; only a failed first load may replace the page.
+describe("TicketDetailPage — failed loads", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    installStorage();
+  });
+
+  function badGateway(path: string): Error {
+    const err = new Error(`${path} responded 502`) as Error & { status?: number };
+    err.status = 502;
+    return err;
+  }
+  const ticketCalls = () => (apiGet as Mock).mock.calls.filter(([p]) => p === "/api/v1/account/support/7").length;
+
+  function renderWith(respond: (path: string) => unknown) {
+    (apiGet as Mock).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/pages/context") return context;
+      if (path === "/api/v1/account/support") return emptySupportList;
+      if (path === "/api/v1/account/support/options") return { media: { enabled: true } };
+      return respond(path);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/account/support/7"]}>
+          <Routes>
+            <Route path="/account/support/:id" element={<TicketDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return queryClient;
+  }
+
+  it("a failed refetch keeps the thread and the typed reply, and says it could not refresh", async () => {
+    let fail = false;
+    const queryClient = renderWith((path) => {
+      if (fail) throw badGateway(path);
+      return openTicket;
+    });
+    await screen.findByRole("heading", { name: "Login issue" });
+    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "half-written reply" } });
+    fail = true;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["account-ticket", "7"] }); });
+
+    expect(screen.getByRole("heading", { name: "Login issue" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Tell us what's wrong…")).toHaveValue("half-written reply");
+    expect(await screen.findByText("Couldn't refresh. What you see may be out of date.")).toBeInTheDocument();
+    const before = ticketCalls();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(ticketCalls()).toBe(before + 1));
+  });
+
+  it("a failed first load shows an error with Try again", async () => {
+    renderWith((path) => { throw badGateway(path); });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Something went wrong");
+    const before = ticketCalls();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(ticketCalls()).toBe(before + 1));
+  });
+});

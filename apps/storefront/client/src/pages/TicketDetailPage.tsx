@@ -29,7 +29,8 @@ import { tError } from "../lib/errors";
 import { t } from "../lib/i18n";
 import { clearTicketDraft, loadTicketDraft } from "../lib/ticketDraft";
 import { buildTicketTimeline } from "../lib/ticketTimeline";
-import ErrorPage from "./ErrorPage";
+import { RefreshFailedNotice } from "../components/shop/LoadFailed";
+import { loadFailureView } from "./loadFailureView";
 
 const QUICK_REPLY_TEMPLATES: Array<{ key: string; labelKey: string; templateKey: string }> = [
   { key: "still_not_working", labelKey: "web.ticket_quick_still_not_working", templateKey: "web.ticket_template_still_not_working" },
@@ -56,7 +57,7 @@ export default function TicketDetailPage() {
     (location.state as { notice?: string } | null)?.notice ?? null,
   );
 
-  const { data, error, refetch } = useQuery({
+  const { data, error, refetch, isFetching } = useQuery({
     queryKey: ["account-ticket", id],
     queryFn: () => apiGet<TicketDetailData>(`/api/v1/account/support/${id}`),
     retry: false,
@@ -117,10 +118,11 @@ export default function TicketDetailPage() {
 
   const timeline = useMemo(() => (data ? buildTicketTimeline(data.ticket, data.messages) : []), [data]);
 
-  if (error) {
-    if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
-  }
+  // H4: only a failed FIRST load replaces the page (404 and 401 as before). A
+  // failed poll or refetch keeps what is on screen (credentials, an unsent
+  // edit) and says the view may be stale (`refreshFailed` below).
+  const failure = loadFailureView(error, data !== undefined, () => void refetch());
+  if (failure !== undefined) return failure;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
@@ -136,12 +138,14 @@ export default function TicketDetailPage() {
     );
   }
 
+  const refreshFailed = Boolean(error);
   const { ticket, order } = data;
   const telegramSupportUrl = ctx?.support_telegram_url ?? null;
   const hasSupportReplied = data.messages.some((m) => !m.from_user) || Boolean(ticket.admin_reply);
 
   return (
     <>
+      {refreshFailed && <RefreshFailedNotice onRetry={() => void refetch()} pending={isFetching} />}
       <Toast
         text={noticeText ?? errorText}
         onDismiss={() => (noticeText ? setNoticeText(null) : setErrorText(null))}

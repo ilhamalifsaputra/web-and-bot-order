@@ -892,3 +892,59 @@ describe("OrderDetailPage game top-up", () => {
     expect(screen.queryByText("Status", { exact: true })).not.toBeInTheDocument();
   });
 });
+
+// H4 (UI-states audit): one failed poll or refetch used to blank the whole
+// page, credentials included, until the next success.
+describe("OrderDetailPage — failed loads", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    vi.stubGlobal("EventSource", MockEventSource);
+    MockEventSource.instances = [];
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function badGateway(path: string): Error {
+    const err = new Error(`${path} responded 502`) as Error & { status?: number };
+    err.status = 502;
+    return err;
+  }
+  const orderCalls = () => (apiGet as Mock).mock.calls.filter(([p]) => p === "/api/v1/account/orders/ORD1").length;
+
+  it("a failed refetch keeps the credentials on screen and offers a retry", async () => {
+    const data: OrderDetailData = {
+      order: { ...baseOrder, items: [{ ...baseOrder.items[0]!, credentials: "user:pass" }] },
+      delivered: true, pending_payment: false, processing: false,
+    };
+    let fail = false;
+    const { queryClient } = renderDetail((path) => {
+      if (fail) throw badGateway(path);
+      return data;
+    });
+    expect(await screen.findByText("user:pass")).toBeInTheDocument();
+    fail = true;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["account-order", "ORD1"] }); });
+
+    expect(screen.getByText("user:pass")).toBeInTheDocument();
+    const notice = await screen.findByText("Couldn't refresh. What you see may be out of date.");
+    expect(notice.closest('[role="status"]')).not.toBeNull();
+
+    fail = false;
+    const before = orderCalls();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(orderCalls()).toBe(before + 1));
+    await waitFor(() => expect(screen.queryByText("Couldn't refresh. What you see may be out of date.")).not.toBeInTheDocument());
+    expect(screen.getByText("user:pass")).toBeInTheDocument();
+  });
+
+  it("a failed first load shows an error with Try again instead of a blank page", async () => {
+    renderDetail((path) => { throw badGateway(path); });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Something went wrong");
+    const before = orderCalls();
+    fireEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(orderCalls()).toBe(before + 1));
+  });
+});

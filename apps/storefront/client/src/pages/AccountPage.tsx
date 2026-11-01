@@ -73,6 +73,8 @@ import { formatIdr, formatNativeUsdt, formatOrderAmount } from "../lib/format";
 import { t } from "../lib/i18n";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 /**
  * The same five destinations as before, grouped so each card answers one
@@ -232,7 +234,7 @@ export default function AccountPage() {
   // table-vs-cards swap; this page's split happens at a wider point.
   const isDashboard = useMediaQuery("(min-width: 1024px)");
 
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["account"],
     queryFn: () => apiGet<AccountData>("/api/v1/account"),
     retry: false,
@@ -282,6 +284,7 @@ export default function AccountPage() {
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection — show a
   // skeleton shaped like the loaded layout instead.
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div className="lg:relative lg:left-1/2 lg:w-screen lg:-translate-x-1/2">

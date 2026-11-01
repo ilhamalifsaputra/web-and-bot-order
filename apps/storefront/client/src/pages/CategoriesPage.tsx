@@ -14,12 +14,13 @@ import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
+import { LoadFailedState } from "../components/shop/LoadFailed";
 
 const SKELETON_TILES = Array.from({ length: 6 }, (_, i) => i);
 
 export default function CategoriesPage() {
   const { data: ctx } = useShopContext();
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["categories"],
     queryFn: () => apiGet<CategoriesPageData>("/api/v1/pages/categories"),
   });
@@ -27,6 +28,7 @@ export default function CategoriesPage() {
   // the empty-state card itself, which paints from `data` alone.
   const { data: suggested } = useSuggestedProducts(!!data && data.categories.length === 0);
 
+  if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>

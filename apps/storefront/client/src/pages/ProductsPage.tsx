@@ -18,13 +18,14 @@ import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
 import EmptyState from "../components/shop/EmptyState";
+import { LoadFailedState } from "../components/shop/LoadFailed";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 
 export default function ProductsPage() {
   const { data: ctx } = useShopContext();
   const [sort, setSort] = useSortParam({ allowCheapest: true });
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["products", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/products?sort=${sort}`),
   });
@@ -35,6 +36,7 @@ export default function ProductsPage() {
 
   // Same reasoning as CategoryPage: a skeleton shaped like the loaded layout
   // instead of a blank page on a slow connection.
+  if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>

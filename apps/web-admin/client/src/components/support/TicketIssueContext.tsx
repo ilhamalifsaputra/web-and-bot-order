@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { LoadingRegion } from "../shared/LoadingRegion";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { CardRow } from "../shared/CardRow";
 import { OrderUnitsCard, type OrderUnitsData } from "../orders/OrderUnitsCard";
@@ -158,13 +159,15 @@ export function TicketIssueContext({ ticketId, order, orderActivity, units }: Ti
         />
       )}
       {units.kind === "loading" && (
-        <Card aria-busy="true">
+        <Card>
           <CardHeader>
             <CardTitle as="h2">Affected units</CardTitle>
           </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
+          <CardContent>
+            <LoadingRegion label="Loading affected units" className="flex flex-col gap-2">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </LoadingRegion>
           </CardContent>
         </Card>
       )}

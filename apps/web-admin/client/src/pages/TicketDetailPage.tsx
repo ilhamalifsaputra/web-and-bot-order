@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { LoadingRegion } from "../components/shared/LoadingRegion";
 import { useSupportUploads } from "../lib/supportUploads";
 import { SupportUploadPicker, type SupportUploadOptionsState } from "../components/support/SupportUploadPicker";
 import { SettingsToggle } from "@/components/shared/SettingsToggle";
@@ -173,7 +174,7 @@ function parsePhotoIds(csv: string | null, max = 3): string[] {
 
 function TicketDetailSkeleton() {
   return (
-    <div role="status" aria-busy="true" aria-label="Loading ticket">
+    <LoadingRegion label="Loading ticket">
       <div className="mb-6 flex flex-col gap-2">
         <Skeleton className="h-3 w-20" />
         <Skeleton className="h-8 w-56 max-w-full" />
@@ -212,7 +213,7 @@ function TicketDetailSkeleton() {
           </Card>
         </div>
       </div>
-    </div>
+    </LoadingRegion>
   );
 }
 

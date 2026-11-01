@@ -15,7 +15,7 @@
  * The "Icon button" row is the sibling <IconButton>; the "Disabled" row is the
  * `.btn:disabled` rule added to app.css alongside this component.
  */
-import { forwardRef, useCallback, useLayoutEffect, useRef, type ButtonHTMLAttributes, type RefObject } from "react";
+import { Children, Fragment, forwardRef, isValidElement, useCallback, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode, type RefObject } from "react";
 import { cn } from "./cn";
 import Spinner from "./Spinner";
 
@@ -58,6 +58,20 @@ function usePendingWidth(pending: boolean): RefObject<HTMLButtonElement | null> 
   return elRef;
 }
 
+/** While pending, the spinner takes the leading icon's place: drop the first
+ * child when it is an icon (an `<svg>` or a component element, e.g. a Lucide
+ * icon). Done on the children, not with a CSS sibling selector, because `+`
+ * skips text nodes and would hide a trailing icon in `Label <Icon/>`. */
+function withoutLeadingIcon(children: ReactNode): ReactNode {
+  const items = Children.toArray(children);
+  const first = items[0];
+  const isIcon =
+    isValidElement(first) &&
+    first.type !== Fragment &&
+    (first.type === "svg" || typeof first.type !== "string");
+  return isIcon ? items.slice(1) : children;
+}
+
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = "primary", size = "md", fullWidth = false, pending = false, type, className, disabled, children, ...rest },
   ref,
@@ -82,7 +96,6 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
         `btn-${variant}`,
         size === "sm" && "btn-sm",
         fullWidth && "w-full",
-        pending && "[&>[data-slot=spinner]+svg]:hidden",
         className,
       )}
       disabled={pending || disabled}
@@ -91,7 +104,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       {...rest}
     >
       {pending && <Spinner />}
-      {children}
+      {pending ? withoutLeadingIcon(children) : children}
     </button>
   );
 });

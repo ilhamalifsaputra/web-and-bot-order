@@ -51,6 +51,20 @@ function usePendingWidth(pending: boolean): React.RefObject<HTMLElement | null> 
   return elRef
 }
 
+/** While pending, the spinner takes the leading icon's place: drop the first
+ * child when it is an icon (an `<svg>` or a component element, e.g. a Lucide
+ * icon). Done on the children, not with a CSS sibling selector, because `+`
+ * skips text nodes and would hide a trailing icon in `Label <Icon/>`. */
+function withoutLeadingIcon(children: React.ReactNode): React.ReactNode {
+  const items = React.Children.toArray(children)
+  const first = items[0]
+  const isIcon =
+    React.isValidElement(first) &&
+    first.type !== React.Fragment &&
+    (first.type === "svg" || typeof first.type !== "string")
+  return isIcon ? items.slice(1) : children
+}
+
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { className, variant = "default", size = "default", asChild = false, pending = false, disabled, children, ...props },
   ref
@@ -77,8 +91,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       aria-busy={showPending ? true : undefined}
       disabled={showPending || disabled}
       className={cn(
-        buttonVariants({ variant, size, className }),
-        showPending && "[&>[data-slot=spinner]+svg]:hidden"
+        buttonVariants({ variant, size, className })
       )}
       {...pressable}
       {...props}
@@ -86,7 +99,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       {showPending ? (
         <>
           <Spinner />
-          {children}
+          {withoutLeadingIcon(children)}
         </>
       ) : (
         children

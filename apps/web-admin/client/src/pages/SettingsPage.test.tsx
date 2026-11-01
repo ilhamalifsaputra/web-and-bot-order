@@ -719,6 +719,26 @@ describe("SettingsPage", () => {
     expect(within(dialog).getByText("Enable two-factor authentication?")).toBeInTheDocument();
   });
 
+  it("2FA 'Cancel' shows only itself as pending, not Confirm", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...SETTINGS_DATA, twoFaPending: { secret: "SECRET123", uri: "otpauth://totp/test" } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+    const row = screen.getByLabelText("6-digit authenticator code").parentElement!;
+    fetchSpy.mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Cancel" })).toHaveAttribute("aria-busy", "true"));
+    const confirm = within(row).getByRole("button", { name: "Confirm" });
+    expect(confirm).toBeDisabled();
+    expect(confirm).not.toHaveAttribute("aria-busy");
+  });
+
   it("2FA 'Disable 2FA' requires a confirmation dialog", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(

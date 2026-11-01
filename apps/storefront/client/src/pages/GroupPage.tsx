@@ -171,7 +171,7 @@ function GroupCatalog({ data, category, fx, hasNextPage, loadMoreBusy, loadMoreF
 
       {hasNextPage && (
         <div className="mt-8 flex flex-col items-center gap-2">
-          <Button variant="soft" onClick={onLoadMore} disabled={loadMoreBusy} aria-busy={loadMoreBusy}>
+          <Button variant="soft" onClick={onLoadMore} pending={loadMoreBusy}>
             {t("web.group_load_more")}
           </Button>
           {loadMoreFailed && (

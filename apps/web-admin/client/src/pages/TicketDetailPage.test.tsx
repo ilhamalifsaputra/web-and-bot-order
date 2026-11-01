@@ -540,6 +540,17 @@ describe("TicketDetailPage — order context", () => {
 });
 
 describe("TicketDetailPage — affected units", () => {
+  it("shows the affected units as a named, busy loading region while the order loads", async () => {
+    const spy = mockFetches({ ...BASE_DETAIL, ticket: LINKED_TICKET });
+    const base = spy.getMockImplementation()!;
+    spy.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes("/api/orders/") ? new Promise(() => {}) : base(input, init),
+    );
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    const region = await screen.findByRole("status", { name: "Loading affected units" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+  });
+
   it("shows the units without credentials, how many this ticket reported, and creates a replacement on this ticket", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const order = {

@@ -745,7 +745,7 @@ export function SettingsPage() {
   const [query, setQuery] = useState("");
 
   // Password change
-  const { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa } = useSettingsSecurity({ markSaved, invalidate });
+  const { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, tfaBusy, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa } = useSettingsSecurity({ markSaved, invalidate });
 
   // 2FA
 
@@ -931,7 +931,7 @@ export function SettingsPage() {
                 <SettingsChangePassword setPwConfirmOpen={setPwConfirmOpen} pwCurrent={pwCurrent} setPwCurrent={setPwCurrent} pwNew={pwNew} setPwNew={setPwNew} pwConfirmOpen={pwConfirmOpen} changePassword={changePassword} />
 
                 {/* Two-Factor Authentication */}
-                <SettingsTwoFactorAuthentication tfaError={tfaError} data={data} tfaAction={tfaAction} tfaSaving={tfaSaving} totpCode={totpCode} setTotpCode={setTotpCode} setTfaEnableConfirmOpen={setTfaEnableConfirmOpen} disablePw={disablePw} setDisablePw={setDisablePw} disableTotp={disableTotp} setDisableTotp={setDisableTotp} setTfaDisableConfirmOpen={setTfaDisableConfirmOpen} tfaEnableConfirmOpen={tfaEnableConfirmOpen} enableTwoFa={enableTwoFa} tfaDisableConfirmOpen={tfaDisableConfirmOpen} disableTwoFa={disableTwoFa} />
+                <SettingsTwoFactorAuthentication tfaError={tfaError} data={data} tfaAction={tfaAction} tfaSaving={tfaSaving} tfaBusy={tfaBusy} totpCode={totpCode} setTotpCode={setTotpCode} setTfaEnableConfirmOpen={setTfaEnableConfirmOpen} disablePw={disablePw} setDisablePw={setDisablePw} disableTotp={disableTotp} setDisableTotp={setDisableTotp} setTfaDisableConfirmOpen={setTfaDisableConfirmOpen} tfaEnableConfirmOpen={tfaEnableConfirmOpen} enableTwoFa={enableTwoFa} tfaDisableConfirmOpen={tfaDisableConfirmOpen} disableTwoFa={disableTwoFa} />
 
               </CardContent>
             </Card>
@@ -1459,11 +1459,12 @@ function SettingsChangePassword({ setPwConfirmOpen, pwCurrent, setPwCurrent, pwN
   </div>);
 }
 
-function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving, totpCode, setTotpCode, setTfaEnableConfirmOpen, disablePw, setDisablePw, disableTotp, setDisableTotp, setTfaDisableConfirmOpen, tfaEnableConfirmOpen, enableTwoFa, tfaDisableConfirmOpen, disableTwoFa }: {
+function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving, tfaBusy, totpCode, setTotpCode, setTfaEnableConfirmOpen, disablePw, setDisablePw, disableTotp, setDisableTotp, setTfaDisableConfirmOpen, tfaEnableConfirmOpen, enableTwoFa, tfaDisableConfirmOpen, disableTwoFa }: {
   tfaError: string | null;
   data: import("../hooks/useSettings").SettingsData;
-  tfaAction: (path: string, body: Record<string, string>) => Promise<void>;
+  tfaAction: (path: string, body: Record<string, string>, action: "enable" | "cancel") => Promise<void>;
   tfaSaving: boolean;
+  tfaBusy: "enable" | "cancel" | null;
   totpCode: string;
   setTotpCode: import("react").Dispatch<import("react").SetStateAction<string>>;
   setTfaEnableConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
@@ -1490,8 +1491,8 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
         <p className="text-sm text-ink-soft mb-3">
           2FA is not enabled. Enable it for extra account security.
         </p>
-        <Button pending={tfaSaving}
-          onClick={() => tfaAction("/api/settings/2fa/begin", {})}
+        <Button pending={tfaBusy === "enable"}
+          onClick={() => tfaAction("/api/settings/2fa/begin", {}, "enable")}
           disabled={tfaSaving}
           variant="outline"
         >
@@ -1521,12 +1522,13 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
             className="w-36"
             maxLength={6}
           />
-          <Button onClick={() => setTfaEnableConfirmOpen(true)} pending={tfaSaving}>
+          <Button onClick={() => setTfaEnableConfirmOpen(true)} disabled={tfaSaving}>
             Confirm
           </Button>
           <Button
             variant="ghost"
-            onClick={() => tfaAction("/api/settings/2fa/cancel", {})}
+            onClick={() => tfaAction("/api/settings/2fa/cancel", {}, "cancel")}
+            pending={tfaBusy === "cancel"}
             disabled={tfaSaving}
           >
             Cancel
@@ -1561,7 +1563,7 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
           <Button
             variant="destructive"
             onClick={() => setTfaDisableConfirmOpen(true)}
-            pending={tfaSaving}
+            disabled={tfaSaving}
             className="self-start"
           >
             Disable 2FA
@@ -1622,7 +1624,10 @@ function useSettingsSecurity({ markSaved, invalidate }: {
 
   const [tfaError, setTfaError] = useState<string | null>(null);
 
-  const [tfaSaving, setTfaSaving] = useState(false);
+  // Which 2FA button is in flight ("enable" = Enable 2FA, "cancel" = Cancel
+  // setup), so only that one shows the spinner; any of them disables the rest.
+  const [tfaBusy, setTfaBusy] = useState<"enable" | "cancel" | null>(null);
+  const tfaSaving = tfaBusy !== null;
 
   const [disablePw, setDisablePw] = useState("");
 
@@ -1643,8 +1648,8 @@ function useSettingsSecurity({ markSaved, invalidate }: {
     return "Password changed successfully.";
   }
 
-  async function tfaAction(path: string, body: Record<string, string>) {
-    setTfaSaving(true);
+  async function tfaAction(path: string, body: Record<string, string>, action: "enable" | "cancel") {
+    setTfaBusy(action);
     setTfaError(null);
     try {
       await apiPost(path, body);
@@ -1655,7 +1660,7 @@ function useSettingsSecurity({ markSaved, invalidate }: {
     } catch (err) {
       setTfaError(err instanceof Error ? err.message : "Failed");
     } finally {
-      setTfaSaving(false);
+      setTfaBusy(null);
     }
   }
 
@@ -1678,7 +1683,7 @@ function useSettingsSecurity({ markSaved, invalidate }: {
     markSaved();
     return "Two-factor authentication disabled.";
   }
-  return { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa };
+  return { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, tfaBusy, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa };
 }
 
 function useSettingsTransfer({ invalidate, markSaved }: {

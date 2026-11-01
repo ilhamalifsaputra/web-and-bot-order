@@ -424,6 +424,17 @@ describe("HomePage", () => {
       expect(within(streaming).getAllByRole("heading", { level: 3 })).toHaveLength(1 + 20);
     });
 
+    it("shows Show more as a pending button (spinner, label kept) while the next page loads", async () => {
+      renderHome(streamingHome(25), () => new Promise(() => {}));
+      const streaming = (await screen.findByRole("heading", { level: 3, name: "🎬 Streaming" })).closest("section")!;
+      fireEvent.click(within(streaming).getByRole("button", { name: "Show more" }));
+      await waitFor(() => expect(within(streaming).getByRole("button", { name: "Show more" })).toHaveAttribute("data-pending", "true"));
+      const button = within(streaming).getByRole("button", { name: "Show more" });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("aria-busy", "true");
+      expect(button.querySelector("[data-slot=spinner]")).toBeInTheDocument();
+    });
+
     it("joins every category of an 'others' or whole-group section into the request", async () => {
       const others = premiumByCategory();
       others.sections[2] = { ...others.sections[2]!, products: cards("Tool", 1, 10), total: 12 };

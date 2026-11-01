@@ -84,11 +84,16 @@ describe("Button pending", () => {
   it("swaps a leading icon for the spinner instead of showing both, keeping a trailing icon", () => {
     render(<Button pending><svg data-testid="lead" />Next<svg data-testid="trail" /></Button>);
     const btn = screen.getByRole("button", { name: "Next" });
-    // Hides only the svg right after the spinner (the leading icon).
-    expect(btn).toHaveClass("[&>[data-slot=spinner]+svg]:hidden");
-    expect(btn).not.toHaveClass("[&>svg]:hidden");
+    // The leading icon gives way to the spinner; the trailing one stays.
     expect(btn.firstElementChild).toHaveAttribute("data-slot", "spinner");
-    expect(btn.lastElementChild).toHaveAttribute("data-testid", "trail");
+    expect(screen.queryByTestId("lead")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trail")).toBeInTheDocument();
+  });
+
+  it("keeps a trailing icon after the label (no CSS sibling jump over text)", () => {
+    render(<Button pending>Next<svg data-testid="trail" /></Button>);
+    expect(screen.getByTestId("trail")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" }).className).not.toMatch(/svg[^ ]*:hidden/);
   });
 
   it("does not fire clicks while pending", () => {

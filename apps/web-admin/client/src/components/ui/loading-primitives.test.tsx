@@ -64,17 +64,22 @@ describe("Button pending", () => {
   it("swaps a leading icon for the spinner instead of adding a second icon", () => {
     render(<Button pending><Check data-testid="icon" />Approve</Button>);
     const button = screen.getByRole("button", { name: "Approve" });
-    // Only the icon right after the spinner (the leading one) is hidden.
-    expect(button).toHaveClass("[&>[data-slot=spinner]+svg]:hidden");
-    expect(button).not.toHaveClass("[&>svg:not([data-slot=spinner])]:hidden");
+    expect(button.firstElementChild).toHaveAttribute("data-slot", "spinner");
+    expect(screen.queryByTestId("icon")).not.toBeInTheDocument();
   });
 
-  it("keeps a trailing icon visible while pending", () => {
+  it("keeps a trailing icon after the label while pending (no CSS sibling jump over text)", () => {
     render(<Button pending>Next<Check data-testid="trail" /></Button>);
     const button = screen.getByRole("button", { name: "Next" });
     expect(button.firstElementChild).toHaveAttribute("data-slot", "spinner");
-    expect(button.lastElementChild).toHaveAttribute("data-testid", "trail");
-    expect(button).not.toHaveClass("[&>svg:not([data-slot=spinner])]:hidden");
+    expect(screen.getByTestId("trail")).toBeInTheDocument();
+    expect(button.className).not.toMatch(/svg[^ ]*:hidden/);
+  });
+
+  it("restores the leading icon when no longer pending", () => {
+    const { rerender } = render(<Button pending><Check data-testid="icon" />Approve</Button>);
+    rerender(<Button pending={false}><Check data-testid="icon" />Approve</Button>);
+    expect(screen.getByTestId("icon")).toBeInTheDocument();
   });
 
   it("does not fire clicks while pending", async () => {

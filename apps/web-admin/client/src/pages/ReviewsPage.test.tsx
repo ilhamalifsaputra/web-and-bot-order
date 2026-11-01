@@ -358,6 +358,9 @@ describe("ReviewsPage — first-load failure keeps the page usable", () => {
     expect(screen.queryByText("No reviews yet")).not.toBeInTheDocument();
     expect(screen.queryByText("No reviews match these filters.")).not.toBeInTheDocument();
     expect(screen.queryByText("No rated products yet.")).not.toBeInTheDocument();
+    // The ratings card keeps its place and says it could not load.
+    expect(screen.getByText("Product Ratings")).toBeInTheDocument();
+    expect(screen.getByText("Couldn't load product ratings.")).toBeInTheDocument();
     expect(listUrls).toHaveLength(1);
 
     failing = false;

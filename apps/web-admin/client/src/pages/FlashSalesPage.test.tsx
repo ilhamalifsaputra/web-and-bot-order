@@ -294,6 +294,9 @@ describe("FlashSalesPage — first-load failure keeps the page usable", () => {
     expect(await screen.findByText("Failed to load denominations.")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Filter by SKU, product, or category…")).toBeInTheDocument();
     expect(screen.queryByText("No SKUs found")).not.toBeInTheDocument();
+    // The four stat cards have no numbers to show: a dash, never a made-up 0.
+    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
     expect(listUrls).toEqual(["/api/flash-sales/denominations"]);
 
     failing = false;

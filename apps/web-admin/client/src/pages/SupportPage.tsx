@@ -219,6 +219,9 @@ export function SupportPage() {
   });
 
   useEffect(() => {
+    // Nothing typed since the last search (including the mount): leave the
+    // page alone, or a Next click inside these 300 ms is undone.
+    if (qDraft === q) return;
     const timer = setTimeout(() => {
       setQ(qDraft);
       // Bail out to the *same* object reference when page is already 1 —
@@ -232,7 +235,7 @@ export function SupportPage() {
       setFilters((f) => (f.page === 1 ? f : { ...f, page: 1 }));
     }, 300);
     return () => clearTimeout(timer);
-  }, [qDraft]);
+  }, [qDraft, q]);
 
   const { data, isError, refetch } = useTickets(q, filters);
   // Super-admin-only data source (mirrors AdminsPage) — a non-super admin
@@ -369,7 +372,7 @@ export function SupportPage() {
         }
       />
 
-      <SupportStats data={data} toggleOverdueFilter={toggleOverdueFilter} />
+      <SupportStats unavailable={isError && !data} data={data} toggleOverdueFilter={toggleOverdueFilter} />
 
       <SupportStatusFilter applyFilters={applyFilters} clearFilters={clearFilters} qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} draft={draft} setDraft={setDraft} />
 
@@ -410,29 +413,30 @@ export function SupportPage() {
   );
 }
 
-function SupportStats({ data, toggleOverdueFilter }: {
+function SupportStats({ unavailable, data, toggleOverdueFilter }: {
+  unavailable: boolean;
   data: NoInfer<SupportData> | undefined;
   toggleOverdueFilter: () => void;
 }) {
   return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-    <StatCard label="Needs attention" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
-    <StatCard label="In progress" value={data?.stats.inProgress ?? 0} icon={Clock} isLoading={!data} />
-    <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
+    <StatCard label="Needs attention" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} unavailable={unavailable} />
+    <StatCard label="In progress" value={data?.stats.inProgress ?? 0} icon={Clock} isLoading={!data} unavailable={unavailable} />
+    <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} unavailable={unavailable} />
     <StatCard
       label="Overdue"
       value={data?.stats.overdue ?? 0}
       icon={AlertTriangle}
       tone="danger"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
       onClick={toggleOverdueFilter}
     />
-    <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} />
+    <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} unavailable={unavailable} />
     <StatCard
       label="Resolved Today"
       value={data?.stats.resolvedToday ?? 0}
       icon={CheckCircle2}
       tone="success"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
   </div>);
 }

@@ -189,6 +189,9 @@ export function StockPage() {
     })
     .sort((a, b) => compareRows(a, b, sortBy, counts));
 
+  // A failed first load has no counts; the tiles must not spin forever.
+  const statsUnavailable = isError && !data;
+
   return (
     <PageLayout title="Stock">
       <PageHeader
@@ -202,10 +205,10 @@ export function StockPage() {
       />
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} />
-        <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} />
-        <StatTile label="Low Stock" value={lowStockCount} isLoading={!data} />
-        <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} />
+        <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} unavailable={statsUnavailable} />
+        <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} unavailable={statsUnavailable} />
+        <StatTile label="Low Stock" value={lowStockCount} isLoading={!data} unavailable={statsUnavailable} />
+        <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} unavailable={statsUnavailable} />
       </div>
 
       <StockFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} familyFilter={familyFilter} setFamilyFilter={setFamilyFilter} activeCategoryFilter={activeCategoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} availabilityFilter={availabilityFilter} setAvailabilityFilter={setAvailabilityFilter} sortBy={sortBy} setSortBy={setSortBy} />

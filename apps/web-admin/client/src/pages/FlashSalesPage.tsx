@@ -291,6 +291,9 @@ export function FlashSalesPage() {
     },
   });
 
+  // A failed first load has no counts; the cards must not read 0.
+  const statsUnavailable = isError && !data;
+
   return (
     <PageLayout title="Flash Sales">
       <PageHeader
@@ -302,10 +305,10 @@ export function FlashSalesPage() {
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Scheduled" value={scheduledCount} icon={Clock} isLoading={isLoading} />
-        <StatCard label="Running" value={runningCount} icon={Zap} tone="success" isLoading={isLoading} />
-        <StatCard label="Expired" value={expiredCount} icon={Ban} isLoading={isLoading} />
-        <StatCard label="Discounted SKU" value={discountedCount} icon={Tag} isLoading={isLoading} />
+        <StatCard label="Scheduled" value={scheduledCount} icon={Clock} isLoading={isLoading} unavailable={statsUnavailable} />
+        <StatCard label="Running" value={runningCount} icon={Zap} tone="success" isLoading={isLoading} unavailable={statsUnavailable} />
+        <StatCard label="Expired" value={expiredCount} icon={Ban} isLoading={isLoading} unavailable={statsUnavailable} />
+        <StatCard label="Discounted SKU" value={discountedCount} icon={Tag} isLoading={isLoading} unavailable={statsUnavailable} />
       </div>
 
       <FlashSalesFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} statusFilter={statusFilter} setStatusFilter={setStatusFilter} sortBy={sortBy} setSortBy={setSortBy} />

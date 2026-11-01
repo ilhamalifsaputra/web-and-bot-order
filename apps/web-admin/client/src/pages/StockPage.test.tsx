@@ -510,6 +510,9 @@ describe("StockPage — first-load failure keeps the page usable", () => {
     expect(await screen.findByText("Failed to load stock.")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Filter by denomination, product, or category…")).toBeInTheDocument();
     expect(screen.queryByText("No denominations found")).not.toBeInTheDocument();
+    // The four stat tiles have no counts to show: a dash, not an endless skeleton.
+    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
+    expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
     expect(listUrls).toEqual(["/api/stock"]);
 
     failing = false;

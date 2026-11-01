@@ -344,6 +344,7 @@ describe("TasksPage — first-load failure keeps the page usable", () => {
     expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
     expect(screen.queryByText("No admin tasks")).not.toBeInTheDocument();
     expect(screen.queryByText("No matching tasks")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
     expect(listUrls).toHaveLength(1);
 
     failing = false;

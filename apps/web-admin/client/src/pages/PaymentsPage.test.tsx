@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1499,6 +1499,7 @@ describe("PaymentsPage — first-load failure keeps the page usable", () => {
     expect(screen.getByPlaceholderText("Search Transfer ID...")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Outcome" })).toBeInTheDocument();
     expect(screen.queryByText("No transactions found")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable")).toHaveLength(3);
     expect(listPaths).toHaveLength(1);
 
     failing = false;
@@ -1506,5 +1507,63 @@ describe("PaymentsPage — first-load failure keeps the page usable", () => {
     await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
     expect(listPaths).toHaveLength(2);
     expect(screen.queryByText("Failed to load payments.")).not.toBeInTheDocument();
+  });
+});
+
+describe("PaymentsPage — failed refresh and search debounce", () => {
+  it("a failed refresh shows one Couldn't refresh notice above the Underpaid Orders card, and Retry clears it", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let failing = false;
+    const listPaths: string[] = [];
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (!path.startsWith("/api/payments")) return searchPayload;
+      listPaths.push(path);
+      if (failing) throw new Error("Database unavailable");
+      return { enabled: true, ledger: [TX], total: 1, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], underpaidCount: 1, pendingInternal: [] };
+    });
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <PaymentsPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+    expect(listPaths).toHaveLength(1);
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["payments"] }); });
+    const notices = await screen.findAllByText(/Couldn't refresh payments/);
+    expect(notices).toHaveLength(1);
+    const underpaidTitle = screen.getByText("Underpaid Orders");
+    expect(notices[0].compareDocumentPosition(underpaidTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("ORD-UP1")).toBeInTheDocument();
+    expect(screen.getByText("TX123")).toBeInTheDocument();
+    expect(listPaths).toHaveLength(2);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh payments/)).not.toBeInTheDocument());
+    expect(listPaths).toHaveLength(3);
+  });
+
+  it("the search debounce that fires after mount does not send Next back to page 1", async () => {
+    const listPaths: string[] = [];
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (!path.startsWith("/api/payments")) return searchPayload;
+      listPaths.push(path);
+      const page = path.includes("page=2") ? 2 : 1;
+      return { enabled: true, ledger: [{ ...TX, id: page, reference: `TXPAGE${page}` }], total: 120, page, hasNext: page === 1, outcomes: [], counts: {} };
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TXPAGE1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("TXPAGE2")).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(screen.getByText("TXPAGE2")).toBeInTheDocument();
+    expect(listPaths.at(-1)).toContain("page=2");
   });
 });

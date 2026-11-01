@@ -839,6 +839,7 @@ describe("SupportPage — failed loads keep the page usable", () => {
     expect(screen.getByRole("combobox", { name: "Status filter" })).toBeInTheDocument();
     expect(screen.queryByText(/no support tickets/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/no matching tickets/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable")).toHaveLength(6);
     expect(listUrls).toHaveLength(1);
 
     failing = false;
@@ -889,5 +890,27 @@ describe("SupportPage — failed loads keep the page usable", () => {
     await vi.waitFor(() => expect(screen.queryByText(/Couldn't refresh tickets/)).not.toBeInTheDocument());
     expect(listUrls).toHaveLength(3);
     expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument();
+  });
+});
+
+describe("SupportPage — search debounce", () => {
+  it("the search debounce that fires after mount does not send Next back to page 1", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      const page = url.includes("page=2") ? 2 : 1;
+      return jsonResponse(supportData([{ ...TICKET_OPEN, id: page, message: `Ticket on page ${page}` }], { total: 60, page }));
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("Ticket on page 2")).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(screen.getByText("Ticket on page 2")).toBeInTheDocument();
+    expect(listUrls.at(-1)).toContain("page=2");
   });
 });

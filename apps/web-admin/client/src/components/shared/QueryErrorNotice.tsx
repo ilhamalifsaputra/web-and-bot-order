@@ -42,6 +42,10 @@ export function QueryErrorNotice({ what, hasData, onRetry, isError = true }: Que
 interface QueryFailureGateProps extends Omit<QueryErrorNoticeProps, "isError"> {
   isError: boolean;
   children: ReactNode;
+  /** False when the page shows its own "Couldn't refresh" notice higher up
+   *  (above other panels built from the same query), so it is not shown twice.
+   *  The first-load notice still shows here. Default true. */
+  showRefreshNotice?: boolean;
 }
 
 /**
@@ -54,10 +58,10 @@ interface QueryFailureGateProps extends Omit<QueryErrorNoticeProps, "isError"> {
  * - error and no data (first load): the notice INSTEAD of the rows, so the page
  *   never claims "No orders found" about a list it could not load.
  */
-export function QueryFailureGate({ children, hasData, ...notice }: QueryFailureGateProps): React.JSX.Element {
+export function QueryFailureGate({ children, hasData, showRefreshNotice = true, ...notice }: QueryFailureGateProps): React.JSX.Element {
   return (
     <>
-      <QueryErrorNotice {...notice} hasData={hasData} />
+      <QueryErrorNotice {...notice} isError={notice.isError && (showRefreshNotice || !hasData)} hasData={hasData} />
       {hasData || !notice.isError ? children : null}
     </>
   );

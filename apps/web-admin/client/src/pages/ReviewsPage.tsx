@@ -280,8 +280,8 @@ export function ReviewsPage() {
     setReplyOpen(true);
   }
 
-  // A first load that failed has no summaries to show; the card would
-  // otherwise claim "No rated products yet." about data it never got.
+  // A first load that failed has no summaries: the card says it could not
+  // load them rather than "No rated products yet."
   const firstLoadFailed = isError && !data;
 
   return (
@@ -300,7 +300,7 @@ export function ReviewsPage() {
       <div className="mb-6 grid gap-4 lg:grid-cols-3">
         <RatingDistributionCard />
         <div className="lg:col-span-2">
-          {firstLoadFailed ? null : <ProductRatingsCard summaries={summaries} isLoading={isLoading} />}
+          <ProductRatingsCard summaries={summaries} isLoading={isLoading} loadFailed={firstLoadFailed} />
         </div>
       </div>
 

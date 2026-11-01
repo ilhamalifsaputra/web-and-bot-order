@@ -284,18 +284,7 @@ export function TasksPage() {
         description="Manual operations queue: manual deliveries, account assignments, failed top-up and refund reviews."
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Pending" value={data?.stats.pending ?? 0} icon={Clock} isLoading={!data} />
-        <StatCard label="Assigned" value={data?.stats.assigned ?? 0} icon={UserCheck} isLoading={!data} />
-        <StatCard label="In Progress" value={data?.stats.inProgress ?? 0} icon={PlayCircle} isLoading={!data} />
-        <StatCard
-          label="Escalated"
-          value={data?.stats.escalated ?? 0}
-          icon={AlertTriangle}
-          tone="danger"
-          isLoading={!data}
-        />
-      </div>
+      <TasksStats data={data} unavailable={isError && !data} />
 
       <TasksTypeFilter applyFilters={applyFilters} clearFilters={clearFilters} fieldId={fieldId} draft={draft} setDraft={setDraft} assignableAdmins={assignableAdmins} />
 
@@ -333,6 +322,24 @@ export function TasksPage() {
         />
       )}
     </PageLayout>
+  );
+}
+
+function TasksStats({ data, unavailable }: { data: TasksData | undefined; unavailable: boolean }) {
+  return (
+    <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <StatCard label="Pending" value={data?.stats.pending ?? 0} icon={Clock} isLoading={!data} unavailable={unavailable} />
+      <StatCard label="Assigned" value={data?.stats.assigned ?? 0} icon={UserCheck} isLoading={!data} unavailable={unavailable} />
+      <StatCard label="In Progress" value={data?.stats.inProgress ?? 0} icon={PlayCircle} isLoading={!data} unavailable={unavailable} />
+      <StatCard
+        label="Escalated"
+        value={data?.stats.escalated ?? 0}
+        icon={AlertTriangle}
+        tone="danger"
+        isLoading={!data}
+        unavailable={unavailable}
+      />
+    </div>
   );
 }
 

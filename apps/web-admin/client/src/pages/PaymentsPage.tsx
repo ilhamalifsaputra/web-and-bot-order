@@ -39,7 +39,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
-import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
+import { QueryErrorNotice, QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -339,9 +339,12 @@ export function PaymentsPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
   useEffect(() => {
+    // Nothing typed since the last search (including the mount): leave the
+    // page alone, or a Next click inside these 300 ms is undone.
+    if (qDraft === q) return;
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
-  }, [qDraft]);
+  }, [qDraft, q]);
   useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [outcome, kind, q, page]);
   const actionableApplied = actionable && isActionableOutcome(outcome);
   const { data, isError, refetch } = usePayments(outcome, kind, q, page, actionableApplied);
@@ -453,7 +456,11 @@ export function PaymentsPage() {
         </div>
       )}
 
-      <PaymentStats data={data} />
+      {/* Above the Underpaid Orders card: its Deliver/Refund/Credit actions
+          act on rows this failed refresh may have made stale. */}
+      <QueryErrorNotice isError={isError && Boolean(data)} what="payments" hasData onRetry={() => void refetch()} />
+
+      <PaymentStats unavailable={isError && !data} data={data} />
 
       {/* Manual match form. Wrapped so "Match to order…" can scroll to it:
           this React 18 Card/Input pair does not forward refs. */}
@@ -472,7 +479,7 @@ export function PaymentsPage() {
 
       <PaymentBulkDismissBar visibleSelected={visibleSelected} bulkDismiss={bulkDismiss} setSelected={setSelected} />
 
-      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="payments" onRetry={() => void refetch()}>
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="payments" showRefreshNotice={false} onRetry={() => void refetch()}>
         <PaymentsSelectAllEligibleTransfers allEligibleSelected={allEligibleSelected} toggleSelectAllEligible={toggleSelectAllEligible} eligibleRows={eligibleRows} selected={selected} toggleSelected={toggleSelected} startMatchFromRow={startMatchFromRow} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} setPendingDismiss={setPendingDismiss} data={data} outcome={outcome} kind={kind} changeOutcome={changeOutcome} setKind={setKind} />
       </QueryFailureGate>
 
@@ -490,7 +497,8 @@ export function PaymentsPage() {
   );
 }
 
-function PaymentStats({ data }: {
+function PaymentStats({ unavailable, data }: {
+  unavailable: boolean;
   data: NoInfer<PaymentsData> | undefined;
 }) {
   return (<div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -499,7 +507,7 @@ function PaymentStats({ data }: {
       hint="Payment records of any outcome written today across every gateway."
       value={data?.todayCount ?? 0}
       icon={Clock}
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
     <StatCard
       label="Unmatched"
@@ -507,7 +515,7 @@ function PaymentStats({ data }: {
       value={data?.counts["unmatched"] ?? 0}
       icon={Hourglass}
       tone="warning"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
     <StatCard
       label="Failed Deliveries"
@@ -515,7 +523,7 @@ function PaymentStats({ data }: {
       value={data?.counts["delivery_failed"] ?? 0}
       icon={XCircle}
       tone="danger"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
   </div>);
 }

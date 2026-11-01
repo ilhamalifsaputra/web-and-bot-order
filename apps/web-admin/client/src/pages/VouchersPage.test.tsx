@@ -761,6 +761,7 @@ describe("VouchersPage — first-load failure keeps the page usable", () => {
     expect(screen.getByLabelText("Status")).toBeInTheDocument();
     expect(screen.queryByText("No vouchers found")).not.toBeInTheDocument();
     expect(screen.queryByText("No matching vouchers")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
     expect(listUrls).toHaveLength(1);
 
     failing = false;
@@ -768,5 +769,27 @@ describe("VouchersPage — first-load failure keeps the page usable", () => {
     await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
     expect(listUrls).toHaveLength(2);
     expect(screen.queryByText("Failed to load vouchers.")).not.toBeInTheDocument();
+  });
+});
+
+describe("VouchersPage — search debounce", () => {
+  it("the search debounce that fires after mount does not send Next back to page 1", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      listUrls.push(url);
+      const page = url.includes("page=2") ? 2 : 1;
+      return listResponse([{ ...VOUCHER, id: page, code: `PAGEV${page}` }], { total: 60, page });
+    });
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
+
+    // Clicked well inside the 300 ms the mount-time search debounce waits.
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("PAGEV2")).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(screen.getByText("PAGEV2")).toBeInTheDocument();
+    expect(listUrls.at(-1)).toContain("page=2");
   });
 });

@@ -346,9 +346,12 @@ export function VouchersPage() {
   const [viewing, setViewing] = useState<Voucher | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Voucher | null>(null);
   useEffect(() => {
+    // Nothing typed since the last search (including the mount): leave the
+    // page alone, or a Next click inside these 300 ms is undone.
+    if (qDraft === q) return;
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
-  }, [qDraft]);
+  }, [qDraft, q]);
   const { data, isError, refetch } = useVouchers(q, status, page);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -513,7 +516,7 @@ export function VouchersPage() {
         }
       />
 
-      <VoucherStats data={data} />
+      <VoucherStats unavailable={isError && !data} data={data} />
 
       <VouchersVoucherCode showForm={showForm} mode={mode} editingId={editingId} update={update} create={create} form={form} setForm={setForm} data={data} />
 
@@ -846,19 +849,20 @@ function VoucherDetailsDialog({ viewing, setViewing, now }: {
   ));
 }
 
-function VoucherStats({ data }: {
+function VoucherStats({ unavailable, data }: {
+  unavailable: boolean;
   data: NoInfer<VouchersData> | undefined;
 }) {
   return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-    <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
-    <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} />
-    <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} />
+    <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} unavailable={unavailable} />
+    <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} unavailable={unavailable} />
+    <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} unavailable={unavailable} />
     <StatCard
       label="Redemptions (currently held)"
       hint="Redemptions still held by an order. A cancelled, rejected or expired order releases its redemption, so this can go down."
       value={data?.stats.totalRedemptions ?? 0}
       icon={Repeat}
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
   </div>);
 }

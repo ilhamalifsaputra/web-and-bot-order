@@ -1,7 +1,8 @@
 /**
  * Client half of the opt-in `Idempotency-Key` contract the six payment
  * mutations implement (deliver / refund / cancel / match / credit / dismiss in
- * src/routes/api/payments.ts, on top of packages/db/src/crud/idempotency.ts).
+ * src/routes/api/payments.ts, on top of packages/db/src/crud/idempotency.ts),
+ * and the wallet adjustment in src/routes/api/users.ts.
  * Clone of the storefront hook (apps/storefront/client/src/api/idempotency.ts),
  * same as api/client.ts is a clone of its storefront twin.
  *
@@ -13,7 +14,8 @@
  *     set of the request's meaningful fields (`{ orderId }` for the three
  *     per-order actions, `{ binanceTxId, orderCode, gateway }` for match,
  *     `{ binanceTxId, orderCode }` for credit, `{ binanceTxId, gateway }` for
- *     dismiss), and the routes store the response for
+ *     dismiss, `{ userId, delta, currency, note }` for the wallet adjustment),
+ *     and the routes store the response for
  *     EVERY exit, 4xx included — a replayed failure is still a replay, so the
  *     admin gets the identical error back without the mutation being
  *     reconsidered.

@@ -114,6 +114,11 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This item has stock history and cannot be deleted; deactivate it instead.",
   "error.rate_limited":
     "You're doing that too quickly — wait a minute and try again.",
+  // Sent by the routes that take an Idempotency-Key; see api/idempotency.ts.
+  // Trying again with the form unchanged is safe, which is what the admin
+  // needs to know: the first attempt may still complete.
+  idempotency_request_in_progress:
+    "This is still being processed. Wait a moment, then try again without changing anything; it will not run twice.",
   // Account/stock replacement (M20's per-unit actions on the Items table).
   // Every one of these comes from the service's own guards
   // (packages/db/src/crud/stockReplacement.ts), so the wording explains what

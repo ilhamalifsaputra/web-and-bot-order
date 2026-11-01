@@ -145,7 +145,8 @@ export interface PostOptions {
   signal?: AbortSignal;
   /** Opaque per-operation key sent as `Idempotency-Key`. The six payment
    * mutations in apps/web-admin/src/routes/api/payments.ts (deliver, refund,
-   * cancel, match, credit, dismiss) replay the first attempt's stored response
+   * cancel, match, credit, dismiss) and the wallet adjustment in
+   * src/routes/api/users.ts replay the first attempt's stored response
    * when a retry arrives with the same key and the same request, instead of
    * running the mutation a second time. Minting and holding the key is
    * `useIdempotentPost`'s job (api/idempotency.ts) — pages should call that

@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { csvRow } from "../../lib/csv";
 import { parsePositiveId, parsePageParam } from "../../lib/params";
+import { normalizeIdempotencyKey } from "../../lib/idempotencyKey";
 import { readMoneyField, moneyFieldError } from "../../lib/moneyField";
 import { UserRole } from "@app/core/enums";
 import { Decimal, isValidWalletAdjustment } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
+import { logger } from "@app/core/logger";
 import {
   prisma,
   getUser,
@@ -26,6 +28,12 @@ import {
   countUsers,
   customersKpis,
   orderStatsByUserIds,
+  IdempotencyClaimTracker,
+  hashIdempotentRequest,
+  saveIdempotentResponse,
+  IdempotencyKeyReuseError,
+  IdempotencyRequestInProgressError,
+  type IdempotentReplay,
   type UserFilter,
   type UserSort,
 } from "@app/db";
@@ -38,6 +46,11 @@ const truthy = (v: string | undefined) => ["1", "true", "on", "yes"].includes((v
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const DEFAULT_PAGE_SIZE = 20;
 const SORT_VALUES: UserSort[] = ["newest", "oldest", "lastSeen", "spend"];
+
+/** Stable name for the wallet adjustment's idempotency ledger row
+ * (packages/db/src/crud/idempotency.ts) — not the literal URL, so it stays
+ * correct if the route is ever remounted. */
+const WALLET_ADJUST_IDEMPOTENCY_ENDPOINT = "web-admin.users.adjustWallet";
 
 function shapeRevenue(r: { idr: Decimal; usdt: Decimal }) {
   const idr = new Decimal(r.idr);
@@ -91,6 +104,20 @@ function buildUserFilter(q: Record<string, string | undefined>): UserFilter {
 }
 
 export default async function usersApiRoutes(app: FastifyInstance): Promise<void> {
+  // Same wiring as routes/api/payments.ts: a claim whose handler threw is
+  // released once the response is out, so a retry with the same key runs at once.
+  const idempotencyClaims = new IdempotencyClaimTracker();
+  app.addHook("onResponse", async (req) => {
+    try {
+      await idempotencyClaims.releaseUnsettled(prisma, req);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Could not release an unfinished idempotency claim after a wallet adjustment failed; a retry with the same key will wait until the claim expires.",
+      );
+    }
+  });
+
   app.get("/api/users", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const page = parsePageParam(q.page);
@@ -297,10 +324,48 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
         ? "IDR adjustments must be whole rupiah."
         : "USDT adjustments must have at most 4 decimal places." });
     }
-    if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
-    let newBalance: Decimal;
+
+    // Opt-in, as on the payment routes: no header behaves exactly as before.
+    // The hash covers what was sent, not what it was read as, so a retry must
+    // be the same request rather than merely the same amount.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? {
+          key: idempotencyKeyHeader,
+          endpoint: WALLET_ADJUST_IDEMPOTENCY_ENDPOINT,
+          requestHash: hashIdempotentRequest({ userId, delta: body.delta, currency, note }),
+        }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await idempotencyClaims.claim(prisma, req, idem);
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        if (e instanceof IdempotencyRequestInProgressError) {
+          return reply.code(409).send({ error: "idempotency_request_in_progress" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, responseBody: unknown) => {
+      if (idem) {
+        await idempotencyClaims.save(prisma, req, { ...idem, statusCode, responseBody: JSON.stringify(responseBody) });
+      }
+      return reply.code(statusCode).send(responseBody);
+    };
+
+    if (!(await getUser(prisma, userId))) return respond(404, { error: "User not found." });
+    let moved: { ok: true; newBalance: string };
     try {
-      newBalance = await prisma.$transaction(async (tx) => {
+      moved = await prisma.$transaction(async (tx) => {
         const { balance, transactionId } = await adjustWallet(tx, userId, deltaDec, {
           reason: "admin_adjust",
           note: note || null,
@@ -322,12 +387,22 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
           targetId: userId,
           details: `Adjusted ${currency} wallet by ${deltaDec.toString()}. Note: "${note.slice(0, 160)}".`,
         });
-        return balance;
+        const response = { ok: true as const, newBalance: balance.toString() };
+        // Stored in the money transaction, unlike the payment routes, which
+        // store after commit. Those have an order state that refuses a repeat;
+        // a wallet adjustment has nothing else to stop one, so a move committed
+        // without its stored response (a failed save, a process dying between
+        // the two) would run again on retry. Not through the tracker: a rollback
+        // here must still leave the claim for it to release.
+        if (idem) {
+          await saveIdempotentResponse(tx, { ...idem, statusCode: 200, responseBody: JSON.stringify(response) });
+        }
+        return response;
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
-    return reply.send({ ok: true, newBalance: newBalance.toString() });
+    return reply.send(moved);
   });
 }

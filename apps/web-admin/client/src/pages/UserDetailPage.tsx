@@ -15,9 +15,11 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { useIdempotentPost } from "../api/idempotency";
 import { CardRow } from "../components/shared/CardRow";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { CurrencyBadge } from "../components/shared/CurrencyBadge";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
@@ -25,6 +27,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
+import { readWalletDelta } from "../lib/walletAdjustment";
 
 interface UserDetail {
   user: {
@@ -81,8 +84,10 @@ export function UserDetailPage() {
   const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
   const [banReason, setBanReason] = useState("");
 
+  const idempotentPost = useIdempotentPost();
+
   const wallet = useMutation({
-    mutationFn: () => apiPost(`/api/users/${userId}/wallet`, { ...walletForm, currency: walletCurrency }),
+    mutationFn: () => idempotentPost(`/api/users/${userId}/wallet`, { ...walletForm, currency: walletCurrency }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["user", userId] });
       setWalletForm({ delta: "", note: "" });
@@ -246,6 +251,8 @@ function UserDetailProfile({ user, setRole, data, walletCurrency, setWalletCurre
   banReason: string;
   setBanReason: import("react").Dispatch<import("react").SetStateAction<string>>;
 }) {
+  const walletDelta = readWalletDelta(walletForm.delta, walletCurrency);
+  const walletNote = walletForm.note.trim();
   return (<div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
     <Card>
       <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
@@ -298,8 +305,29 @@ function UserDetailProfile({ user, setRole, data, walletCurrency, setWalletCurre
           <div className="flex gap-2">
             <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
             <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
-            <Button onClick={() => wallet.mutate()} disabled={wallet.isPending}>Adjust</Button>
+            {walletDelta.ok && walletNote ? (
+              <ConfirmDialog
+                trigger={<Button disabled={wallet.isPending}>Adjust</Button>}
+                title={walletDelta.credit ? "Credit this wallet?" : "Debit this wallet?"}
+                description={walletDelta.credit ? "This adds money to the customer's wallet." : "This takes money out of the customer's wallet."}
+                confirmLabel={walletDelta.credit ? "Credit wallet" : "Debit wallet"}
+                variant={walletDelta.credit ? "default" : "destructive"}
+                // Awaited so the dialog holds its busy state until the answer
+                // arrives. The mutation's own onError shows the failure.
+                onConfirm={async () => { await wallet.mutateAsync().catch(() => undefined); }}
+              >
+                <div className="divide-y divide-line">
+                  <CardRow label="Customer" value={user.fullName ?? user.username ?? `User #${user.id}`} />
+                  <CardRow label="Currency" value={walletCurrency} />
+                  <CardRow label="Amount" value={<span className="font-mono">{walletDelta.credit ? "+" : ""}{formatCurrencyDisplay(walletDelta.amount, walletCurrency)}</span>} />
+                  <CardRow label="Reason" value={walletNote} />
+                </div>
+              </ConfirmDialog>
+            ) : (
+              <Button disabled>Adjust</Button>
+            )}
           </div>
+          {!walletDelta.ok && walletDelta.hint && <p className="text-xs text-rust">{walletDelta.hint}</p>}
         </CardContent>
       </Card>
 

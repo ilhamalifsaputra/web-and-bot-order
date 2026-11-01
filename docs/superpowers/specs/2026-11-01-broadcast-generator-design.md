@@ -62,6 +62,21 @@ that the CSV existed only to build broadcast text.
 12. Selection works at **product level**, expandable to denominations, with **Pilih semua hasil filter**. On mobile, a sticky bar shows `12 item · 2.140 kar · [Lihat preview]` and opens the preview in a sheet.
 13. **Sama seperti terakhir** says what it reuses: "(Update Stok, 13.05 oleh <admin>)".
 
+### Additions from re-checking the source spec (owner-approved)
+
+14. **Tabs with their own URLs** under the single **Broadcast** sidebar item: `/broadcast` (Send message), `/broadcast/generator` (Build from products), `/broadcast/history` (generator history). The sidebar gets no new entries.
+15. **Picker filters** (source spec §12.3):
+    - Group, **Source** (All / Local stock / Manual / Digiflazz), **Status** (All / ✅ / ⛔ / 🔧), Category, search
+    - **Show inactive** toggle, off by default
+    - **Select all results**, **Clear selection**
+    - selected-items summary: `12 selected · 8 Premium · 4 Game · 3 Digiflazz`
+
+    Every row shows its source label. Provider rows also show the data age.
+16. **Stale provider data needs explicit acknowledgement** (source spec §12.2-B asks to exclude stale provider items by default). Instead of silently dropping items, Copy and Send are refused while the data is stale unless the admin ticks **"I understand the Digiflazz status has not been refreshed"** (`ack_stale: true`) or runs Sync now first. The banner also links **View Digiflazz status →** to `/catalog/digiflazz-sync`.
+17. **Default footer falls back to existing settings** (source spec §12.5). When `broadcast_footer_id`/`_en` is empty, the footer is built from `bot_username` (`Order: @bot`), `support_contact` (`CS: …`) and `public_channel_id`. `public_channel_id` is only used when it is an `@handle`, never a numeric id. Nothing is hard-coded.
+18. Deliberate deviation: source spec §12.4 allows free editing of the generated text. D10 (product list locked) stands.
+19. Out of scope: a dedicated **Providers** menu and the Inventory sub-pages from source spec §11.1. The existing Stock, Catalog and Digiflazz Sync pages cover them.
+
 ## 3. What already exists (reuse, don't rebuild)
 
 | Need | Existing code |

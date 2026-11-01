@@ -763,7 +763,7 @@ import { DIGIFLAZZ_SYNC_STATUS_KEY } from "./digiflazzSyncStatus";
 import {
   buildPostSnapshot, getBroadcastPostSettings, createCopiedPost, createQueuedPost, listPostHistory,
   lastPostForReuse, savePreset, listPresets, deletePreset, loadGeneratedPost, recordSentSnapshot,
-  autoCancelSendingBroadcast, BROADCAST_STALE_MINUTES_KEY,
+  autoCancelSendingBroadcast, BROADCAST_STALE_MINUTES_KEY, BROADCAST_FOOTER_ID_KEY,
 } from "./broadcastPosts";
 
 let db: TestDb;
@@ -843,6 +843,17 @@ describe("settings", () => {
     expect((await getBroadcastPostSettings(prisma)).staleMinutes).toBe(90);
     await setSetting(prisma, BROADCAST_STALE_MINUTES_KEY, "30");
     expect((await getBroadcastPostSettings(prisma)).staleMinutes).toBe(30);
+  });
+
+  it("builds the default footer from existing settings, never showing a numeric channel id", async () => {
+    await setSetting(prisma, "bot_username", "tokobot");
+    await setSetting(prisma, "support_contact", "@tokocs");
+    await setSetting(prisma, "public_channel_id", "-1001234567890");
+    expect((await getBroadcastPostSettings(prisma)).footerId).toBe("Order: @tokobot · CS: @tokocs");
+    await setSetting(prisma, "public_channel_id", "@tokochannel");
+    expect((await getBroadcastPostSettings(prisma)).footerEn).toBe("Order: @tokobot · CS: @tokocs · Channel: @tokochannel");
+    await setSetting(prisma, BROADCAST_FOOTER_ID_KEY, "Footer khusus");
+    expect((await getBroadcastPostSettings(prisma)).footerId).toBe("Footer khusus");
   });
 });
 
@@ -928,6 +939,7 @@ import {
   DEFAULT_STALE_MINUTES, type PostFields, type PostItemInput, type PostSnapshot, type PostType,
   type SnapshotGroup, type SnapshotItem,
 } from "@app/core/broadcastPost";
+import { config } from "@app/core/config";
 import { BroadcastStatus } from "@app/core/enums";
 import { fulfillmentSourceOf, resolveDenominationAvailability } from "@app/core/productAvailability";
 import { PRODUCT_GROUPS, groupForCategory } from "@app/core/productGroups";
@@ -945,12 +957,35 @@ export const BROADCAST_STALE_MINUTES_KEY = "broadcast_stale_minutes";
 
 const nonBlank = (s: string | null | undefined): string | null => (s && s.trim() ? s : null);
 
+const handle = (s: string | null | undefined): string | null => {
+  const v = (s ?? "").trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
+  return /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(v) ? `@${v}` : null;
+};
+
+/** Footer built from settings the shop already has, used when the broadcast
+ * footer settings are empty. A numeric channel id is never shown. */
+async function fallbackFooter(db: Db): Promise<string | null> {
+  const [bot, support, channel] = await Promise.all([
+    getSetting(db, "bot_username"), getSetting(db, "support_contact"), getSetting(db, "public_channel_id"),
+  ]);
+  const parts = [
+    handle(bot ?? config.BOT_USERNAME) && `Order: ${handle(bot ?? config.BOT_USERNAME)}`,
+    nonBlank(support) && `CS: ${support!.trim()}`,
+    handle(channel) && `Channel: ${handle(channel)}`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 export async function getBroadcastPostSettings(db: Db) {
-  const [footerId, footerEn, staleRaw] = await Promise.all([
-    getSetting(db, BROADCAST_FOOTER_ID_KEY), getSetting(db, BROADCAST_FOOTER_EN_KEY), getSetting(db, BROADCAST_STALE_MINUTES_KEY),
+  const [footerId, footerEn, staleRaw, fallback] = await Promise.all([
+    getSetting(db, BROADCAST_FOOTER_ID_KEY), getSetting(db, BROADCAST_FOOTER_EN_KEY), getSetting(db, BROADCAST_STALE_MINUTES_KEY), fallbackFooter(db),
   ]);
   const n = Number.parseInt(staleRaw ?? "", 10);
-  return { footerId: nonBlank(footerId), footerEn: nonBlank(footerEn), staleMinutes: Number.isInteger(n) && n > 0 ? n : DEFAULT_STALE_MINUTES };
+  return {
+    footerId: nonBlank(footerId) ?? fallback,
+    footerEn: nonBlank(footerEn) ?? fallback,
+    staleMinutes: Number.isInteger(n) && n > 0 ? n : DEFAULT_STALE_MINUTES,
+  };
 }
 
 const denomSelect = {
@@ -1411,7 +1446,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `GET /api/broadcast/posts/history` → `{ history: PostHistoryRow[] }`, with `createdAtDisplay` added per row
   - `POST /api/broadcast/posts/presets` `{ name, denomination_ids }` → `{ preset }`
   - `POST /api/broadcast/posts/presets/:id/delete` → `{ ok: true }`
-  - `PostBody = { type, language: "id"|"en", title, intro, details, footer, items: PostItemInput[], has_image?: boolean }`
+  - `PostBody = { type, language: "id"|"en", title, intro, details, footer, items: PostItemInput[], has_image?: boolean, ack_stale?: boolean }`
+  - copy/send answer **409** `{ code: "stale_provider", error }` when a Digiflazz item is selected, provider data is stale, and `ack_stale !== true`.
 
 - [ ] **Step 1: Extract the image check.** Create `apps/web-admin/src/lib/broadcastImage.ts`. Move the block from `routes/api/broadcast.ts` (lines ~72-81, the `BROADCAST_IMAGE_RE` check + `stat` on disk) into:
 
@@ -1520,6 +1556,19 @@ describe("broadcast generator API", () => {
     expect(j.history[0]).toMatchObject({ action: "COPIED", adminName: "Admin" });
   });
 
+  it("refuses copy/send of a Digiflazz item on stale data unless acknowledged", async () => {
+    await prisma.denomination.update({ where: { id: denomId }, data: { autoDeliverySource: "digiflazz", supplierSku: "ML86" } });
+    const res = await postJson("/api/broadcast/posts/copy", cookie, csrf, body({ idempotency_key: "stale1" })); // never synced → stale
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("stale_provider");
+    const ok = await postJson("/api/broadcast/posts/copy", cookie, csrf, body({ idempotency_key: "stale2", ack_stale: true }));
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it("does not ask for acknowledgement when no provider item is selected", async () => {
+    expect((await postJson("/api/broadcast/posts/copy", cookie, csrf, body({ idempotency_key: "nostale" }))).statusCode).toBe(200);
+  });
+
   it("refuses mutations without CSRF", async () => {
     expect((await postJson("/api/broadcast/posts/copy", cookie, "bad", body({ idempotency_key: "x" }))).statusCode).toBe(403);
   });
@@ -1620,6 +1669,18 @@ async function render(p: Parsed, hasImage: boolean) {
 }
 
 const bad = (reply: FastifyReply, error: string) => reply.code(400).send({ error });
+
+/** Source spec §12.2-B: never present stale provider status without the
+ * admin's explicit acknowledgement. Only matters when a provider SKU is in the
+ * selection. */
+function staleBlocked(r: Awaited<ReturnType<typeof render>>, raw: Record<string, unknown>): boolean {
+  const hasProvider = r.snapshot.groups.some((g) => g.products.some((p) => p.items.some((i) => i.source === "PROVIDER_API")));
+  return hasProvider && r.view.provider.stale && raw.ack_stale !== true;
+}
+const STALE_BODY = {
+  code: "stale_provider",
+  error: "The Digiflazz status has not been refreshed recently. Run Sync now, or confirm that you want to use the last known status.",
+};
 const idemKey = (raw: unknown): string | null => {
   const k = typeof raw === "string" ? raw.trim() : "";
   return /^[A-Za-z0-9_-]{8,80}$/.test(k) ? k : null;
@@ -1659,6 +1720,7 @@ export default async function broadcastPostRoutes(app: FastifyInstance): Promise
     const key = idemKey((req.body as Record<string, unknown>)?.idempotency_key);
     if (!key) return bad(reply, "Missing request key — reload the page and try again.");
     const r = await render(p, false);
+    if (staleBlocked(r, (req.body ?? {}) as Record<string, unknown>)) return reply.code(409).send(STALE_BODY);
     const out = await createCopiedPost(prisma, {
       type: p.type, language: p.lang, fields: p.fields, items: p.items, snapshot: r.snapshot, idempotencyKey: key, createdById: req.admin!.userId,
     });
@@ -1690,6 +1752,7 @@ export default async function broadcastPostRoutes(app: FastifyInstance): Promise
     }
     const r = await render(p, image !== null);
     if (!r.view.dm.sendable) return bad(reply, r.view.dm.blockReason!);
+    if (staleBlocked(r, raw)) return reply.code(409).send(STALE_BODY);
     const total = await countSegment(prisma, segment);
     const out = await createQueuedPost(prisma, {
       type: p.type, language: p.lang, fields: p.fields, items: p.items, snapshot: r.snapshot, idempotencyKey: key,
@@ -1780,6 +1843,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Create: `apps/web-admin/client/src/pages/broadcast/GeneratorTab.test.tsx`
 - Modify: `apps/web-admin/client/src/pages/BroadcastPage.tsx`: wrap the existing content in `Tabs` ("Send message" | "Build from products"), and replace the `Restock` and `Maintenance` entries of `TEMPLATES` with a link that switches to the new tab
 - Modify: `apps/web-admin/client/src/pages/SettingsPage.tsx`: add the three keys to `TELEGRAM_KEYS` and `FIELD_DESCRIPTIONS`
+- Modify: `apps/web-admin/client/src/App.tsx`: add the `/broadcast/generator` and `/broadcast/history` routes
 
 **Interfaces:**
 - Consumes: the Task 5 HTTP API; `apiGet`, `apiPost` from `../../api/client`; shadcn `Tabs`, `Button`, `Checkbox`, `Input`, `Textarea`, `Select`, `Dialog`; `ConfirmDialog`, `ImageUploadField`, `DataTable`, `EmptyState`, `StatusBadge`; `toast` from `sonner`; `describeError` from `../../lib/errorMessages`.
@@ -1858,6 +1922,7 @@ describe("GeneratorTab", () => {
     await userEvent.click(await screen.findByRole("combobox", { name: /preset/i }));
     await userEvent.click(await screen.findByRole("option", { name: "Harian" }));
     expect(screen.getByRole("checkbox", { name: /1 Bulan Sharing/ })).toBeChecked();
+    await userEvent.click(screen.getByRole("switch", { name: /show inactive/i }));
     expect(screen.getByRole("checkbox", { name: /Old SKU/ })).not.toBeChecked();
   });
 
@@ -1882,6 +1947,30 @@ describe("GeneratorTab", () => {
     await userEvent.click(await screen.findByRole("checkbox", { name: /1 Bulan Sharing/ }));
     await userEvent.click(await screen.findByRole("button", { name: /copy for channel/i }));
     expect(await screen.findByRole("textbox", { name: /copy manually/i })).toHaveValue("UPDATE STOK");
+  });
+
+  it("filters by source and status, hides inactive by default, and summarises the selection", async () => {
+    renderTab();
+    expect(await screen.findByText("1 Bulan Sharing")).toBeInTheDocument();
+    expect(screen.queryByText("Old SKU")).not.toBeInTheDocument(); // inactive hidden by default
+    await userEvent.click(screen.getByRole("switch", { name: /show inactive/i }));
+    expect(screen.getByText("Old SKU")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: /digiflazz/i }));
+    expect(screen.queryByText("1 Bulan Sharing")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /select all results/i }));
+    expect(screen.getByText(/1 selected · 0 Premium · 1 Game · 1 Digiflazz/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /clear selection/i }));
+    expect(screen.getByText(/0 selected/)).toBeInTheDocument();
+  });
+
+  it("requires the stale acknowledgement before copying a Digiflazz item", async () => {
+    renderTab();
+    await userEvent.click(await screen.findByRole("checkbox", { name: /172 Diamonds/ }));
+    const copy = await screen.findByRole("button", { name: /copy for channel/i });
+    expect(copy).toBeDisabled();
+    await userEvent.click(screen.getByRole("checkbox", { name: /I understand the Digiflazz status/i }));
+    expect(copy).toBeEnabled();
+    expect(screen.getByRole("link", { name: /view digiflazz status/i })).toHaveAttribute("href", "/catalog/digiflazz-sync");
   });
 
   it("requires the note field for a disruption post", async () => {
@@ -1960,13 +2049,25 @@ export const STATUS_TEXT: Record<ItemStatus, string> = {
     - **Preset `Select`** (accessible name "Preset"). Choosing a preset applies `selectionFromIds`.
     - **"Same as last" button**, shown only when `last` exists. Its label is ``Same as last (${TYPE_LABEL[last.type]}, ${last.createdAt} by ${last.adminName ?? "admin"})``. Clicking it sets the type and the selection from `last.items`.
     - **"+ Save preset"** opens a small dialog for the name, then `POST /presets` and invalidates `options`. Saving is disabled while nothing is selected.
-    - **Filters:** search input, group segmented control (All / Premium Apps / Game Top Up), category `Select`, and "Select all results", which adds every non-INACTIVE/GONE item that matches the filters.
+    - **Filters:**
+      - search input
+      - group segmented control (All / Premium Apps / Game Top Up)
+      - **Source** segmented control (All / Local stock / Manual / Digiflazz), mapping `INTERNAL_INVENTORY` / `MANUAL` / `PROVIDER_API`
+      - **Status** segmented control (All / ✅ / ⛔ / 🔧)
+      - category `Select`
+      - **Show inactive** switch, off by default, which hides INACTIVE rows
+    - **Selection actions:**
+      - **Select all results** adds every non-INACTIVE/GONE item that matches the filters.
+      - **Clear selection** empties the selection.
+      - A summary line reads `12 selected · 8 Premium · 4 Game · 3 Digiflazz`.
+    - **Row labels:** every denomination row shows its source label (Local stock / Manual / Digiflazz). Digiflazz rows also show `data {ageMinutes} min old` from `provider.ageMinutes`.
     - **Tree:** each product row has a tri-state checkbox (all/none/some of its non-inactive items) and is expandable. Each denomination row has a checkbox whose accessible name is its name, the `STATUS_TEXT` badge, and:
       - for `AVAILABLE` items, a small "Mark sold out" toggle that sets `markSoldOut`;
       - for `RESTOCK`, a NEW/BACK toggle.
 
       INACTIVE rows are greyed. Checking one manually shows an inline note that it will not appear in the message.
-    - **Stale banner:** when `provider.stale`, a yellow `Alert` shows "Digiflazz status as of HH.mm ({ageMinutes} min ago)", "Last sync failed", or "Never synced". It has a **Sync now** button that calls `apiPost("/api/catalog/digiflazz/sync/run")`, toasts the server's error text on failure, and invalidates `options` + `preview` on success.
+    - **Stale banner:** when `provider.stale`, a yellow `Alert` shows "Digiflazz status as of HH.mm ({ageMinutes} min ago)", "Last sync failed", or "Never synced". It has a **Sync now** button that calls `apiPost("/api/catalog/digiflazz/sync/run")`, toasts the server's error text on failure, and invalidates `options` + `preview` on success. Next to it sits a link **View Digiflazz status →** to `/catalog/digiflazz-sync`.
+    - **Stale acknowledgement:** when `provider.stale` and the selection contains a Digiflazz item, both the copy area and the send dialog show a required checkbox, "I understand the Digiflazz status has not been refreshed". Copy and Send stay disabled until it is ticked, and the requests send `ack_stale: true`. A 409 `stale_provider` response re-shows the checkbox with the server's message.
   - **Fields:** Title, Intro and Footer (prefilled placeholder from `defaults.footerId`/`footerEn` by language), plus Note (accessible name "Note (Keterangan)", `required` when `NEEDS_DETAILS.includes(type)`), and a language toggle (ID | EN).
   - **`PostPreview`**:
     - DM | Channel toggle. The counter reads `{length} / {limit}`.
@@ -1984,7 +2085,12 @@ export const STATUS_TEXT: Record<ItemStatus, string> = {
     - A table with time, type, admin, action ("Copied" or "Sent #id" + status badge), and buttons "View snapshot" and "Use again".
     - "View snapshot" opens a dialog listing planned vs sent items. Items present in planned but missing from sent are marked "dropped at send time (sold out)".
     - "Use again" calls the parent to set the type and selection.
-  - **`BroadcastPage`** wraps the existing card and history in `<Tabs defaultValue="message">` with triggers "Send message" and "Build from products". The second renders `<GeneratorTab />`. Remove `Restock` and `Maintenance` from `TEMPLATES`, and put a small link button "Build a restock or disruption post from products →" under the template picker that switches the tab.
+  - **`BroadcastPage`** wraps the existing card and history in `<Tabs>` with **URL-backed** tabs:
+    - `/broadcast`: "Send message", the existing content
+    - `/broadcast/generator`: "Build from products", renders `<GeneratorTab />`
+    - `/broadcast/history`: "Product broadcast history", renders `<PostHistory />`
+
+    Add the two routes in `apps/web-admin/client/src/App.tsx` next to `/broadcast`, all rendering `BroadcastPage`. Derive the active tab from `useLocation().pathname` and switch with `navigate()`. Make sure the sidebar's `/broadcast` item stays highlighted on the sub-paths: check how `Sidebar.tsx` decides "active" (the `end` flag) and keep it non-`end`. "Use again" in history navigates to `/broadcast/generator` with the selection passed via router state. Remove `Restock` and `Maintenance` from `TEMPLATES`, and put a small link button "Build a restock or disruption post from products →" under the template picker that switches the tab.
   - **`SettingsPage`:** add `broadcast_footer_id`, `broadcast_footer_en` and `broadcast_stale_minutes` to `TELEGRAM_KEYS`, and give `FIELD_DESCRIPTIONS` a plain sentence for each, for example `broadcast_stale_minutes: "How old the Digiflazz status may be before the broadcast builder shows a warning. Default 90 minutes; the catalog sync runs hourly."`
 
 - [ ] **Step 5: Run tests, typecheck and doctor on the changed files**
@@ -2001,7 +2107,7 @@ Expected: tests PASS, typecheck clean, boundaries OK, doctor 0 errors / 0 warnin
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/web-admin/client/src/pages/broadcast/generatorTypes.ts apps/web-admin/client/src/pages/broadcast/GeneratorTab.tsx apps/web-admin/client/src/pages/broadcast/ItemPicker.tsx apps/web-admin/client/src/pages/broadcast/PostPreview.tsx apps/web-admin/client/src/pages/broadcast/SendDialog.tsx apps/web-admin/client/src/pages/broadcast/PostHistory.tsx apps/web-admin/client/src/pages/broadcast/GeneratorTab.test.tsx apps/web-admin/client/src/pages/BroadcastPage.tsx apps/web-admin/client/src/pages/BroadcastPage.test.tsx apps/web-admin/client/src/pages/SettingsPage.tsx
+git add apps/web-admin/client/src/pages/broadcast/generatorTypes.ts apps/web-admin/client/src/pages/broadcast/GeneratorTab.tsx apps/web-admin/client/src/pages/broadcast/ItemPicker.tsx apps/web-admin/client/src/pages/broadcast/PostPreview.tsx apps/web-admin/client/src/pages/broadcast/SendDialog.tsx apps/web-admin/client/src/pages/broadcast/PostHistory.tsx apps/web-admin/client/src/pages/broadcast/GeneratorTab.test.tsx apps/web-admin/client/src/pages/BroadcastPage.tsx apps/web-admin/client/src/pages/BroadcastPage.test.tsx apps/web-admin/client/src/pages/SettingsPage.tsx apps/web-admin/client/src/App.tsx
 git commit -m "feat(web-admin): Build from products tab for stock and service broadcasts
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"

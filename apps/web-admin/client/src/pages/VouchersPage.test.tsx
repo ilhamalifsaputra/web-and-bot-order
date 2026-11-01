@@ -793,3 +793,30 @@ describe("VouchersPage — search debounce", () => {
     expect(listUrls.at(-1)).toContain("page=2");
   });
 });
+
+/** The page a list request asks for; a request without `page` asks for 1. */
+function requestedPage(url: string): string {
+  return new URL(url, "http://admin.test").searchParams.get("page") ?? "1";
+}
+
+describe("VouchersPage — search resets the page", () => {
+  it("typing a search after moving to page 2 asks for page 1 of the results", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      listUrls.push(url);
+      const page = Number(requestedPage(url));
+      return listResponse([{ ...VOUCHER, id: page, code: `PAGEV${page}` }], { total: 60, page });
+    });
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("PAGEV2")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText("Search voucher code..."), { target: { value: "save" } });
+    await waitFor(() => expect(listUrls.at(-1)).toContain("q=save"));
+    expect(requestedPage(listUrls.at(-1)!)).toBe("1");
+    expect(listUrls.filter((u) => u.includes("q=save") && requestedPage(u) === "2")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
+  });
+});

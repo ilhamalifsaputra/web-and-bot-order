@@ -1567,3 +1567,30 @@ describe("PaymentsPage — failed refresh and search debounce", () => {
     expect(listPaths.at(-1)).toContain("page=2");
   });
 });
+
+/** The page a list request asks for; a request without `page` asks for 1. */
+function requestedPage(url: string): string {
+  return new URL(url, "http://admin.test").searchParams.get("page") ?? "1";
+}
+
+describe("PaymentsPage — search resets the page", () => {
+  it("typing a search after moving to page 2 asks for page 1 of the results", async () => {
+    const listPaths: string[] = [];
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (!path.startsWith("/api/payments")) return searchPayload;
+      listPaths.push(path);
+      const page = Number(requestedPage(path));
+      return { enabled: true, ledger: [{ ...TX, id: page, reference: `TXPAGE${page}` }], total: 120, page, hasNext: page === 1, outcomes: [], counts: {} };
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TXPAGE1")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("TXPAGE2")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText("Search Transfer ID..."), { target: { value: "binance" } });
+    await waitFor(() => expect(listPaths.at(-1)).toContain("q=binance"));
+    expect(requestedPage(listPaths.at(-1)!)).toBe("1");
+    expect(listPaths.filter((p) => p.includes("q=binance") && requestedPage(p) === "2")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("TXPAGE1")).toBeInTheDocument());
+  });
+});

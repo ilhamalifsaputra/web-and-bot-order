@@ -914,3 +914,31 @@ describe("SupportPage — search debounce", () => {
     expect(listUrls.at(-1)).toContain("page=2");
   });
 });
+
+/** The page a list request asks for; a request without `page` asks for 1. */
+function requestedPage(url: string): string {
+  return new URL(url, "http://admin.test").searchParams.get("page") ?? "1";
+}
+
+describe("SupportPage — search resets the page", () => {
+  it("typing a search after moving to page 2 asks for page 1 of the results", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      const page = Number(requestedPage(url));
+      return jsonResponse(supportData([{ ...TICKET_OPEN, id: page, message: `Ticket on page ${page}` }], { total: 60, page }));
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("Ticket on page 2")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(/ticket, order, or customer/i), { target: { value: "refund" } });
+    await waitFor(() => expect(listUrls.at(-1)).toContain("q=refund"));
+    expect(requestedPage(listUrls.at(-1)!)).toBe("1");
+    expect(listUrls.filter((u) => u.includes("q=refund") && requestedPage(u) === "2")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
+  });
+});

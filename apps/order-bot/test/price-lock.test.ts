@@ -79,6 +79,7 @@ import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/p
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import { OrderStatus, PaymentMethod, UserRole, VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { MyContext, SessionData } from "../src/context";
@@ -319,6 +320,9 @@ function expectOneEditOnly(sink: SentCall[]) {
 const OBSERVED_SECOND_TAP_TOAST = (rail: Rail, ctx: MyContext) =>
   t(ctx, rail.method === PaymentMethod.WALLET ? "checkout.wallet_already_paid" : "checkout.duplicate_pending");
 
+/** A required text answer keyed `note`, the one the buyer session carries. */
+const NOTE_FIELD = { key: "note", label: { id: "Catatan", en: "Note" }, type: "text", required: true, options: [], placeholder: "" };
+
 describe.each(RAILS)("price lock: $name", (rail) => {
   beforeEach(async () => {
     await rail.setup();
@@ -353,6 +357,9 @@ describe.each(RAILS)("price lock: $name", (rail) => {
   });
 
   it("price changed between render and tap: no order, no debit, no voucher use; one edit with the new total; paying again succeeds", async () => {
+    // The product really asks for the answer the session carries, so the
+    // order stores it (a product with no info fields stores none).
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { additionalFields: JSON.stringify([NOTE_FIELD]) } });
     const session = await buyerSession(rail);
     const seen = await render(rail, session);
     expect(session.scratch.quotedTotalIdr).toBe("72000");
@@ -389,7 +396,7 @@ describe.each(RAILS)("price lock: $name", (rail) => {
     expect(orders).toHaveLength(1);
     expect(netIdr(orders[0]!).equals(81000)).toBe(true);
     expect(orders[0]!.checkoutIntentId).toBe(INTENT);
-    expect(orders[0]!.customerData).toBe(JSON.stringify([{ note: "keep-me" }]));
+    expect(decryptCustomerData(orders[0]!.customerData, orders[0]!.id)).toBe(JSON.stringify([{ note: "keep-me" }]));
   });
 
   it("double-tap queued from the old screen: the second tap carries the old nonce and re-renders instead of paying the new price; only a tap from the new screen pays", async () => {

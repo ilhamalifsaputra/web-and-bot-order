@@ -6,6 +6,7 @@ import { botToken } from "@app/core/runtime";
 import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction, ingestSupportTelegramMedia } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
+import { MAX_SUPPORT_MEDIA, isMediaDocument, mediaChecklist } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import * as ckb from "../keyboards/customer";
@@ -56,21 +57,28 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
       if ((orderPage + 1) * 5 < orders.length) keyboard.text(t(current, "helpdesk.next"), callback("next"));
       keyboard.row().text(t(current, "helpdesk.no_order"), callback("order:skip")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
     } else if (step === "description") { text = t(current, "helpdesk.ask_description"); keyboard = navigation(current); }
-    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/3`; keyboard = new InlineKeyboard().text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
+    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaEnabled && attachments.length >= MAX_SUPPORT_MEDIA ? `\n\n${t(current, "helpdesk.media_limit_hint")}` : ""}`; keyboard = new InlineKeyboard().text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
     else {
       const order = preselectedOrder?.id === orderId ? preselectedOrder : orders.find((item) => item.id === orderId);
-      text = `<b>${t(current, "helpdesk.review")}</b>\n${t(current, `helpdesk.category_${category.toLowerCase()}`)} / ${t(current, issue!.labelKey)}\n${order ? `<code>${esc(order.orderCode)}</code>` : t(current, "helpdesk.no_order")}\n\n${esc(body.slice(0, 1200))}\n\n${t(current, "helpdesk.attachments")}: ${attachments.length}`;
+      text = `<b>${t(current, "helpdesk.review")}</b>\n${t(current, `helpdesk.category_${category.toLowerCase()}`)} / ${t(current, issue!.labelKey)}\n${order ? `<code>${esc(order.orderCode)}</code>` : t(current, "helpdesk.no_order")}\n\n${esc(body.slice(0, 1200))}\n\n${t(current, "helpdesk.attachments")}: ${attachments.length}${mediaEnabled ? `\n${t(current, "helpdesk.media_limit_hint")}` : ""}`;
       keyboard = new InlineKeyboard().text(t(current, "helpdesk.confirm"), callback("submit")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
     }
     await menuAnchor(current, `${text}${error ? `\n\n${error}` : ""}`, keyboard);
     error = "";
+    const screen = { text, keyboard };
     current = await conversation.wait();
     const data = current.callbackQuery?.data ?? "";
     const action = data.startsWith(callback("")) ? data.slice(callback("").length) : "";
     if (current.callbackQuery) await current.answerCallbackQuery();
     const input = current.message?.text;
     if (input && ckb.isPersistentLabel(input)) return void await handleProductNumber(current);
-    if (input?.startsWith("/start") || data === "v1:menu:main" || action === "cancel" || input === "/cancel") return void await showMainMenu(current);
+    if (input?.startsWith("/start") || data === "v1:menu:main" || action === "cancel" || input === "/cancel") {
+      // The draft is abandoned: the typed description is obsolete scratch now
+      // (photos were already deleted once stored; their unbound attachments
+      // expire through cleanupSupportMedia).
+      for (const accepted of acceptedInputs) await consumeInput(accepted);
+      return void await showMainMenu(current);
+    }
     if (await conversation.now() - started > TTL) { await menuAnchor(current, t(current, "helpdesk.session_expired"), ckb.backToMain(current.session.lang)); return; }
     if (action === "back") { step = step === "issue" ? "category" : step === "order" ? "issue" : step === "description" ? (issue?.order && orders.length ? "order" : "issue") : step === "media" ? "description" : "media"; continue; }
     if (step === "category" && action.startsWith("category:")) { const candidate = action.slice(9); if (SUPPORT_CATEGORIES.some((item) => item.key === candidate)) { category = candidate; issueKey = ""; orderId = (candidate === "ORDER" || candidate === "PAYMENT") ? preselectedOrder?.id ?? null : null; step = "issue"; } }
@@ -84,14 +92,21 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
       const trimmed = input.trim(); if (trimmed.length >= 10 && trimmed.length <= 2000) { body = trimmed; acceptedInputs.push(current); step = "media"; } else error = t(current, "helpdesk.description_quality");
     } else if (step === "media") {
       if (action === "review") step = "review";
+      else if (isMediaDocument(current)) error = t(current, "helpdesk.send_as_photo");
       else if (current.message?.photo || current.message?.video) {
-        if (!mediaEnabled || attachments.length >= 3) { error = t(current, mediaEnabled ? "web.support_attach_error_count" : "helpdesk.media_unavailable"); continue; }
+        // Over the limit (or media off): the photo is unused, so it goes and
+        // the bubble says why. A repeat of the same text is a no-op edit.
+        if (!mediaEnabled || attachments.length >= MAX_SUPPORT_MEDIA) { await consumeInput(current); error = t(current, mediaEnabled ? "web.support_attach_error_count" : "helpdesk.media_unavailable"); continue; }
         const photo = current.message.photo?.at(-1); const video = current.message.video; const media = photo ?? video!;
+        await menuAnchor(current, `${screen.text}\n\n${t(current, "helpdesk.uploading_bot")}`, screen.keyboard);
         try {
           const file = await current.api.getFile(media.file_id);
           const args = { ownerId: user.id, draftId, fileId: media.file_id, filePath: file.file_path ?? "", mime: photo ? "image/jpeg" : video?.mime_type ?? "video/mp4", bytes: file.file_size ?? media.file_size ?? 0 };
-          const id = await conversation.external(async () => ingestSupportTelegramMedia(prisma, { ...args, token: botToken() ?? "" })); attachments.push(id); acceptedInputs.push(current);
-        } catch { error = t(current, "helpdesk.upload_failed"); }
+          const id = await conversation.external(async () => ingestSupportTelegramMedia(prisma, { ...args, token: botToken() ?? "" })); attachments.push(id);
+        } catch { error = t(current, "helpdesk.upload_failed_bot"); }
+        // Stored in R2 (or failed): either way the chat copy is no longer
+        // needed, and removing it keeps the wizard bubble in view.
+        await consumeInput(current);
       }
     } else if (step === "review" && action === "submit") {
       const ticket = await conversation.external(async () => {

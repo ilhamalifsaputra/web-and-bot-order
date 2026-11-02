@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { createSupportUpload, finalizeSupportUpload, cleanupSupportMedia, ingestSupportTelegramMedia } from "./supportAttachments";
+import { createSupportUpload, finalizeSupportUpload, cleanupSupportMedia, ingestSupportTelegramMedia, discardSupportAttachment } from "./supportAttachments";
 import { logger } from "@app/core/logger";
 import { createTicket, addTicketMessage, listTicketMessages, setSupportLegalHold, reopenTicketAdmin } from "./support";
 import { SenderType } from "@app/core/enums";
@@ -195,5 +195,51 @@ describe("Telegram media ingest", () => {
       expect(logged).not.toContain("api.telegram.org");
       expect((await db.prisma.supportAttachment.findFirstOrThrow({ where: { ownerId } })).status).toBe("REJECTED");
     } finally { warn.mockRestore(); }
+  });
+});
+
+describe("discardSupportAttachment (customer removes a draft file)", () => {
+  it("rejects a READY draft row of the owner and expires it now, so cleanup deletes the object", async () => {
+    const id = await ready();
+    const before = Date.now();
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(true);
+    const row = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe("REJECTED");
+    expect(row.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(row.expiresAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    await cleanupSupportMedia(db.prisma, new Date(Date.now() + 1000));
+    expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).status).toBe("DELETED");
+  });
+  it("rejects a PENDING draft row too", async () => {
+    const intent = await createSupportUpload(db.prisma, { ownerId, draftId: randomUUID(), filename: "proof.png", mime: "image/png", bytes: png.length });
+    expect(await discardSupportAttachment(db.prisma, intent.id, ownerId)).toBe(true);
+    expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: intent.id } })).status).toBe("REJECTED");
+  });
+  it("refuses a row already attached to a ticket", async () => {
+    const id = await ready();
+    await createTicket(db.prisma, ownerId, "An issue with attached evidence", null, null, null, { attachmentIds: [id] });
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(false);
+    expect(await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "READY", attachedAt: expect.any(Date) });
+  });
+  it("refuses a row owned by someone else", async () => {
+    const id = await ready();
+    expect(await discardSupportAttachment(db.prisma, id, otherId)).toBe(false);
+    expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).status).toBe("READY");
+  });
+  it("is idempotent on an already REJECTED row and refuses DELETED/DELETING rows", async () => {
+    const id = await ready();
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(true);
+    const first = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } });
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(false);
+    expect(await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "REJECTED", expiresAt: first.expiresAt });
+    for (const status of ["DELETED", "DELETING"] as const) {
+      const other = await ready();
+      await db.prisma.supportAttachment.update({ where: { id: other }, data: { status } });
+      expect(await discardSupportAttachment(db.prisma, other, ownerId)).toBe(false);
+      expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: other } })).status).toBe(status);
+    }
+  });
+  it("returns false for an unknown id", async () => {
+    expect(await discardSupportAttachment(db.prisma, randomUUID(), ownerId)).toBe(false);
   });
 });

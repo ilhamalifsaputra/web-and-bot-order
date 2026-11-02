@@ -1,5 +1,7 @@
+import type { InlineKeyboard } from "grammy";
 import { botToken } from "@app/core/runtime";
-import { prisma, ingestSupportTelegramMedia } from "@app/db";
+import { logger } from "@app/core/logger";
+import { prisma, ingestSupportTelegramMedia, discardSupportAttachment } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput } from "./chat";
 import { t } from "./i18n";
@@ -19,6 +21,47 @@ export function isMediaDocument(ctx: MyContext): boolean {
 export function mediaChecklist(ctx: MyContext, count: number): string {
   if (count <= 0) return "";
   return `\n${Array.from({ length: count }, (_, index) => t(ctx, "helpdesk.media_item", { n: index + 1 })).join("  ")}`;
+}
+
+/** The "at the limit" line under the counter, shown only once all files are
+ * stored; each flow passes its own wording of where the rest can go. */
+export function mediaLimitHint(ctx: MyContext, mediaEnabled: boolean, count: number, key: "helpdesk.media_limit_hint" | "helpdesk.media_limit_hint_reply"): string {
+  return mediaEnabled && count >= MAX_SUPPORT_MEDIA ? `\n\n${t(ctx, key)}` : "";
+}
+
+/** One "🗑 Photo/video n" button per stored file, two per row (each label
+ * fits NARROW_LABEL_WIDTH), on rows of their own above the flow's buttons.
+ * The callback carries the file's 0-based position in the draft. */
+export function addRemoveButtons(ctx: MyContext, keyboard: InlineKeyboard, count: number, callbackFor: (index: number) => string): InlineKeyboard {
+  for (let index = 0; index < count; index++) {
+    keyboard.text(t(ctx, "helpdesk.media_remove", { n: index + 1 }), callbackFor(index));
+    if (index % 2 === 1 || index === count - 1) keyboard.row();
+  }
+  return keyboard;
+}
+
+/** The 0-based index a remove tap names, or null when the data is not a
+ * remove tap of this flow. */
+export function removeIndex(data: string, prefix: string): number | null {
+  if (!data.startsWith(prefix)) return null;
+  const index = Number(data.slice(prefix.length));
+  return Number.isSafeInteger(index) && index >= 0 ? index : null;
+}
+
+/** Takes the file at `index` out of the draft and retires its stored row so
+ * the cleanup job deletes the object. A stale index changes nothing. A failed
+ * discard never blocks the customer: the unattached row expires on its own. */
+export async function removeMedia(conversation: MyConversation, attachments: string[], index: number, ownerId: number): Promise<void> {
+  if (index >= attachments.length) return;
+  const [id] = attachments.splice(index, 1);
+  await conversation.external(async () => {
+    try {
+      await discardSupportAttachment(prisma, id!, ownerId);
+    } catch (err) {
+      // Only the error name: a database error message could carry connection details.
+      logger.warn({ attachmentId: id, errorName: err instanceof Error ? err.name : typeof err },"A support attachment the customer removed from a draft could not be retired now; it will still expire and be cleaned up later.");
+    }
+  });
 }
 
 /** The photo (largest size) or video this message carries, with the type the

@@ -136,6 +136,19 @@ export async function attachSupportMedia(db: Db, ids: string[], ownerId: number,
   }
 }
 
+/** The customer removed a draft file before sending: retire it so the
+ * existing cleanupSupportMedia job deletes the stored object. Only the
+ * owner's own unattached PENDING/READY/VERIFYING row changes; an attached,
+ * foreign, already retired or deleted row is left alone. Returns whether a
+ * row was retired by this call (false on a repeat, so it is idempotent). */
+export async function discardSupportAttachment(db: Db, id: string, ownerId: number): Promise<boolean> {
+  const changed = await db.supportAttachment.updateMany({
+    where: { id, ownerId, attachedAt: null, status: { in: ["PENDING", "READY", "VERIFYING"] } },
+    data: { status: "REJECTED", expiresAt: new Date() },
+  });
+  return changed.count === 1;
+}
+
 export async function supportAttachmentLinks(db: Db, ticketId: number, messageId: number | null, prefix: string) {
   const rows = await db.supportAttachment.findMany({ where: { ticketId, messageId, status: "READY" } });
   return rows.map((row) => `${prefix}/${row.id}/file.${row.mime.startsWith("video/") ? "mp4" : row.mime.split("/")[1]}`);

@@ -5,7 +5,7 @@ import { supportMediaAvailable } from "@app/core/supportMedia";
 import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, refuseMedia } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, addRemoveButtons, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import * as ckb from "../keyboards/customer";
@@ -33,6 +33,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   let category = ""; let issueKey = ""; let orderId: number | null = preselectedOrder?.id ?? null; let body = ""; let orderPage = 0;
   const attachments: string[] = [];
   const acceptedInputs: MyContext[] = [];
+  let lastAlbum: string | undefined;
   let error = "";
   if (ctx.callbackQuery) await ctx.answerCallbackQuery();
   for (;;) {
@@ -56,7 +57,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
       if ((orderPage + 1) * 5 < orders.length) keyboard.text(t(current, "helpdesk.next"), callback("next"));
       keyboard.row().text(t(current, "helpdesk.no_order"), callback("order:skip")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
     } else if (step === "description") { text = t(current, "helpdesk.ask_description"); keyboard = navigation(current); }
-    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaEnabled && attachments.length >= MAX_SUPPORT_MEDIA ? `\n\n${t(current, "helpdesk.media_limit_hint")}` : ""}`; keyboard = new InlineKeyboard().text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
+    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaLimitHint(current, mediaEnabled, attachments.length, "helpdesk.media_limit_hint")}`; keyboard = addRemoveButtons(current, new InlineKeyboard(), attachments.length, (index) => callback(`rm:${index}`)).text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
     else {
       const order = preselectedOrder?.id === orderId ? preselectedOrder : orders.find((item) => item.id === orderId);
       text = `<b>${t(current, "helpdesk.review")}</b>\n${t(current, `helpdesk.category_${category.toLowerCase()}`)} / ${t(current, issue!.labelKey)}\n${order ? `<code>${esc(order.orderCode)}</code>` : t(current, "helpdesk.no_order")}\n\n${esc(body.slice(0, 1200))}\n\n${t(current, "helpdesk.attachments")}: ${attachments.length}${mediaEnabled ? `\n${t(current, "helpdesk.media_limit_hint")}` : ""}`;
@@ -90,12 +91,21 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     } else if (step === "description" && input) {
       const trimmed = input.trim(); if (trimmed.length >= 10 && trimmed.length <= 2000) { body = trimmed; acceptedInputs.push(current); step = "media"; } else error = t(current, "helpdesk.description_quality");
     } else if (step === "media") {
+      const removing = removeIndex(action, "rm:");
       if (action === "review") step = "review";
+      // A stale index changes nothing; the loop re-renders the bubble either way.
+      else if (removing !== null) await removeMedia(conversation, attachments, removing, user.id);
       else if (isMediaDocument(current)) error = t(current, "helpdesk.send_as_photo");
       else if (incomingMedia(current)) {
+        // Telegram delivers an album as one update per part sharing a
+        // media_group_id: only its first part shows the uploading line, the
+        // rest go straight to the counter edit.
+        const group = current.message?.media_group_id;
+        const sameAlbum = group !== undefined && group === lastAlbum;
+        lastAlbum = group;
         const refused = await refuseMedia(current, mediaEnabled, attachments.length);
         if (refused) { error = refused; continue; }
-        await menuAnchor(current, `${screen.text}\n\n${t(current, "helpdesk.uploading_bot")}`, screen.keyboard);
+        if (!sameAlbum) await menuAnchor(current, `${screen.text}\n\n${t(current, "helpdesk.uploading_bot")}`, screen.keyboard);
         const stored = await ingestMedia(conversation, current, { ownerId: user.id, draftId });
         if ("id" in stored) attachments.push(stored.id); else error = stored.error;
       }

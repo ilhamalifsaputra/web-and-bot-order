@@ -9,11 +9,14 @@ vi.mock("@app/core/supportMedia", async (orig) => ({
 vi.mock("@app/db", async (orig) => ({
   ...(await orig<typeof import("@app/db")>()),
   ingestSupportTelegramMedia: vi.fn(),
+  discardSupportAttachment: vi.fn(async () => true),
 }));
 
-import { prisma, ingestSupportTelegramMedia } from "@app/db";
+import { prisma, ingestSupportTelegramMedia, discardSupportAttachment } from "@app/db";
+import { supportMediaAvailable } from "@app/core/supportMedia";
 import { ValidationError } from "@app/core/errors";
 import { TicketStatus } from "@app/core/enums";
+import { NARROW_LABEL_WIDTH, visualWidth } from "@app/core/buttonLimits";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, FakeConversation, calls, type SentCall, type MakeCtxOptions } from "./helpers/ctx";
 import type { MyContext, SessionData } from "../src/context";
@@ -22,12 +25,14 @@ import { supportConversation } from "../src/conversations/support";
 import { ticketUserReplyConversation } from "../src/conversations/customer";
 
 const ingest = vi.mocked(ingestSupportTelegramMedia);
+const discard = vi.mocked(discardSupportAttachment);
 let sample: SampleData;
 
 beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
   ingest.mockReset();
+  discard.mockClear();
   let n = 0;
   ingest.mockImplementation(async () => `att-${++n}`);
 });
@@ -82,6 +87,12 @@ function harness() {
 }
 
 const photo = (id: string): MakeCtxOptions => ({ photo: [{ file_id: id }] });
+/** One photo of a Telegram album: every part shares the media_group_id. */
+const albumPhoto = (id: string, group: string): MakeCtxOptions => ({ photo: [{ file_id: id }], messageExtra: { media_group_id: group } });
+type Button = { text: string; callback_data?: string };
+/** The inline keyboard an edit (api- or ctx-level) carried, as rows. */
+const markupOf = (c: SentCall): Button[][] => (c.args[c.args.length - 1] as { reply_markup?: { inline_keyboard?: Button[][] } } | undefined)?.reply_markup?.inline_keyboard ?? [];
+const removeButtons = (c: SentCall, prefix: string) => markupOf(c).flat().filter((b) => b.callback_data?.startsWith(prefix));
 const imageDocument: MakeCtxOptions = { document: { file_id: "doc-1" }, messageExtra: { document: { file_id: "doc-1", file_name: "shot.jpg", mime_type: "image/jpeg", file_size: 1000 } } };
 const en = (key: string, args?: Record<string, unknown>) => t({ session: { lang: "en" } } as unknown as MyContext, key, args as never);
 
@@ -153,15 +164,6 @@ describe("support wizard media step (one bubble)", () => {
     expect(h.editText(h.edits(h.windowOf(4))[1]!)).toContain("1/3");
   });
 
-  it("cancel after one photo deletes the description too (the photo is already gone)", async () => {
-    const h = harness();
-    const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), h.tap("cancel", "v1:support:v2:cancel")]);
-    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
-    expect(h.deletedIds(h.windowOf(4))).toEqual([h.idOf("description")]);
-    expect(h.deletedIds(h.sink)).toEqual([h.idOf("p1"), h.idOf("description")]);
-    expect(await prisma.supportTicket.count()).toBe(0);
-  });
-
   it("an image sent as a file gets 1 edit asking for a photo, no upload and no delete", async () => {
     const h = harness();
     const conv = new FakeConversation([...toMedia(h), h.step("doc", imageDocument), h.tap("cancel", "v1:support:v2:cancel")]);
@@ -172,6 +174,122 @@ describe("support wizard media step (one bubble)", () => {
     expect(h.deletedIds(w)).toEqual([]);
     expect(h.editText(h.edits(w)[0]!)).toContain(en("helpdesk.send_as_photo"));
     expect(ingest).not.toHaveBeenCalled();
+  });
+
+  it("shows one remove button per stored file, two per row, and none before the first file", async () => {
+    const h = harness();
+    const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), h.step("p2", photo("p2")), h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    // The description window renders the empty media step: no remove buttons.
+    expect(removeButtons(h.edits(h.windowOf(2)).at(-1)!, "v1:support:v2:rm:")).toEqual([]);
+    const afterTwo = h.edits(h.windowOf(4)).at(-1)!;
+    expect(removeButtons(afterTwo, "v1:support:v2:rm:")).toEqual([
+      { text: en("helpdesk.media_remove", { n: 1 }), callback_data: "v1:support:v2:rm:0" },
+      { text: en("helpdesk.media_remove", { n: 2 }), callback_data: "v1:support:v2:rm:1" },
+    ]);
+    expect(markupOf(afterTwo).some((row) => row.length === 2 && row.every((b) => b.callback_data?.startsWith("v1:support:v2:rm:")))).toBe(true);
+  });
+
+  it("removing a file is 0 sends, 1 edit and 0 deletes; the counter, checklist and buttons follow", async () => {
+    const h = harness();
+    const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), h.step("p2", photo("p2")), h.tap("rm", "v1:support:v2:rm:0"), h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    const w = h.windowOf(5);
+    expect(h.sends(w)).toBe(0);
+    expect(h.edits(w)).toHaveLength(1);
+    expect(h.deletedIds(w)).toEqual([]);
+    const text = h.editText(h.edits(w)[0]!);
+    expect(text).toContain("1/3");
+    expect(text).toContain(en("helpdesk.media_item", { n: 1 }));
+    expect(text).not.toContain(en("helpdesk.media_item", { n: 2 }));
+    expect(removeButtons(h.edits(w)[0]!, "v1:support:v2:rm:")).toEqual([{ text: en("helpdesk.media_remove", { n: 1 }), callback_data: "v1:support:v2:rm:0" }]);
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(discard).toHaveBeenCalledWith(prisma, "att-1", sample.user.id);
+  });
+
+  it("a stale remove index only re-renders: 0 sends, 1 edit, no error text, nothing discarded", async () => {
+    const h = harness();
+    const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), h.tap("rm", "v1:support:v2:rm:5"), h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    const w = h.windowOf(4);
+    expect(h.sends(w)).toBe(0);
+    expect(h.edits(w)).toHaveLength(1);
+    expect(h.deletedIds(w)).toEqual([]);
+    const text = h.editText(h.edits(w)[0]!);
+    expect(text).toContain("1/3");
+    expect(text).not.toContain(en("error.stale_screen"));
+    expect(discard).not.toHaveBeenCalled();
+  });
+
+  it("the review screen carries no remove buttons", async () => {
+    const h = harness();
+    const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), h.tap("review", "v1:support:v2:review"), h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    const review = h.edits(h.windowOf(4)).at(-1)!;
+    expect(h.editText(review)).toContain(en("helpdesk.attachments"));
+    expect(removeButtons(review, "v1:support:v2:rm:")).toEqual([]);
+  });
+
+  it("an album of 3 shows the uploading edit only for its first photo: edits 2,1,1, 0 sends", async () => {
+    const h = harness();
+    const parts = ["a", "b", "c"].map((id) => h.step(id, albumPhoto(id, "album-1")));
+    const conv = new FakeConversation([...toMedia(h), ...parts, h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    const album = [3, 4, 5].map((i) => h.windowOf(i));
+    expect(album.map((w) => h.sends(w))).toEqual([0, 0, 0]);
+    expect(album.map((w) => h.edits(w).length)).toEqual([2, 1, 1]);
+    expect(album.map((w) => h.deletedIds(w))).toEqual(["a", "b", "c"].map((id) => [h.idOf(id)]));
+    expect(h.editText(h.edits(album[0]!)[0]!)).toContain(en("helpdesk.uploading_bot"));
+    expect(h.editText(h.edits(album[1]!)[0]!)).toContain("2/3");
+    expect(h.editText(h.edits(album[1]!)[0]!)).not.toContain(en("helpdesk.uploading_bot"));
+    expect(ingest).toHaveBeenCalledTimes(3);
+  });
+
+  it("a new album after an earlier one gets its own uploading edit", async () => {
+    const h = harness();
+    const conv = new FakeConversation([...toMedia(h), h.step("a", albumPhoto("a", "g1")), h.step("b", albumPhoto("b", "g2")), h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    expect([3, 4].map((i) => h.edits(h.windowOf(i)).length)).toEqual([2, 2]);
+  });
+
+  it("with media off a photo is 0 sends, 1 edit and 1 delete of that photo", async () => {
+    vi.mocked(supportMediaAvailable).mockResolvedValueOnce(false);
+    const h = harness();
+    const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), h.tap("cancel", "v1:support:v2:cancel")]);
+    await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+    const w = h.windowOf(3);
+    expect(h.sends(w)).toBe(0);
+    expect(h.edits(w)).toHaveLength(1);
+    expect(h.deletedIds(w)).toEqual([h.idOf("p1")]);
+    expect(h.editText(h.edits(w)[0]!)).toContain(en("helpdesk.media_unavailable"));
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  for (const exit of [
+    { name: "the Cancel button", update: (h: ReturnType<typeof harness>) => h.tap("exit", "v1:support:v2:cancel") },
+    { name: "/start", update: (h: ReturnType<typeof harness>) => h.step("exit", { text: "/start" }) },
+    { name: "/cancel", update: (h: ReturnType<typeof harness>) => h.step("exit", { text: "/cancel" }) },
+  ]) {
+    it(`leaving via ${exit.name} after one photo sends Home once and deletes only the description`, async () => {
+      const h = harness();
+      const conv = new FakeConversation([...toMedia(h), h.step("p1", photo("p1")), exit.update(h)]);
+      await supportConversation(conv.asMyConversation(), h.entry("v1:support:open"));
+      const w = h.windowOf(4);
+      // Home carries the persistent reply keyboard, so it is the one send.
+      expect({ sends: h.sends(w), edits: h.edits(w).length, deletes: h.deletedIds(w) }).toEqual({ sends: 1, edits: 0, deletes: [h.idOf("description")] });
+      // The photo itself was already deleted when it was stored.
+      expect(h.deletedIds(h.sink)).toEqual([h.idOf("p1"), h.idOf("description")]);
+      expect(await prisma.supportTicket.count()).toBe(0);
+    });
+  }
+});
+
+describe("remove button label", () => {
+  it("fits the two-per-row budget in both languages", () => {
+    for (const lang of ["en", "id"]) for (const n of [1, 2, 3]) {
+      const label = t({ session: { lang } } as unknown as MyContext, "helpdesk.media_remove", { n } as never);
+      expect(visualWidth(label), label).toBeLessThanOrEqual(NARROW_LABEL_WIDTH);
+    }
   });
 });
 
@@ -217,16 +335,87 @@ describe("ticket reply media (one bubble)", () => {
     expect(h.edits(w)).toHaveLength(1);
     expect(h.deletedIds(w)).toEqual([h.idOf("d")]);
     expect(h.editText(h.edits(w)[0]!)).toContain(en("web.support_attach_error_count"));
+    expect(h.editText(h.edits(w)[0]!)).toContain(en("helpdesk.media_limit_hint_reply"));
+    // Below the limit the hint stays out of the way.
+    expect(h.editText(h.edits(h.windowOf(1)).at(-1)!)).not.toContain(en("helpdesk.media_limit_hint_reply"));
   });
 
-  it("cancel after text and one photo deletes the typed text too", async () => {
+  it("shows one remove button per stored file; removing one is 0 sends, 1 edit, 0 deletes", async () => {
     const ticket = await openTicket(); const h = harness();
-    const conv = new FakeConversation([h.step("text", { text: "Still broken" }), h.step("p1", photo("p1")), h.tap("cancel", `v1:ticket:view:${ticket.id}`)]);
+    const conv = new FakeConversation([h.step("p1", photo("p1")), h.step("p2", photo("p2")), h.tap("rm", "v1:support:reply:rm:1"), h.tap("cancel", `v1:ticket:view:${ticket.id}`)]);
     await ticketUserReplyConversation(conv.asMyConversation(), h.entry(`v1:ticket:reply:${ticket.id}`));
-    expect(h.deletedIds(h.windowOf(2))).toEqual([h.idOf("text")]);
-    expect(h.deletedIds(h.sink)).toEqual([h.idOf("p1"), h.idOf("text")]);
-    expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id } })).toBe(0);
+    expect(removeButtons(h.edits(h.windowOf(0))[0]!, "v1:support:reply:rm:")).toEqual([]);
+    expect(removeButtons(h.edits(h.windowOf(1)).at(-1)!, "v1:support:reply:rm:")).toEqual([
+      { text: en("helpdesk.media_remove", { n: 1 }), callback_data: "v1:support:reply:rm:0" },
+      { text: en("helpdesk.media_remove", { n: 2 }), callback_data: "v1:support:reply:rm:1" },
+    ]);
+    const w = h.windowOf(2);
+    expect(h.sends(w)).toBe(0);
+    expect(h.edits(w)).toHaveLength(1);
+    expect(h.deletedIds(w)).toEqual([]);
+    const text = h.editText(h.edits(w)[0]!);
+    expect(text).toContain("1/3");
+    expect(text).not.toContain(en("helpdesk.media_item", { n: 2 }));
+    expect(removeButtons(h.edits(w)[0]!, "v1:support:reply:rm:")).toEqual([{ text: en("helpdesk.media_remove", { n: 1 }), callback_data: "v1:support:reply:rm:0" }]);
+    expect(discard).toHaveBeenCalledWith(prisma, "att-2", sample.user.id);
   });
+
+  it("a stale remove index only re-renders: 0 sends, 1 edit, no error text", async () => {
+    const ticket = await openTicket(); const h = harness();
+    const conv = new FakeConversation([h.step("p1", photo("p1")), h.tap("rm", "v1:support:reply:rm:7"), h.tap("cancel", `v1:ticket:view:${ticket.id}`)]);
+    await ticketUserReplyConversation(conv.asMyConversation(), h.entry(`v1:ticket:reply:${ticket.id}`));
+    const w = h.windowOf(1);
+    expect(h.sends(w)).toBe(0);
+    expect(h.edits(w)).toHaveLength(1);
+    expect(h.deletedIds(w)).toEqual([]);
+    expect(h.editText(h.edits(w)[0]!)).toContain("1/3");
+    expect(h.editText(h.edits(w)[0]!)).not.toContain(en("error.stale_screen"));
+    expect(discard).not.toHaveBeenCalled();
+  });
+
+  it("an album of 3 shows the uploading edit only for its first photo: edits 2,1,1, 0 sends", async () => {
+    const ticket = await openTicket(); const h = harness();
+    const parts = ["a", "b", "c"].map((id) => h.step(id, albumPhoto(id, "album-1")));
+    const conv = new FakeConversation([...parts, h.tap("cancel", `v1:ticket:view:${ticket.id}`)]);
+    await ticketUserReplyConversation(conv.asMyConversation(), h.entry(`v1:ticket:reply:${ticket.id}`));
+    const album = [0, 1, 2].map((i) => h.windowOf(i));
+    expect(album.map((w) => h.sends(w))).toEqual([0, 0, 0]);
+    expect(album.map((w) => h.edits(w).length)).toEqual([2, 1, 1]);
+    expect(album.map((w) => h.deletedIds(w))).toEqual(["a", "b", "c"].map((id) => [h.idOf(id)]));
+    expect(h.editText(h.edits(album[2]!)[0]!)).toContain("3/3");
+  });
+
+  it("with media off a photo is 0 sends, 1 edit and 1 delete of that photo", async () => {
+    vi.mocked(supportMediaAvailable).mockResolvedValueOnce(false);
+    const ticket = await openTicket(); const h = harness();
+    const conv = new FakeConversation([h.step("p1", photo("p1")), h.tap("cancel", `v1:ticket:view:${ticket.id}`)]);
+    await ticketUserReplyConversation(conv.asMyConversation(), h.entry(`v1:ticket:reply:${ticket.id}`));
+    const w = h.windowOf(0);
+    expect(h.sends(w)).toBe(0);
+    expect(h.edits(w)).toHaveLength(1);
+    expect(h.deletedIds(w)).toEqual([h.idOf("p1")]);
+    expect(h.editText(h.edits(w)[0]!)).toContain(en("helpdesk.media_unavailable"));
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  for (const exit of [
+    // Cancel turns the reply bubble into the "cancelled" screen (1 edit);
+    // /start and /cancel go Home, whose reply keyboard needs its one send.
+    { name: "the Cancel button", sends: 0, edits: 1, update: (h: ReturnType<typeof harness>, id: number) => h.tap("exit", `v1:ticket:view:${id}`) },
+    { name: "/start", sends: 1, edits: 0, update: (h: ReturnType<typeof harness>) => h.step("exit", { text: "/start" }) },
+    { name: "/cancel", sends: 1, edits: 0, update: (h: ReturnType<typeof harness>) => h.step("exit", { text: "/cancel" }) },
+  ]) {
+    it(`leaving via ${exit.name} after text and one photo deletes only the typed text`, async () => {
+      const ticket = await openTicket(); const h = harness();
+      const conv = new FakeConversation([h.step("text", { text: "Still broken" }), h.step("p1", photo("p1")), exit.update(h, ticket.id)]);
+      await ticketUserReplyConversation(conv.asMyConversation(), h.entry(`v1:ticket:reply:${ticket.id}`));
+      const w = h.windowOf(2);
+      expect({ sends: h.sends(w), edits: h.edits(w).length, deletes: h.deletedIds(w) }).toEqual({ sends: exit.sends, edits: exit.edits, deletes: [h.idOf("text")] });
+      // The photo itself was already deleted when it was stored.
+      expect(h.deletedIds(h.sink)).toEqual([h.idOf("p1"), h.idOf("text")]);
+      expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id } })).toBe(0);
+    });
+  }
 
   it("an image sent as a file gets 1 edit asking for a photo, no upload and no delete", async () => {
     const ticket = await openTicket(); const h = harness();

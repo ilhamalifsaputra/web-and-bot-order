@@ -5,10 +5,13 @@ import { supportMediaAvailable } from "@app/core/supportMedia";
 import { prisma, getTicket, addTicketMessage } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, refuseMedia } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, addRemoveButtons, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { backToMain, isPersistentLabel } from "../keyboards/customer";
 import { handleProductNumber, showMainMenu } from "../handlers/customer";
+
+/** Callback prefix of a reply bubble's "remove file n" button (0-based). */
+const REMOVE = "v1:support:reply:rm:";
 
 /** A single reply draft can contain text and up to three verified files.
  * The domain transaction owns persistence, status changes, and notification. */
@@ -31,12 +34,13 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
   let error = "";
   const attachments: string[] = [];
   const acceptedInputs: MyContext[] = [];
+  let lastAlbum: string | undefined;
   // Leaving abandons the draft: the typed reply text is obsolete scratch now
   // (photos were already deleted once stored).
   const discardDraft = async () => { for (const accepted of acceptedInputs) await consumeInput(accepted); };
   for (;;) {
-    const keyboard = new InlineKeyboard().text(t(current, "helpdesk.confirm"), "v1:support:reply:submit").row().text(t(current, "helpdesk.cancel"), `v1:ticket:view:${ticketId}`);
-    const screen = `${t(current, "ticket.ask_reply")}\n${mediaEnabled ? t(current, "helpdesk.ask_media") : ""}\n${t(current, "helpdesk.attachments")}: ${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${body ? `\n${t(current, "helpdesk.reply_ready")}` : ""}`;
+    const keyboard = addRemoveButtons(current, new InlineKeyboard(), attachments.length, (index) => `${REMOVE}${index}`).text(t(current, "helpdesk.confirm"), "v1:support:reply:submit").row().text(t(current, "helpdesk.cancel"), `v1:ticket:view:${ticketId}`);
+    const screen = `${t(current, "ticket.ask_reply")}\n${mediaEnabled ? t(current, "helpdesk.ask_media") : ""}\n${t(current, "helpdesk.attachments")}: ${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaLimitHint(current, mediaEnabled, attachments.length, "helpdesk.media_limit_hint_reply")}${body ? `\n${t(current, "helpdesk.reply_ready")}` : ""}`;
     await menuAnchor(current, `${screen}${error ? `\n\n${error}` : ""}`, keyboard);
     current = await conversation.wait();
     const action = current.callbackQuery?.data;
@@ -47,14 +51,22 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
     if (action === `v1:ticket:view:${ticketId}`) { await discardDraft(); await menuAnchor(current, t(current, "helpdesk.cancelled"), new InlineKeyboard().text(t(current, "helpdesk.view"), action)); return; }
     if (await conversation.now() - started > 30 * 60_000) { await menuAnchor(current, t(current, "helpdesk.session_expired"), backToMain(current.session.lang)); return; }
     error = "";
-    if (input) {
+    const removing = removeIndex(action ?? "", REMOVE);
+    // A stale index changes nothing; the loop re-renders the bubble either way.
+    if (removing !== null) await removeMedia(conversation, attachments, removing, info.id);
+    else if (input) {
       if (!input.trim() || input.trim().length > 2000) { error = t(current, "helpdesk.description_quality"); continue; }
       body = input.trim(); acceptedInputs.push(current);
     } else if (isMediaDocument(current)) { error = t(current, "helpdesk.send_as_photo");
     } else if (incomingMedia(current)) {
+      // An album arrives as one update per part sharing a media_group_id:
+      // only its first part shows the uploading line.
+      const group = current.message?.media_group_id;
+      const sameAlbum = group !== undefined && group === lastAlbum;
+      lastAlbum = group;
       const refused = await refuseMedia(current, mediaEnabled, attachments.length);
       if (refused) { error = refused; continue; }
-      await menuAnchor(current, `${screen}\n\n${t(current, "helpdesk.uploading_bot")}`, keyboard);
+      if (!sameAlbum) await menuAnchor(current, `${screen}\n\n${t(current, "helpdesk.uploading_bot")}`, keyboard);
       const stored = await ingestMedia(conversation, current, { ownerId: info.id, ticketId, draftId });
       if ("id" in stored) attachments.push(stored.id); else error = stored.error;
     } else if (action === "v1:support:reply:submit") {

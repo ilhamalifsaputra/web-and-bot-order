@@ -234,6 +234,13 @@ object and is not flagged.
 safe to a version that still decrypts. Do not roll back past this change after
 step 2.
 
+The bot sessions have their own rollback trap: the previous
+`prismaSessionStorage.read()` does `JSON.parse(raw)`, which succeeds on an
+envelope and returns the envelope object as the session (not "no session").
+Before any rollback past this change, run `DELETE FROM bot_sessions;`. That
+loses only in-progress navigation and checkout state, which buyers restart in
+seconds. `DOCS.md` carries the same instruction.
+
 ## Honest limits
 
 This protects against a database leak, a backup dump or a read-only SQL

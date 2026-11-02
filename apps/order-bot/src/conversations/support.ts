@@ -2,11 +2,10 @@ import { randomUUID } from "node:crypto";
 import { InlineKeyboard } from "grammy";
 import { SUPPORT_CATEGORIES, supportIssue } from "@app/core/supportCatalog";
 import { supportMediaAvailable } from "@app/core/supportMedia";
-import { botToken } from "@app/core/runtime";
-import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction, ingestSupportTelegramMedia } from "@app/db";
+import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, isMediaDocument, mediaChecklist } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, refuseMedia } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import * as ckb from "../keyboards/customer";
@@ -93,20 +92,12 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     } else if (step === "media") {
       if (action === "review") step = "review";
       else if (isMediaDocument(current)) error = t(current, "helpdesk.send_as_photo");
-      else if (current.message?.photo || current.message?.video) {
-        // Over the limit (or media off): the photo is unused, so it goes and
-        // the bubble says why. A repeat of the same text is a no-op edit.
-        if (!mediaEnabled || attachments.length >= MAX_SUPPORT_MEDIA) { await consumeInput(current); error = t(current, mediaEnabled ? "web.support_attach_error_count" : "helpdesk.media_unavailable"); continue; }
-        const photo = current.message.photo?.at(-1); const video = current.message.video; const media = photo ?? video!;
+      else if (incomingMedia(current)) {
+        const refused = await refuseMedia(current, mediaEnabled, attachments.length);
+        if (refused) { error = refused; continue; }
         await menuAnchor(current, `${screen.text}\n\n${t(current, "helpdesk.uploading_bot")}`, screen.keyboard);
-        try {
-          const file = await current.api.getFile(media.file_id);
-          const args = { ownerId: user.id, draftId, fileId: media.file_id, filePath: file.file_path ?? "", mime: photo ? "image/jpeg" : video?.mime_type ?? "video/mp4", bytes: file.file_size ?? media.file_size ?? 0 };
-          const id = await conversation.external(async () => ingestSupportTelegramMedia(prisma, { ...args, token: botToken() ?? "" })); attachments.push(id);
-        } catch { error = t(current, "helpdesk.upload_failed_bot"); }
-        // Stored in R2 (or failed): either way the chat copy is no longer
-        // needed, and removing it keeps the wizard bubble in view.
-        await consumeInput(current);
+        const stored = await ingestMedia(conversation, current, { ownerId: user.id, draftId });
+        if ("id" in stored) attachments.push(stored.id); else error = stored.error;
       }
     } else if (step === "review" && action === "submit") {
       const ticket = await conversation.external(async () => {

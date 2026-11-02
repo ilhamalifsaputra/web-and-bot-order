@@ -19,6 +19,7 @@ let app: FastifyInstance;
 let cookie: string;
 let csrf: string;
 let customerId: number;
+let adminUserId: number;
 
 beforeAll(async () => {
   await initDb();
@@ -34,6 +35,7 @@ beforeEach(async () => {
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
   const jti = newJti();
   await setSetting(prisma, sessionJtiKey(ADMIN_TG), jti);
+  adminUserId = admin.id;
   const { raw, data } = makeSession(admin.id, ADMIN_TG, jti);
   cookie = raw;
   csrf = data.csrf;
@@ -182,7 +184,7 @@ describe("POST /api/users/:userId/wallet idempotency edges", () => {
       data: {
         key: "key-1",
         endpoint: "web-admin.users.adjustWallet",
-        requestHash: hashIdempotentRequest({ userId: customerId, delta: "1000", currency: "IDR", note: "Goodwill credit" }),
+        requestHash: hashIdempotentRequest({ userId: customerId, delta: "1000", currency: "IDR", note: "Goodwill credit", adminId: adminUserId }),
         statusCode: 0,
         responseBody: "",
         pendingSince: new Date(),
@@ -208,5 +210,51 @@ describe("POST /api/users/:userId/wallet idempotency edges", () => {
 
     expect(res.statusCode).toBe(400);
     expect(await prisma.idempotencyRecord.count()).toBe(0);
+  });
+});
+
+describe("POST /api/users/:userId/wallet idempotency is per acting admin", () => {
+  const body = { delta: "1000", currency: "IDR", note: "Goodwill credit" };
+
+  /** A second admin (ADMIN_IDS holds 999 and 1000) with a session of their own. */
+  async function secondAdmin() {
+    const other = await upsertUser(prisma, { telegramId: 1000, username: "admin2", fullName: "Second Admin" });
+    const jti = newJti();
+    await setSetting(prisma, sessionJtiKey(1000), jti);
+    const { raw, data } = makeSession(other.id, 1000, jti);
+    return { cookie: raw, csrf: data.csrf };
+  }
+  function adjustAs(session: { cookie: string; csrf: string }, key: string) {
+    return app.inject({
+      method: "POST",
+      url: `/api/users/${customerId}/wallet`,
+      headers: { "content-type": "application/json", "x-csrf-token": session.csrf, "idempotency-key": key },
+      cookies: { [COOKIE]: session.cookie },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("does not replay the first admin's response to a different admin sending the same key", async () => {
+    const other = await secondAdmin();
+    const first = await adjust("shared-key", body);
+    expect(first.statusCode).toBe(200);
+
+    const second = await adjustAs(other, "shared-key");
+
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "idempotency_key_reused" });
+    expect(await moneyState()).toEqual({ walletRows: 1, postings: 1, audits: 1, idr: "1000", usdt: "0" });
+  });
+
+  it("still replays the stored response exactly once to the same admin", async () => {
+    const other = await secondAdmin();
+    const first = await adjust("shared-key", body);
+    await adjustAs(other, "shared-key");
+
+    const replay = await adjust("shared-key", body);
+
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(first.json());
+    expect(await moneyState()).toEqual({ walletRows: 1, postings: 1, audits: 1, idr: "1000", usdt: "0" });
   });
 });

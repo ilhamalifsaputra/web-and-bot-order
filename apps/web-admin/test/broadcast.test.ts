@@ -207,6 +207,51 @@ describe("POST /api/broadcast — Idempotency-Key", () => {
     await postKeyed(null, BODY);
     expect(await prisma.broadcast.count()).toBe(2);
   });
+
+  describe("per acting admin", () => {
+    /** A second admin (ADMIN_IDS holds 999 and 1000) with a session of their own. */
+    async function secondAdmin() {
+      const other = await upsertUser(prisma, { telegramId: 1000, username: "admin2", fullName: "Second Admin" });
+      const jti = newJti();
+      await setSetting(prisma, sessionJtiKey(1000), jti);
+      const { raw, data } = makeSession(other.id, 1000, jti);
+      return { cookie: raw, csrf: data.csrf };
+    }
+    function postKeyedAs(session: { cookie: string; csrf: string }, key: string) {
+      return app.inject({
+        method: "POST",
+        url: "/api/broadcast",
+        headers: { "content-type": "application/json", "x-csrf-token": session.csrf, "idempotency-key": key },
+        cookies: { [COOKIE]: session.cookie },
+        payload: JSON.stringify(BODY),
+      });
+    }
+
+    it("does not replay the first admin's broadcast to a different admin sending the same key", async () => {
+      const other = await secondAdmin();
+      const first = await postKeyed("bc-shared", BODY);
+      expect(first.statusCode).toBe(201);
+
+      const second = await postKeyedAs(other, "bc-shared");
+
+      expect(second.statusCode).toBe(409);
+      expect(second.json()).toEqual({ error: "idempotency_key_reused" });
+      expect(await prisma.broadcast.count()).toBe(1);
+      expect(await prisma.auditLog.count({ where: { action: "broadcast_enqueue" } })).toBe(1);
+    });
+
+    it("still replays the stored response exactly once to the same admin", async () => {
+      const other = await secondAdmin();
+      const first = await postKeyed("bc-shared", BODY);
+      await postKeyedAs(other, "bc-shared");
+
+      const replay = await postKeyed("bc-shared", BODY);
+
+      expect(replay.statusCode).toBe(201);
+      expect(replay.json()).toEqual(first.json());
+      expect(await prisma.broadcast.count()).toBe(1);
+    });
+  });
 });
 
 describe("POST /api/broadcast/:id/queue", () => {

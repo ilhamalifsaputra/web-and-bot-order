@@ -331,13 +331,16 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
 
     // Opt-in, as on the payment routes: no header behaves exactly as before.
     // The hash covers what was sent, not what it was read as, so a retry must
-    // be the same request rather than merely the same amount.
+    // be the same request rather than merely the same amount. It also names the
+    // acting admin: the ledger row is keyed by key + endpoint alone, so without
+    // it a second admin sending the same key would be handed the first admin's
+    // stored response (and no wallet move of their own).
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader
       ? {
           key: idempotencyKeyHeader,
           endpoint: WALLET_ADJUST_IDEMPOTENCY_ENDPOINT,
-          requestHash: hashIdempotentRequest({ userId, delta: body.delta, currency, note }),
+          requestHash: hashIdempotentRequest({ userId, delta: body.delta, currency, note, adminId: req.admin!.userId }),
         }
       : null;
 

@@ -125,13 +125,15 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
 
     // Opt-in, as on the payment routes: no header behaves exactly as before.
     // Claimed after validation, so a refused request stores nothing and a
-    // corrected retry is judged afresh.
+    // corrected retry is judged afresh. The hash names the acting admin because
+    // the ledger row is keyed by key + endpoint alone: another admin sending the
+    // same key must be refused, not handed this admin's stored response.
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
     const idem = idempotencyKeyHeader
       ? {
           key: idempotencyKeyHeader,
           endpoint: CREATE_BROADCAST_IDEMPOTENCY_ENDPOINT,
-          requestHash: hashIdempotentRequest({ message, segment, scheduleRaw, imageUrlRaw, isDraft }),
+          requestHash: hashIdempotentRequest({ message, segment, scheduleRaw, imageUrlRaw, isDraft, adminId: req.admin!.userId }),
         }
       : null;
 

@@ -145,6 +145,17 @@ export function deliveredContentAad(orderId: number): string {
   return `orders.delivered_content:${rowId(orderId)}`;
 }
 
+/** AAD for Order.customerData of one order. */
+export function customerDataAad(orderId: number): string {
+  return `orders.customer_data:${rowId(orderId)}`;
+}
+
+/** AAD for the whole serialized BotSession.data of one session key. */
+export function botSessionAad(sessionKey: string): string {
+  if (sessionKey === "") throw new CredentialEnvelopeError("A bot session credential context needs a non-empty key.");
+  return `bot_sessions.data:${sessionKey}`;
+}
+
 /** AAD for an encrypted Setting value (ENCRYPTED_SETTING_KEYS in @app/db). */
 export function settingValueAad(key: string): string {
   if (key === "") throw new CredentialEnvelopeError("A setting credential context needs a non-empty key.");
@@ -185,10 +196,11 @@ function keyForVersion(version: number): Buffer {
  * the value will be stored (use the *Aad helpers above, never a literal); it
  * is bound into a v2 envelope and ignored by v1, which is what writers emit
  * while CREDENTIAL_ENVELOPE_WRITE_V2 is off. Fresh random IV per call (AES-GCM
- * requires a unique IV per key — reuse would leak plaintext). */
-export function encryptCredentials(plaintext: string, aad: string): string {
+ * requires a unique IV per key — reuse would leak plaintext). `forceV1` writes
+ * a v1 envelope whatever the flag says, for a row whose id does not exist yet. */
+export function encryptCredentials(plaintext: string, aad: string, opts: { forceV1?: boolean } = {}): string {
   if (!aad) throw new CredentialEnvelopeError("encryptCredentials needs a non-empty context (AAD).");
-  const version = credentialEnvelopeWriteVersion();
+  const version = opts.forceV1 ? 1 : credentialEnvelopeWriteVersion();
   const key = keyForVersion(CURRENT_KEY_VERSION);
   const iv = randomBytes(IV_LENGTH_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, iv);
@@ -384,6 +396,60 @@ export function tryDecryptDeliveredContent(
     );
     return null;
   }
+}
+
+// ── Order.customerData and BotSession.data ─────────────────────────────────
+// The buyer's answers to a product's additional fields (Game ID / Zone / Server,
+// an account e-mail, free text an admin may have labelled "Password"). Same
+// envelope, key and legacy-plaintext rules as the columns above; a row written
+// before this change stays plaintext until scripts/backfill-encrypt-customer-data.ts
+// rewrites it.
+
+/** An UPDATE of an existing order's answers (the id is known, so a v2 envelope binds to it). */
+export function encryptCustomerData(plaintext: string, orderId: number): string {
+  return encryptCredentials(plaintext, customerDataAad(orderId));
+}
+
+/** The INSERT of a new order: its id does not exist yet, so the value is a v1
+ * envelope (no AAD) whatever CREDENTIAL_ENVELOPE_WRITE_V2 says. v1 decrypts
+ * without a context, and scripts/reencrypt-credentials-v2.ts binds it later. */
+export function encryptCustomerDataForInsert(plaintext: string): string {
+  return encryptCredentials(plaintext, "orders.customer_data:insert", { forceV1: true });
+}
+
+/** Fulfillment-path read: throws on an unreadable value so nothing is sent to a
+ * supplier with an empty target. Null means the order carries no answers. */
+export function decryptCustomerData(stored: string | null, orderId: number): string | null {
+  return stored === null ? null : decryptCredentials(stored, customerDataAad(orderId));
+}
+
+/** DISPLAY-ONLY twin: an unreadable value becomes null plus a warning that
+ * names the order and the error class, never the content. */
+export function tryDecryptCustomerData(
+  stored: string | null,
+  ctx: { orderId: number; purpose: string },
+): string | null {
+  if (stored === null) return null;
+  try {
+    return decryptCustomerData(stored, ctx.orderId);
+  } catch (err) {
+    if (err instanceof CredentialKeyConfigError) throw err;
+    // Only the error's name: a message could echo part of the stored value.
+    logger.warn(
+      { orderId: ctx.orderId, errorName: err instanceof Error ? err.name : typeof err },
+      `Could not decrypt the buyer's answers of order ${ctx.orderId} for ${ctx.purpose}; they are shown as empty there. They are corrupted, tampered with, or were encrypted under a different key.`,
+    );
+    return null;
+  }
+}
+
+/** The grammY session JSON of one chat (contains in-flight checkout answers). */
+export function encryptBotSession(plaintext: string, sessionKey: string): string {
+  return encryptCredentials(plaintext, botSessionAad(sessionKey));
+}
+
+export function decryptBotSession(stored: string, sessionKey: string): string {
+  return decryptCredentials(stored, botSessionAad(sessionKey));
 }
 
 // ── Stock traceability hardening plan, Fase 2 ──────────────────────────────

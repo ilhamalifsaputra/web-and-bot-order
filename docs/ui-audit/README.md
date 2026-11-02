@@ -25,14 +25,34 @@ Storefront and Web Admin only. The Telegram bot is out of scope.
 
 ## Status in one paragraph
 
-27 findings are Fixed on this branch with commits and targeted tests, 33 are
-Open with recommendations, and 2 are Not Tested: the admin ticket upload after
-the owner's R2 CORS change (UPL-01) and the full test suite (TEST-01). No
-finding is marked Verified, because no runtime browser reproduction was run on
-this branch: the Playwright MCP server failed to connect in the audit session,
-and the later visual checks were static plus jsdom tests. All audits were
-static code traces; "Needs reproduction" in a finding means the result depends
-on runtime behaviour nobody observed.
+65 findings: 24 Fixed (commits and targeted tests), 5 Verified (Fixed and also
+exercised in a real browser), 35 Open with recommendations, and 1 Not Tested:
+the admin ticket upload after the owner's R2 CORS change (UPL-01, awaiting the
+owner). The audits themselves were static code traces; "Needs reproduction" in
+a finding means the result depends on runtime behaviour nobody observed.
+
+**Browser verification (2026-11-02, HEAD `e3ddb406`).** Six scenarios ran in
+headless Chromium against built bundles with dummy data in a disposable
+Postgres schema (dropped afterwards): admin first-load 502 on Orders keeps the
+search box and recovers on Retry (ADM-M5); admin 401 plus window-focus refetch
+on Edit Denomination keeps the typed value, shows exactly one session banner
+(ADM-H3); a storefront checkout whose response was dropped leaves exactly one
+order and one debit, shows the unknown-outcome notice with no Place order
+button, and the same-key retry opens that order (SF-H1); a storefront
+`/account/orders` 500 shows the error, not a skeleton (SF-H3); an aborted lazy
+chunk shows the boundary fallback with the header intact (SF-H6). The
+reload-once-per-window guard for a stale deploy was **not** exercised there.
+Limits: headless Chromium, dummy data, one viewport, no screen reader, no R2,
+no real payment gateway. Everything not listed stays Fixed (code and tests
+only), Open or Not Tested.
+
+**Full gate at `e3ddb406`:** `pnpm doctor:full` 0/0, `doctor:bugs` clean,
+`pnpm typecheck` exit 0, pretest checks exit 0, full vitest 715 files /
+13,823 tests with 1 failure: `packages/outbox-dispatcher/src/dispatcher.test.ts`
+"still sends the ORDER_DELIVERED_DM when the flush hook hangs past its bound",
+a timing test under load in a file this branch does not touch; re-run alone it
+passes 101/101. The former finding TEST-01 ("full suite not run") was removed
+because it was a gate item, not a defect, and the gate has now run.
 
 ## Decisions the owner still owns
 
@@ -50,7 +70,7 @@ on runtime behaviour nobody observed.
 
 Open Medium/Low items from both audits (ADM-M1..M15 open ones, SF-M2..M11,
 SF-L1, SF-L2, VIS-08..VIS-11), the DigiflazzSync SSE status that can skeleton
-forever (ADM-M15), and the full gate `pnpm typecheck && pnpm test` (Task 11).
+forever (ADM-M15), .
 
 ## Source material
 

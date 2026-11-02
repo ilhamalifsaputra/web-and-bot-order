@@ -6,7 +6,9 @@ nothing is shared between the apps and no dependency was added.
 
 **Runtime:** Not Tested. The states changed here only render when a request
 fails, which needs request mocking against built bundles and a seeded
-database; that browser run was not done. Every change below is covered by
+database. The 2026-11-02 browser run covered failure behaviour (see
+TEST_COVERAGE.md), not the icons and tones, so the visual changes are still
+checked by jsdom only. Every change below is covered by
 jsdom tests that assert the icon, its `aria-hidden`, the tone classes and the
 roles.
 

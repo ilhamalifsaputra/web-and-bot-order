@@ -12,8 +12,21 @@ reports; each task ran its touched files with `--maxWorkers=2`.
 | `pnpm doctor:full` | 0 errors, 0 warnings on both clients, last on 2026-11-02 (704 files) |
 | `pnpm doctor:bugs` | Clean |
 | Both client suites, run once | 272 files / 2892 tests passed (after the loading work, `45b3f03e`) |
-| Full `pnpm typecheck && pnpm test` | **Not run** (TEST-01). Pending the final gate (Task 11) |
-| Real browser / E2E / responsive / contrast | **Not run** |
+| Full gate at `e3ddb406`: `pnpm typecheck` | Exit 0; pretest checks exit 0; `doctor:full` 0 errors / 0 warnings; `doctor:bugs` clean |
+| Full gate at `e3ddb406`: full vitest (`--maxWorkers=2`, about 83 min) | 715 files / 13,823 tests, 1 failed: `packages/outbox-dispatcher/src/dispatcher.test.ts` "still sends the ORDER_DELIVERED_DM when the flush hook hangs past its bound" (timing test under load; file untouched by this branch; re-run alone 101/101 pass) |
+| Real browser (2026-11-02, headless Chromium, built bundles, dummy data in a disposable Postgres schema, one viewport) | 6 manual Playwright scenarios, listed below; no automated E2E suite |
+| Screen reader, keyboard walk-through, contrast, other viewports, real R2, real payment gateway | **Not run** |
+
+## Browser scenarios (observed, not jsdom)
+
+| # | Scenario | Result | Finding |
+|---|---|---|---|
+| 1 | Admin `/orders`, GET `/api/orders` answers 502 on first load | "Failed to load orders." alert + Retry, search box present, no "No orders" text; 4 fetches before Retry (default 5xx retries), 5th after Retry loads the list and clears the alert | ADM-M5 |
+| 2 | Admin Edit Denomination, price 12345 typed, then all `/api` calls answer 401 and a window-focus refetch fires | Typed value kept, no full-page error, exactly one session banner with Log in (new tab) and Reload; 6 API calls. A first attempt with a non-bubbling visibilitychange triggered no request and was discarded | ADM-H3 |
+| 3 | Admin login with a dummy admin | Worked | — |
+| 4 | Storefront checkout (signed-in dummy shopper, wallet), POST `/api/v1/checkout` response dropped | 1 order, wallet 1,000,000 to 995,000, 1 stock item SOLD; unknown-outcome notice, no Place order button; Try again reused the same Idempotency-Key, got 201 and opened that order; DB still 1 order, wallet 995,000, SOLD=1 AVAILABLE=3 | SF-H1 |
+| 5 | Storefront `/account/orders`, GET answers 500 on first load | Error with Try again, no aria-busy skeleton left; Retry clears it | SF-H3 (one of ten routes) |
+| 6 | Storefront lazy chunk `CartPage-*.js` aborted | Boundary alert with Reload page, header still rendered, URL stays `/cart`. The reload-once stale-deploy guard was not exercised | SF-H6 (fallback only) |
 
 ## Tests added by area
 

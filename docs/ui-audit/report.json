@@ -1,16 +1,16 @@
 {
   "audit_name": "Trustance Core UI States & Interaction Reliability Audit",
   "repository": "web-and-bot-order (branch worktree-ui-states-audit)",
-  "commit": "92ca9cc7",
+  "commit": "e3ddb406",
   "audit_date": "2026-11-02",
   "status": "in_progress",
   "summary": {
     "routes_discovered": 78,
     "modules_discovered": 14,
-    "findings_total": 66,
+    "findings_total": 65,
     "critical": 2,
     "high": 15,
-    "medium": 33,
+    "medium": 32,
     "low": 16
   },
   "coverage": [
@@ -18,13 +18,13 @@
       "surface": "storefront",
       "routes": 35,
       "audit": "static code trace (docs/ui-audit/STOREFRONT_UI_STATES_AUDIT.md)",
-      "browser": "not_run"
+      "browser": "partial (headless Chromium, dummy data: 2 admin and 3 storefront scenarios, see FINDINGS.md Verified entries)"
     },
     {
       "surface": "web-admin",
       "routes": 43,
       "audit": "static code trace (docs/ui-audit/WEB_ADMIN_UI_STATES_AUDIT.md)",
-      "browser": "not_run"
+      "browser": "partial (headless Chromium, dummy data: 2 admin and 3 storefront scenarios, see FINDINGS.md Verified entries)"
     },
     {
       "surface": "ticket-attachments",
@@ -142,7 +142,7 @@
       "id": "ADM-H3",
       "severity": "High",
       "title": "Session expiry had no handling; a failed refetch unmounted drafts",
-      "status": "Fixed",
+      "status": "Verified",
       "confidence": "Confirmed",
       "surface": "web-admin",
       "module": "Auth / session",
@@ -275,7 +275,7 @@
       "id": "ADM-M5",
       "severity": "Medium",
       "title": "List page errors hid filters and had no Retry",
-      "status": "Fixed",
+      "status": "Verified",
       "confidence": "Confirmed",
       "surface": "web-admin",
       "module": "Lists",
@@ -493,7 +493,7 @@
       "id": "SF-H1",
       "severity": "High",
       "title": "Lost checkout response turned into an empty cart and lost the order",
-      "status": "Fixed",
+      "status": "Verified",
       "confidence": "Confirmed",
       "surface": "storefront",
       "module": "Checkout",
@@ -531,7 +531,7 @@
       "id": "SF-H3",
       "severity": "High",
       "title": "Failed first loads showed endless skeletons on 11 routes",
-      "status": "Fixed",
+      "status": "Verified",
       "confidence": "Confirmed",
       "surface": "storefront",
       "module": "Catalog / account",
@@ -582,7 +582,7 @@
       "id": "SF-H6",
       "severity": "High",
       "title": "No ErrorBoundary: a stale chunk or render throw whitened the app",
-      "status": "Fixed",
+      "status": "Verified",
       "confidence": "Confirmed",
       "surface": "storefront",
       "module": "App shell",
@@ -1032,21 +1032,6 @@
       "commits": []
     },
     {
-      "id": "TEST-01",
-      "severity": "Medium",
-      "title": "Full test suite not yet run on this branch",
-      "status": "Not Tested",
-      "confidence": "Confirmed",
-      "surface": "both",
-      "module": "All",
-      "route": "-",
-      "component": "-",
-      "file": "-",
-      "line": "-",
-      "state": "-",
-      "commits": []
-    },
-    {
       "id": "ADM-M16",
       "severity": "Medium",
       "title": "A single Deliver retried after a lost response reports not pending verification although it was delivered",
@@ -1112,12 +1097,12 @@
     }
   ],
   "tests": {
-    "typecheck": "passed (packages touched + tsconfig.test.json; root pnpm typecheck not_run)",
-    "lint": "passed (pnpm lint)",
-    "unit": "passed (touched files and both client suites; full pnpm test not_run)",
-    "integration": "passed (touched server route test files only)",
-    "e2e": "not_run",
-    "accessibility": "partial (jsdom role/aria assertions only)",
-    "responsive": "not_run"
+    "typecheck": "passed (pnpm typecheck exit 0 at e3ddb406)",
+    "lint": "passed (pnpm lint; pretest checks exit 0)",
+    "unit": "passed with one timing flake (full vitest at e3ddb406: 715 files / 13,823 tests, 1 failed: packages/outbox-dispatcher/src/dispatcher.test.ts flush-hook-hang test, file untouched by this branch, re-run alone 101/101)",
+    "integration": "passed (server route tests are part of the full run above)",
+    "e2e": "partial (6 manual Playwright scenarios in headless Chromium; no automated E2E suite)",
+    "accessibility": "partial (jsdom role/aria assertions; no screen reader or keyboard walk-through)",
+    "responsive": "not_run (browser checks used a single viewport)"
   }
 }

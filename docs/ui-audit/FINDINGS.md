@@ -1,14 +1,16 @@
 # Findings
 
-Branch `worktree-ui-states-audit`, head `92ca9cc7` (base `2ebb5de0`). Template and
+Branch `worktree-ui-states-audit`, head `e3ddb406` (base `2ebb5de0`). Template and
 severity scale from the audit spec (sections 9 and 10). Machine-readable copy:
 [report.json](report.json); the two must match.
 
 **Status meanings used here**
 - **Fixed**: code changed on this branch (commit listed) and the targeted tests
   pass. Not checked in a real browser.
-- **Verified**: confirmed by a runtime reproduction. No finding has this status:
-  no browser run happened on this branch.
+- **Verified**: a Fixed finding that was also exercised in a real browser on
+  2026-11-02 (headless Chromium, built bundles, dummy data in a disposable
+  schema, one viewport, no screen reader, no R2, no real payment gateway). The
+  browser note is in the finding's Test case section; its commit list is unchanged.
 - **Open**: not fixed; a recommendation is given.
 - **Accepted Risk**: owner accepted it. None yet.
 - **Not Tested**: the outcome depends on a check that has not been run.
@@ -17,17 +19,17 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 
 | Status | Count |
 |---|---|
-| Fixed | 29 |
-| Verified | 0 |
+| Fixed | 24 |
+| Verified | 5 |
 | Open | 35 |
 | Accepted Risk | 0 |
-| Not Tested | 2 |
+| Not Tested | 1 |
 
 | Severity | Count |
 |---|---|
 | Critical | 2 |
 | High | 15 |
-| Medium | 33 |
+| Medium | 32 |
 | Low | 16 |
 
 ## Index
@@ -40,7 +42,7 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 | ADM-C2 | Critical | Open | A settlement batch can be recorded twice after a lost response |
 | ADM-H1 | High | Fixed | Readonly admins read full order data through tickets and order lists |
 | ADM-H2 | High | Fixed | Support CSV export and Telegram ticket photos were open to readonly |
-| ADM-H3 | High | Fixed | Session expiry had no handling; a failed refetch unmounted drafts |
+| ADM-H3 | High | Verified | Session expiry had no handling; a failed refetch unmounted drafts |
 | ADM-H4 | High | Fixed | Broadcast could be sent twice |
 | ADM-H5 | High | Fixed | One-click Deliver and bulk Mark Delivered had no confirmation |
 | ADM-H6 | High | Fixed | Bulk actions showed a green toast when items failed |
@@ -48,7 +50,7 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 | ADM-M2 | Medium | Open | Offline list pages can show a false empty state |
 | ADM-M3 | Medium | Open | No request timeout in the admin API client |
 | ADM-M4 | Medium | Open | Settlements, Audit and Wallet ledger show an error line beside an empty state |
-| ADM-M5 | Medium | Fixed | List page errors hid filters and had no Retry |
+| ADM-M5 | Medium | Verified | List page errors hid filters and had no Retry |
 | ADM-M6 | Medium | Open | No permission-denied state in the admin SPA |
 | ADM-M7 | Medium | Open | Order detail actions give little success feedback; errors render off-screen |
 | ADM-M8 | Medium | Open | Support-role admins get an empty assignee list |
@@ -66,12 +68,12 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 | ADM-L2 | Low | Open | Readonly ticket photo thumbnails render as broken images |
 | ADM-L3 | Low | Open | Wallet adjustments have no rate limit |
 | ADM-L4 | Low | Fixed | A pending button lost a leading label component and measured layout on every commit |
-| SF-H1 | High | Fixed | Lost checkout response turned into an empty cart and lost the order |
+| SF-H1 | High | Verified | Lost checkout response turned into an empty cart and lost the order |
 | SF-H2 | High | Fixed | Session ending mid-checkout showed a wrong email error and a dead end |
-| SF-H3 | High | Fixed | Failed first loads showed endless skeletons on 11 routes |
+| SF-H3 | High | Verified | Failed first loads showed endless skeletons on 11 routes |
 | SF-H4 | High | Fixed | Order and ticket detail went blank on any refetch error |
 | SF-H5 | High | Fixed | Order-recovery sessions were stuck on skeletons |
-| SF-H6 | High | Fixed | No ErrorBoundary: a stale chunk or render throw whitened the app |
+| SF-H6 | High | Verified | No ErrorBoundary: a stale chunk or render throw whitened the app |
 | SF-H7 | High | Fixed | Cancel reported success when the server refused it |
 | SF-M1 | Medium | Fixed | Cancel failure was silent |
 | SF-M2 | Medium | Open | Pay poll failures are invisible |
@@ -99,7 +101,6 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 | VIS-10 | Low | Open | Admin filtered-empty states reuse the first-time-empty icon |
 | VIS-11 | Low | Open | Small admin empty states (dashboard widgets, sub-tables) have no icon |
 | SEC-01 | High | Open | Order.customerData is stored as plaintext |
-| TEST-01 | Medium | Not Tested | Full test suite not yet run on this branch |
 
 
 ### [UPL-01] [High] Admin ticket image/video upload fails at the browser PUT to R2
@@ -314,7 +315,7 @@ Readonly export link lands on a plain-text 403 page.
 
 ### [ADM-H3] [High] Session expiry had no handling; a failed refetch unmounted drafts
 
-- Status: Fixed
+- Status: Verified
 - Commit: `f848a5ef`, `b65c8a1b`, `dcd14aff`, `a8e3bc2a`, `aeb594b8`
 - Confidence: Confirmed
 - Surface: web-admin
@@ -343,6 +344,8 @@ Done: central 401 flag, no retry on 401/403, SessionExpiredBanner, QueryErrorNot
 
 **Test case**
 api/sessionExpiry.test.tsx (21), TicketDetail/OrderDetail refetch tests, first-load tests on 9 list pages, and a first-load plus a typed-draft-survives-a-failed-refetch test on Edit Denomination (typed price and cost), Catalog (pasted CSV), Product Detail (name draft), Stock Product (credentials), Categories (New category name), Admins (Telegram ID) and Pricing (markup).
+
+Browser, 2026-11-02 (HEAD e3ddb406): on Edit Denomination (/catalog/1/denominations/1/edit) the price 12345 was typed, then every /api call answered 401 and a window-focus refetch fired (6 API calls). The typed value survived, no full-page error appeared, and exactly one banner showed "Your session has ended. Log in again in a new tab; what you have typed here stays on this page." with a Log in link (href=/login, target=_blank) and Reload. A first attempt with a non-bubbling visibilitychange event triggered no request and was discarded as inconclusive. Ticket reply, order and wallet forms were not exercised in a browser. Environment: headless Chromium against built bundles, dummy data in a disposable Postgres schema (dropped afterwards), one viewport, no screen reader, no R2 and no real payment gateway.
 
 **Regression risk**
 Shared notice on many pages.
@@ -594,7 +597,7 @@ Low.
 
 ### [ADM-M5] [Medium] List page errors hid filters and had no Retry
 
-- Status: Fixed
+- Status: Verified
 - Commit: `f848a5ef`, `b65c8a1b`, `dcd14aff`
 - Confidence: Confirmed
 - Surface: web-admin
@@ -623,6 +626,8 @@ Done.
 
 **Test case**
 First-load and refresh tests on Orders, Support, Users, Reviews, Payments, Vouchers, Tasks, Stock, FlashSales.
+
+Browser, 2026-11-02 (HEAD e3ddb406): /orders with GET /api/orders answered 502 on first load showed the alert "Failed to load orders." with Retry, the search box still present and no "No orders" text. After Retry (one more fetch; four fetches before it are the default 5xx retries) the list loaded and the alert was gone. Only the Orders list page was exercised; the other eight list pages are covered by jsdom tests. Environment: headless Chromium against built bundles, dummy data in a disposable Postgres schema (dropped afterwards), one viewport, no screen reader, no R2 and no real payment gateway.
 
 **Regression risk**
 Stat cards show Unavailable.
@@ -1224,7 +1229,7 @@ Low; a custom icon component not named ...Icon keeps its place next to the spinn
 
 ### [SF-H1] [High] Lost checkout response turned into an empty cart and lost the order
 
-- Status: Fixed
+- Status: Verified
 - Commit: `b8bb1776`, `2d5ae303`, `b42abd66`
 - Confidence: Confirmed
 - Surface: storefront
@@ -1253,6 +1258,8 @@ Done.
 
 **Test case**
 CheckoutPage.test.tsx (same key and body on retry), idempotency.test.ts.
+
+Browser, 2026-11-02 (HEAD e3ddb406): signed-in dummy shopper, wallet payment. POST /api/v1/checkout reached the real server and its response was dropped. Server state: one order, wallet 1,000,000 -> 995,000, one stock item SOLD. The UI showed "We couldn't confirm your order ... It may have been placed", the Place order button was absent, and only View my orders / Try again / Start over remained. Try again sent the same Idempotency-Key as the first attempt, the server answered 201 and the page moved to that order's detail. Afterwards the database still held exactly one order, the wallet was still 995,000 and stock was SOLD=1, AVAILABLE=3: no duplicate order and no double debit. The guest variant was not exercised. Environment: headless Chromium against built bundles, dummy data in a disposable Postgres schema (dropped afterwards), one viewport, no screen reader, no R2 and no real payment gateway.
 
 **Regression risk**
 Guest edited retry can still create a second order (pre-existing, SF-M10).
@@ -1294,7 +1301,7 @@ Client and server ship together.
 
 ### [SF-H3] [High] Failed first loads showed endless skeletons on 11 routes
 
-- Status: Fixed
+- Status: Verified
 - Commit: `9539336f`
 - Confidence: Confirmed
 - Surface: storefront
@@ -1323,6 +1330,8 @@ Done.
 
 **Test case**
 firstLoadFailure.test (10 routes, exact fetch counts).
+
+Browser, 2026-11-02 (HEAD e3ddb406): /account/orders with GET answered 500 on first load showed "Something went wrong ... Try again" with no aria-busy skeleton left; after Retry the alert was gone. Only this one of the ten affected routes was exercised in a browser; the rest are covered by the firstLoadFailure jsdom test. Environment: headless Chromium against built bundles, dummy data in a disposable Postgres schema (dropped afterwards), one viewport, no screen reader, no R2 and no real payment gateway.
 
 **Regression risk**
 Low.
@@ -1399,7 +1408,7 @@ Search overlay not covered (SF-M7).
 
 ### [SF-H6] [High] No ErrorBoundary: a stale chunk or render throw whitened the app
 
-- Status: Fixed
+- Status: Verified
 - Commit: `8a12842c`
 - Confidence: Confirmed
 - Surface: storefront
@@ -1428,6 +1437,8 @@ Done.
 
 **Test case**
 ErrorBoundary.test, chunkReload.test, randomId.test.
+
+Browser, 2026-11-02 (HEAD e3ddb406): the lazy chunk CartPage-*.js was aborted. The page showed the boundary alert "Something went wrong. This page stopped working. Reloading usually fixes it." with a Reload page button, the site header still rendered (not a white page), and the URL stayed /cart. Only the boundary fallback was exercised: the chunk was aborted, so the reload-once-per-window guard for a stale deploy was NOT exercised (jsdom tests only). Environment: headless Chromium against built bundles, dummy data in a disposable Postgres schema (dropped afterwards), one viewport, no screen reader, no R2 and no real payment gateway.
 
 **Regression risk**
 Low.
@@ -2376,38 +2387,3 @@ Round-trip and readonly projection tests.
 
 **Regression risk**
 Schema/data migration; out of this branch.
-
-### [TEST-01] [Medium] Full test suite not yet run on this branch
-
-- Status: Not Tested
-- Commit: -
-- Confidence: Confirmed
-- Surface: both
-- Module: All
-- Route: -
-- Component/Function: -
-- File: -
-- Line: -
-- State: -
-- Trigger/Precondition: -
-
-**Actual behavior**
-Only touched files and both client suites ran; the full gate (pnpm typecheck && pnpm test) is pending (Task 11).
-
-**Expected behavior**
-Full gate green before merge.
-
-**Impact**
-Unknown regressions elsewhere.
-
-**Root cause**
-Machine memory limits; deferred to the final gate.
-
-**Recommended fix**
-Run the full gate.
-
-**Test case**
-pnpm typecheck && pnpm test.
-
-**Regression risk**
--

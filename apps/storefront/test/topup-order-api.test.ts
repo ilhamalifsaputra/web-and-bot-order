@@ -17,6 +17,7 @@
 // Pattern: guest-checkout-api.test.ts — app.inject() against an isolated temp DB.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
@@ -667,7 +668,7 @@ describe("POST /api/v1/topup/order — signed-in gateway branch", () => {
     });
     expect(ok.statusCode).toBe(201);
     const order = await prisma.order.findFirst({ where: { orderCode: ok.json().order_code } });
-    expect(JSON.parse(order!.customerData!)).toEqual([{ user_id: "1234567" }]);
+    expect(JSON.parse(decryptCustomerData(order!.customerData, order!.id)!)).toEqual([{ user_id: "1234567" }]);
   });
 
   it("enforces the same MAX_PENDING_ORDERS cap the cart-based checkout does", async () => {

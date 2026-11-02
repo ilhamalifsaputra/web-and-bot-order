@@ -8,6 +8,7 @@
 // web-admin dashboard SPA).
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 import { readdir } from "node:fs/promises";
 // PayDisini's createTransaction hits a real gateway HTTP endpoint — mock it
 // for the PAYDISINI pay-view test below (mirrors the mock that lived in
@@ -2079,7 +2080,7 @@ describe("POST /api/v1/checkout — manual_with_info customer_data revalidation"
     });
     expect(res.statusCode).toBe(201);
     const order = await getOrderByCode(prisma, res.json().order_code);
-    expect(JSON.parse(order!.customerData!)).toEqual([{ game_id: "player1" }, { game_id: "player2" }]);
+    expect(JSON.parse(decryptCustomerData(order!.customerData, order!.id)!)).toEqual([{ game_id: "player1" }, { game_id: "player2" }]);
   });
 
   // Final whole-branch review: POST /cart's homogeneity guard only fires on
@@ -3126,7 +3127,7 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     });
     expect(res.statusCode).toBe(200);
     const stored = await prisma.order.findUniqueOrThrow({ where: { orderCode } });
-    expect(JSON.parse(stored.customerData!)).toEqual([{ game_id: "fixed-id" }]);
+    expect(JSON.parse(decryptCustomerData(stored.customerData, stored.id)!)).toEqual([{ game_id: "fixed-id" }]);
   });
 
   it("GET /account/reviews still lists a delivered order whose delivered_content is unreadable", async () => {

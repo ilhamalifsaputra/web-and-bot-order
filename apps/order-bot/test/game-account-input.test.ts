@@ -7,6 +7,7 @@ import "./setup-db";
  * the per-field wizard and go straight to the payment screen, exactly as before.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 
 const kokinpayMock = vi.hoisted(() => ({ checkGameNickname: vi.fn() }));
 vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
@@ -1194,7 +1195,7 @@ describe("a pay tap after an admin changed the account input settings", () => {
 
       const orders = await prisma.order.findMany();
       expect(orders).toHaveLength(1);
-      expect(orders[0]!.customerData).toBe(JSON.stringify(DATA));
+      expect(decryptCustomerData(orders[0]!.customerData, orders[0]!.id)).toBe(JSON.stringify(DATA));
       expect(calls(sink, "conversation.enter")).toHaveLength(0);
     });
 
@@ -1231,7 +1232,7 @@ describe("a pay tap after an admin changed the account input settings", () => {
 
       const orders = await prisma.order.findMany();
       expect(orders).toHaveLength(1);
-      expect(orders[0]!.customerData).toBe(JSON.stringify(DATA));
+      expect(decryptCustomerData(orders[0]!.customerData, orders[0]!.id)).toBe(JSON.stringify(DATA));
     });
   });
 

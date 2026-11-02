@@ -988,13 +988,15 @@ describe("GET /api/support/:ticketId linked order by role", () => {
       };
       expect(supportBody).toEqual(superAdmin.json());
       expect(supportBody.ticket.order).toMatchObject({
-        customerData: SENTINEL,
         adminNote: PROTECTED_ORDER_FIELDS.adminNote,
         paymentRef: PROTECTED_ORDER_FIELDS.paymentRef,
       });
       expect(supportBody.ticket.order.items[0]?.costSnapshot).toBe("987654.32");
       expect(supportBody.ticket.order.items[0]?.product.costPrice).toBe("987654.32");
-      expect(supportBody.customer.recentOrders[0]).toMatchObject({ customerData: SENTINEL });
+      // The buyer's answers are withheld from ticket and list rows for every role (encrypted at rest;
+      // only the order detail route reads them, through getOrder).
+      expect(supportBody.ticket.order).not.toHaveProperty("customerData");
+      expect(supportBody.customer.recentOrders[0]).not.toHaveProperty("customerData");
       // Already withheld from every role by withoutDeliveredContent.
       expect(support.body).not.toContain(PROTECTED_ORDER_FIELDS.deliveredContent);
     },
@@ -1021,7 +1023,8 @@ describe("readonly order rows on the list routes", () => {
     digiflazzFailureDetail: `failure-${SENTINEL}`,
     accountDiagnosticNote: `diagnostic-${SENTINEL}`,
   };
-  const OLD_FIELDS = { customerData: SENTINEL, adminNote: PROTECTED.adminNote, paymentProofFileId: PROTECTED.paymentProofFileId };
+  // customerData is not here: list rows drop the buyer's answers for every role (see withoutDeliveredContent).
+  const OLD_FIELDS = { adminNote: PROTECTED.adminNote, paymentProofFileId: PROTECTED.paymentProofFileId };
 
   async function seedDenomination(group: "PREMIUM_APPS" | "GAME_TOPUP") {
     const category = await prisma.category.create({ data: { name: group, slug: group.toLowerCase(), group } });
@@ -1103,6 +1106,7 @@ describe("readonly order rows on the list routes", () => {
       ...OLD_FIELDS,
       items: [{ costSnapshot: COST, product: { costPrice: COST } }],
     });
+    expect(support.orders[0]).not.toHaveProperty("customerData");
   });
 
   it.each(["PREMIUM_APPS", "GAME_TOPUP"] as const)("GET /api/users/:userId gives readonly only the order summary for a %s order", async (group) => {
@@ -1127,6 +1131,7 @@ describe("readonly order rows on the list routes", () => {
     const superAdmin = (await asRole("super", url)).json();
     expect(support).toEqual(superAdmin);
     expect(support.orders[0]).toMatchObject({ ...OLD_FIELDS, items: [{ costSnapshot: COST }] });
+    expect(support.orders[0]).not.toHaveProperty("customerData");
   });
 
   async function seedPayments() {
@@ -1182,6 +1187,8 @@ describe("readonly order rows on the list routes", () => {
     expect(stable(support)).toEqual(stable(superAdmin));
     expect(support.underpaid[0]).toMatchObject({ ...OLD_FIELDS, items: [{ costSnapshot: COST }] });
     expect(support.pendingInternal[0]).toMatchObject(OLD_FIELDS);
+    expect(support.underpaid[0]).not.toHaveProperty("customerData");
+    expect(support.pendingInternal[0]).not.toHaveProperty("customerData");
   });
 });
 

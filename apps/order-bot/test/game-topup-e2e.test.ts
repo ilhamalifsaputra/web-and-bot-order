@@ -41,6 +41,7 @@ import "./setup-db";
  * assert message CONTENT, never `parse_mode`.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 
 vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "1000";
@@ -232,7 +233,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     expect(order).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentMethod: "TOKOPAY", kind: OrderKind.PRODUCT });
     // The price lock held: the order total is the total the review quoted.
     expect(order.totalAmount.toString()).toBe("58000");
-    expect(JSON.parse(order.customerData!)).toEqual([{ user_id: "123456789", zone_id: "1234" }]);
+    expect(JSON.parse(decryptCustomerData(order.customerData, order.id)!)).toEqual([{ user_id: "123456789", zone_id: "1234" }]);
     expect(tokopayMock.createTransaction).toHaveBeenCalledTimes(1);
     expect(tg.screenText()).toContain(order.orderCode);
 

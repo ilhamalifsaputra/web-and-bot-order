@@ -2,6 +2,7 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 
 vi.mock("@app/core/payments/tokopay", async (orig) => ({
   ...(await orig<typeof import("@app/core/payments/tokopay")>()),
@@ -718,7 +719,7 @@ describe("buyNowTokopay — customerData threading", () => {
 
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
-    expect(orders[0]!.customerData).toBe(customerData);
+    expect(decryptCustomerData(orders[0]!.customerData, orders[0]!.id)).toBe(customerData);
     expect(orders[0]!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect(ctx.session.scratch.customerData).toBeUndefined();
   });

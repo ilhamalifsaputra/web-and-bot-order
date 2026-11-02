@@ -1,32 +1,64 @@
 import { randomUUID } from "node:crypto";
 import { ValidationError } from "@app/core/errors";
+import { logger } from "@app/core/logger";
 import { supportMediaConfigured, resolveSupportBucket, supportMediaType, supportObjectUrl, inspectSupportObject } from "@app/core/supportMedia";
 import type { Db } from "./_types";
 
 let telegramStreams = 0;
-/** Two live streams per process, with backpressure and no permanent disk writes. */
+/** Two live transfers per process, bounded in memory, no disk writes.
+ * The Telegram body is read into a Buffer capped at the declared size
+ * (at most 5 MB per image / 20 MB per video from supportMediaLimits) so the
+ * R2 presigned PUT carries a Content-Length; R2 refuses chunked uploads
+ * with 411 MissingContentLength. The buffer is dropped when this returns. */
 export async function ingestSupportTelegramMedia(db: Db, args: { ownerId: number; draftId: string; ticketId?: number; fileId: string; filePath: string; token: string; mime: string; bytes: number }) {
   if (telegramStreams >= 2) throw new ValidationError("helpdesk.upload_failed");
   supportMediaType(args.mime, args.bytes);
   if (!/^[a-zA-Z0-9_/.-]+$/.test(args.filePath) || args.filePath.includes("..")) throw new ValidationError("web.support_attach_error_type");
   telegramStreams++;
   let id: string | undefined;
+  let stage: "telegram_download" | "r2_upload" | "verify" | "metadata" = "telegram_download";
+  let status: number | undefined;
   try {
     const upload = await createSupportUpload(db, { ownerId: args.ownerId, draftId: args.draftId, ticketId: args.ticketId, filename: `evidence.${args.mime === "video/mp4" ? "mp4" : "jpg"}`, mime: args.mime, bytes: args.bytes });
     id = upload.id;
     const source = await fetch(`https://api.telegram.org/file/bot${args.token}/${args.filePath}`, { signal: AbortSignal.timeout(90_000) });
+    status = source.status;
     if (!source.ok || !source.body) throw new Error("Media source unavailable");
+    const chunks: Uint8Array[] = [];
     let count = 0;
-    const bounded = source.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, controller) { count += chunk.byteLength; if (count > args.bytes) throw new Error("Media limit exceeded"); controller.enqueue(chunk); } }));
-    const result = await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bounded, duplex: "half", signal: AbortSignal.timeout(90_000) } as RequestInit & { duplex: string });
-    if (!result.ok || count !== args.bytes) throw new Error("Media transfer failed");
+    const reader = source.body.getReader();
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        count += next.value.byteLength;
+        if (count > args.bytes) throw new Error("Media limit exceeded");
+        chunks.push(next.value);
+      }
+    } finally { await reader.cancel().catch(() => undefined); }
+    if (count !== args.bytes) throw new Error("Media size mismatch");
+    const buffer = Buffer.concat(chunks, count);
+    // Drop the chunk references so only one copy is held during the PUT.
+    chunks.length = 0;
+    stage = "r2_upload"; status = undefined;
+    const result = await fetch(upload.url, { method: "PUT", headers: upload.headers, body: buffer, signal: AbortSignal.timeout(90_000) });
+    status = result.status;
+    if (!result.ok) throw new Error("Media transfer failed");
+    stage = "verify"; status = undefined;
     await finalizeSupportUpload(db, id, args.ownerId);
+    stage = "metadata";
     await db.supportAttachment.update({ where: { id }, data: { telegramFileId: args.fileId, telegramBotId: args.token.split(":")[0] } });
     return id;
-  } catch {
+  } catch (err) {
     if (id) await db.supportAttachment.updateMany({ where: { id, attachedAt: null }, data: { status: "REJECTED", expiresAt: new Date() } });
     // Network errors may contain Telegram URLs with the bot token. Never
-    // propagate that error to the logger, caller, notification, or audit.
+    // propagate that error to the logger, caller, notification, or audit:
+    // log only the stage, the HTTP status and, for our own validation
+    // errors, the i18n key (never the error object, URL, token or filePath).
+    logger.warn(
+      { stage, status, attachmentId: id, ...(err instanceof ValidationError ? { key: err.key } : {}) },
+      "A support attachment from Telegram could not be stored, so the customer was asked to retry the upload.",
+    );
     throw new ValidationError("helpdesk.upload_failed");
   } finally { telegramStreams--; }
 }
@@ -104,6 +136,19 @@ export async function attachSupportMedia(db: Db, ids: string[], ownerId: number,
     const changed = await db.supportAttachment.updateMany({ where: { id: row.id, ticketId: row.ticketId, attachedAt: null, status: "READY" }, data: { ticketId, messageId: messageId ?? null, attachedAt: new Date(), expiresAt: new Date("9999-01-01") } });
     if (changed.count !== 1) throw new ValidationError("helpdesk.media_verification_failed");
   }
+}
+
+/** The customer removed a draft file before sending: retire it so the
+ * existing cleanupSupportMedia job deletes the stored object. Only the
+ * owner's own unattached PENDING/READY/VERIFYING row changes; an attached,
+ * foreign, already retired or deleted row is left alone. Returns whether a
+ * row was retired by this call (false on a repeat, so it is idempotent). */
+export async function discardSupportAttachment(db: Db, id: string, ownerId: number): Promise<boolean> {
+  const changed = await db.supportAttachment.updateMany({
+    where: { id, ownerId, attachedAt: null, status: { in: ["PENDING", "READY", "VERIFYING"] } },
+    data: { status: "REJECTED", expiresAt: new Date() },
+  });
+  return changed.count === 1;
 }
 
 export async function supportAttachmentLinks(db: Db, ticketId: number, messageId: number | null, prefix: string) {

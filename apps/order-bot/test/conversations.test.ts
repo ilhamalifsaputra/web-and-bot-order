@@ -285,7 +285,9 @@ describe("support + reject conversations", () => {
     const conv = new FakeConversation([msg(sink, { callbackData: "v1:support:v2:category:ACCOUNT" }), msg(sink, { callbackData: "v1:support:v2:issue:login" }), msg(sink, { text: "My login is not working today" }), msg(sink, { callbackData: "v1:support:v2:review" }), msg(sink, { callbackData: "v1:support:v2:back" }), msg(sink, { callbackData: "v1:support:v2:cancel" })]);
     await supportConversation(conv.asMyConversation(), entryCust(sink, "v1:support:open"));
     expect(await prisma.supportTicket.count()).toBe(0);
-    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    // Cancel abandons the draft, so the accepted description (the only typed
+    // input) is deleted as obsolete scratch: exactly one delete.
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
     expect(calls(sink, "sendMessage")).toHaveLength(0);
   });
 

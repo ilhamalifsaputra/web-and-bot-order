@@ -50,10 +50,12 @@
  *
  * The whole session JSON is encrypted at rest because it carries the buyer's
  * in-flight checkout answers (`scratch.customerData`) and the messages typed
- * into a conversation. The envelope is bound to its session key
- * (`bot_sessions.data:{sessionKey}`), so a row copied onto another chat does
- * not decrypt. An undecryptable envelope is read as "no session"; a plaintext
- * row written before this change is still read and expires within its TTL.
+ * into a conversation. While CREDENTIAL_ENVELOPE_WRITE_V2 is on, the envelope
+ * is v2 and bound to its session key (`bot_sessions.data:{sessionKey}`), so a
+ * row copied onto another chat does not decrypt; a v1 envelope (flag off) is
+ * not bound to anything. An undecryptable envelope is read as "no session"
+ * (a missing key is rethrown); a plaintext row written before this change is
+ * still read and expires within its TTL.
  */
 import type { StorageAdapter } from "grammy";
 import { config } from "@app/core/config";

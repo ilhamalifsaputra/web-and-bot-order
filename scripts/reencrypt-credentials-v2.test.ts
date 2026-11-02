@@ -230,6 +230,15 @@ describe("reencryptCredentialsV2 with the write flag on", () => {
     expect((await prisma.order.findUniqueOrThrow({ where: { id: nullOrder } })).customerData).toBeNull();
   });
 
+  it("skips an empty customerData value like the backfill does (it carries no answers)", async () => {
+    const emptyOrder = await orderWithAnswers("");
+
+    const report = await reencryptCredentialsV2(prisma);
+
+    expect(report.customerData).toMatchObject({ scanned: 0, v1: 0, notEncrypted: 0, unreadable: 0 });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: emptyOrder } })).customerData).toBe("");
+  });
+
   it("never overwrites buyer answers that changed between the read and the rewrite (compare-and-set)", async () => {
     const orderId = await orderWithAnswers(encryptLegacyV1('[{"game_id":"OLD"}]'));
     const concurrent = encryptCustomerData('[{"game_id":"CONCURRENT"}]', orderId);

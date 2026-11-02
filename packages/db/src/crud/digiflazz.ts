@@ -1657,7 +1657,12 @@ async function processDigiflazzOrder(
   // Edits after the claim are rejected by updateOrderCustomerData's WHERE guard.
   const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { id: true, customerData: true, inputConfigSnapshot: true } });
   try { customerNo = buildDigiflazzCustomerNo(resolution.product, decryptCustomerData(submittedInput.customerData, submittedInput.id), submittedInput.inputConfigSnapshot); }
-  catch {
+  catch (err) {
+    // The error class only: a message could echo the buyer's answers or the stored value.
+    logger.warn(
+      { orderCode: order.orderCode, errorName: err instanceof Error ? err.name : typeof err },
+      `Could not build the Digiflazz target for order ${order.orderCode} from the buyer's answers (unreadable, or invalid for the input configuration), so nothing was sent to Digiflazz and the order goes to manual review.`,
+    );
     await recordStructuralProblem("Invalid player input configuration or answers; needs manual review");
     return;
   }

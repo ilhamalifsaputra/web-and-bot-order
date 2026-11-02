@@ -202,7 +202,8 @@ async function reencryptCustomerData(db: PrismaClient, dryRun: boolean, report: 
     afterId = rows[rows.length - 1]!.id;
     for (const row of rows) {
       const stored = row.customerData;
-      if (stored === null) continue;
+      // An empty value carries no answers (and decrypts as "" even in strict mode): skip it, as the backfill does.
+      if (stored === null || stored === "") continue;
       const aad = customerDataAad(row.id);
       const c = classify(stored, aad);
       if (!tally(report, c) || dryRun) continue;

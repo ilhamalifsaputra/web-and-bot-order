@@ -1316,7 +1316,9 @@ describe("updateOrderCustomerData", () => {
     await settlePaidOrder(prisma, order.id, { adminId });
 
     const updated = await updateOrderCustomerData(prisma, order.id, [{ game_id: "999" }]);
-    expect(JSON.parse(updated.customerData!)).toEqual([{ game_id: "999" }]);
+    // Only the id comes back: the stored row is an envelope, so a caller reads the answers through getOrder.
+    expect(updated).toEqual({ id: order.id });
+    expect(JSON.parse((await getOrder(prisma, order.id))!.customerData!)).toEqual([{ game_id: "999" }]);
   });
 
   it("throws error.order_not_processing once the order has left PROCESSING", async () => {

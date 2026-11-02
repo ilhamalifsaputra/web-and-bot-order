@@ -225,6 +225,34 @@ describe("game top-up details on the pay and order-detail payloads", () => {
     expect(detail.order.delivered_content).toBe("PREMIUM-DELIVERY");
   });
 
+  it("a legacy plaintext answers row (written before encryption) still returns its Game ID on both pages", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId);
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify(answers) } });
+    for (const url of routes(order.orderCode)) {
+      const res = await get(url, cookie);
+      expect(res.statusCode, url).toBe(200);
+      expect(res.json().game_target).toEqual([{ game_id: "12345678", zone_id: "2201" }]);
+    }
+  });
+
+  it("the pay page does not decrypt the answers of a non-game order (no game_target is ever built from them)", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId, { denomId: premiumDenomId, sn: "PREMIUM-DELIVERY" });
+    const envelope = JSON.parse(order.customerData!) as { authTag: string };
+    envelope.authTag = Buffer.alloc(16).toString("base64");
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify(envelope) } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const res = await get(routes(order.orderCode)[0]!, cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().game_target).toBeNull();
+      expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ orderId: order.id }), expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("a game order's detail sends no stock credentials", async () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeOrder(userId);

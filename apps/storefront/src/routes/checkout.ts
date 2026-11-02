@@ -1821,7 +1821,14 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
       let customerNo: string;
       try { customerNo = buildDigiflazzCustomerNo(resolution.product, decryptCustomerData(order.customerData, order.id), order.inputConfigSnapshot); }
-      catch { return reply.send({ status: "unmatched" }); }
+      catch (err) {
+        // The error class only: a message could echo the buyer's answers or the stored value.
+        logger.warn(
+          { orderCode: order.orderCode, errorName: err instanceof Error ? err.name : typeof err },
+          `Ignored a Digiflazz callback for order ${order.orderCode} because its Digiflazz target could not be rebuilt from the buyer's answers (unreadable, or invalid for the input configuration); no live re-check was sent, and the order needs manual review.`,
+        );
+        return reply.send({ status: "unmatched" });
+      }
 
       // Task B3d (backend audit): a genuine callback can only exist after the
       // dispatch poller placed the purchase, and is only worth a re-check while

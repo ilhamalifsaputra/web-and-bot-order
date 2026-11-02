@@ -95,8 +95,11 @@ export class EncryptedCustomerDataError extends Error {
   }
 }
 
-/** Structural envelope check, inline on purpose: this module is bundled into
- * the browser clients and must not import the Node-only credentialCrypto. */
+/** Structural envelope check, kept inline on purpose. Neither browser client
+ * bundles this module today (both import only its types and keep their own
+ * copies in client/src/lib/), but it is otherwise pure validation, and pulling
+ * in the Node-only credentialCrypto here would make that a trap for the day
+ * a client does import it. */
 function looksLikeEncryptedEnvelope(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;

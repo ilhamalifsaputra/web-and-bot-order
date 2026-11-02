@@ -865,8 +865,11 @@ Urutan ini wajib; jangan lompat langkah.
 
    > **Peringatan rollback.** Begitu ada order yang jawabannya terenkripsi
    > (order baru langsung terenkripsi sejak kode ini jalan), kode versi
-   > sebelumnya membaca envelope itu sebagai "tanpa jawaban" — Game ID kosong
-   > di admin dan target supplier kosong. Rollback hanya aman ke versi yang
+   > sebelumnya membaca envelope itu sebagai "tanpa jawaban": Game ID kosong
+   > di admin dan di halaman pembeli, dan pengiriman Digiflazz-nya gagal validasi
+   > field wajib sehingga order masuk "perlu review manual" (tidak ada yang
+   > dikirim ke supplier, tapi semua order game baru tertahan sampai ditangani
+   > manual). Rollback hanya aman ke versi yang
    > masih bisa mendekripsinya; jangan rollback melewati perubahan ini. Sesi
    > bot (`BotSession.data`) juga terenkripsi, dan kode lama TIDAK mengenali
    > envelope-nya sebagai sesi (ia mem-parse JSON envelope itu seolah-olah

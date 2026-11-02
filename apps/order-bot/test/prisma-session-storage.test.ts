@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@app/db";
 import { BotState, initialSession, type SessionData } from "../src/context";
 import { prismaSessionStorage, classifySessionKind, NAV_TTL_MS, CHECKOUT_TTL_MS } from "../src/util/prismaSessionStorage";
-import { isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { CredentialKeyConfigError, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -248,5 +248,17 @@ describe("prismaSessionStorage — encryption at rest", () => {
     });
 
     expect(await storage.read("chat-bad")).toBeUndefined();
+  });
+
+  it("rethrows a missing CREDENTIAL_ENCRYPTION_KEY on read instead of hiding it as 'no session'", async () => {
+    const storage = prismaSessionStorage();
+    await storage.write("chat-nokey", checkoutSession());
+    const savedKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      await expect(storage.read("chat-nokey")).rejects.toThrow(CredentialKeyConfigError);
+    } finally {
+      process.env.CREDENTIAL_ENCRYPTION_KEY = savedKey;
+    }
   });
 });

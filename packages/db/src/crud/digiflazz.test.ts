@@ -1182,7 +1182,19 @@ describe("dispatchDigiflazzOrderNow — direct per-order dispatch (instant dispa
       data: { customerData: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
     });
 
-    const summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+    const warn = vi.spyOn(logger, "warn");
+    let summary;
+    try {
+      summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+      // The cause is logged (order code and error class only), not swallowed.
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderCode: order.orderCode, errorName: expect.any(String) }),
+        expect.stringContaining(order.orderCode),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(String(good.ciphertext));
+    } finally {
+      warn.mockRestore();
+    }
 
     expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
     expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();

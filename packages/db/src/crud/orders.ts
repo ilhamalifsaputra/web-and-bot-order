@@ -3525,7 +3525,7 @@ export async function updateOrderCustomerData(
   db: Db,
   orderId: number,
   answers: unknown,
-): Promise<OrderWithIncludes> {
+): Promise<{ id: number }> {
   // Raw reads: editing the buyer's answers needs no secret (see getOrderRaw).
   const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
@@ -3544,8 +3544,9 @@ export async function updateOrderCustomerData(
     data: { customerData: encryptCustomerData(JSON.stringify(normalized), orderId) },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
-  const refreshed = await getOrderRaw(db, orderId);
-  return refreshed!;
+  // Only the id: the stored answers are now an envelope, and a caller that needs
+  // them reads the order through getOrder, which decrypts.
+  return { id: orderId };
 }
 
 /** The eligibility flags the Orders list/detail/bulk-action surfaces all

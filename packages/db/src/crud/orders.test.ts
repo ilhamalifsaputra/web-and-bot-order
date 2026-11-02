@@ -38,6 +38,8 @@ import {
   channelMaskedBuyerId,
   customerLabel,
   findUnderpaidReceived,
+  getOrderRaw,
+  updateOrderCustomerData,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock, setSetting } from "@app/db";
 import { VoucherType, VoucherScope, OrderKind, StockActorType, StockStatus, OrderCurrency, OrderStatus } from "@app/core/enums";
@@ -48,7 +50,13 @@ import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { createGuestUser } from "./webauth";
-import { CredentialEnvelopeError, credentialEnvelopeVersion, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import {
+  CredentialEnvelopeError,
+  credentialEnvelopeVersion,
+  encryptDeliveredContent,
+  isEncryptedCredentialEnvelope,
+  decryptCustomerData,
+} from "@app/core/credentialCrypto";
 import { encryptLegacyV1, useEnvelopeWriteV2 } from "../../../../tests/helpers/envelopeFlag";
 import { logger } from "@app/core/logger";
 
@@ -2079,5 +2087,144 @@ describe("getOrderByCode", () => {
     const parent = await prisma.denomination.findUniqueOrThrow({ where: { id: sample.product.id }, select: { product: { select: { slug: true } } } });
     expect(parent.product.slug).toBeTruthy();
     expect((await getOrderByCode(prisma, order.orderCode))!.items[0]!.product.product.slug).toBe(parent.product.slug);
+  });
+});
+
+describe("Order.customerData is encrypted at rest", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  const ANSWERS = JSON.stringify([{ game_id: "12345" }]);
+
+  async function infoDenomination(name: string) {
+    const category = await createCategory(prisma, `cat-${Math.random()}`);
+    const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name });
+    const fields = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+    ];
+    return createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: `${name} Denom`,
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "5.00",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(fields),
+    });
+  }
+
+  const rawCustomerData = async (orderId: number) =>
+    (await prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: { customerData: true } })).customerData;
+
+  async function directOrder(name: string) {
+    const denom = await infoDenomination(name);
+    return (await createOrderDirect(prisma, {
+      channel: "bot", user: sample.user, productId: denom.id, quantity: 1, customerData: ANSWERS,
+    }))!;
+  }
+
+  it("createOrderFromCart stores an envelope, never the answers, and getOrder reads them back", async () => {
+    const denom = await infoDenomination("Cart Info");
+    await addToCart(prisma, sample.user.id, denom.id, 1);
+
+    const order = await createOrderFromCart(prisma, { channel: "bot", user: sample.user, customerData: ANSWERS });
+
+    const stored = await rawCustomerData(order!.id);
+    expect(isEncryptedCredentialEnvelope(stored!)).toBe(true);
+    expect(stored).not.toContain("12345");
+    expect(order!.customerData).toBe(ANSWERS);
+    expect((await getOrder(prisma, order!.id))!.customerData).toBe(ANSWERS);
+  });
+
+  it("createOrderDirect stores an envelope, never the answers, and getOrder reads them back", async () => {
+    const order = await directOrder("Direct Info");
+
+    const stored = await rawCustomerData(order.id);
+    expect(isEncryptedCredentialEnvelope(stored!)).toBe(true);
+    expect(stored).not.toContain("12345");
+    expect((await getOrder(prisma, order.id))!.customerData).toBe(ANSWERS);
+  });
+
+  it("writes a v1 envelope at INSERT even when CREDENTIAL_ENVELOPE_WRITE_V2 is on (the id does not exist yet)", async () => {
+    const saved = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+    process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    try {
+      const order = await directOrder("Flag On Info");
+      expect(credentialEnvelopeVersion((await rawCustomerData(order.id))!)).toBe(1);
+      expect((await getOrder(prisma, order.id))!.customerData).toBe(ANSWERS);
+    } finally {
+      if (saved === undefined) delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+      else process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = saved;
+    }
+  });
+
+  it("an order without answers keeps customerData null", async () => {
+    const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 });
+    expect(await rawCustomerData(order!.id)).toBeNull();
+    expect((await getOrder(prisma, order!.id))!.customerData).toBeNull();
+  });
+
+  it("updateOrderCustomerData stores a fresh envelope for the new answers", async () => {
+    const order = await directOrder("Edit Info");
+    await prisma.order.update({ where: { id: order.id }, data: { status: "PROCESSING" } });
+    const next = [{ game_id: "99999" }];
+
+    await updateOrderCustomerData(prisma, order.id, next);
+
+    const stored = await rawCustomerData(order.id);
+    expect(isEncryptedCredentialEnvelope(stored!)).toBe(true);
+    expect(stored).not.toContain("99999");
+    expect(JSON.parse((await getOrder(prisma, order.id))!.customerData!)).toEqual(next);
+  });
+
+  it("with the write flag on, an edit is bound to its own order (v2)", async () => {
+    const saved = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+    process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    try {
+      const order = await directOrder("Edit V2 Info");
+      await prisma.order.update({ where: { id: order.id }, data: { status: "PROCESSING" } });
+      const next = [{ game_id: "99999" }];
+      await updateOrderCustomerData(prisma, order.id, next);
+
+      const stored = (await rawCustomerData(order.id))!;
+      expect(credentialEnvelopeVersion(stored)).toBe(2);
+      expect(decryptCustomerData(stored, order.id)).toBe(JSON.stringify(next));
+      expect(() => decryptCustomerData(stored, order.id + 1)).toThrow();
+    } finally {
+      if (saved === undefined) delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+      else process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = saved;
+    }
+  });
+
+  it("raw readers return the stored envelope and the display reader returns plaintext", async () => {
+    const order = await directOrder("Readers Info");
+
+    expect(isEncryptedCredentialEnvelope((await getOrderRaw(prisma, order.id))!.customerData!)).toBe(true);
+    const display = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
+    expect(display!.customerData).toBe(ANSWERS);
+  });
+
+  it("a legacy plaintext row is still readable through getOrder", async () => {
+    const order = await directOrder("Legacy Info");
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: ANSWERS } });
+
+    expect((await getOrder(prisma, order.id))!.customerData).toBe(ANSWERS);
+  });
+
+  it("an unreadable envelope throws from getOrder (a delivery must not run on empty answers) and is null for display", async () => {
+    const order = await directOrder("Corrupt Info");
+    const good = JSON.parse((await rawCustomerData(order.id))!) as Record<string, unknown>;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { customerData: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+
+    await expect(getOrder(prisma, order.id)).rejects.toThrow();
+    const display = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
+    expect(display!.customerData).toBeNull();
   });
 });

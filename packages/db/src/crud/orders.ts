@@ -58,6 +58,10 @@ import {
   encryptDeliveredContent,
   decryptDeliveredContent,
   tryDecryptDeliveredContent,
+  encryptCustomerData,
+  encryptCustomerDataForInsert,
+  decryptCustomerData,
+  tryDecryptCustomerData,
 } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
@@ -616,11 +620,14 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * no items with stock attached — cheap no-op for every non-manual-account
  * order kind. `Order.deliveredContent` (encrypted since Fase 6c) is decrypted
  * here too, throwing on an unreadable value like the stock credentials do.
+ * `Order.customerData` (encrypted since the buyer-answers change) is decrypted
+ * here too, throwing on an unreadable value.
  */
 function withDecryptedStockCredentials<
   T extends {
     id: number;
     deliveredContent: string | null;
+    customerData: string | null;
     items: Array<{ stockItem: { id: number; credentials: string } | null }>;
   },
 >(order: T): T {
@@ -632,6 +639,7 @@ function withDecryptedStockCredentials<
   return {
     ...order,
     deliveredContent: decryptDeliveredContent(order.deliveredContent, order.id),
+    customerData: decryptCustomerData(order.customerData, order.id),
     items: order.items.map((item) =>
       item.stockItem
         ? {
@@ -720,6 +728,7 @@ export async function getOrderByCodeFull(db: Db, orderCode: string) {
 type StockCredentialsOrder = {
   id: number;
   deliveredContent: string | null;
+  customerData: string | null;
   items: Array<{ stockItem: { id: number; credentials: string } | null }>;
 };
 type DisplayItem<I extends StockCredentialsOrder["items"][number]> = Omit<I, "stockItem"> & {
@@ -736,6 +745,10 @@ function withDisplayStockCredentials<T extends StockCredentialsOrder>(order: T):
   return {
     ...order,
     deliveredContent: tryDecryptDeliveredContent(order.deliveredContent, {
+      orderId: order.id,
+      purpose: "a buyer's order detail page",
+    }),
+    customerData: tryDecryptCustomerData(order.customerData, {
       orderId: order.id,
       purpose: "a buyer's order detail page",
     }),
@@ -972,7 +985,7 @@ export async function createOrderFromCart(
         totalAmount: ZERO,
         voucherId: voucher ? voucher.id : null,
         status: OrderStatus.PENDING_PAYMENT,
-        customerData: customerDataToStore,
+        customerData: customerDataToStore ? encryptCustomerDataForInsert(customerDataToStore) : customerDataToStore,
         inputConfigSnapshot: infoLine ? inputConfigSnapshot(infoLine.product) : null,
         fulfillmentProvider: fulfillmentProviderFor({ items: cart.map(ci => ({ product: ci.product })) }),
         fulfillmentSku: cart.find(ci => ci.product.autoDeliverySource === "digiflazz")?.product.supplierSku ?? null,
@@ -1289,7 +1302,7 @@ export async function createOrderDirect(
         uniqueCents: ZERO,
         totalAmount: ZERO,
         status: OrderStatus.PENDING_PAYMENT,
-        customerData: customerDataToStore,
+        customerData: customerDataToStore ? encryptCustomerDataForInsert(customerDataToStore) : customerDataToStore,
         inputConfigSnapshot: product.additionalFields ? inputConfigSnapshot(product) : null,
         fulfillmentProvider: fulfillmentProviderFor({ items: [{ product }] }),
         fulfillmentSku: product.autoDeliverySource === "digiflazz" ? product.supplierSku : null,
@@ -3509,7 +3522,7 @@ export async function updateOrderCustomerData(
   const normalized = validateCustomerData(fields, answers, order.items.length);
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PROCESSING, ...(fulfillmentProviderFor(order) === "DIGIFLAZZ" ? { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] } : {}) },
-    data: { customerData: JSON.stringify(normalized) },
+    data: { customerData: encryptCustomerData(JSON.stringify(normalized), orderId) },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
   const refreshed = await getOrderRaw(db, orderId);

@@ -21,7 +21,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Check, MoreVertical, Plus, Save, SquarePen, Trash2, X, Zap } from "lucide-react";
+import { Check, MoreVertical, Plus, Save, SquarePen, Trash2, X, Zap } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -36,6 +36,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
@@ -237,18 +238,10 @@ export function ProductDetailPage() {
     }
   }
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Product Detail">
-        <EmptyState
-          icon={AlertCircle}
-          title="Failed to load product"
-          description="An error occurred while loading the product details. Please try again."
-          action={{
-            label: "Retry",
-            onClick: () => void refetch(),
-          }}
-        />
+        <QueryErrorNotice what="product" hasData={false} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -283,6 +276,8 @@ export function ProductDetailPage() {
         title={product.name}
         breadcrumb={[{ label: "Catalog", href: "/catalog" }]}
       />
+
+      <QueryErrorNotice isError={isError} what="product" hasData onRetry={() => void refetch()} />
 
       <ProductDetailSummary product={product} navigate={navigate} toggleProductActive={toggleProductActive} togglingProduct={togglingProduct} editingProduct={editingProduct} setNameDraft={setNameDraft} setDescriptionDraft={setDescriptionDraft} setGameVariantDraft={setGameVariantDraft} setGameVariantEmojiDraft={setGameVariantEmojiDraft} setGameRegionDraft={setGameRegionDraft} setWhatYouGetDraft={setWhatYouGetDraft} setTermsDraft={setTermsDraft} setWarrantyNoteDraft={setWarrantyNoteDraft} setCategoryDraft={setCategoryDraft} setThumbnailKindDraft={setThumbnailKindDraft} setCurrencyIconKindDraft={setCurrencyIconKindDraft} setEditingProduct={setEditingProduct} />
 

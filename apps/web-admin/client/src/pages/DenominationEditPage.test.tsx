@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -558,5 +558,77 @@ describe("DenominationEditPage loading", () => {
     render(<DenominationEditPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("This denomination no longer exists.")).toBeInTheDocument());
     expect(screen.queryByRole("status", { name: "Loading denomination" })).not.toBeInTheDocument();
+  });
+});
+
+describe("DenominationEditPage — failed loads keep the page usable", () => {
+  function renderWithClient() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/catalog/42/denominations/10/edit"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/catalog/:productId/denominations/:denomId/edit" element={<DenominationEditPage />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return qc;
+  }
+  function mockDetail(failing: () => boolean) {
+    const calls = { n: 0 };
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      // Other widgets on the form read their own endpoints; only the product
+      // detail request is counted and made to fail.
+      if (path !== "/api/catalog/42") return PRODUCT_DETAIL;
+      calls.n += 1;
+      if (failing()) throw new Error("Database unavailable");
+      return PRODUCT_DETAIL;
+    });
+    return calls;
+  }
+
+  it("a failed first load shows Retry; Retry loads the form", async () => {
+    let failing = true;
+    const calls = mockDetail(() => failing);
+    renderWithClient();
+
+    expect(await screen.findByText("Failed to load denomination.")).toBeInTheDocument();
+    expect(calls.n).toBe(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByDisplayValue("Netflix 1 Month")).toBeInTheDocument();
+    expect(calls.n).toBe(2);
+    expect(screen.queryByText("Failed to load denomination.")).not.toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps the typed price, cost and name, with Couldn't refresh and Retry; saving still sends them", async () => {
+    let failing = false;
+    const calls = mockDetail(() => failing);
+    vi.mocked(apiPatch).mockResolvedValue({ id: 10 });
+    const qc = renderWithClient();
+    await screen.findByDisplayValue("Netflix 1 Month");
+    const price = screen.getByPlaceholderText("e.g. 15000");
+    const cost = screen.getByLabelText("Cost Price (IDR)");
+    fireEvent.change(price, { target: { value: "17500" } });
+    fireEvent.change(cost, { target: { value: "12000" } });
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["catalog", "42"] }); });
+    expect(await screen.findByText(/Couldn't refresh denomination/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("e.g. 15000")).toBe(price);
+    expect(price).toHaveValue("17500");
+    expect(cost).toHaveValue("12000");
+    expect(calls.n).toBe(2);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh denomination/)).not.toBeInTheDocument());
+    expect(calls.n).toBe(3);
+    expect(price).toHaveValue("17500");
+
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledWith("/api/catalog/denominations/10", expect.objectContaining({ price: "17500", costPrice: "12000" })));
   });
 });

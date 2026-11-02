@@ -15,6 +15,7 @@ import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpe
 import { DataTable } from "../components/shared/DataTable";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { exactFieldsOf } from "../lib/exactFields";
 import { familyOfGroup, GAME_TOPUP_GROUP } from "../lib/catalogFamily";
@@ -132,14 +133,15 @@ export function PricingPage() {
     } catch (e) { setCategoryError((e as Error).message); } finally { setCategorySaving(false); }
   }
   return <PageLayout title="Pricing & Margins"><PageHeader title="Pricing & Margins" description="Atur markup Digiflazz, pembulatan, dan pantau estimasi margin." />
-    {query.isPending ? <LinesSkeleton label="Memuat kebijakan harga" lines={4} /> : query.error ? <Alert variant="destructive"><AlertDescription>{query.error.message}</AlertDescription></Alert> : <>
+    {query.isPending ? <LinesSkeleton label="Memuat kebijakan harga" lines={4} /> : !query.data ? <PricingLoadFailed message={query.error?.message} onRetry={() => void query.refetch()} /> : <>
+      <QueryErrorNotice isError={query.isError} what="pricing rules" hasData onRetry={() => void query.refetch()} />
       <p className="mb-5 text-sm text-ink-soft">{query.data.categories.length} kategori · {query.data.categories.filter(c => c.markupType).length} aturan khusus. Perubahan berlaku pada sync berikutnya atau saat diterapkan.</p>
       {!owner && <Alert><AlertDescription>Akses baca saja. Hanya super-admin dapat mengubah harga.</AlertDescription></Alert>}
       {notice && <p role="status" className="mb-4 text-sm text-pine">{notice}</p>}
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       <nav aria-label="Pricing sections" className="mb-5 flex gap-5 overflow-x-auto text-sm text-pine"><a href="#global-pricing">Global Defaults</a><a href="#category-rules">Category Rules</a><a href="#apply-pricing">Terapkan harga</a></nav>
       <div className="space-y-6">
-        <PricingGlobalDefaults setSaveOpen={setSaveOpen} query={query} owner={owner} fieldId={fieldId} form={form} setForm={setForm} sample={sample} setSample={setSample} checking={checking} previewError={previewError} preview={preview} dirty={dirty} />
+        <PricingGlobalDefaults setSaveOpen={setSaveOpen} data={query.data} owner={owner} fieldId={fieldId} form={form} setForm={setForm} sample={sample} setSample={setSample} checking={checking} previewError={previewError} preview={preview} dirty={dirty} />
         <CategoryRulesCard categories={query.data.categories} owner={owner} onRemove={setRemove} onEdit={c => {
           setEditCategory(c); setCategoryType(c.ruleReadable === false ? "percent" : c.markupType ?? "percent"); setCategoryValue(c.ruleReadable === false ? "0" : c.markupValue ?? "0"); setCategoryError(null);
         }} />
@@ -154,6 +156,14 @@ export function PricingPage() {
     </form></DialogContent></Dialog>
     <ConfirmDialog open={!!remove} onOpenChange={v => { if (!v) setRemove(null); }} title="Hapus aturan kategori?" description="Kategori kembali mengikuti default global pada sync atau penerapan berikutnya." onConfirm={async () => { if (!remove) return; try { await apiDelete(`/api/pricing/categories/${remove.id}`); await reload(); } catch (e) { setError((e as Error).message); } }} />
   </PageLayout>;
+}
+
+/** The first load failed, so there is no policy to show: the server's message and a way to try again. */
+function PricingLoadFailed({ message, onRetry }: { message: string | undefined; onRetry: () => void }) {
+  return <div className="space-y-3">
+    <Alert variant="destructive"><AlertDescription>{message}</AlertDescription></Alert>
+    <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+  </div>;
 }
 
 /** The Category Rules card: one row per category, with Edit/Hapus for owners. */
@@ -238,9 +248,9 @@ function CategoryRuleCell({ category: c }: { category: Category }) {
     : `${c.skuCount} SKU Digiflazz mengikuti default global.`}</p></div>;
 }
 
-function PricingGlobalDefaults({ setSaveOpen, query, owner, fieldId, form, setForm, sample, setSample, checking, previewError, preview, dirty }: {
+function PricingGlobalDefaults({ setSaveOpen, data, owner, fieldId, form, setForm, sample, setSample, checking, previewError, preview, dirty }: {
   setSaveOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
-  query: import("@tanstack/react-query").QueryObserverSuccessResult<NoInfer<PricingData>, Error> | import("@tanstack/react-query").QueryObserverPlaceholderResult<NoInfer<PricingData>, Error>;
+  data: PricingData;
   owner: boolean;
   fieldId: string;
   form: Form;
@@ -254,7 +264,7 @@ function PricingGlobalDefaults({ setSaveOpen, query, owner, fieldId, form, setFo
 }) {
   return (<Card id="global-pricing"><CardHeader><CardTitle as="h2">Global Defaults</CardTitle><CardDescription>Aturan dasar untuk SKU Digiflazz yang mengikuti harga otomatis.</CardDescription></CardHeader>
     <CardContent><form className="space-y-5" onSubmit={e => { e.preventDefault(); setSaveOpen(true); }}>
-      {(!query.data.policy.globalRuleReadable || !query.data.policy.roundingReadable) && <Alert variant="destructive"><AlertDescription>Kebijakan tersimpan tidak terbaca. Periksa dan simpan kembali sebelum menghitung harga.</AlertDescription></Alert>}
+      {(!data.policy.globalRuleReadable || !data.policy.roundingReadable) && <Alert variant="destructive"><AlertDescription>Kebijakan tersimpan tidak terbaca. Periksa dan simpan kembali sebelum menghitung harga.</AlertDescription></Alert>}
       <fieldset disabled={!owner} className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2"><label htmlFor={`${fieldId}-jenis-markup-1`} className="text-sm font-medium">Jenis markup</label><TypeSelect id={`${fieldId}-jenis-markup-1`} value={form.markupType} label="Jenis markup" onChange={v => setForm({ ...form, markupType: v, markupValue: "0" })} /></div>
         <div className="space-y-2"><label htmlFor="markup-value" className="text-sm font-medium">Markup {form.markupType === "flat" ? "(IDR)" : "(%)"}</label><Input id="markup-value" inputMode="decimal" disabled={form.markupType === "none"} value={form.markupValue} onChange={e => setForm({ ...form, markupValue: e.target.value })} /></div>

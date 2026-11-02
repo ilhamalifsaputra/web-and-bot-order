@@ -22,7 +22,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  AlertCircle,
   Archive,
   ArchiveRestore,
   Check,
@@ -45,6 +44,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { SearchBar } from "../components/shared/SearchBar";
 import { SelectFilter } from "../components/shared/SelectFilter";
 import { StatTile } from "../components/shared/StatTile";
@@ -173,21 +173,8 @@ export function CatalogPage() {
 
   const { handlePreview, handleApply } = useCatalogImport({ setImportError, csv, setPreview, preview, setImporting, queryClient, setShowImport, setCsv });
 
-  if (isError) {
-    return (
-      <PageLayout title="Catalog">
-        <EmptyState
-          icon={AlertCircle}
-          title="Failed to load catalog"
-          description="An error occurred while loading the catalog. Please try again."
-          action={{
-            label: "Retry",
-            onClick: () => void refetch(),
-          }}
-        />
-      </PageLayout>
-    );
-  }
+  // A failed first load has no counts to show; the tiles must not read 0.
+  const statsUnavailable = isError && !data;
 
   const products = data?.products ?? [];
   // Everything below the tabs — the tiles, the Category options and the list —
@@ -318,15 +305,16 @@ export function CatalogPage() {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-        <StatTile label="Products" value={stats.products} />
+        <StatTile label="Products" value={stats.products} unavailable={statsUnavailable} />
         <StatTile
           label="Categories"
           value={stats.categories}
+          unavailable={statsUnavailable}
           onClick={() => navigate("/categories")}
         />
-        <StatTile label="Variants" value={stats.variants} />
-        <StatTile label="Active" value={stats.active} />
-        <StatTile label="Inactive" value={stats.inactive} />
+        <StatTile label="Variants" value={stats.variants} unavailable={statsUnavailable} />
+        <StatTile label="Active" value={stats.active} unavailable={statsUnavailable} />
+        <StatTile label="Inactive" value={stats.inactive} unavailable={statsUnavailable} />
       </div>
 
       <CatalogFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} activeCategoryFilter={activeCategoryFilter} changeCategoryFilter={changeCategoryFilter} tabCategories={tabCategories} statusFilter={statusFilter} setStatusFilter={setStatusFilter} sortBy={sortBy} setSortBy={setSortBy} />
@@ -368,7 +356,9 @@ export function CatalogPage() {
         </div>
       )}
 
-      <CatalogProductsTable allFilteredSelected={allFilteredSelected} toggleSelectAllFiltered={toggleSelectAllFiltered} filtered={filtered} selected={selected} toggleSelected={toggleSelected} toggleProductActive={toggleProductActive} togglingProduct={togglingProduct} navigate={navigate} togglingArchive={togglingArchive} toggleProductArchived={toggleProductArchived} setPendingDelete={setPendingDelete} isLoading={isLoading} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} setShowImport={setShowImport} setPreview={setPreview} setCsv={setCsv} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="catalog" onRetry={() => void refetch()}>
+        <CatalogProductsTable allFilteredSelected={allFilteredSelected} toggleSelectAllFiltered={toggleSelectAllFiltered} filtered={filtered} selected={selected} toggleSelected={toggleSelected} toggleProductActive={toggleProductActive} togglingProduct={togglingProduct} navigate={navigate} togglingArchive={togglingArchive} toggleProductArchived={toggleProductArchived} setPendingDelete={setPendingDelete} isLoading={isLoading} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} setShowImport={setShowImport} setPreview={setPreview} setCsv={setCsv} />
+      </QueryFailureGate>
 
       {pendingDelete && (
         <ConfirmDialog

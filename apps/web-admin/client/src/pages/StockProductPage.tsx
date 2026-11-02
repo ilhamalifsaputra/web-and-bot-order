@@ -26,6 +26,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -140,7 +141,7 @@ export function StockProductPage() {
   const [page, setPage] = useState(1);
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState(""); // committed/submitted query — drives the fetch
-  const { data, isError } = useStockProduct(productId ?? "", activeTab, page, search);
+  const { data, isError, refetch } = useStockProduct(productId ?? "", activeTab, page, search);
   // Only one account is readable at a time — revealing another row hides the
   // previous one, so a shared screen never shows a column of plaintext logins.
   // `revealedText` is fetched fresh from the server (never derived from the
@@ -291,10 +292,10 @@ export function StockProductPage() {
     );
   }
 
-  if (isError) {
+  if (isError && !data) {
     return (
       <PageLayout title="Stock — Product">
-        <p className="text-sm text-rust">Failed to load product.</p>
+        <QueryErrorNotice what="product" hasData={false} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -331,6 +332,8 @@ export function StockProductPage() {
           ) : undefined
         }
       />
+
+      <QueryErrorNotice isError={isError} what="product" hasData onRetry={() => void refetch()} />
 
       {/* Stats row */}
       <div className="mb-4 flex gap-4 text-sm">

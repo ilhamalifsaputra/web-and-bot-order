@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -683,5 +683,67 @@ describe("StockProductPage loading", () => {
     render(<StockProductPage />, { wrapper: Wrapper });
     expect(screen.getByRole("status", { name: "Loading stock" })).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
+});
+
+describe("StockProductPage — failed loads keep the page usable", () => {
+  function renderWithClient() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/stock/10"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/stock/:productId" element={<StockProductPage />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return qc;
+  }
+  function mockStockProduct(failing: () => boolean) {
+    const calls = { n: 0 };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls.n += 1;
+      return failing()
+        ? new Response(JSON.stringify({ error: "Database unavailable" }), { status: 500, headers: { "Content-Type": "application/json" } })
+        : jsonResponse(STOCK_PRODUCT_DATA);
+    });
+    return calls;
+  }
+
+  it("a failed first load shows Retry; Retry loads the product", async () => {
+    let failing = true;
+    const calls = mockStockProduct(() => failing);
+    renderWithClient();
+
+    expect(await screen.findByText("Failed to load product.")).toBeInTheDocument();
+    expect(calls.n).toBe(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByLabelText("Credentials, one per line")).toBeInTheDocument();
+    expect(calls.n).toBe(2);
+    expect(screen.queryByText("Failed to load product.")).not.toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps the credentials the admin typed, with Couldn't refresh and Retry", async () => {
+    let failing = false;
+    const calls = mockStockProduct(() => failing);
+    const qc = renderWithClient();
+    const box = await screen.findByLabelText("Credentials, one per line");
+    fireEvent.change(box, { target: { value: "user1:pass1\nuser2:pass2" } });
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["stock", "10"] }); });
+    expect(await screen.findByText(/Couldn't refresh product/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Credentials, one per line")).toBe(box);
+    expect(box).toHaveValue("user1:pass1\nuser2:pass2");
+    expect(calls.n).toBe(2);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh product/)).not.toBeInTheDocument());
+    expect(calls.n).toBe(3);
+    expect(box).toHaveValue("user1:pass1\nuser2:pass2");
   });
 });

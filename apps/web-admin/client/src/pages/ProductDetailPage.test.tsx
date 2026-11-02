@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -689,5 +689,70 @@ describe("ProductDetailPage loading", () => {
     render(<ProductDetailPage />, { wrapper: Wrapper });
     expect(screen.getByRole("status", { name: "Loading product" })).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
+});
+
+describe("ProductDetailPage — failed loads keep the page usable", () => {
+  function renderWithClient() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/catalog/1"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/catalog/:productId" element={<ProductDetailPage />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return qc;
+  }
+  /** The product detail request fails while `failing()`; the catalog list always loads. */
+  function mockProduct(failing: () => boolean) {
+    const calls = { detail: 0 };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "/api/catalog") return Response.json({ categories: [], products: [] });
+      calls.detail += 1;
+      return failing() ? Response.json({ error: "Database unavailable" }, { status: 500 }) : Response.json(PRODUCT_DETAIL);
+    });
+    return calls;
+  }
+
+  it("a failed first load shows Retry; Retry loads the product", async () => {
+    let failing = true;
+    const calls = mockProduct(() => failing);
+    renderWithClient();
+
+    expect(await screen.findByText("Failed to load product.")).toBeInTheDocument();
+    expect(calls.detail).toBe(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Private")).toBeInTheDocument();
+    expect(calls.detail).toBe(2);
+    expect(screen.queryByText("Failed to load product.")).not.toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps the product-name draft being edited, with Couldn't refresh and Retry", async () => {
+    let failing = false;
+    const calls = mockProduct(() => failing);
+    const qc = renderWithClient();
+    await screen.findByText("Private");
+    fireEvent.click(screen.getByRole("button", { name: /edit product/i }));
+    const name = await screen.findByDisplayValue("CapCut Pro");
+    fireEvent.change(name, { target: { value: "CapCut Pro Max" } });
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["catalog", "1"] }); });
+    expect(await screen.findByText(/Couldn't refresh product/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("CapCut Pro Max")).toBe(name);
+    expect(screen.getByText("Private")).toBeInTheDocument();
+    expect(calls.detail).toBe(2);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh product/)).not.toBeInTheDocument());
+    expect(calls.detail).toBe(3);
+    expect(name).toHaveValue("CapCut Pro Max");
   });
 });

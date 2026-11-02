@@ -1,9 +1,12 @@
 /**
  * Fase 6d, stage 2: rewrite every v1 credential envelope (no AAD) as a v2
- * envelope bound to where it is stored, in all three encrypted columns:
+ * envelope bound to where it is stored, in all four encrypted columns:
  * StockItem.credentials (`stock_items.credentials:{id}`),
- * Order.deliveredContent (`orders.delivered_content:{orderId}`) and the
+ * Order.deliveredContent (`orders.delivered_content:{orderId}`),
+ * Order.customerData (`orders.customer_data:{orderId}`) and the
  * ENCRYPTED_SETTING_KEYS Setting rows (`settings.value:{key}`).
+ * (BotSession.data is not rewritten: sessions expire within 24 h, and a
+ * session written while the flag is on is already v2.)
  *
  * Run it only after the stage-1 reader code is deployed to EVERY process and
  * CREDENTIAL_ENVELOPE_WRITE_V2 is on (see DOCS.md, "Credential envelope v2").
@@ -35,6 +38,7 @@ import {
   CredentialKeyConfigError,
   credentialEnvelopeVersion,
   credentialEnvelopeWriteVersion,
+  customerDataAad,
   decryptCredentials,
   deliveredContentAad,
   encryptCredentials,
@@ -75,6 +79,7 @@ export interface ReencryptReport {
   dryRun: boolean;
   stock: ReencryptColumnReport;
   deliveredContent: ReencryptColumnReport;
+  customerData: ReencryptColumnReport;
   settings: ReencryptColumnReport;
 }
 
@@ -184,6 +189,33 @@ async function reencryptDeliveredContent(db: PrismaClient, dryRun: boolean, repo
   }
 }
 
+async function reencryptCustomerData(db: PrismaClient, dryRun: boolean, report: ReencryptColumnReport): Promise<void> {
+  let afterId = 0;
+  for (;;) {
+    const rows = await db.order.findMany({
+      where: { id: { gt: afterId } },
+      orderBy: { id: "asc" },
+      take: BATCH_SIZE,
+      select: { id: true, customerData: true },
+    });
+    if (rows.length === 0) return;
+    afterId = rows[rows.length - 1]!.id;
+    for (const row of rows) {
+      const stored = row.customerData;
+      if (stored === null) continue;
+      const aad = customerDataAad(row.id);
+      const c = classify(stored, aad);
+      if (!tally(report, c) || dryRun) continue;
+      const { count } = await db.order.updateMany({
+        where: { id: row.id, customerData: stored },
+        data: { customerData: sealV2(c.plaintext, aad) },
+      });
+      if (count === 1) report.reencrypted++;
+      else report.changedDuringRun++;
+    }
+  }
+}
+
 async function reencryptSettings(db: PrismaClient, dryRun: boolean, report: ReencryptColumnReport): Promise<void> {
   const rows = await db.setting.findMany({
     where: { key: { in: [...ENCRYPTED_SETTING_KEYS] } },
@@ -215,10 +247,12 @@ export async function reencryptCredentialsV2(
     dryRun,
     stock: emptyReport(),
     deliveredContent: emptyReport(),
+    customerData: emptyReport(),
     settings: emptyReport(),
   };
   await reencryptStock(db, dryRun, report.stock);
   await reencryptDeliveredContent(db, dryRun, report.deliveredContent);
+  await reencryptCustomerData(db, dryRun, report.customerData);
   await reencryptSettings(db, dryRun, report.settings);
   return report;
 }
@@ -240,6 +274,7 @@ async function main(): Promise<void> {
   const tag = `[reencrypt-credentials-v2]${dryRun ? " (dry run, nothing written)" : ""}`;
   console.log(`${tag} ${describeColumn("Stock credentials", r.stock, dryRun)}`);
   console.log(`${tag} ${describeColumn("Order delivered content", r.deliveredContent, dryRun)}`);
+  console.log(`${tag} ${describeColumn("Order buyer answers", r.customerData, dryRun)}`);
   console.log(`${tag} ${describeColumn("Encrypted settings", r.settings, dryRun)}`);
   await prisma.$disconnect();
 }

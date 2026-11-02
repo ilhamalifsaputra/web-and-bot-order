@@ -850,7 +850,21 @@ Urutan ini wajib; jangan lompat langkah.
    angkanya (lihat di atas), lalu jalankan tanpa `--dry-run`.
 5. **Enkripsi.** `pnpm backfill-encrypt-stock-credentials`,
    `pnpm backfill-encrypt-settings-secrets`,
-   `pnpm backfill-encrypt-delivered-content`.
+   `pnpm backfill-encrypt-delivered-content`, lalu jawaban pembeli
+   (`Order.customerData`): `pnpm backfill-encrypt-customer-data --dry-run`,
+   baca angkanya, lalu jalankan tanpa `--dry-run`. Ulangi `--dry-run` sampai
+   `plaintext = 0` dan `corrupt = 0` sebelum lanjut ke langkah 7.
+
+   > **Peringatan rollback.** Begitu ada order yang jawabannya terenkripsi
+   > (order baru langsung terenkripsi sejak kode ini jalan), kode versi
+   > sebelumnya membaca envelope itu sebagai "tanpa jawaban" — Game ID kosong
+   > di admin dan target supplier kosong. Rollback hanya aman ke versi yang
+   > masih bisa mendekripsinya; jangan rollback melewati perubahan ini. Sesi
+   > bot (`BotSession.data`) juga terenkripsi, dan kode lama TIDAK mengenali
+   > envelope-nya sebagai sesi (ia mem-parse JSON envelope itu seolah-olah
+   > sesi); kalau terpaksa rollback, kosongkan tabel sesi bot dulu
+   > (`DELETE FROM bot_sessions;` — hanya status navigasi/checkout yang
+   > sedang berjalan yang hilang).
 6. **Audit.** `pnpm audit-stock-integrity` dan
    `scripts/audit-stock-duplicates.sql`; selesaikan temuannya dulu.
 7. **Mode ketat.** Hanya setelah warning "legacy plaintext" hilang dari log

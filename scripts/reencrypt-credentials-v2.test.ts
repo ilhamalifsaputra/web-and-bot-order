@@ -1,6 +1,6 @@
 /**
  * The v1 -> v2 re-encrypt (Fase 6d) must rewrite every v1 envelope in the
- * three encrypted columns as a v2 envelope bound to its own row, leave
+ * four encrypted columns as a v2 envelope bound to its own row, leave
  * plaintext/corrupt/already-v2 values alone, trace each stock rewrite with a
  * REENCRYPTED event (actor SYSTEM), never overwrite a concurrent write, be
  * idempotent, write nothing on a dry run, and refuse a real run while the v2
@@ -11,7 +11,9 @@ import type { PrismaClient } from "@prisma/client";
 import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 import {
   credentialEnvelopeVersion,
+  decryptCustomerData,
   decryptDeliveredContent,
+  encryptCustomerData,
   decryptStockCredentials,
   encryptDeliveredContent,
   encryptStockCredentials,
@@ -51,6 +53,12 @@ async function stockRow(credentials: string) {
 async function orderWith(deliveredContent: string | null) {
   const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1, channel: "bot" }))!;
   await prisma.order.update({ where: { id: order.id }, data: { deliveredContent } });
+  return order.id;
+}
+
+async function orderWithAnswers(customerData: string | null) {
+  const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1, channel: "bot" }))!;
+  await prisma.order.update({ where: { id: order.id }, data: { customerData } });
   return order.id;
 }
 
@@ -205,5 +213,45 @@ describe("reencryptCredentialsV2 with the write flag on", () => {
 
     expect(report.deliveredContent).toMatchObject({ v1: 1, reencrypted: 0, changedDuringRun: 1 });
     expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).deliveredContent).toBe(concurrent);
+  });
+
+  it("re-encrypts a v1 customerData envelope as v2 bound to its order and leaves plaintext to the backfill", async () => {
+    const v1Order = await orderWithAnswers(encryptLegacyV1('[{"game_id":"123"}]'));
+    const plainOrder = await orderWithAnswers('[{"game_id":"456"}]');
+    const nullOrder = await orderWithAnswers(null);
+
+    const report = await reencryptCredentialsV2(prisma);
+
+    expect(report.customerData).toMatchObject({ scanned: 2, v1: 1, reencrypted: 1, notEncrypted: 1, unreadable: 0, changedDuringRun: 0 });
+    const v1Raw = (await prisma.order.findUniqueOrThrow({ where: { id: v1Order } })).customerData!;
+    expect(credentialEnvelopeVersion(v1Raw)).toBe(2);
+    expect(decryptCustomerData(v1Raw, v1Order)).toBe('[{"game_id":"123"}]');
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: plainOrder } })).customerData).toBe('[{"game_id":"456"}]');
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: nullOrder } })).customerData).toBeNull();
+  });
+
+  it("never overwrites buyer answers that changed between the read and the rewrite (compare-and-set)", async () => {
+    const orderId = await orderWithAnswers(encryptLegacyV1('[{"game_id":"OLD"}]'));
+    const concurrent = encryptCustomerData('[{"game_id":"CONCURRENT"}]', orderId);
+    // A client whose order.updateMany first lets another writer change the answers.
+    const racing = new Proxy(prisma, {
+      get(target, prop, receiver) {
+        if (prop !== "order") return Reflect.get(target, prop, receiver);
+        return new Proxy(target.order, {
+          get(orderDelegate, method, r) {
+            if (method !== "updateMany") return Reflect.get(orderDelegate, method, r);
+            return async (args: Parameters<typeof target.order.updateMany>[0]) => {
+              await target.order.update({ where: { id: orderId }, data: { customerData: concurrent } });
+              return target.order.updateMany(args);
+            };
+          },
+        });
+      },
+    });
+
+    const report = await reencryptCredentialsV2(racing);
+
+    expect(report.customerData).toMatchObject({ v1: 1, reencrypted: 0, changedDuringRun: 1 });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).customerData).toBe(concurrent);
   });
 });

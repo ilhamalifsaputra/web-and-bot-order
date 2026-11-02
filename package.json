@@ -21,6 +21,7 @@
     "split-digiflazz-types": "tsx scripts/split-digiflazz-types.ts",
     "backfill-encrypt-stock-credentials": "tsx scripts/backfill-encrypt-stock-credentials.ts",
     "backfill-encrypt-delivered-content": "tsx scripts/backfill-encrypt-delivered-content.ts",
+    "backfill-encrypt-customer-data": "tsx scripts/backfill-encrypt-customer-data.ts",
     "reencrypt-credentials-v2": "tsx scripts/reencrypt-credentials-v2.ts",
     "backfill-stock-traceability": "tsx scripts/backfill-stock-traceability.ts",
     "backfill-player-input-configuration": "tsx scripts/backfill-player-input-configuration.ts",

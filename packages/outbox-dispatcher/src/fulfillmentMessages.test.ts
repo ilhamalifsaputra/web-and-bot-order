@@ -5,7 +5,7 @@ import {
   recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus, adoptTransactionMessage,
   markCredentialsDelivered,
 } from "@app/db";
-import { encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { encryptDeliveredContent, encryptCustomerData, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { DELIVERING_SLOW_AFTER_MS, FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
@@ -1074,8 +1074,9 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
       additionalFields: opts.fields ?? fields, providerInputMapping: opts.mapping ?? null,
     });
     await db.orderItem.create({ data: { orderId: order.id, productId: denomination.id, quantity: 1, unitPrice: 1000, warrantyDaysSnapshot: 0 } });
+    // Stored the way checkout writes it: an encrypted envelope, never the answers.
     await db.order.update({ where: { id: order.id }, data: {
-      customerData: JSON.stringify(opts.customerData ?? [{ uid: "12345678", zone: "2201", password: "hunter2-secret" }]),
+      customerData: encryptCustomerData(JSON.stringify(opts.customerData ?? [{ uid: "12345678", zone: "2201", password: "hunter2-secret" }]), order.id),
       deliveredContent: opts.sn === null ? null : encryptDeliveredContent(opts.sn ?? "SN-OK-123", order.id),
     } });
     return order;
@@ -1091,7 +1092,11 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
   it("shows the Game ID, Zone ID and a 200-character SN in full, and never another answer", async () => {
     const sn = "SN" + "ab12-".repeat(40);
     expect(sn.length).toBe(202);
-    const tg = await finish(await gameOrder({ sn }));
+    const order = await gameOrder({ sn });
+    const stored = (await db.order.findUniqueOrThrow({ where: { id: order.id } })).customerData!;
+    expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
+    expect(stored).not.toContain("12345678");
+    const tg = await finish(order);
     expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
     const text = tg.edits[0]!.text;
     expect(text).toContain("Game ID: <code>12345678</code>");
@@ -1185,6 +1190,27 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     expect(tg.edits[0]!.text).toContain("Game ID: <code>12345678</code>");
     expect(tg.edits[0]!.text).not.toMatch(/SN:|not-a-valid/);
     expect(tg.edits[0]!.text).toContain("Top-up completed");
+  });
+
+  it("leaves the target lines out, without failing, when the answers envelope cannot be decrypted", async () => {
+    const order = await gameOrder();
+    // A real envelope whose auth tag was tampered with: decryption throws.
+    const envelope = JSON.parse((await db.order.findUniqueOrThrow({ where: { id: order.id } })).customerData!) as { authTag: string };
+    envelope.authTag = Buffer.alloc(16).toString("base64");
+    await db.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify(envelope) } });
+    const tg = await finish(order);
+    expect(tg.calls).toEqual({ sendMessage: 1, editMessageText: 1 });
+    expect(tg.edits[0]!.text).not.toMatch(/Game ID|Zone ID|Server ID|12345678/);
+    expect(tg.edits[0]!.text).toContain("SN: <code>SN-OK-123</code>");
+    expect(tg.edits[0]!.text).toContain("Top-up completed");
+  });
+
+  it("still shows the Game ID of a legacy order whose answers were stored before encryption", async () => {
+    const order = await gameOrder();
+    await db.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify([{ uid: "12345678", zone: "2201" }]) } });
+    const tg = await finish(order);
+    expect(tg.edits[0]!.text).toContain("Game ID: <code>12345678</code>");
+    expect(tg.edits[0]!.text).toContain("Zone ID: <code>2201</code>");
   });
 
   it("shows no SN line when no serial number was stored", async () => {

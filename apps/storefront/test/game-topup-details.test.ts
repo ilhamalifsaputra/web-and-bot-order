@@ -8,7 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { prisma, initDb, setSetting, createCategory, createCatalogProduct, createDenomination } from "@app/db";
 import { OrderStatus } from "@app/core/enums";
-import { encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { encryptDeliveredContent, encryptCustomerData, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 import { newJti, shopSessionJtiKey, makeCustomerSession, SHOP_COOKIE_NAME } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -70,13 +70,13 @@ async function makeOrder(userId: number, opts: { denomId?: number; status?: stri
     data: {
       orderCode: `ORD-GTD-${counter}`, userId, subtotalAmount: "15000", totalAmount: "15000",
       status: opts.status ?? OrderStatus.DELIVERED, currency: "IDR", paymentMethod: "TOKOPAY", paymentState: "PAID", kind: "PRODUCT",
-      customerData: JSON.stringify(answers),
       items: { create: [{ productId: opts.denomId ?? gameDenomId, quantity: 1, unitPrice: "15000", warrantyDaysSnapshot: 0 }] },
     },
   });
   const deliveredContent = opts.deliveredContent ? opts.deliveredContent(order.id)
     : opts.sn === null ? null : encryptDeliveredContent(opts.sn ?? LONG_SN, order.id);
-  return prisma.order.update({ where: { id: order.id }, data: { deliveredContent } });
+  // Stored the way checkout writes it: an encrypted envelope bound to the order, never the answers.
+  return prisma.order.update({ where: { id: order.id }, data: { deliveredContent, customerData: encryptCustomerData(JSON.stringify(answers), order.id) } });
 }
 
 const get = (url: string, cookie: string) => app.inject({ method: "GET", url, cookies: { [SHOP_COOKIE_NAME]: cookie } });
@@ -86,6 +86,8 @@ describe("game top-up details on the pay and order-detail payloads", () => {
   it("gives the owner the full long SN, the mapped Game ID / Zone and the product slug", async () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeOrder(userId);
+    expect(isEncryptedCredentialEnvelope(order.customerData!)).toBe(true);
+    expect(order.customerData).not.toContain("12345678");
     for (const url of routes(order.orderCode)) {
       const res = await get(url, cookie);
       expect(res.statusCode, url).toBe(200);
@@ -167,6 +169,49 @@ describe("game top-up details on the pay and order-detail payloads", () => {
     }
   });
 
+  it("an unreadable answers envelope leaves game_target empty with a content-free warning, not a crash", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId);
+    const envelope = JSON.parse(order.customerData!) as { authTag: string };
+    envelope.authTag = Buffer.alloc(16).toString("base64");
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify(envelope) } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      for (const url of routes(order.orderCode)) {
+        const res = await get(url, cookie);
+        expect(res.statusCode, url).toBe(200);
+        expect(JSON.stringify(res.json().game_target ?? [])).not.toContain("12345678");
+        expect(res.json().sn).toBe(LONG_SN);
+      }
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/12345678|hunter2|buyer@example/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("answers that decrypt to an envelope-shaped value read as no answers with a content-free warning, not a 500", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId);
+    const envelopeShaped = JSON.stringify({ keyVersion: 1, iv: "a", ciphertext: "ODD-ROW-b", authTag: "c" });
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: encryptCustomerData(envelopeShaped, order.id) } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      for (const url of routes(order.orderCode)) {
+        const res = await get(url, cookie);
+        expect(res.statusCode, url).toBe(200);
+      }
+      const detail = (await get(`/api/v1/account/orders/${order.orderCode}`, cookie)).json();
+      expect(detail.order.customer_data).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: order.id, errorName: "EncryptedCustomerDataError" }),
+        expect.any(String),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ODD-ROW-b");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("a Premium Apps order has product_slug but no game_target or sn, and still its credentials path", async () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeOrder(userId, { denomId: premiumDenomId, sn: "PREMIUM-DELIVERY" });
@@ -178,6 +223,34 @@ describe("game top-up details on the pay and order-detail payloads", () => {
     }
     const detail = (await get(routes(order.orderCode)[1]!, cookie)).json();
     expect(detail.order.delivered_content).toBe("PREMIUM-DELIVERY");
+  });
+
+  it("a legacy plaintext answers row (written before encryption) still returns its Game ID on both pages", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId);
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify(answers) } });
+    for (const url of routes(order.orderCode)) {
+      const res = await get(url, cookie);
+      expect(res.statusCode, url).toBe(200);
+      expect(res.json().game_target).toEqual([{ game_id: "12345678", zone_id: "2201" }]);
+    }
+  });
+
+  it("the pay page does not decrypt the answers of a non-game order (no game_target is ever built from them)", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId, { denomId: premiumDenomId, sn: "PREMIUM-DELIVERY" });
+    const envelope = JSON.parse(order.customerData!) as { authTag: string };
+    envelope.authTag = Buffer.alloc(16).toString("base64");
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify(envelope) } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const res = await get(routes(order.orderCode)[0]!, cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().game_target).toBeNull();
+      expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ orderId: order.id }), expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("a game order's detail sends no stock credentials", async () => {

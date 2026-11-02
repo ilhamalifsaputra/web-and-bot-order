@@ -45,9 +45,27 @@
  * grepping every `session.state = ` assignment before relying on it). See
  * that function's doc comment for exactly which fields it checks and why
  * each one is a reliable "checkout draft is active" signal.
+ *
+ * ## Encrypted at rest
+ *
+ * The whole session JSON is encrypted at rest because it carries the buyer's
+ * in-flight checkout answers (`scratch.customerData`) and the messages typed
+ * into a conversation. While CREDENTIAL_ENVELOPE_WRITE_V2 is on, the envelope
+ * is v2 and bound to its session key (`bot_sessions.data:{sessionKey}`), so a
+ * row copied onto another chat does not decrypt; a v1 envelope (flag off) is
+ * not bound to anything. An undecryptable envelope is read as "no session"
+ * (a missing key is rethrown); a plaintext row written before this change is
+ * still read and expires within its TTL.
  */
 import type { StorageAdapter } from "grammy";
 import { config } from "@app/core/config";
+import {
+  CredentialKeyConfigError,
+  decryptBotSession,
+  encryptBotSession,
+  isEncryptedCredentialEnvelope,
+} from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 import { prisma, readBotSession, writeBotSession, deleteBotSession, type BotSessionKind } from "@app/db";
 import type { SessionData } from "../context";
 
@@ -148,8 +166,26 @@ export function classifySessionKind(session: SessionData): BotSessionKind {
 export function prismaSessionStorage(): StorageAdapter<SessionData> {
   return {
     async read(key) {
-      const raw = await readBotSession(prisma, key);
-      if (raw === undefined) return undefined;
+      const stored = await readBotSession(prisma, key);
+      if (stored === undefined) return undefined;
+      let raw: string;
+      if (isEncryptedCredentialEnvelope(stored)) {
+        try {
+          raw = decryptBotSession(stored, key);
+        } catch (err) {
+          // A missing key is a deployment fault the boot check already refuses; never hide it as a miss.
+          if (err instanceof CredentialKeyConfigError) throw err;
+          // Class name only: a message could echo part of the stored value.
+          logger.warn(
+            { errorName: err instanceof Error ? err.name : typeof err },
+            "A saved bot session could not be decrypted, so this chat starts a fresh session. It is corrupted, tampered with, or was encrypted under a different key.",
+          );
+          return undefined;
+        }
+      } else {
+        // Written before sessions were encrypted; such a row expires within the 24 h navigation TTL.
+        raw = stored;
+      }
       try {
         return JSON.parse(raw) as SessionData;
       } catch {
@@ -162,7 +198,7 @@ export function prismaSessionStorage(): StorageAdapter<SessionData> {
     async write(key, value) {
       const kind = classifySessionKind(value);
       const ttlMs = kind === "checkout" ? CHECKOUT_TTL_MS : NAV_TTL_MS;
-      await writeBotSession(prisma, key, JSON.stringify(value), kind, new Date(Date.now() + ttlMs));
+      await writeBotSession(prisma, key, encryptBotSession(JSON.stringify(value), key), kind, new Date(Date.now() + ttlMs));
     },
     async delete(key) {
       await deleteBotSession(prisma, key);

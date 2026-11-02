@@ -83,15 +83,47 @@ export function parseAdditionalFields(
   }
 }
 
-/** Parse stored buyer answers; returns [] on null/blank/invalid (never throws). */
+/** Thrown by parseCustomerData when it is handed an encrypted envelope: the
+ * caller forgot to decrypt first. Returning [] there would show an empty admin
+ * panel or build an empty supplier target without any error. */
+export class EncryptedCustomerDataError extends Error {
+  constructor() {
+    super(
+      "Order.customerData is an encrypted envelope; decrypt it with decryptCustomerData (or read the order through getOrder) before parsing it.",
+    );
+    this.name = "EncryptedCustomerDataError";
+  }
+}
+
+/** Structural envelope check, kept inline on purpose. Neither browser client
+ * bundles this module today (both import only its types and keep their own
+ * copies in client/src/lib/), but it is otherwise pure validation, and pulling
+ * in the Node-only credentialCrypto here would make that a trap for the day
+ * a client does import it. */
+function looksLikeEncryptedEnvelope(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.keyVersion === "number" &&
+    typeof v.iv === "string" &&
+    typeof v.ciphertext === "string" &&
+    typeof v.authTag === "string"
+  );
+}
+
+/** Parse stored buyer answers (already decrypted); returns [] on null/blank/invalid.
+ * Throws EncryptedCustomerDataError when given an encrypted envelope. */
 export function parseCustomerData(json: string | null | undefined): CustomerData {
   if (!json) return [];
+  let raw: unknown;
   try {
-    const parsed = zCustomerData.safeParse(JSON.parse(json));
-    return parsed.success ? parsed.data : [];
+    raw = JSON.parse(json);
   } catch {
     return [];
   }
+  if (looksLikeEncryptedEnvelope(raw)) throw new EncryptedCustomerDataError();
+  const parsed = zCustomerData.safeParse(raw);
+  return parsed.success ? parsed.data : [];
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

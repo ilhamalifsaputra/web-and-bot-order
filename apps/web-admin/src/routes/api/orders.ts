@@ -6,7 +6,7 @@ import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
-import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { EncryptedCustomerDataError, parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { orderInputConfig } from "@app/core/playerInput";
 import { startOfDayUtc } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
@@ -252,7 +252,18 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     let fieldSpec = product?.additionalFields ?? null;
     try { fieldSpec = orderInputConfig({ additionalFields: fieldSpec, providerInputMapping: product?.providerInputMapping ?? null }, order.inputConfigSnapshot).additionalFields; } catch { /* display-only fallback */ }
     const customerDataFields = parseAdditionalFields(fieldSpec);
-    const customerData = parseCustomerData(order.customerData);
+    // getOrder already decrypted the answers. A value that still looks like an envelope (an odd legacy
+    // row) is shown as no answers rather than failing the page; the warning names only the order.
+    let customerData: ReturnType<typeof parseCustomerData> = [];
+    try {
+      customerData = parseCustomerData(order.customerData);
+    } catch (err) {
+      if (!(err instanceof EncryptedCustomerDataError)) throw err;
+      logger.warn(
+        { orderId: order.id, errorName: err.name },
+        `The buyer's answers of order ${order.id} still look encrypted after decryption, so the admin order detail shows them as empty. The stored value needs an operator to look at it.`,
+      );
+    }
     // getOrder decrypts stock credentials for the delivery paths; this page
     // load must not leak them (or the hand-typed deliveredContent) — the
     // audited POST /api/orders/:orderId/reveal below is the only way to read them.

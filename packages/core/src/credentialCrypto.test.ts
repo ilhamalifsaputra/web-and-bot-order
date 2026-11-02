@@ -25,7 +25,15 @@ import {
   settingValueAad,
   encryptStockCredentials,
   decryptStockCredentials,
+  customerDataAad,
+  botSessionAad,
+  encryptCustomerData,
+  decryptCustomerData,
+  tryDecryptCustomerData,
+  encryptBotSession,
+  decryptBotSession,
 } from "./credentialCrypto";
+import * as credentialCrypto from "./credentialCrypto";
 import { logger } from "./logger";
 
 const ORIGINAL_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY;
@@ -615,5 +623,94 @@ describe("envelope v2 with AAD (Fase 6d)", () => {
     expect(credentialEnvelopeVersion("plain@x.com:pw")).toBeNull();
     expect(credentialEnvelopeVersion("")).toBeNull();
     expect(credentialEnvelopeVersion('{"user":"a"}')).toBeNull();
+  });
+});
+
+describe("Order.customerData and BotSession helpers", () => {
+  const ANSWERS = '[{"game_id":"12345","zone":"7"}]';
+  const ORIGINAL_WRITE_FLAG = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+  const ORIGINAL_LEGACY_FLAG = process.env.ALLOW_LEGACY_PLAINTEXT;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+    delete process.env.ALLOW_LEGACY_PLAINTEXT;
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_WRITE_FLAG === undefined) delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+    else process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = ORIGINAL_WRITE_FLAG;
+    if (ORIGINAL_LEGACY_FLAG === undefined) delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    else process.env.ALLOW_LEGACY_PLAINTEXT = ORIGINAL_LEGACY_FLAG;
+  });
+
+  it("context strings are exactly the documented ones (changing one orphans every v2 value)", () => {
+    expect(customerDataAad(42)).toBe("orders.customer_data:42");
+    expect(botSessionAad("chat-1")).toBe("bot_sessions.data:chat-1");
+    expect(() => customerDataAad(0)).toThrow(CredentialEnvelopeError);
+    expect(() => botSessionAad("")).toThrow(CredentialEnvelopeError);
+  });
+
+  it("round-trips as a v1 envelope while the write flag is off, and never stores the answers", () => {
+    const stored = encryptCustomerData(ANSWERS, 7);
+    expect(credentialEnvelopeVersion(stored)).toBe(1);
+    expect(stored).not.toContain("12345");
+    expect(decryptCustomerData(stored, 7)).toBe(ANSWERS);
+  });
+
+  it("with the write flag on, an update envelope is v2 and bound to its own order", () => {
+    process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    const stored = encryptCustomerData(ANSWERS, 7);
+    expect(credentialEnvelopeVersion(stored)).toBe(2);
+    expect(decryptCustomerData(stored, 7)).toBe(ANSWERS);
+    expect(() => decryptCustomerData(stored, 8)).toThrow(CredentialEnvelopeError);
+  });
+
+  it("there is no way to force a v1 envelope past the write flag (new orders bind their answers once the id exists)", () => {
+    expect("encryptCustomerDataForInsert" in credentialCrypto).toBe(false);
+    process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    // An options object from older callers must not downgrade the envelope.
+    const stored = (credentialCrypto.encryptCredentials as (p: string, aad: string, opts?: unknown) => string)(ANSWERS, customerDataAad(7), { forceV1: true });
+    expect(credentialEnvelopeVersion(stored)).toBe(2);
+  });
+
+  it("null stays null", () => {
+    expect(decryptCustomerData(null, 1)).toBeNull();
+    expect(tryDecryptCustomerData(null, { orderId: 1, purpose: "test" })).toBeNull();
+  });
+
+  it("a legacy plaintext array passes through while the flag is on and throws when it is off", () => {
+    expect(decryptCustomerData(ANSWERS, 7)).toBe(ANSWERS);
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(() => decryptCustomerData(ANSWERS, 7)).toThrow(LegacyPlaintextCredentialError);
+  });
+
+  it("a tampered envelope throws for delivery and becomes null plus a warning without content for display", () => {
+    const good = JSON.parse(encryptCustomerData(ANSWERS, 7)) as Record<string, unknown>;
+    const tampered = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
+    expect(() => decryptCustomerData(tampered, 7)).toThrow();
+    expect(tryDecryptCustomerData(tampered, { orderId: 7, purpose: "a test page" })).toBeNull();
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain("7");
+    expect(logged).not.toContain("12345");
+  });
+
+  it("a missing key is not swallowed by the display variant", () => {
+    const stored = encryptCustomerData(ANSWERS, 7);
+    const key = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      expect(() => tryDecryptCustomerData(stored, { orderId: 7, purpose: "test" })).toThrow(CredentialKeyConfigError);
+    } finally {
+      if (key === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = key;
+    }
+  });
+
+  it("bot sessions round-trip bound to their key", () => {
+    const stored = encryptBotSession('{"scratch":{"customerData":"[{\\"game_id\\":\\"12345\\"}]"}}', "chat-1");
+    expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
+    expect(stored).not.toContain("12345");
+    expect(decryptBotSession(stored, "chat-1")).toContain("12345");
   });
 });

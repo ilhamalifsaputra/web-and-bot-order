@@ -244,7 +244,8 @@ describe("end-to-end: customerInfoConversation through the REAL Prisma session a
     // The scratch fields set at entry are exactly what makes this a
     // "checkout in progress" session per classifySessionKind.
     expect(rowAfterEntry!.kind).toBe("checkout");
-    const dataAfterEntry = JSON.parse(rowAfterEntry!.data) as SessionData & { conversation?: unknown };
+    // The stored blob is encrypted at rest; read it back through the adapter.
+    const dataAfterEntry = (await prismaSessionStorage().read(String(CHAT_ID))) as SessionData & { conversation?: unknown };
     // The conversation is genuinely suspended mid-flight, waiting at its
     // first wait() — its replay op log (including the conversation.external()
     // result: the denomination's field spec and category group, as a plain
@@ -265,7 +266,7 @@ describe("end-to-end: customerInfoConversation through the REAL Prisma session a
 
     const rowAfterAnswer = await prisma.botSession.findUnique({ where: { key: String(CHAT_ID) } });
     expect(rowAfterAnswer).not.toBeNull();
-    const dataAfterAnswer = JSON.parse(rowAfterAnswer!.data) as SessionData & { conversation?: Record<string, unknown> };
+    const dataAfterAnswer = (await prismaSessionStorage().read(String(CHAT_ID))) as SessionData & { conversation?: Record<string, unknown> };
 
     // The conversation completed (its own return, no more wait() calls) —
     // grammY's conversations plugin deletes the per-conversation entry from

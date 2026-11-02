@@ -28,7 +28,7 @@ import { ValidationError } from "@app/core/errors";
 import { usesLocalInventory } from "@app/core/productAvailability";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
-import { parseCustomerData } from "@app/core/deliveryFields";
+import { EncryptedCustomerDataError, parseCustomerData } from "@app/core/deliveryFields";
 import { orderInputConfig, parseInputFields } from "@app/core/playerInput";
 import { customerProgressPhase, getOrderFulfillment, toBuyerDigiflazzStatus } from "@app/core/orderFulfillment";
 import { buyerOrderSummary } from "./buyerOrderSummary";
@@ -288,7 +288,18 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       providerInputMapping: denomination?.providerInputMapping ?? null,
     }, order.inputConfigSnapshot);
     const customerDataFields = parseInputFields(inputConfig.additionalFields);
-    const customerData = parseCustomerData(order.customerData);
+    // getOrderByCodeFullForDisplay already decrypted the answers. A value that still looks like an envelope (an odd legacy
+    // row) is shown as no answers rather than failing the page; the warning names only the order.
+    let customerData: ReturnType<typeof parseCustomerData> = [];
+    try {
+      customerData = parseCustomerData(order.customerData);
+    } catch (err) {
+      if (!(err instanceof EncryptedCustomerDataError)) throw err;
+      logger.warn(
+        { orderId: order.id, errorName: err.name },
+        `The buyer's answers of order ${order.id} still look encrypted after decryption, so the buyer's order page shows them as empty. The stored value needs an operator to look at it.`,
+      );
+    }
     const money = buyerOrderSummary(order);
     const transactionStatus = await transactionStatusView(order);
     return reply.send({

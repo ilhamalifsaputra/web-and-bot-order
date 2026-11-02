@@ -6,7 +6,7 @@ import { formatIdrFor } from "@app/core/moneyFormat";
 import { formatUsdt } from "@app/core/formatters";
 import { t } from "@app/core/i18n";
 import { orderGameTargets, orderGameTargetLabels } from "@app/core/playerInput";
-import { decryptDeliveredContent } from "@app/core/credentialCrypto";
+import { decryptDeliveredContent, tryDecryptCustomerData } from "@app/core/credentialCrypto";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { escape } from "./templates";
@@ -52,7 +52,8 @@ function gameReceiptDetails(order: MessageRow["order"], lang: string): string[] 
   const first = order.items[0];
   if (first) {
     try {
-      const targets = orderGameTargets(first.product, order.inputConfigSnapshot, order.customerData);
+      const answers = tryDecryptCustomerData(order.customerData, { orderId: order.id, purpose: "the order status message" });
+      const targets = orderGameTargets(first.product, order.inputConfigSnapshot, answers);
       const labels = orderGameTargetLabels(first.product, order.inputConfigSnapshot, lang);
       for (const [label, name] of [["transaction.game_id", "game_id"], ["transaction.zone_id", "zone_id"], ["transaction.server_id", "server_id"]] as const) {
         const found = [...new Set(targets.map(target => target[name]).filter((v): v is string => !!v))];

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, createOrderFromCart, attachPaymentProof, settlePaidOrder, updateOrderCustomerData, fulfillManualOrder, creditOrderToBalance } from "./orders";
+import { createOrderDirect, createOrderFromCart, attachPaymentProof, settlePaidOrder, updateOrderCustomerData, fulfillManualOrder, creditOrderToBalance, getOrder } from "./orders";
 import { bulkAddStock } from "./stock";
 import { dispatchPendingDigiflazzOrders, recordDigiflazzOutcome, fulfillDigiflazzOrder } from "./digiflazz";
 import { setSetting } from "./settings";
@@ -100,7 +100,7 @@ describe("automatic fulfillment routing", () => {
     const order = await paidOrder();
     await db.prisma.order.update({ where: { id: order.id }, data: { digiflazzDispatchedAt: new Date(), digiflazzStatus: "pending_at_supplier" } });
     await expect(updateOrderCustomerData(db.prisma, order.id, [{ game_id: "different" }])).rejects.toThrow();
-    expect((await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).customerData).toContain("12345");
+    expect((await getOrder(db.prisma, order.id))!.customerData).toContain("12345");
   });
 
   it("alerts once when terminal failure is repeated", async () => {

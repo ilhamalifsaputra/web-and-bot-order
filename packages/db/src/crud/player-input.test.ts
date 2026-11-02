@@ -3,7 +3,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { OrderStatus, ProductType } from "@app/core/enums";
 import { buildPlayerNicknameRequest, parseInputFields } from "@app/core/playerInput";
-import { createOrderDirect, createDenomination, updateDenomination, updateOrderCustomerData, buildDigiflazzCustomerNo, resolveNicknameGate } from "@app/db";
+import { createOrderDirect, createDenomination, updateDenomination, updateOrderCustomerData, buildDigiflazzCustomerNo, resolveNicknameGate, getOrder } from "@app/db";
 let db: TestDb;
 let sample: SampleData;
 const fields = JSON.stringify([
@@ -19,7 +19,8 @@ describe("player input order boundary", () => {
     const args = { user: sample.user, productId: sample.product.id, quantity: 1, channel: "bot" as const };
     await expect(createOrderDirect(db.prisma, { ...args, customerData: JSON.stringify([{ user_id: "000123" }]) })).rejects.toThrow();
     const order = (await createOrderDirect(db.prisma, { ...args, customerData: JSON.stringify([{ user_id: "000123", zone_id: "004" }]) }))!;
-    const saved = await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    // The column is encrypted at rest; read the answers back through getOrder, which decrypts.
+    const saved = (await getOrder(db.prisma, order.id))!;
     expect(saved.customerData).toBe(JSON.stringify([{ user_id: "000123", zone_id: "004" }]));
     expect(JSON.parse((saved as unknown as { inputConfigSnapshot: string }).inputConfigSnapshot).fields).toHaveLength(2);
   });
@@ -49,7 +50,7 @@ describe("player input order boundary", () => {
     await updateDenomination(db.prisma, sample.product.id, { additionalFields: JSON.stringify([JSON.parse(fields)[0]]) });
     await expect(updateOrderCustomerData(db.prisma, order.id, [{ user_id: "9" }])).rejects.toThrow();
     await updateOrderCustomerData(db.prisma, order.id, [{ user_id: "9", zone_id: "8" }]);
-    const saved = await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    const saved = (await getOrder(db.prisma, order.id))!;
     expect(JSON.parse(saved.customerData!)).toEqual([{ user_id: "9", zone_id: "8" }]);
   });
   it("two variants of the same game resolve their own input profile and never inherit from each other", async () => {

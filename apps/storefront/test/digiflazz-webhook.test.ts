@@ -45,7 +45,7 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
 
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
-import { decryptDeliveredContent, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { decryptDeliveredContent, encryptDeliveredContent, encryptCustomerData } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 import { DigiflazzRequestError } from "@app/core/suppliers/digiflazz";
 import {
@@ -212,7 +212,7 @@ async function createProcessingDigiflazzOrder(
   totalAmount = "15000",
   dispatch: { digiflazzDispatchedAt?: Date | null; digiflazzStatus?: string | null; digiflazzNextRecheckAt?: Date | null } = {},
 ) {
-  return prisma.order.create({
+  const order = await prisma.order.create({
     data: {
       orderCode,
       userId,
@@ -225,11 +225,15 @@ async function createProcessingDigiflazzOrder(
       digiflazzStatus: "pending_at_supplier",
       digiflazzNextRecheckAt: new Date(Date.now() + 30 * 60_000),
       ...dispatch,
-      customerData: JSON.stringify([{ user_id: "123456789" }]),
       items: {
         create: [{ productId: denomId, quantity: 1, unitPrice: totalAmount, warrantyDaysSnapshot: 0 }],
       },
     },
+  });
+  // Stored the way checkout writes it: an encrypted envelope bound to the order, never the answers.
+  return prisma.order.update({
+    where: { id: order.id },
+    data: { customerData: encryptCustomerData(JSON.stringify([{ user_id: "123456789" }]), order.id) },
   });
 }
 
@@ -803,6 +807,47 @@ describe("POST /pay/digiflazz/callback", () => {
   // actually Digiflazz-routed (e.g. a plain manual order) must be refused
   // before any live re-check is attempted — resolveSingleDigiflazzItem's
   // guard, not a bare "order found" check.
+  it("a legacy plaintext answers row (written before encryption) still re-checks live with the same customerNo", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFLEGACY");
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: JSON.stringify([{ user_id: "123456789" }]) } });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-LEGACY", message: "ok", price: null });
+
+    const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-STALE" }));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ refId: order.orderCode, buyerSkuCode: "ml100", customerNo: "123456789" }),
+    );
+  });
+
+  it("an unreadable answers envelope returns unmatched without a live re-check and logs a content-free warning", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFTAMPER");
+    const good = JSON.parse(order.customerData!) as Record<string, unknown>;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { customerData: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const res = await app.inject(signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" }));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ status: "unmatched" });
+      expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderCode: order.orderCode, errorName: expect.any(String) }),
+        expect.stringContaining(order.orderCode),
+      );
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain("123456789");
+      expect(logged).not.toContain(String(good.ciphertext));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("returns unmatched for a validly-signed callback naming an order that isn't Digiflazz-routed, without calling the live re-check", async () => {
     const order = await createProcessingPlainOrder("ORD-DFNOTDIGI");
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });

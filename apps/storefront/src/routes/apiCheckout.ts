@@ -26,6 +26,7 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
+import { tryDecryptCustomerData } from "@app/core/credentialCrypto";
 import { prisma, getOrderByCode } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { cancelAsBuyer } from "./buyerCancel";
@@ -118,10 +119,21 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     }
     const view = await payView(order);
     // Game top-up details only here, after the owner check above — the
-    // wallet top-up pay page shares payView and stays unchanged.
+    // wallet top-up pay page shares payView and stays unchanged. The raw row's
+    // answers are decrypted only when a game target can be built from them.
+    const isGameTopup = view.presentation.transactionType === "GAME_TOPUP";
     return reply.send({
       ...view,
-      ...gameTopupDetails(order, view.presentation.transactionType, () => decryptGameSn(order)),
+      ...gameTopupDetails(
+        {
+          ...order,
+          customerData: isGameTopup
+            ? tryDecryptCustomerData(order.customerData, { orderId: order.id, purpose: "the buyer's pay page" })
+            : null,
+        },
+        view.presentation.transactionType,
+        () => decryptGameSn(order),
+      ),
       read_only: Boolean(customer.orderScope),
       recovery_url: customer.user.isGuest && !customer.orderScope ? guestOrderRecoveryUrl("", order.orderCode) : null,
     });

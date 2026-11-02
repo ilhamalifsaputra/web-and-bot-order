@@ -725,9 +725,10 @@ Settings (API key payment/provider), **dan** `Order.deliveredContent` (akun yang
 diketik admin untuk order manual). Hanya daftar/cari/export stok dan preview
 stok di bot yang melewati baris itu; jalur lain (detail order admin, pencarian
 admin, riwayat order pembeli, pengiriman) mengembalikan error. Jadi set `false`
-hanya setelah **ketiga** backfill selesai: `backfill-encrypt-stock-credentials`,
-`backfill-encrypt-settings-secrets`, dan `backfill-encrypt-delivered-content`.
-Cara tahu backfill sudah tuntas: jalankan ketiga script itu, lalu restart —
+hanya setelah **keempat** backfill selesai: `backfill-encrypt-stock-credentials`,
+`backfill-encrypt-settings-secrets`, `backfill-encrypt-delivered-content`, dan
+`backfill-encrypt-customer-data` (jawaban pembeli, `Order.customerData`).
+Cara tahu backfill sudah tuntas: jalankan keempat script itu, lalu restart —
 warning "legacy plaintext" (muncul sekali per proses) tidak muncul lagi di log
 **semua** proses. Urutan lengkapnya ada di "Checklist rollout" di bawah.
 
@@ -742,6 +743,8 @@ bawahnya tidak terbaca selamanya):
 | --- | --- |
 | `StockItem.credentials` | `stock_items.credentials:{id}` |
 | `Order.deliveredContent` | `orders.delivered_content:{orderId}` |
+| `Order.customerData` (jawaban pembeli) | `orders.customer_data:{orderId}` |
+| `BotSession.data` (sesi grammY) | `bot_sessions.data:{key}` |
 | `Setting.value` (kunci di `ENCRYPTED_SETTING_KEYS`) | `settings.value:{key}` |
 
 Kode pembaca menerima v1 (tanpa AAD, konteks diabaikan) dan v2 (konteks wajib
@@ -767,8 +770,13 @@ cocok). Penulis tetap menulis v1 kecuali `CREDENTIAL_ENVELOPE_WRITE_V2=true`
    tapi cek itu HANYA membaca environment proses script itu sendiri. Ia tidak
    membuktikan apa pun tentang proses aplikasi, host lain, atau cron; pastikan
    langkah 1 dan 4 sudah benar di semua tempat itu secara manual.
-6. **Verifikasi.** Jalankan lagi `--dry-run`: `v1` harus 0 di ketiga kolom
-   (kalau ada "changed during the run", ulangi langkah 5).
+6. **Verifikasi.** Jalankan lagi `--dry-run`: `v1` harus 0 di keempat kolom
+   (`StockItem.credentials`, `Order.deliveredContent`, `Order.customerData`,
+   `Setting.value`; kalau ada "changed during the run", ulangi langkah 5).
+   Order baru menulis jawabannya sebagai v2 yang terikat ke order itu sendiri
+   (dalam transaksi yang sama, begitu id-nya ada), jadi angka ini tetap 0.
+   `BotSession.data` tidak ditulis ulang oleh script: sesi v1 menjadi v2 saat
+   ditulis berikutnya, dan habis sendiri dalam 24 jam.
 
 **Rollback.** Setelah langkah 4, nilai v2 sudah ada di database. Mematikan flag
 hanya menghentikan penulisan v2 baru — nilai v2 yang ada tetap v2. Karena itu
@@ -850,7 +858,24 @@ Urutan ini wajib; jangan lompat langkah.
    angkanya (lihat di atas), lalu jalankan tanpa `--dry-run`.
 5. **Enkripsi.** `pnpm backfill-encrypt-stock-credentials`,
    `pnpm backfill-encrypt-settings-secrets`,
-   `pnpm backfill-encrypt-delivered-content`.
+   `pnpm backfill-encrypt-delivered-content`, lalu jawaban pembeli
+   (`Order.customerData`): `pnpm backfill-encrypt-customer-data --dry-run`,
+   baca angkanya, lalu jalankan tanpa `--dry-run`. Ulangi `--dry-run` sampai
+   `plaintext = 0` dan `corrupt = 0` sebelum lanjut ke langkah 7.
+
+   > **Peringatan rollback.** Begitu ada order yang jawabannya terenkripsi
+   > (order baru langsung terenkripsi sejak kode ini jalan), kode versi
+   > sebelumnya membaca envelope itu sebagai "tanpa jawaban": Game ID kosong
+   > di admin dan di halaman pembeli, dan pengiriman Digiflazz-nya gagal validasi
+   > field wajib sehingga order masuk "perlu review manual" (tidak ada yang
+   > dikirim ke supplier, tapi semua order game baru tertahan sampai ditangani
+   > manual). Rollback hanya aman ke versi yang
+   > masih bisa mendekripsinya; jangan rollback melewati perubahan ini. Sesi
+   > bot (`BotSession.data`) juga terenkripsi, dan kode lama TIDAK mengenali
+   > envelope-nya sebagai sesi (ia mem-parse JSON envelope itu seolah-olah
+   > sesi); kalau terpaksa rollback, kosongkan tabel sesi bot dulu
+   > (`DELETE FROM bot_sessions;` — hanya status navigasi/checkout yang
+   > sedang berjalan yang hilang).
 6. **Audit.** `pnpm audit-stock-integrity` dan
    `scripts/audit-stock-duplicates.sql`; selesaikan temuannya dulu.
 7. **Mode ketat.** Hanya setelah warning "legacy plaintext" hilang dari log
@@ -858,7 +883,7 @@ Urutan ini wajib; jangan lompat langkah.
 8. **Envelope v2.** Semua host dan cron sudah di kode ini →
    `pnpm reencrypt-credentials-v2 --dry-run` → set
    `CREDENTIAL_ENVELOPE_WRITE_V2=true` di semua proses dan restart →
-   `pnpm reencrypt-credentials-v2` → `--dry-run` lagi, `v1` harus 0. Sejak
+   `pnpm reencrypt-credentials-v2` → `--dry-run` lagi, `v1` harus 0 di keempat kolom. Sejak
    itu rollback wajib tetap ke kode tahap 1 atau lebih baru (lihat "Envelope
    credential v2" di atas).
 

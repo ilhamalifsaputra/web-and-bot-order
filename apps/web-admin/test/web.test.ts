@@ -106,7 +106,8 @@ import {
   PAYMENTS_MUTATION_RATE_LIMIT_MAX,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
-import { decryptCredentials, encryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { decryptCredentials, encryptCustomerData, encryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 import { canMutate } from "../src/plugins/auth";
 import { SETUP_INCOMPLETE_MESSAGE } from "../src/plugins/setupGate";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
@@ -1229,6 +1230,25 @@ describe("orders API — manual fulfilment", () => {
     await post(`/api/orders/${orderId}/fulfill`, seed.cookie, { csrf_token: seed.csrf, content: "user:x" });
     const after = await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
     expect(after.json().canFulfill).toBe(false);
+  });
+
+  it("GET order detail: answers that decrypt to an envelope-shaped value read as no answers with a content-free warning, not a 500", async () => {
+    const orderId = await makeProcessingOrder();
+    const envelopeShaped = JSON.stringify({ keyVersion: 1, iv: "a", ciphertext: "ODD-ROW-b", authTag: "c" });
+    await prisma.order.update({ where: { id: orderId }, data: { customerData: encryptCustomerData(envelopeShaped, orderId) } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const res = await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().customerData).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId, errorName: "EncryptedCustomerDataError" }),
+        expect.any(String),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ODD-ROW-b");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

@@ -1157,6 +1157,53 @@ describe("dispatchDigiflazzOrderNow — direct per-order dispatch (instant dispa
     expect(refreshed!.deliveredContent).toBe("SN-NOW");
   });
 
+  it("[MONEY-CRITICAL] dispatches the identical customer number for an order whose answers are stored encrypted", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    const stored = (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).customerData!;
+    expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
+    expect(stored).not.toContain("123456789");
+    digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Sukses", sn: "SN-ENC", message: "ok", price: null });
+
+    const summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledWith(
+      { username: "shopuser", apiKey: "shopkey" },
+      { refId: order.orderCode, buyerSkuCode: "ml100", customerNo: "123456789" },
+    );
+  });
+
+  it("[MONEY-CRITICAL] an unreadable answers envelope sends nothing to the supplier and routes the order to manual review", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    const good = JSON.parse((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).customerData!) as Record<string, unknown>;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { customerData: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+
+    const warn = vi.spyOn(logger, "warn");
+    let summary;
+    try {
+      summary = await dispatchDigiflazzOrderNow(prisma, order.id);
+      // The cause is logged (order code and error class only), not swallowed.
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderCode: order.orderCode, errorName: expect.any(String) }),
+        expect.stringContaining(order.orderCode),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(String(good.ciphertext));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.PROCESSING);
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzFailureDetail).toContain("Invalid player input configuration or answers; needs manual review");
+  });
+
   it("Pending leaves the order pending_at_supplier with a recheck scheduled", async () => {
     const order = await makeProcessingDigiflazzOrder();
     digiflazzMock.createTransaction.mockResolvedValue({ refId: order.orderCode, status: "Pending", sn: null, message: null, price: null });

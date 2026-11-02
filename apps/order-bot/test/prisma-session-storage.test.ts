@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@app/db";
 import { BotState, initialSession, type SessionData } from "../src/context";
 import { prismaSessionStorage, classifySessionKind, NAV_TTL_MS, CHECKOUT_TTL_MS } from "../src/util/prismaSessionStorage";
+import { CredentialKeyConfigError, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -187,5 +188,77 @@ describe("prismaSessionStorage — TTL split", () => {
       data: { expiresAt: new Date(Date.now() + NAV_TTL_MS - CHECKOUT_TTL_MS - 1_000) },
     });
     expect(await storage.read("chat:longlived")).not.toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// Encryption at rest — the blob carries the buyer's in-flight checkout answers
+// ===========================================================================
+
+describe("prismaSessionStorage — encryption at rest", () => {
+  const checkoutSession = (): SessionData => ({
+    ...initialSession(),
+    scratch: { customerData: '[{"game_id":"12345"}]' },
+  });
+  const rawData = async (key: string) => (await prisma.botSession.findUniqueOrThrow({ where: { key } })).data;
+
+  it("stores an envelope, never the typed answers, and reads the session back", async () => {
+    const storage = prismaSessionStorage();
+    await storage.write("chat-enc", checkoutSession());
+
+    const stored = await rawData("chat-enc");
+    expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
+    expect(stored).not.toContain("12345");
+    expect((await storage.read("chat-enc"))?.scratch?.customerData).toBe('[{"game_id":"12345"}]');
+  });
+
+  it("still reads a plaintext session written before encryption (it expires on its own)", async () => {
+    const storage = prismaSessionStorage();
+    await prisma.botSession.create({
+      data: { key: "chat-old", data: JSON.stringify(checkoutSession()), kind: "checkout", expiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    expect((await storage.read("chat-old"))?.scratch?.customerData).toBe('[{"game_id":"12345"}]');
+  });
+
+  it("treats a session copied onto another key as no session (the envelope is bound to its key)", async () => {
+    const original = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+    process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    try {
+      const storage = prismaSessionStorage();
+      await storage.write("chat-a", checkoutSession());
+      await prisma.botSession.create({
+        data: { key: "chat-b", data: await rawData("chat-a"), kind: "checkout", expiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      expect(await storage.read("chat-b")).toBeUndefined();
+    } finally {
+      if (original === undefined) delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+      else process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = original;
+    }
+  });
+
+  it("treats a tampered envelope as no session instead of crashing the update", async () => {
+    const storage = prismaSessionStorage();
+    await storage.write("chat-bad", checkoutSession());
+    const good = JSON.parse(await rawData("chat-bad")) as Record<string, unknown>;
+    await prisma.botSession.update({
+      where: { key: "chat-bad" },
+      data: { data: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
+    });
+
+    expect(await storage.read("chat-bad")).toBeUndefined();
+  });
+
+  it("rethrows a missing CREDENTIAL_ENCRYPTION_KEY on read instead of hiding it as 'no session'", async () => {
+    const storage = prismaSessionStorage();
+    await storage.write("chat-nokey", checkoutSession());
+    const savedKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      await expect(storage.read("chat-nokey")).rejects.toThrow(CredentialKeyConfigError);
+    } finally {
+      process.env.CREDENTIAL_ENCRYPTION_KEY = savedKey;
+    }
   });
 });

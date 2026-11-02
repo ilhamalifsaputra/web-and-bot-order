@@ -58,6 +58,8 @@ import {
   encryptDeliveredContent,
   decryptDeliveredContent,
   tryDecryptDeliveredContent,
+  encryptCustomerData,
+  tryDecryptCustomerData,
 } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
@@ -616,11 +618,17 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * no items with stock attached — cheap no-op for every non-manual-account
  * order kind. `Order.deliveredContent` (encrypted since Fase 6c) is decrypted
  * here too, throwing on an unreadable value like the stock credentials do.
+ * `Order.customerData` (encrypted since the buyer-answers change) is decrypted
+ * here too but does NOT throw: an unreadable answers value degrades to null
+ * plus a warning naming only the order id and error class (a missing key still
+ * throws). Settlement and delivery read through here and must not fail on the
+ * buyer's answers; the supplier paths decrypt their own raw rows instead.
  */
 function withDecryptedStockCredentials<
   T extends {
     id: number;
     deliveredContent: string | null;
+    customerData: string | null;
     items: Array<{ stockItem: { id: number; credentials: string } | null }>;
   },
 >(order: T): T {
@@ -632,6 +640,10 @@ function withDecryptedStockCredentials<
   return {
     ...order,
     deliveredContent: decryptDeliveredContent(order.deliveredContent, order.id),
+    // Never the throwing variant: getOrder also serves payment settlement, credential delivery and
+    // ticket creation, and one unreadable answers value must not roll those back forever. No supplier
+    // path reads answers through here; each decrypts its own raw row and fails safe on its own.
+    customerData: tryDecryptCustomerData(order.customerData, { orderId: order.id, purpose: "an order read" }),
     items: order.items.map((item) =>
       item.stockItem
         ? {
@@ -720,6 +732,7 @@ export async function getOrderByCodeFull(db: Db, orderCode: string) {
 type StockCredentialsOrder = {
   id: number;
   deliveredContent: string | null;
+  customerData: string | null;
   items: Array<{ stockItem: { id: number; credentials: string } | null }>;
 };
 type DisplayItem<I extends StockCredentialsOrder["items"][number]> = Omit<I, "stockItem"> & {
@@ -736,6 +749,10 @@ function withDisplayStockCredentials<T extends StockCredentialsOrder>(order: T):
   return {
     ...order,
     deliveredContent: tryDecryptDeliveredContent(order.deliveredContent, {
+      orderId: order.id,
+      purpose: "a buyer's order detail page",
+    }),
+    customerData: tryDecryptCustomerData(order.customerData, {
       orderId: order.id,
       purpose: "a buyer's order detail page",
     }),
@@ -939,7 +956,9 @@ export async function createOrderFromCart(
   // persisted as-is (Finding #4, per-sku-delivery-flows audit 2026-07-13).
   // Re-validating data performCheckout already validated is a safe no-op —
   // valid data stays valid.
-  let customerDataToStore = args.customerData ?? null;
+  // No info line means nothing to answer: store null, never the caller's raw value (a buyer could
+  // otherwise store an envelope-shaped string that every answers reader then refuses).
+  let customerDataToStore: string | null = null;
   const infoLines = cart.filter((ci) => ci.product.deliveryType === DeliveryType.MANUAL_WITH_INFO || !!ci.product.additionalFields);
   if (infoLines.length > 1) throw new ValidationError("error.customer_data_incomplete");
   const infoLine = infoLines[0];
@@ -972,7 +991,8 @@ export async function createOrderFromCart(
         totalAmount: ZERO,
         voucherId: voucher ? voucher.id : null,
         status: OrderStatus.PENDING_PAYMENT,
-        customerData: customerDataToStore,
+        // Encrypted in the final-totals update below, once the id exists to bind the envelope to.
+        customerData: null,
         inputConfigSnapshot: infoLine ? inputConfigSnapshot(infoLine.product) : null,
         fulfillmentProvider: fulfillmentProviderFor({ items: cart.map(ci => ({ product: ci.product })) }),
         fulfillmentSku: cart.find(ci => ci.product.autoDeliverySource === "digiflazz")?.product.supplierSku ?? null,
@@ -1102,7 +1122,11 @@ export async function createOrderFromCart(
   const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : ZERO;
   await db.order.update({
     where: { id: order.id },
-    data: { uniqueCents: cents, totalAmount: q4(finalBeforeCents.plus(cents)) },
+    data: {
+      uniqueCents: cents,
+      totalAmount: q4(finalBeforeCents.plus(cents)),
+      customerData: customerDataToStore ? encryptCustomerData(customerDataToStore, order.id) : customerDataToStore,
+    },
   });
 
   // 9. Wallet debit (atomic). Cart orders are charged in IDR (TokoPay/QRIS),
@@ -1260,7 +1284,8 @@ export async function createOrderDirect(
   // storefront's performCheckout, which already does the equivalent check
   // before calling createOrderFromCart (Finding #4, per-sku-delivery-flows
   // audit 2026-07-13). Re-validating already-valid data is a safe no-op.
-  let customerDataToStore = args.customerData ?? null;
+  // A product without info fields has nothing to answer: store null, never the caller's raw value.
+  let customerDataToStore: string | null = null;
   if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO || product.additionalFields) {
     const fields = parseInputFields(product.additionalFields);
     let parsedAnswers: unknown = null;
@@ -1289,7 +1314,8 @@ export async function createOrderDirect(
         uniqueCents: ZERO,
         totalAmount: ZERO,
         status: OrderStatus.PENDING_PAYMENT,
-        customerData: customerDataToStore,
+        // Encrypted in the final-totals update below, once the id exists to bind the envelope to.
+        customerData: null,
         inputConfigSnapshot: product.additionalFields ? inputConfigSnapshot(product) : null,
         fulfillmentProvider: fulfillmentProviderFor({ items: [{ product }] }),
         fulfillmentSku: product.autoDeliverySource === "digiflazz" ? product.supplierSku : null,
@@ -1359,7 +1385,12 @@ export async function createOrderDirect(
   const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : ZERO;
   await db.order.update({
     where: { id: order.id },
-    data: { uniqueCents: cents, walletUsed, totalAmount: q4(afterDiscount.minus(walletUsed).plus(cents)) },
+    data: {
+      uniqueCents: cents,
+      walletUsed,
+      totalAmount: q4(afterDiscount.minus(walletUsed).plus(cents)),
+      customerData: customerDataToStore ? encryptCustomerData(customerDataToStore, order.id) : customerDataToStore,
+    },
   });
 
   if (walletUsed.greaterThan(ZERO)) {
@@ -1443,12 +1474,13 @@ export async function applyUsdtWalletToOrder(
 
 /**
  * List/summary rows are spread straight into admin JSON, so they never carry
- * the delivered secret; only getOrder's detail/reveal/resend paths read it.
+ * the delivered secret or the buyer's (encrypted) answers; only getOrder's
+ * detail/reveal/resend paths read them.
  */
 export function withoutDeliveredContent<T extends { deliveredContent: string | null }>(
   order: T,
-): Omit<T, "deliveredContent"> {
-  const { deliveredContent: _deliveredContent, ...rest } = order;
+): Omit<T, "deliveredContent" | "customerData"> {
+  const { deliveredContent: _deliveredContent, customerData: _customerData, ...rest } = order as T & { customerData?: unknown };
   return rest;
 }
 
@@ -3493,7 +3525,7 @@ export async function updateOrderCustomerData(
   db: Db,
   orderId: number,
   answers: unknown,
-): Promise<OrderWithIncludes> {
+): Promise<{ id: number }> {
   // Raw reads: editing the buyer's answers needs no secret (see getOrderRaw).
   const order = await getOrderRaw(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
@@ -3509,11 +3541,12 @@ export async function updateOrderCustomerData(
   const normalized = validateCustomerData(fields, answers, order.items.length);
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PROCESSING, ...(fulfillmentProviderFor(order) === "DIGIFLAZZ" ? { digiflazzDispatchedAt: null, OR: [{ digiflazzStatus: null }, { digiflazzStatus: { not: "failed" } }] } : {}) },
-    data: { customerData: JSON.stringify(normalized) },
+    data: { customerData: encryptCustomerData(JSON.stringify(normalized), orderId) },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
-  const refreshed = await getOrderRaw(db, orderId);
-  return refreshed!;
+  // Only the id: the stored answers are now an envelope, and a caller that needs
+  // them reads the order through getOrder, which decrypts.
+  return { id: orderId };
 }
 
 /** The eligibility flags the Orders list/detail/bulk-action surfaces all

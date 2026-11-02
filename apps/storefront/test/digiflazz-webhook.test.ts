@@ -45,7 +45,7 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
 
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
-import { decryptDeliveredContent, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { decryptDeliveredContent, encryptDeliveredContent, encryptCustomerDataForInsert } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 import { DigiflazzRequestError } from "@app/core/suppliers/digiflazz";
 import {
@@ -225,7 +225,8 @@ async function createProcessingDigiflazzOrder(
       digiflazzStatus: "pending_at_supplier",
       digiflazzNextRecheckAt: new Date(Date.now() + 30 * 60_000),
       ...dispatch,
-      customerData: JSON.stringify([{ user_id: "123456789" }]),
+      // Stored the way checkout writes it: an encrypted envelope, never the answers.
+      customerData: encryptCustomerDataForInsert(JSON.stringify([{ user_id: "123456789" }])),
       items: {
         create: [{ productId: denomId, quantity: 1, unitPrice: totalAmount, warrantyDaysSnapshot: 0 }],
       },

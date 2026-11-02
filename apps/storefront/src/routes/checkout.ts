@@ -92,6 +92,7 @@ import {
   type ExpectedTotal,
 } from "@app/db";
 import { readCanonicalMoney } from "@app/core/moneyFormat";
+import { decryptCustomerData } from "@app/core/credentialCrypto";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
 import {
@@ -1819,7 +1820,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
 
       let customerNo: string;
-      try { customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot); }
+      try { customerNo = buildDigiflazzCustomerNo(resolution.product, decryptCustomerData(order.customerData, order.id), order.inputConfigSnapshot); }
       catch { return reply.send({ status: "unmatched" }); }
 
       // Task B3d (backend audit): a genuine callback can only exist after the

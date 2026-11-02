@@ -59,7 +59,7 @@ import {
 } from "@app/core/pricingRule";
 import { randomUUID } from "node:crypto";
 import { logger } from "@app/core/logger";
-import { encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { encryptDeliveredContent, decryptCustomerData } from "@app/core/credentialCrypto";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { parseInputFields, orderInputConfig, buildPlayerTarget, buildPlayerNicknameRequest, nicknameInputKeys } from "@app/core/playerInput";
@@ -966,7 +966,7 @@ export async function recheckDigiflazzOrderNow(
   let structuralProblem: string | null = resolution.ok ? null : resolution.reason;
   if (resolution.ok) {
     try {
-      customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData, order.inputConfigSnapshot);
+      customerNo = buildDigiflazzCustomerNo(resolution.product, decryptCustomerData(order.customerData, order.id), order.inputConfigSnapshot);
     } catch {
       structuralProblem = "Invalid player input configuration or answers; needs manual review";
     }
@@ -1164,7 +1164,7 @@ async function computeAccountDiagnosticNote(
     // server} keys for backward compat with any order already in PROCESSING
     // at deploy time whose customerData was written by the pre-fix
     // nicknameCheck.ts.
-    const unit = parseCustomerData(order.customerData)[0] ?? {};
+    const unit = parseCustomerData(decryptCustomerData(order.customerData, order.id))[0] ?? {};
     const inputConfig = orderInputConfig(denomination, order.inputConfigSnapshot);
     const fields = parseInputFields(inputConfig.additionalFields);
     const input = buildPlayerNicknameRequest(fields, inputConfig.providerInputMapping, unit);
@@ -1655,8 +1655,8 @@ async function processDigiflazzOrder(
   let customerNo: string;
   // An edit that won the row lock before this claim must be the target submitted.
   // Edits after the claim are rejected by updateOrderCustomerData's WHERE guard.
-  const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { customerData: true, inputConfigSnapshot: true } });
-  try { customerNo = buildDigiflazzCustomerNo(resolution.product, submittedInput.customerData, submittedInput.inputConfigSnapshot); }
+  const submittedInput = await db.order.findUniqueOrThrow({ where: { id: order.id }, select: { id: true, customerData: true, inputConfigSnapshot: true } });
+  try { customerNo = buildDigiflazzCustomerNo(resolution.product, decryptCustomerData(submittedInput.customerData, submittedInput.id), submittedInput.inputConfigSnapshot); }
   catch {
     await recordStructuralProblem("Invalid player input configuration or answers; needs manual review");
     return;

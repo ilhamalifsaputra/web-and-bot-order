@@ -24,13 +24,13 @@ describe("Flash (Alert shim)", () => {
     expect(el.querySelector("svg")).toHaveClass("w-4", "h-4", "shrink-0", "mt-px");
   });
 
-  it("error tone matches the old rust classes and icon", () => {
+  it("error tone keeps the rust classes and uses its own circle-alert icon (not the warning triangle)", () => {
     const { container } = render(<Flash text="Bad input" kind="error" />);
     const el = container.firstElementChild as HTMLElement;
     expect(el.className).toBe(
       "flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border bg-rust-tint text-rust-dark border-rust/30",
     );
-    expect(el.querySelector("svg.lucide-triangle-alert")).toBeInTheDocument();
+    expect(el.querySelector("svg.lucide-circle-alert")).toBeInTheDocument();
   });
 
   it("success keeps its green surface and icon with readable body text", () => {

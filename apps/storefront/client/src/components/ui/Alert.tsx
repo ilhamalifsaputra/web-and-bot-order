@@ -25,6 +25,7 @@ import { forwardRef, type HTMLAttributes, type ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle,
+  CircleAlert,
   Info,
   Lightbulb,
   TriangleAlert,
@@ -35,7 +36,9 @@ import { cn } from "./cn";
 export type AlertTone = "info" | "success" | "warning" | "error" | "tip";
 export type AlertVariant = "banner" | "panel";
 
-/** Banner tones keep guidance, success, attention and errors distinct. */
+/** Banner tones keep guidance, success, attention and errors distinct.
+ *  An error has its own icon (circle-alert), not the warning triangle, so a
+ *  failure never differs from a warning by colour alone (UI-states audit). */
 const BANNER_TONE: Record<AlertTone, string> = {
   info: "bg-pine-tint text-pine-dark border-pine/30",
   success: "bg-grass-tint text-ink-soft border-grass/30",
@@ -47,7 +50,7 @@ const BANNER_ICON: Record<AlertTone, LucideIcon> = {
   info: Info,
   success: CheckCircle,
   warning: AlertTriangle,
-  error: AlertTriangle,
+  error: CircleAlert,
   tip: Lightbulb,
 };
 
@@ -64,7 +67,7 @@ const PANEL_ICON: Record<AlertTone, LucideIcon> = {
   tip: Lightbulb,
   warning: TriangleAlert,
   success: CheckCircle,
-  error: TriangleAlert,
+  error: CircleAlert,
 };
 
 export interface AlertProps extends Omit<HTMLAttributes<HTMLDivElement>, "title" | "role"> {

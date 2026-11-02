@@ -13,6 +13,7 @@
  * a friendly message with a Reload button. `resetKey` (the route path) clears
  * the error when the buyer navigates elsewhere.
  */
+import { CircleAlert } from "lucide-react";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { isChunkLoadError, reloadOnceForStaleChunk } from "../lib/chunkReload";
 import { t } from "../lib/i18n";
@@ -57,6 +58,7 @@ export default class ErrorBoundary extends Component<Props, State> {
     return (
       <div role="alert" className="mx-auto max-w-md px-4 py-10">
         <Card className="text-center">
+          <CircleAlert className="mx-auto mb-3 h-12 w-12 text-rust" aria-hidden="true" />
           <h1 className="section-title mb-2">{t("web.state_error_title")}</h1>
           <p className="mb-4 text-sm text-ink-soft">{t("shop.app_error_body")}</p>
           <Button type="button" onClick={() => window.location.reload()}>

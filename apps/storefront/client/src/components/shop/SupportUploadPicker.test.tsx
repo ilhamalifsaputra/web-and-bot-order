@@ -30,3 +30,23 @@ describe("SupportUploadPicker upload progress", () => {
     expect(container.querySelector("span[aria-hidden='true'].rounded-full")).toBeInTheDocument();
   });
 });
+
+describe("SupportUploadPicker file state icons", () => {
+  it("an uploading file shows a hidden cloud-upload icon", () => {
+    const { container } = render(<SupportUploadPicker uploads={uploadsWith({ progress: 40 })} />);
+    expect(container.querySelector("svg.lucide-cloud-upload")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("an uploaded file shows a hidden file-check icon beside its words", () => {
+    const { container } = render(<SupportUploadPicker uploads={uploadsWith({ state: "ready", progress: 100, id: "a1" })} />);
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(container.querySelector("svg.lucide-file-check")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("a failed file shows a hidden file-x icon and its reason in the destructive tone", () => {
+    const { container } = render(<SupportUploadPicker uploads={uploadsWith({ state: "failed", error: "Upload blocked" })} />);
+    expect(container.querySelector("svg.lucide-file-x")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Upload blocked");
+    expect(screen.getByRole("alert")).toHaveClass("text-rust-dark");
+  });
+});

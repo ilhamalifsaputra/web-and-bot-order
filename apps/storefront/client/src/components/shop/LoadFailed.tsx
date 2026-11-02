@@ -14,7 +14,7 @@
  * A 401 is not a failure to show (`isUnauthorized`, lib/errors.ts) — those
  * pages are already redirecting to /login.
  */
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, TriangleAlert } from "lucide-react";
 import { t } from "../../lib/i18n";
 import Button from "../ui/Button";
 import ErrorState from "./ErrorState";
@@ -33,7 +33,10 @@ export function RefreshFailedNotice({ onRetry, pending }: { onRetry: () => void;
       role="status"
       className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amberx/30 bg-amberx-tint px-4 py-2 text-sm text-ink-soft"
     >
-      <span>{t("shop.refresh_failed")}</span>
+      <span className="flex min-w-0 items-center gap-2">
+        <TriangleAlert className="h-4 w-4 shrink-0 text-amberx" aria-hidden="true" />
+        {t("shop.refresh_failed")}
+      </span>
       <Button type="button" variant="ghost" size="sm" onClick={onRetry} pending={pending}>
         <RefreshCw className="h-4 w-4" aria-hidden="true" /> {t("web.state_retry")}
       </Button>

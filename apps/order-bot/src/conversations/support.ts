@@ -5,7 +5,7 @@ import { supportMediaAvailable } from "@app/core/supportMedia";
 import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, addRemoveButtons, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, addRemoveButtons, albumFollowUpTracker, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import * as ckb from "../keyboards/customer";
@@ -33,7 +33,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   let category = ""; let issueKey = ""; let orderId: number | null = preselectedOrder?.id ?? null; let body = ""; let orderPage = 0;
   const attachments: string[] = [];
   const acceptedInputs: MyContext[] = [];
-  let lastAlbum: string | undefined;
+  const albumFollowUp = albumFollowUpTracker();
   let error = "";
   if (ctx.callbackQuery) await ctx.answerCallbackQuery();
   for (;;) {
@@ -97,12 +97,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
       else if (removing !== null) await removeMedia(conversation, attachments, removing, user.id);
       else if (isMediaDocument(current)) error = t(current, "helpdesk.send_as_photo");
       else if (incomingMedia(current)) {
-        // Telegram delivers an album as one update per part sharing a
-        // media_group_id: only its first part shows the uploading line, the
-        // rest go straight to the counter edit.
-        const group = current.message?.media_group_id;
-        const sameAlbum = group !== undefined && group === lastAlbum;
-        lastAlbum = group;
+        const sameAlbum = albumFollowUp(current);
         const refused = await refuseMedia(current, mediaEnabled, attachments.length);
         if (refused) { error = refused; continue; }
         if (!sameAlbum) await menuAnchor(current, `${screen.text}\n\n${t(current, "helpdesk.uploading_bot")}`, screen.keyboard);

@@ -5,7 +5,7 @@ import { supportMediaAvailable } from "@app/core/supportMedia";
 import { prisma, getTicket, addTicketMessage } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, addRemoveButtons, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, addRemoveButtons, albumFollowUpTracker, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { backToMain, isPersistentLabel } from "../keyboards/customer";
 import { handleProductNumber, showMainMenu } from "../handlers/customer";
@@ -34,7 +34,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
   let error = "";
   const attachments: string[] = [];
   const acceptedInputs: MyContext[] = [];
-  let lastAlbum: string | undefined;
+  const albumFollowUp = albumFollowUpTracker();
   // Leaving abandons the draft: the typed reply text is obsolete scratch now
   // (photos were already deleted once stored).
   const discardDraft = async () => { for (const accepted of acceptedInputs) await consumeInput(accepted); };
@@ -59,11 +59,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
       body = input.trim(); acceptedInputs.push(current);
     } else if (isMediaDocument(current)) { error = t(current, "helpdesk.send_as_photo");
     } else if (incomingMedia(current)) {
-      // An album arrives as one update per part sharing a media_group_id:
-      // only its first part shows the uploading line.
-      const group = current.message?.media_group_id;
-      const sameAlbum = group !== undefined && group === lastAlbum;
-      lastAlbum = group;
+      const sameAlbum = albumFollowUp(current);
       const refused = await refuseMedia(current, mediaEnabled, attachments.length);
       if (refused) { error = refused; continue; }
       if (!sameAlbum) await menuAnchor(current, `${screen}\n\n${t(current, "helpdesk.uploading_bot")}`, keyboard);

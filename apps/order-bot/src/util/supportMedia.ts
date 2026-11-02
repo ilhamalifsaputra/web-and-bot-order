@@ -74,6 +74,21 @@ export function incomingMedia(ctx: MyContext): { fileId: string; mime: string; s
   return { fileId: media.file_id, mime: photo ? "image/jpeg" : video?.mime_type ?? "video/mp4", size: media.file_size };
 }
 
+/** Telegram delivers an album as one update per part sharing a
+ * media_group_id. Call the returned function once per incoming photo/video: it
+ * is true for the 2nd and later parts of the album it saw last, which skip the
+ * "uploading" edit and go straight to the counter edit. A single photo or a
+ * different album resets it. */
+export function albumFollowUpTracker(): (ctx: MyContext) => boolean {
+  let lastAlbum: string | undefined;
+  return (ctx) => {
+    const group = ctx.message?.media_group_id;
+    const followUp = group !== undefined && group === lastAlbum;
+    lastAlbum = group;
+    return followUp;
+  };
+}
+
 /** Over the limit (or media off): the photo is unused, so it is deleted and
  * the returned text tells the customer why. Null means the photo may be
  * uploaded. A repeat of the same text re-renders as a no-op edit. */

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -109,7 +109,9 @@ describe("CatalogPage", () => {
       'On the website home page, products that were ordered and delivered most often in the last 30 days are shown first in each section. New products get a "New" badge for 14 days and appear under "Show more" until they start selling. The bot\'s Popular menu uses all-time sales.',
     );
     // A static explanation, not a live region: it must not be announced as a
-    // status update or an alert when the page loads.
+    // status update or an alert when the page loads. (Wait for the rows: the
+    // table's own "Loading results" status is legitimately live until then.)
+    await screen.findByText("CapCut Pro");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(note.closest('[data-slot="alert"]')).toHaveAttribute("role", "note");
@@ -623,4 +625,70 @@ describe("CatalogPage product-family tabs", () => {
     await waitFor(() => expect(screen.queryByText("1 selected")).not.toBeInTheDocument());
   });
 });
+});
+
+describe("CatalogPage — failed loads keep the page usable", () => {
+  function renderWithClient() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <CatalogPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return qc;
+  }
+
+  it("a failed first load shows Retry, keeps the filters and header, and never claims there are no products", async () => {
+    let failing = true;
+    let calls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      return failing ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse({ categories: [CATEGORY], products: [PRODUCT] });
+    });
+    renderWithClient();
+
+    expect(await screen.findByText("Failed to load catalog.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Filter by product or category…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Product" })).toBeInTheDocument();
+    expect(screen.queryByText("No products yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No products match your filters")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(0);
+    expect(calls).toBe(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+    expect(calls).toBe(2);
+    expect(screen.queryByText("Failed to load catalog.")).not.toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps the CSV the admin pasted, the rows, and shows Couldn't refresh with Retry", async () => {
+    let failing = false;
+    let calls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      return failing ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse({ categories: [CATEGORY], products: [PRODUCT] });
+    });
+    const qc = renderWithClient();
+    await screen.findByText("CapCut Pro");
+    fireEvent.click(headerImportCsvButton());
+    const csv = screen.getByPlaceholderText(/Seed Category\|Product Name/);
+    fireEvent.change(csv, { target: { value: "Apps|CapCut|1 Month|PRIVATE|30 days|50000" } });
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["catalog"] }); });
+    expect(await screen.findByText(/Couldn't refresh catalog/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Seed Category\|Product Name/)).toBe(csv);
+    expect(csv).toHaveValue("Apps|CapCut|1 Month|PRIVATE|30 days|50000");
+    expect(screen.getByText("CapCut Pro")).toBeInTheDocument();
+    expect(calls).toBe(2);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh catalog/)).not.toBeInTheDocument());
+    expect(calls).toBe(3);
+    expect(csv).toHaveValue("Apps|CapCut|1 Month|PRIVATE|30 days|50000");
+  });
 });

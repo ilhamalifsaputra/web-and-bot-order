@@ -1196,7 +1196,9 @@ describe("CheckoutPage — Idempotency-Key", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
     await waitFor(() => expect(placeOrderKeys()).toHaveLength(1));
-    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    // While the outcome is unknown the only way to resend is the notice's
+    // Try again (review I2), which repeats the identical request.
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
     await waitFor(() => expect(placeOrderKeys()).toHaveLength(2));
 
     const [first, second] = placeOrderKeys();
@@ -1204,13 +1206,19 @@ describe("CheckoutPage — Idempotency-Key", () => {
     expect(second).toBe(first);
   });
 
-  it("starts a new operation with a new key when the buyer changes the payment method after a failure", async () => {
+  it("starts a new operation with a new key when the buyer changes the payment method after an answered failure", async () => {
     renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
     await screen.findByRole("heading", { name: "Checkout" });
-    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    (apiPost as Mock).mockImplementation(
+      async (_path: string, _body: unknown, options?: { onResponse?: (status: number) => void }) => {
+        options?.onResponse?.(400);
+        throw new Error("web.pay_method_unavailable");
+      },
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
     await waitFor(() => expect(placeOrderKeys()).toHaveLength(1));
+    await screen.findByText("That payment method isn't available right now — pick another one.");
 
     // A different `method` is a different request — and `method` is in the
     // server's own request hash, so reusing the key here would earn a 409
@@ -1341,5 +1349,367 @@ describe("CheckoutPage — volume tiers and the changed-price confirmation", () 
     // A confirmed new total is a new request: it never reuses the refused attempt's key.
     const keys = checkoutCalls().map((c) => (c[2] as { idempotencyKey: string }).idempotencyKey);
     expect(keys[1]).not.toBe(keys[0]);
+  });
+});
+
+// H1 / H2 (storefront UI-states audit): a checkout whose outcome is unknown, and
+// a signed-in buyer whose session died mid-checkout, must never turn into
+// "cart empty" or a dead end.
+describe("CheckoutPage — unknown outcome and an ended session", () => {
+  const stored = new Map<string, string>();
+  const setItem = vi.fn((k: string, v: string) => { stored.set(k, v); });
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    stored.clear();
+    // jsdom here exposes no sessionStorage; install one that records writes,
+    // so a test can prove nothing typed is ever persisted (review C1).
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: {
+        getItem: (k: string) => stored.get(k) ?? null,
+        setItem,
+        removeItem: (k: string) => { stored.delete(k); },
+      },
+    });
+  });
+
+  const UNKNOWN_TITLE = "We couldn't confirm your order";
+  const SESSION_ENDED = "Your session ended. Log in again to finish checkout.";
+  const signedIn: CheckoutData = { ...checkoutData, signed_in: true };
+  const emptyAnonymous: CheckoutData = { ...checkoutData, items: [], items_empty: true, is_guest: true, signed_in: false };
+
+  function checkoutCalls() {
+    return (apiPost as Mock).mock.calls.filter((c) => c[0] === "/api/v1/checkout");
+  }
+  function keys(): string[] {
+    return checkoutCalls().map((c) => (c[2] as { idempotencyKey: string }).idempotencyKey);
+  }
+  type OnResponse = { onResponse?: (s: number) => void };
+  /** A response that arrived (status reported to the hook) and was refused. */
+  function refuse(status: number, key: string) {
+    (apiPost as Mock).mockImplementation(async (_p: string, _b: unknown, options?: OnResponse) => {
+      options?.onResponse?.(status);
+      const err = new Error(key) as Error & { status?: number };
+      err.status = status;
+      throw err;
+    });
+  }
+  /** Every Place order control on the page (desktop card and mobile bar). */
+  function placeOrderButtons() {
+    return screen.queryAllByRole("button", { name: /Place order/ });
+  }
+
+  it("a lost response says the order may exist, links to the buyer's orders, and keeps the form through a cart refetch", async () => {
+    let serverCart: CheckoutData = checkoutData;
+    const { queryClient } = renderCheckout(() => serverCart);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(UNKNOWN_TITLE);
+    expect(alert).toHaveTextContent("It may have been placed");
+    expect(screen.queryByText("Something went wrong. Please try again.")).not.toBeInTheDocument();
+    expect(within(alert).getByRole("link", { name: "View my orders" })).toHaveAttribute("href", "/account/orders");
+
+    // The order was in fact created and the server cleared the cart; the
+    // window refocuses and the checkout query refetches an empty cart.
+    serverCart = { ...checkoutData, items: [], items_empty: true };
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+
+    expect(screen.queryByText("There's nothing to check out yet")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN_TITLE);
+  });
+
+  // Review I2: with the outcome unknown, nothing may change the request and
+  // nothing but the same-key Try again may send it.
+  it("freezes every input and removes Place order (desktop card and mobile bar) while the outcome is unknown", async () => {
+    renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    expect(placeOrderButtons().length).toBeGreaterThan(0);
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+
+    expect(placeOrderButtons()).toHaveLength(0);
+    expect(screen.getByRole("radio", { name: /BINANCE/ })).toBeDisabled();
+    expect(screen.getByPlaceholderText("Code")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Start over" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Check your orders first.");
+  });
+
+  // Review m1: Start over must not throw away a retry that is still in flight.
+  it("disables Try again and Start over while the same-key retry is pending", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+    (apiPost as Mock).mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start over" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+  });
+
+  // Review m2: the first attempt freezes the form too, so the body Try again
+  // resends is always the one on screen.
+  it("freezes every input while the first attempt is still in flight", async () => {
+    renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /BINANCE/ })).toBeDisabled());
+    expect(screen.getByPlaceholderText("Code")).toBeDisabled();
+  });
+
+  it("freezes the desktop card's Place order too", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: true, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+    try {
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      await screen.findByText(UNKNOWN_TITLE);
+      expect(placeOrderButtons()).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("freezes the info step and the guest email too", async () => {
+    const fields: AdditionalField[] = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+    ];
+    renderCheckout(
+      () => ({ ...checkoutData, is_guest: true, wallet_idr_enabled: false, wallet_usdt_enabled: false, items: [{ denomination_id: 5, delivery_type: "manual_with_info", additional_fields: fields, qty: 1 }] }),
+      { ...context, customer: null },
+    );
+    await screen.findByText("Order details");
+    fireEvent.change(screen.getByLabelText("Game ID"), { target: { value: "P1" } });
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+    expect(screen.getByLabelText("Game ID")).toBeDisabled();
+    expect(screen.getByLabelText("Email address")).toBeDisabled();
+  });
+
+  it("Start over clears the hold by reloading the page", async () => {
+    const reload = vi.fn();
+    const original = Object.getOwnPropertyDescriptor(window, "location");
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { ...window.location, reload } });
+    try {
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      fireEvent.click(await screen.findByRole("button", { name: "Start over" }));
+      expect(reload).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) Object.defineProperty(window, "location", original);
+    }
+  });
+
+  it("Try again after a 504 and a refetch sends the same Idempotency-Key and lands on the replayed order", async () => {
+    let serverCart: CheckoutData = checkoutData;
+    const { queryClient } = renderCheckout(() => serverCart);
+    await screen.findByRole("heading", { name: "Checkout" });
+    refuse(504, "/api/v1/checkout responded 504");
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+
+    serverCart = { ...checkoutData, items: [], items_empty: true };
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+
+    // The server replays the stored 201.
+    (apiPost as Mock).mockImplementation(async (_p: string, _b: unknown, options?: OnResponse) => {
+      options?.onResponse?.(201);
+      return { order_code: "ORD9", pay_url: "/checkout/ORD9/pay" } satisfies PlaceOrderResponse;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
+
+    expect(checkoutCalls()).toHaveLength(2);
+    const [first, second] = keys();
+    expect(first).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second).toBe(first);
+    expect(checkoutCalls()[1]![1]).toEqual(checkoutCalls()[0]![1]);
+  });
+
+  // Review I3: key_reused against the held key keeps the hold and the key.
+  it("a key_reused answer to Try again keeps the notice and the same key", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+    refuse(409, "error.idempotency_key_reused");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(checkoutCalls()).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(checkoutCalls()).toHaveLength(3));
+    expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN_TITLE);
+    const [k1, k2, k3] = keys();
+    expect(k2).toBe(k1);
+    expect(k3).toBe(k1);
+  });
+
+  // Review I2: after an unknown outcome, an empty cart means the order was
+  // most likely placed — never "your cart is empty".
+  it("cart_empty after an unknown outcome reads as 'probably placed', with the orders link and no retry", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+    refuse(400, "error.cart_empty");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    const alert = await screen.findByText(/most likely placed/);
+    const box = alert.closest('[role="alert"]') as HTMLElement;
+    expect(within(box).getByRole("link", { name: "View my orders" })).toHaveAttribute("href", "/account/orders");
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Your cart is empty.")).not.toBeInTheDocument();
+    expect(placeOrderButtons()).toHaveLength(0);
+  });
+
+  it("a guest's unknown outcome points at order tracking, not the account", async () => {
+    renderCheckout(
+      () => ({ ...checkoutData, is_guest: true, wallet_idr_enabled: false, wallet_usdt_enabled: false }),
+      { ...context, customer: null },
+    );
+    await screen.findByRole("heading", { name: "Checkout" });
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(UNKNOWN_TITLE);
+    expect(within(alert).getByRole("link", { name: "Track your order" })).toHaveAttribute("href", "/track");
+  });
+
+  it("a wallet payment with an unknown outcome never claims nothing was charged", async () => {
+    renderCheckout(() => ({ ...checkoutData, wallet_idr: "200000" }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    fireEvent.click(screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }));
+    refuse(504, "/api/v1/checkout responded 504");
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("taken from your wallet balance");
+    expect(alert.textContent).not.toMatch(/nothing was charged|not charged|no charge/i);
+  });
+
+  it("a first-attempt 429 is a plain refusal, not an unknown outcome", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    refuse(429, "error.rate_limited");
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(checkoutCalls()).toHaveLength(1);
+    expect(screen.queryByText(UNKNOWN_TITLE)).not.toBeInTheDocument();
+  });
+
+  it("an answered refusal after an unknown outcome replaces the notice and unfreezes the form", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await screen.findByText(UNKNOWN_TITLE);
+    refuse(400, "web.pay_method_unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("That payment method isn't available right now — pick another one.")).toBeInTheDocument();
+    expect(screen.queryByText(UNKNOWN_TITLE)).not.toBeInTheDocument();
+    expect(placeOrderButtons().length).toBeGreaterThan(0);
+  });
+
+  const fields: AdditionalField[] = [
+    { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+  const infoData: CheckoutData = { ...signedIn, items: [{ denomination_id: 5, delivery_type: "manual_with_info", additional_fields: fields, qty: 1 }] };
+
+  // Review C1: answers stay in memory only; the login opens in a new tab and
+  // this tab picks the new session up on its next read.
+  it("a signed-in buyer whose session ended logs in from a new tab and keeps everything typed, with nothing persisted", async () => {
+    let server: CheckoutData = infoData;
+    const { queryClient } = renderCheckout(() => server);
+    await screen.findByText("Order details");
+    fireEvent.change(screen.getByLabelText("Game ID"), { target: { value: "PLAYER-77" } });
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SAVE10" } });
+    // The server no longer sees a session: the order takes its guest branch
+    // and a read now answers for an anonymous visitor.
+    refuse(400, "web.guest_email_invalid");
+    server = { ...infoData, items: [], items_empty: true, is_guest: true, signed_in: false };
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(SESSION_ENDED);
+    // The page re-read the checkout and still keeps the form.
+    await waitFor(() => expect((apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/checkout").length).toBeGreaterThan(1));
+    expect(screen.getByLabelText("Game ID")).toHaveValue("PLAYER-77");
+    expect(screen.queryByText(/Enter a valid email address/)).not.toBeInTheDocument();
+    const login = within(alert).getByRole("link", { name: "Log in" });
+    expect(login).toHaveAttribute("href", "/login?next=/checkout");
+    expect(login).toHaveAttribute("target", "_blank");
+    expect(login).toHaveAttribute("rel", "noopener noreferrer");
+    fireEvent.click(login);
+    expect(placeOrderButtons().every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+
+    // The buyer signs in in the other tab and comes back: the focus refetch
+    // answers for the live session again.
+    server = { ...infoData };
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+
+    await waitFor(() => expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Game ID")).toHaveValue("PLAYER-77");
+    expect(screen.getByPlaceholderText("Code")).toHaveValue("SAVE10");
+    expect(placeOrderButtons().some((b) => !(b as HTMLButtonElement).disabled)).toBe(true);
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("a signed-in checkout whose refetch suddenly comes back anonymous says the session ended, then recovers after re-login", async () => {
+    let server: CheckoutData = signedIn;
+    const { queryClient } = renderCheckout(() => server);
+    await screen.findByRole("heading", { name: "Checkout" });
+    server = emptyAnonymous;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+    expect(await screen.findByRole("alert")).toHaveTextContent(SESSION_ENDED);
+    expect(screen.queryByText("There's nothing to check out yet")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
+
+    server = signedIn;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+    await waitFor(() => expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument());
+  });
+
+  // Review m3: the buyer can say they are back instead of waiting for a focus refetch.
+  it("'I've logged in — continue' re-reads the checkout once and resumes", async () => {
+    let server: CheckoutData = signedIn;
+    const { queryClient } = renderCheckout(() => server);
+    await screen.findByRole("heading", { name: "Checkout" });
+    server = emptyAnonymous;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+    const alert = await screen.findByRole("alert");
+    const reads = () => (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/checkout").length;
+    const before = reads();
+
+    server = signedIn;
+    fireEvent.click(within(alert).getByRole("button", { name: "I've logged in — continue" }));
+    await waitFor(() => expect(reads()).toBe(before + 1));
+    await waitFor(() => expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument());
+  });
+
+  // Review M1: a password-less guest-checkout session has no account to log
+  // back into, so its loss is never reported as "log in again".
+  it("never asks a guest-checkout session to log in again", async () => {
+    let server: CheckoutData = { ...checkoutData, signed_in: false };
+    const { queryClient } = renderCheckout(() => server, { ...context, is_guest: true });
+    await screen.findByRole("heading", { name: "Checkout" });
+    server = emptyAnonymous;
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["checkout"] }); });
+    expect(await screen.findByText("There's nothing to check out yet")).toBeInTheDocument();
+    expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument();
   });
 });

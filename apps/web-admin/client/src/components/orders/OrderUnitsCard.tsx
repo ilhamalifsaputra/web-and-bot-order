@@ -395,7 +395,8 @@ function ReplacementReportDialog({ reportTarget, setReportTarget, ticketMode, re
           Cancel
         </Button>
         <Button
-          disabled={!reason.trim() || report.isPending}
+          pending={report.isPending}
+          disabled={!reason.trim()}
           onClick={() => {
             if (!reportTarget || !reason.trim()) return;
             report.mutate({ orderItemIds: reportTarget, reason: reason.trim() });
@@ -579,6 +580,7 @@ function OrderUnitsTable({ selectedIds, report, openReportDialog, reportLabel, s
                   <Button
                     size="sm"
                     variant="outline"
+                    pending={retry.isPending && retry.variables === row.openRequest!.id}
                     disabled={retry.isPending}
                     onClick={() => retry.mutate(row.openRequest!.id)}
                   >

@@ -20,7 +20,7 @@ describe("apiGet", () => {
 
   it("throws when the response is not ok", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, text: async () => "{}" })));
-    await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
+    await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow(/don't have permission/);
   });
 
   it("carries the response's HTTP status on the thrown error", async () => {
@@ -68,6 +68,14 @@ describe("apiPost", () => {
     await expect(apiPost("/api/dashboard/something", {})).rejects.toThrow(
       "Your session was refreshed in another tab. Reload this page to continue.",
     );
+  });
+
+  it("keeps the 403 status on that reload message, since the server did answer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 403, text: async () => "CSRF check failed" })),
+    );
+    await expect(apiPost("/api/dashboard/something", {})).rejects.toMatchObject({ status: 403 });
   });
 
   it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {

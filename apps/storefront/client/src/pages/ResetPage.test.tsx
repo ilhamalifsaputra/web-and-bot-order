@@ -127,3 +127,12 @@ describe("ResetPage", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/login?reset=1"));
   });
 });
+
+describe("ResetPage token check loading", () => {
+  it("shows a busy status region shaped like the form while the link is checked", () => {
+    document.documentElement.lang = "en";
+    (apiGet as Mock).mockReturnValue(new Promise(() => {}));
+    renderReset("tok123");
+    expect(screen.getByRole("status", { name: "Loading…" })).toHaveAttribute("aria-busy", "true");
+  });
+});

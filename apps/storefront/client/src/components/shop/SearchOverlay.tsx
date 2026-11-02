@@ -1,4 +1,5 @@
 import * as m from "motion/react-m";
+import { LoadingRegion } from "./LoadingState";
 /**
  * SearchOverlay — the storefront's product search, as an overlay panel instead
  * of a route (page-templates.md §10, user decision #2). It replaces the old
@@ -316,17 +317,17 @@ function SearchResultsPanel({ showSkeleton, showEmpty, debounced, onClose, showR
 }) {
   return (<div className="min-h-0 flex-1 overflow-y-auto p-2">
     {showSkeleton && (
-      <div aria-busy="true" aria-label={t("web.loading")} className="space-y-1">
+      <LoadingRegion className="space-y-1">
         {SKELETON_ROWS.map((i) => (
           <div key={i} className="flex items-center gap-3 p-2">
-            <div className="h-10 w-10 shrink-0 animate-pulse rounded-lg bg-sand" />
+            <div className="h-10 w-10 shrink-0 motion-safe:animate-pulse rounded-lg bg-sand" />
             <div className="flex-1 space-y-1.5">
-              <div className="h-3.5 w-2/3 animate-pulse rounded bg-sand" />
-              <div className="h-3 w-1/3 animate-pulse rounded bg-sand" />
+              <div className="h-3.5 w-2/3 motion-safe:animate-pulse rounded bg-sand" />
+              <div className="h-3 w-1/3 motion-safe:animate-pulse rounded bg-sand" />
             </div>
           </div>
         ))}
-      </div>
+      </LoadingRegion>
     )}
 
     {showEmpty && (

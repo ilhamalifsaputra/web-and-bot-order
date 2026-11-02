@@ -338,3 +338,35 @@ describe("ReviewsPage", () => {
     expect(productEl).toHaveTextContent(longProduct);
   });
 });
+
+describe("ReviewsPage — first-load failure keeps the page usable", () => {
+  it("keeps the search and filters, never claims there are no reviews, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/reviews/kpis")) return jsonResponse(KPIS_DATA);
+      listUrls.push(url);
+      return failing ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse(REVIEWS_DATA);
+    });
+    render(<ReviewsPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load reviews.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search comment or customer…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
+    expect(screen.queryByText("No reviews yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No reviews match these filters.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No rated products yet.")).not.toBeInTheDocument();
+    // The ratings card keeps its place and says it could not load.
+    expect(screen.getByText("Product Ratings")).toBeInTheDocument();
+    expect(screen.getByText("Couldn't load product ratings.")).toBeInTheDocument();
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("Bagus banget!")).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load reviews.")).not.toBeInTheDocument();
+  });
+});

@@ -144,6 +144,20 @@ describe("SettingsPage", () => {
     ));
   });
 
+  it("shows only the clicked move button as pending while the order saves", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    const user = userEvent.setup();
+    expect(await screen.findByText("Website order")).toBeInTheDocument();
+    fetchSpy.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: "Move Top Up Game up" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Move Top Up Game up" })).toHaveAttribute("aria-busy", "true"));
+    const other = screen.getByRole("button", { name: "Move Premium Apps down" });
+    expect(other).toBeDisabled();
+    expect(other).not.toHaveAttribute("aria-busy");
+  });
+
   it("moves a group down with the full new order", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -703,6 +717,26 @@ describe("SettingsPage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Enable two-factor authentication?")).toBeInTheDocument();
+  });
+
+  it("2FA 'Cancel' shows only itself as pending, not Confirm", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...SETTINGS_DATA, twoFaPending: { secret: "SECRET123", uri: "otpauth://totp/test" } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+    const row = screen.getByLabelText("6-digit authenticator code").parentElement!;
+    fetchSpy.mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Cancel" })).toHaveAttribute("aria-busy", "true"));
+    const confirm = within(row).getByRole("button", { name: "Confirm" });
+    expect(confirm).toBeDisabled();
+    expect(confirm).not.toHaveAttribute("aria-busy");
   });
 
   it("2FA 'Disable 2FA' requires a confirmation dialog", async () => {

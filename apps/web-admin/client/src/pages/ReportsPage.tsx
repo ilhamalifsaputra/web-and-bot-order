@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useQuery } from "@tanstack/react-query";
 import { Download } from "lucide-react";
@@ -50,7 +51,7 @@ export function ReportsPage() {
       />
 
       <div className="flex flex-col gap-6">
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LinesSkeleton label="Loading reports" lines={6} />}
         {isError && <p className="text-sm text-rust">Failed to load reports.</p>}
 
         {data && (

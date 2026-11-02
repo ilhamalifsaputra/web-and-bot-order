@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
@@ -26,7 +27,6 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  AlertCircle,
   ChevronDown,
   ChevronUp,
   FolderTree,
@@ -151,20 +151,6 @@ export function CategoriesPage() {
     navigate(`/catalog?categoryId=${categoryId}`);
   }
 
-  if (isError) {
-    return (
-      <PageLayout title="Categories">
-        <PageHeader title="Categories" />
-        <EmptyState
-          icon={AlertCircle}
-          title="Couldn't load categories"
-          description="Something went wrong fetching the catalog."
-          action={{ label: "Retry", onClick: () => void refetch() }}
-        />
-      </PageLayout>
-    );
-  }
-
   return (
     <PageLayout title="Categories">
       <PageHeader
@@ -183,6 +169,7 @@ export function CategoriesPage() {
         }
       />
 
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="categories" onRetry={() => void refetch()}>
       <Card>
         <CardContent>
         <DataTable
@@ -319,6 +306,7 @@ export function CategoriesPage() {
         />
         </CardContent>
       </Card>
+      </QueryFailureGate>
 
       {creating && (
         <CategoryDialog

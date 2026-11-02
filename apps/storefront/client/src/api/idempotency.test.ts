@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { apiPost, type PostOptions } from "./client";
-import { useIdempotentPost } from "./idempotency";
+import { orderFailureOutcome, useIdempotentPost } from "./idempotency";
 
 vi.mock("./client", () => ({ apiPost: vi.fn() }));
 
@@ -256,5 +256,69 @@ describe("useIdempotentPost", () => {
     await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(message);
 
     expect(keyOfCall(1)).not.toBe(keyOfCall(0));
+  });
+});
+
+// Review I1/I3 (UI-states audit).
+describe("useIdempotentPost — outcomes the status alone gets wrong", () => {
+  it("holds the key when a 201 arrived but its body could not be read", async () => {
+    vi.mocked(apiPost).mockImplementation(async (_p, _b, o?: PostOptions) => {
+      o?.onResponse?.(201);
+      throw new SyntaxError("Unexpected token < in JSON at position 0");
+    });
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(SyntaxError);
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(SyntaxError);
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+  });
+
+  it("keeps holding a key whose earlier outcome is unknown when the retry gets key_reused", async () => {
+    vi.mocked(apiPost).mockImplementationOnce(neverAnswered());
+    vi.mocked(apiPost).mockImplementation(respondedWith(409, "error.idempotency_key_reused"));
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("error.idempotency_key_reused");
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("error.idempotency_key_reused");
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+    expect(keyOfCall(2)).toBe(keyOfCall(0));
+  });
+
+  it("still drops a fresh key that gets key_reused (nothing was held)", async () => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(409, "error.idempotency_key_reused"));
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+    expect(keyOfCall(1)).not.toBe(keyOfCall(0));
+  });
+});
+
+describe("orderFailureOutcome", () => {
+  function withStatus(status: number, message: string): Error {
+    const err = new Error(message) as Error & { status?: number };
+    err.status = status;
+    return err;
+  }
+
+  it("no response at all, a 5xx and the in-progress 409 leave the order unknown", () => {
+    expect(orderFailureOutcome(new TypeError("Failed to fetch"))).toBe("unanswered");
+    expect(orderFailureOutcome(new SyntaxError("Unexpected token <"))).toBe("unanswered");
+    expect(orderFailureOutcome(Object.assign(new Error("aborted"), { name: "AbortError" }))).toBe("unanswered");
+    expect(orderFailureOutcome(withStatus(500, "/api/v1/checkout responded 500"))).toBe("unanswered");
+    expect(orderFailureOutcome(withStatus(504, "/api/v1/checkout responded 504"))).toBe("unanswered");
+    expect(orderFailureOutcome(withStatus(409, "error.idempotency_request_in_progress"))).toBe("unanswered");
+  });
+
+  it("a 429 and a reused key say nothing new about an earlier attempt", () => {
+    expect(orderFailureOutcome(withStatus(429, "error.rate_limited"))).toBe("inconclusive");
+    expect(orderFailureOutcome(withStatus(409, "error.idempotency_key_reused"))).toBe("inconclusive");
+  });
+
+  it("any other answer is known", () => {
+    expect(orderFailureOutcome(withStatus(400, "web.out_of_stock"))).toBe("answered");
+    expect(orderFailureOutcome(withStatus(409, "error.quote_changed"))).toBe("answered");
+    expect(orderFailureOutcome(new Error("web.pay_method_unavailable"))).toBe("answered");
   });
 });

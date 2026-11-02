@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VouchersPage } from "./VouchersPage";
 
@@ -657,6 +658,62 @@ describe("VouchersPage", () => {
     await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
   });
 
+  describe("bulk outcome reporting", () => {
+    const vouchers = [
+      { ...VOUCHER, id: 1, code: "BULKV1" },
+      { ...VOUCHER, id: 2, code: "BULKV2" },
+    ];
+
+    async function bulkDeleteBoth(result: unknown) {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      const success = vi.spyOn(toast, "success");
+      const warning = vi.spyOn(toast, "warning");
+      const error = vi.spyOn(toast, "error");
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) =>
+        init?.method === "POST" ? jsonResponse(result) : listResponse(vouchers, { total: 2 }));
+      render(<VouchersPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("BULKV1")).toBeInTheDocument());
+      await user.click(screen.getByRole("checkbox", { name: /select voucher bulkv1/i }));
+      await user.click(screen.getByRole("checkbox", { name: /select voucher bulkv2/i }));
+      await user.click(screen.getByRole("button", { name: /delete 2 vouchers/i }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /delete/i }));
+      await waitFor(() => expect(success.mock.calls.length + warning.mock.calls.length + error.mock.calls.length).toBe(1));
+      const posts = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(posts).toHaveLength(1);
+      return { success, warning, error };
+    }
+
+    it("all succeeded: success toast, selection cleared", async () => {
+      const { success } = await bulkDeleteBoth({ succeeded: [1, 2], failed: [] });
+      expect(success).toHaveBeenCalledWith("Deleted 2 vouchers.");
+      await waitFor(() => expect(screen.queryByText(/selected$/)).not.toBeInTheDocument());
+    });
+
+    it("partial: warning toast, the failed voucher stays selected with its reason", async () => {
+      const { success, warning } = await bulkDeleteBoth({
+        succeeded: [1],
+        failed: [{ id: 2, error: "cannot delete a voucher that has been used" }],
+      });
+      expect(warning).toHaveBeenCalledWith("Deleted 1 of 2 vouchers — 1 failed.");
+      expect(success).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
+      expect(screen.getByRole("checkbox", { name: /select voucher bulkv2/i })).toBeChecked();
+      const panel = screen.getByRole("alert");
+      expect(within(panel).getByText("BULKV2")).toBeInTheDocument();
+      expect(within(panel).getByText(/already been used/i)).toBeInTheDocument();
+    });
+
+    it("all failed: error toast rather than \"Deleted 0 of 2\" as a success", async () => {
+      const { success, error } = await bulkDeleteBoth({
+        succeeded: [],
+        failed: [{ id: 1, error: "voucher not found" }, { id: 2, error: "cannot delete a voucher that has been used" }],
+      });
+      expect(error).toHaveBeenCalledWith("Deleted 0 of 2 vouchers — 2 failed.");
+      expect(success).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.getByText("2 selected")).toBeInTheDocument());
+    });
+  });
+
   it("clears the bulk selection when the page changes", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const vouchers = [{ ...VOUCHER, id: 1, code: "PAGEV1" }];
@@ -681,5 +738,104 @@ describe("VouchersPage", () => {
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
     expect(screen.getByText(/showing 1–50 of 120/i)).toBeInTheDocument();
+  });
+});
+
+describe("VouchersPage — first-load failure keeps the page usable", () => {
+  it("keeps the search and status filter, never claims there are no vouchers, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (!url.startsWith("/api/vouchers?")) return jsonResponse({ products: [] });
+      listUrls.push(url);
+      return failing
+        ? new Response(JSON.stringify({ error: "Database unavailable" }), { status: 500, headers: { "Content-Type": "application/json" } })
+        : listResponse([VOUCHER]);
+    });
+    render(<VouchersPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load vouchers.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search voucher code...")).toBeInTheDocument();
+    expect(screen.getByLabelText("Status")).toBeInTheDocument();
+    expect(screen.queryByText("No vouchers found")).not.toBeInTheDocument();
+    expect(screen.queryByText("No matching vouchers")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load vouchers.")).not.toBeInTheDocument();
+  });
+});
+
+describe("VouchersPage — search debounce", () => {
+  it("the search debounce that fires after mount does not send Next back to page 1", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      listUrls.push(url);
+      const page = url.includes("page=2") ? 2 : 1;
+      return listResponse([{ ...VOUCHER, id: page, code: `PAGEV${page}` }], { total: 60, page });
+    });
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
+
+    // Clicked well inside the 300 ms the mount-time search debounce waits.
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("PAGEV2")).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(screen.getByText("PAGEV2")).toBeInTheDocument();
+    expect(listUrls.at(-1)).toContain("page=2");
+  });
+});
+
+/** The page a list request asks for; a request without `page` asks for 1. */
+function requestedPage(url: string): string {
+  return new URL(url, "http://admin.test").searchParams.get("page") ?? "1";
+}
+
+describe("VouchersPage — search resets the page", () => {
+  it("typing a search after moving to page 2 asks for page 1 of the results", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      listUrls.push(url);
+      const page = Number(requestedPage(url));
+      return listResponse([{ ...VOUCHER, id: page, code: `PAGEV${page}` }], { total: 60, page });
+    });
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("PAGEV2")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText("Search voucher code..."), { target: { value: "save" } });
+    await waitFor(() => expect(listUrls.at(-1)).toContain("q=save"));
+    expect(requestedPage(listUrls.at(-1)!)).toBe("1");
+    expect(listUrls.filter((u) => u.includes("q=save") && requestedPage(u) === "2")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("PAGEV1")).toBeInTheDocument());
+  });
+});
+
+describe("VouchersPage bulk bar pending", () => {
+  it("marks only the clicked bulk action as pending", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const vouchers = [{ ...VOUCHER, id: 1, code: "BULKV1" }];
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse(vouchers, { total: 1 }));
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("BULKV1")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: /select voucher bulkv1/i }));
+    spy.mockImplementation(() => new Promise(() => {}));
+    await user.click(screen.getByRole("button", { name: /deactivate 1 voucher/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /deactivate 1 voucher/i })).toHaveAttribute("aria-busy", "true"));
+    for (const name of [/^activate 1 voucher/i, /delete 1 voucher/i]) {
+      const other = screen.getByRole("button", { name });
+      expect(other).toBeDisabled();
+      expect(other).not.toHaveAttribute("aria-busy");
+    }
   });
 });

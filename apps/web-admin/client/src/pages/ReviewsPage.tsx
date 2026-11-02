@@ -35,6 +35,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { Stars } from "../components/shared/Stars";
@@ -279,13 +280,9 @@ export function ReviewsPage() {
     setReplyOpen(true);
   }
 
-  if (isError) {
-    return (
-      <PageLayout title="Reviews">
-        <p className="text-rust">Failed to load reviews.</p>
-      </PageLayout>
-    );
-  }
+  // A first load that failed has no summaries: the card says it could not
+  // load them rather than "No rated products yet."
+  const firstLoadFailed = isError && !data;
 
   return (
     <PageLayout title="Reviews">
@@ -303,13 +300,15 @@ export function ReviewsPage() {
       <div className="mb-6 grid gap-4 lg:grid-cols-3">
         <RatingDistributionCard />
         <div className="lg:col-span-2">
-          <ProductRatingsCard summaries={summaries} isLoading={isLoading} />
+          <ProductRatingsCard summaries={summaries} isLoading={isLoading} loadFailed={firstLoadFailed} />
         </div>
       </div>
 
       <ReviewsRating applyFilters={applyFilters} clearFilters={clearFilters} searchInput={searchInput} setSearchInput={setSearchInput} isFetching={isFetching} fieldId={fieldId} draft={draft} setDraft={setDraft} productOptions={productOptions} />
 
-      <ReviewsSummary navigate={navigate} openReply={openReply} deleteReply={deleteReply} setStatus={setStatus} toggleHide={toggleHide} setDeleteTargetId={setDeleteTargetId} reviews={reviews} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="reviews" onRetry={() => void refetch()}>
+        <ReviewsSummary navigate={navigate} openReply={openReply} deleteReply={deleteReply} setStatus={setStatus} toggleHide={toggleHide} setDeleteTargetId={setDeleteTargetId} reviews={reviews} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">

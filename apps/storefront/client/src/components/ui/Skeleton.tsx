@@ -5,11 +5,13 @@
  *
  * Promoted from `components/shop/` to `components/ui/` in Fase 6 as a
  * business-agnostic primitive; `components/shop/Skeleton.tsx` re-exports this.
+ * Pulses only under `motion-safe`; decorative, so wrap a group in an
+ * `aria-busy` + `aria-label` region (see LoadingState).
  */
 export interface SkeletonProps {
   className?: string;
 }
 
 export default function Skeleton({ className = "" }: SkeletonProps) {
-  return <div aria-hidden="true" className={`animate-pulse rounded-xl bg-sand ${className}`} />;
+  return <div aria-hidden="true" className={`motion-safe:animate-pulse rounded-xl bg-sand ${className}`} />;
 }

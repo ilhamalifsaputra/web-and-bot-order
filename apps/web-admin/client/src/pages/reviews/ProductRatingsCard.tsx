@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LinesSkeleton } from "../../components/shared/LoadingRegion";
 import { Star } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
@@ -60,13 +61,16 @@ interface ProductRatingsCardProps {
    *  that already arrived in the reviews list response. */
   summaries: ProductRatingSummary[];
   isLoading?: boolean;
+  /** The reviews query failed before it returned anything: say so inside the
+   *  card instead of "No rated products yet.". */
+  loadFailed?: boolean;
 }
 
 /**
  * Top-5 product analytics widget. "Needing Attention" (a trend/recency
  * aggregate) is explicitly deferred — not built in Phase A, see task brief.
  */
-export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardProps): React.JSX.Element {
+export function ProductRatingsCard({ summaries, isLoading, loadFailed }: ProductRatingsCardProps): React.JSX.Element {
   const [sort, setSort] = useState<SortMode>("most_reviewed");
   const top5 = [...summaries].sort(SORTERS[sort]).slice(0, 5);
 
@@ -93,21 +97,27 @@ export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardP
         </p>
       )}
       <CardContent className="flex flex-col divide-y divide-line">
-        {isLoading && <p className="py-2 text-sm text-ink-soft">Loading…</p>}
-        {!isLoading && top5.length === 0 && (
-          <p className="py-2 text-sm text-ink-soft">No rated products yet.</p>
-        )}
-        {!isLoading &&
-          top5.map((s) => (
-            <div key={s.productId} className="flex items-center justify-between gap-2 py-2">
-              <span className="truncate text-sm text-ink">{s.productName}</span>
-              <span className="flex shrink-0 items-center gap-1 text-xs text-ink-soft">
-                <Star className="h-4 w-4 fill-amberx text-amberx" />
-                {s.avg != null ? s.avg.toFixed(1) : "—"} · {s.count}
-              </span>
-            </div>
-          ))}
+        <ProductRatingsBody top5={top5} isLoading={isLoading} loadFailed={loadFailed} />
       </CardContent>
     </Card>
+  );
+}
+
+function ProductRatingsBody({ top5, isLoading, loadFailed }: { top5: ProductRatingSummary[]; isLoading?: boolean; loadFailed?: boolean }) {
+  if (loadFailed) return <p className="py-2 text-sm text-ink-soft">Couldn't load product ratings.</p>;
+  if (isLoading) return <LinesSkeleton label="Loading product ratings" lines={5} className="py-2" />;
+  if (top5.length === 0) return <p className="py-2 text-sm text-ink-soft">No rated products yet.</p>;
+  return (
+    <>
+      {top5.map((s) => (
+        <div key={s.productId} className="flex items-center justify-between gap-2 py-2">
+          <span className="truncate text-sm text-ink">{s.productName}</span>
+          <span className="flex shrink-0 items-center gap-1 text-xs text-ink-soft">
+            <Star className="h-4 w-4 fill-amberx text-amberx" />
+            {s.avg != null ? s.avg.toFixed(1) : "—"} · {s.count}
+          </span>
+        </div>
+      ))}
+    </>
   );
 }

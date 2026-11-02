@@ -1,4 +1,5 @@
 import { useLayoutEffect } from "react";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import CheckoutErrorBanner from "../components/shop/CheckoutErrorBanner";
 /**
  * Single-page "instant buy" flow for a `checkoutFlow: "instant"` category
@@ -211,7 +212,7 @@ export default function InstantBuyPage() {
   }
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-4 w-48" />
         <div className="space-y-4 max-w-2xl mx-auto">
           <Skeleton className="h-48 w-full sm:h-56" />
@@ -219,7 +220,7 @@ export default function InstantBuyPage() {
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-14 w-full" />
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 
@@ -547,11 +548,21 @@ function InstantBuySummaryAndSubmit({ checkoutHint, placeOrderError, errorBanner
       />
     ) : (
       <>
-        <div className="card card-pad space-y-3" aria-busy={!previewErrorKey && configValid} aria-label={t("web.loading")}>
-          <Skeleton className="h-5 w-28" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-2/3" />
-        </div>
+        {/* A quote on its way is a live loading region; an invalid or
+            failed configuration only keeps the placeholder shape. */}
+        {!previewErrorKey && configValid ? (
+          <LoadingRegion className="card card-pad space-y-3">
+            <Skeleton className="h-5 w-28" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-2/3" />
+          </LoadingRegion>
+        ) : (
+          <div className="card card-pad space-y-3">
+            <Skeleton className="h-5 w-28" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-2/3" />
+          </div>
+        )}
         <Button ref={setPrimaryElement} id="instant-buy-submit" variant="primary" fullWidth className="mt-4" disabled onClick={submitOrder}>{t("web.buy_now")}</Button>
       </>
     )}
@@ -903,12 +914,12 @@ function InstantBuyPaymentMethods({ page, totals, method, setMethod }: {
     {page && totals ? (
       <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
     ) : (
-      <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion className="card card-pad space-y-3">
         <Skeleton className="h-5 w-40" />
         {[0, 1, 2].map((i) => (
           <Skeleton key={i} className="h-14 w-full rounded-xl" />
         ))}
-      </div>
+      </LoadingRegion>
     )}
   </div>);
 }

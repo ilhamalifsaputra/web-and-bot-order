@@ -1,4 +1,5 @@
 import { useSupportUploads } from "../lib/supportUploads";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import SupportUploadPicker from "../components/shop/SupportUploadPicker";
 /**
  * Two-column support workspace: conversation thread (merged via
@@ -17,7 +18,6 @@ import type { SupportData, TicketDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import TicketComposer from "../components/shop/TicketComposer";
 import TicketMessageThread from "../components/shop/TicketMessageThread";
 import TicketSidebar from "../components/shop/TicketSidebar";
@@ -29,7 +29,9 @@ import { tError } from "../lib/errors";
 import { t } from "../lib/i18n";
 import { clearTicketDraft, loadTicketDraft } from "../lib/ticketDraft";
 import { buildTicketTimeline } from "../lib/ticketTimeline";
-import ErrorPage from "./ErrorPage";
+import { RefreshFailedNotice } from "../components/shop/LoadFailed";
+import { loadFailureView } from "./loadFailureView";
+import { randomUuid } from "../lib/randomId";
 
 const QUICK_REPLY_TEMPLATES: Array<{ key: string; labelKey: string; templateKey: string }> = [
   { key: "still_not_working", labelKey: "web.ticket_quick_still_not_working", templateKey: "web.ticket_template_still_not_working" },
@@ -42,7 +44,7 @@ export default function TicketDetailPage() {
   const ticketId = Number(id);
   const mediaOptions = useQuery({ queryKey: ["support-v2-options"], queryFn: () => apiGet<{ media: { enabled: boolean; imageBytes?: number; videoBytes?: number } }>("/api/v1/account/support/options"), retry: false });
   const uploads = useSupportUploads(ticketId, mediaOptions.data?.media);
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const [requestId, setRequestId] = useState(() => randomUuid());
   const { data: ctx } = useShopContext();
   const location = useLocation();
   const [message, setMessage] = useState(() => loadTicketDraft(ticketId));
@@ -56,7 +58,7 @@ export default function TicketDetailPage() {
     (location.state as { notice?: string } | null)?.notice ?? null,
   );
 
-  const { data, error, refetch } = useQuery({
+  const { data, error, refetch, isFetching } = useQuery({
     queryKey: ["account-ticket", id],
     queryFn: () => apiGet<TicketDetailData>(`/api/v1/account/support/${id}`),
     retry: false,
@@ -79,7 +81,7 @@ export default function TicketDetailPage() {
       setMessage("");
       setFiles([]);
       uploads.reset();
-      setRequestId(crypto.randomUUID());
+      setRequestId(randomUuid());
       clearTicketDraft(ticketId);
       refetch();
     },
@@ -117,13 +119,14 @@ export default function TicketDetailPage() {
 
   const timeline = useMemo(() => (data ? buildTicketTimeline(data.ticket, data.messages) : []), [data]);
 
-  if (error) {
-    if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
-  }
+  // H4: only a failed FIRST load replaces the page (404 and 401 as before). A
+  // failed poll or refetch keeps what is on screen (credentials, an unsent
+  // edit) and says the view may be stale (`refreshFailed` below).
+  const failure = loadFailureView(error, data !== undefined, () => void refetch());
+  if (failure !== undefined) return failure;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-16 w-full" />
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="space-y-3">
@@ -132,16 +135,18 @@ export default function TicketDetailPage() {
           </div>
           <Skeleton className="h-64 w-full" />
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 
+  const refreshFailed = Boolean(error);
   const { ticket, order } = data;
   const telegramSupportUrl = ctx?.support_telegram_url ?? null;
   const hasSupportReplied = data.messages.some((m) => !m.from_user) || Boolean(ticket.admin_reply);
 
   return (
     <>
+      {refreshFailed && <RefreshFailedNotice onRetry={() => void refetch()} pending={isFetching} />}
       <Toast
         text={noticeText ?? errorText}
         onDismiss={() => (noticeText ? setNoticeText(null) : setErrorText(null))}
@@ -202,10 +207,9 @@ function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportRe
           <Button
             variant="soft"
             size="sm"
-            disabled={reopenMutation.isPending}
+            pending={reopenMutation.isPending}
             onClick={() => reopenMutation.mutate()}
           >
-            {reopenMutation.isPending && <Spinner />}
             <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
           </Button>
         )}
@@ -217,7 +221,7 @@ function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportRe
             <Button
               variant="soft"
               size="sm"
-              disabled={closeMutation.isPending}
+              pending={closeMutation.isPending}
               onClick={() => closeMutation.mutate()}
             >
               <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
@@ -238,7 +242,7 @@ function TicketConversationPanel({ mediaEnabled, uploads, timeline, hasSupportRe
           onSubmit={submitReply}
           pending={replyMutation.isPending}
           uploadSlot={<SupportUploadPicker uploads={uploads} enabled={mediaEnabled} disabled={replyMutation.isPending} />}
-      uploadBusy={uploads.busy} hasUploads={uploads.ids.length > 0}
+      uploadBusy={uploads.busy} uploadFailed={uploads.failed}hasUploads={uploads.ids.length > 0}
       uploadProgress={uploadProgress}
         />
       </>

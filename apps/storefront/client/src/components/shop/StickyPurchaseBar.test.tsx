@@ -34,8 +34,10 @@ describe("StickyPurchaseBar", () => {
     );
     const button = screen.getByRole("button", { name: /Buy now/ });
     expect(button).toBeDisabled();
-    // components/ui/Spinner is an aria-hidden span with the animate-spin class.
-    expect(button.querySelector(".animate-spin")).not.toBeNull();
+    // components/ui/Spinner is an aria-hidden ring span (motion-safe spin),
+    // rendered by Button's pending state.
+    expect(button.querySelector("span[aria-hidden='true'].rounded-full")).not.toBeNull();
+    expect(button).toHaveAttribute("aria-busy", "true");
     fireEvent.click(button);
     expect(onClick).not.toHaveBeenCalled();
   });
@@ -49,7 +51,7 @@ describe("StickyPurchaseBar", () => {
     );
     const button = screen.getByRole("button", { name: "Buy now" });
     expect(button.className).toContain("opacity-60");
-    expect(button.querySelector(".animate-spin")).toBeNull();
+    expect(button.querySelector("span[aria-hidden='true'].rounded-full")).toBeNull();
   });
 
   it("renders the notice ribbon and the savings / secondary chips only when passed", () => {

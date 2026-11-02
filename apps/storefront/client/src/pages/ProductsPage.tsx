@@ -5,6 +5,7 @@
  * uses, so prices here can't drift from the ones checkout charges.
  */
 import { useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { PackageSearch } from "lucide-react";
 import { apiGet } from "../api/client";
 import type { ShelfPageData } from "../api/types";
@@ -18,13 +19,14 @@ import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
 import EmptyState from "../components/shop/EmptyState";
+import { LoadFailedState } from "../components/shop/LoadFailed";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 
 export default function ProductsPage() {
   const { data: ctx } = useShopContext();
   const [sort, setSort] = useSortParam({ allowCheapest: true });
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["products", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/products?sort=${sort}`),
   });
@@ -35,9 +37,10 @@ export default function ProductsPage() {
 
   // Same reasoning as CategoryPage: a skeleton shaped like the loaded layout
   // instead of a blank page on a slow connection.
+  if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-48" />
@@ -47,7 +50,7 @@ export default function ProductsPage() {
             <ProductCardSkeleton key={i} />
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

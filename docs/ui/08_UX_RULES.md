@@ -12,14 +12,16 @@ referenced are defined in `03_COMPONENT_LIBRARY.md`; tokens in
 
 - **Prefer skeletons over spinners** whenever the eventual content's shape is
   knowable in advance — a table (`SkeletonRow` × N via `DataTable`'s `isLoading`),
-  a KPI card (its own `Loading…` text branch, §KPI card in
-  `07_DASHBOARD_GUIDELINES.md`).
+  a KPI card (`KpiSkeleton`), a card body (`LinesSkeleton`), a detail page
+  (`DetailPageSkeleton`), all inside a busy, named `LoadingRegion`. Never a bare
+  "Loading…" line, a zero, or an empty state while loading.
 - **Never a full-page spinner** for a page's initial load — render the page shell
   (`PageHeader`, etc.) immediately and let the content area show its own
   skeleton/loading branch.
-- **Inline spinners** (`Loader2`, `animate-spin`) are reserved for small, in-place
-  indicators where a skeleton doesn't apply — a submit button's own pending label
-  ("Creating…" with a spinning icon), the toast `loading` type.
+- **Inline spinners** (`Spinner`, motion-safe) are reserved for small, in-place
+  indicators where a skeleton doesn't apply. A pending mutation button uses
+  `<Button pending>` — one pattern app-wide. Upload progress shows a percentage
+  only when the browser measured it; otherwise words and a spinner.
 - Loading state never blocks the rest of the page from being usable unless the data
   being loaded is a hard prerequisite for everything else on the page.
 

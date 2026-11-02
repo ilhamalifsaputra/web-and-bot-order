@@ -14,6 +14,7 @@ import { useNavigate } from "react-router-dom";
 import { apiGet } from "../api/client";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -119,20 +120,12 @@ function useStock() {
 export function StockPage() {
   const fieldId = useId();
   const navigate = useNavigate();
-  const { data, isLoading, isError } = useStock();
+  const { data, isLoading, isError, refetch } = useStock();
   const [filter, setFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [familyFilter, setFamilyFilter] = useState<FamilyTab>(ALL_TAB);
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
-
-  if (isError) {
-    return (
-      <PageLayout title="Stock">
-        <p className="text-rust">Failed to load stock.</p>
-      </PageLayout>
-    );
-  }
 
   const denominations = data?.denominations ?? [];
   const counts = data?.counts ?? {};
@@ -196,6 +189,9 @@ export function StockPage() {
     })
     .sort((a, b) => compareRows(a, b, sortBy, counts));
 
+  // A failed first load has no counts; the tiles must not spin forever.
+  const statsUnavailable = isError && !data;
+
   return (
     <PageLayout title="Stock">
       <PageHeader
@@ -209,15 +205,17 @@ export function StockPage() {
       />
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} />
-        <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} />
-        <StatTile label="Low Stock" value={lowStockCount} isLoading={!data} />
-        <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} />
+        <StatTile label="Stock-tracked SKU" value={totalSku} isLoading={!data} unavailable={statsUnavailable} />
+        <StatTile label="In stock (SKUs)" value={availableCount} isLoading={!data} unavailable={statsUnavailable} />
+        <StatTile label="Low Stock" value={lowStockCount} isLoading={!data} unavailable={statsUnavailable} />
+        <StatTile label="Out of Stock" value={outOfStockCount} isLoading={!data} unavailable={statsUnavailable} />
       </div>
 
       <StockFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} familyFilter={familyFilter} setFamilyFilter={setFamilyFilter} activeCategoryFilter={activeCategoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} availabilityFilter={availabilityFilter} setAvailabilityFilter={setAvailabilityFilter} sortBy={sortBy} setSortBy={setSortBy} />
 
-      <StockSummary counts={counts} lowStockThreshold={lowStockThreshold} data={data} navigate={navigate} filtered={filtered} isLoading={isLoading} isGenuinelyEmpty={isGenuinelyEmpty} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="stock" onRetry={() => void refetch()}>
+        <StockSummary counts={counts} lowStockThreshold={lowStockThreshold} data={data} navigate={navigate} filtered={filtered} isLoading={isLoading} isGenuinelyEmpty={isGenuinelyEmpty} clearFilters={clearFilters} />
+      </QueryFailureGate>
     </PageLayout>
   );
 }

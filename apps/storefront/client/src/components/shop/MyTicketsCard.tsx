@@ -16,6 +16,7 @@
  * mockup's friendlier "Sep 3, 2025" form would need a backend change.
  */
 import { FileText, Inbox, Search } from "lucide-react";
+import { LoadingRegion } from "./LoadingState";
 import { t } from "../../lib/i18n";
 import { useIsDesktop } from "../../lib/useMediaQuery";
 import type { SupportTicketSummary, SupportTicketStats } from "../../api/types";
@@ -126,11 +127,11 @@ export default function MyTicketsCard({
 
       <div className="mt-4">
         {isLoading ? (
-          <div className="space-y-3" aria-busy="true" aria-label={t("web.loading")}>
+          <LoadingRegion className="space-y-3">
             {SKELETON_ROWS.map((i) => (
               <Skeleton key={i} className="h-16 w-full" />
             ))}
-          </div>
+          </LoadingRegion>
         ) : tickets.length === 0 ? (
           <EmptyState
             bare

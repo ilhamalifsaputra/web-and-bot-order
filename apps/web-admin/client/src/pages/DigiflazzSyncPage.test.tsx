@@ -345,6 +345,17 @@ describe("DigiflazzSyncPage", () => {
 describe("DigiflazzSyncPage — Sync runs the full sync before the preview", () => {
   const postedUrls = () => vi.mocked(apiPost).mock.calls.map(([url]) => url);
 
+  it("keeps a busy, disabled Sync button with a spinner while the sync runs", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockReturnValue(new Promise(() => {}));
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+    const button = await screen.findByRole("button", { name: /syncing/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector("[data-slot=spinner]")).toBeInTheDocument();
+  });
+
   it("runs the sync first, then fetches the preview, and shows the run summary without zero parts", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiPost)
@@ -668,6 +679,45 @@ describe("DigiflazzSyncPage — Deteksi panel", () => {
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     expect(await screen.findByText(/deteksi katalog belum pernah dijalankan/i)).toBeInTheDocument();
     expect(await screen.findByText(/tidak ada isu deteksi yang perlu ditinjau/i)).toBeInTheDocument();
+  });
+
+  it("says the detection queries failed, with Retry, instead of claiming they are empty", async () => {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.startsWith("/api/catalog/detection/")) return Promise.reject(new Error("boom"));
+      return Promise.resolve({ categories: [{ id: 1, name: "Top Up Game" }] });
+    });
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(await screen.findByText("Failed to load detection summary.")).toBeInTheDocument();
+    expect(await screen.findByText("Failed to load detection issues.")).toBeInTheDocument();
+    expect(screen.getAllByRole("alert").length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(/deteksi katalog belum pernah dijalankan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tidak ada isu deteksi yang perlu ditinjau/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/antrean tinjauan \(0\)/i)).not.toBeInTheDocument();
+  });
+
+  it("shows busy skeletons and no (0) count while detection loads", () => {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.startsWith("/api/catalog/detection/")) return new Promise(() => {});
+      return Promise.resolve({ categories: [{ id: 1, name: "Top Up Game" }] });
+    });
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(screen.getByRole("status", { name: "Memuat ringkasan deteksi" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Memuat isu deteksi" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText(/antrean tinjauan \(0\)/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tidak ada isu deteksi yang perlu ditinjau/i)).not.toBeInTheDocument();
+  });
+
+  it("marks only the clicked review action as pending", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    stubDetectionGets({ metrics: { metrics: SUMMARY }, issuesHolder: { current: { issues: [OPEN_ISSUE] } } });
+    vi.mocked(apiPost).mockReturnValue(new Promise(() => {}));
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(await screen.findByRole("button", { name: /^dismiss$/i }));
+    const dismiss = screen.getByRole("button", { name: /^dismiss$/i });
+    const resolve = screen.getByRole("button", { name: /^resolve$/i });
+    expect(dismiss).toHaveAttribute("aria-busy", "true");
+    expect(resolve).not.toHaveAttribute("aria-busy");
+    expect(resolve).toBeDisabled();
   });
 
   it("renders the run summary counts and the confidence distribution", async () => {

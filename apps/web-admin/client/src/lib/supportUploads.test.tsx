@@ -97,4 +97,37 @@ describe("support direct uploads", () => {
     expect(supportUploadErrorKey(new Error("helpdesk.media_verification_failed"))).toBe("helpdesk.media_verification_failed");
     expect(supportUploadErrorKey(new Error("helpdesk.upload_timeout"))).toBe("helpdesk.upload_timeout");
   });
+
+  describe("storage connection errors (xhr.onerror)", () => {
+    async function failTransport(online: boolean) {
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(online);
+      vi.mocked(apiPost).mockResolvedValue({ id: "proof-net", url: "https://storage.invalid/proof-net", headers: {} });
+      const { result } = renderHook(() => useSupportUploads(12));
+      act(() => result.current.add([photo()]));
+      await waitFor(() => expect(UploadRequest.instances).toHaveLength(1));
+      act(() => UploadRequest.instances[0]!.onerror?.());
+      await waitFor(() => expect(result.current.files[0]!.state).toBe("failed"));
+      return result.current;
+    }
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps the network message when the browser is offline", async () => {
+      const hook = await failTransport(false);
+      expect(hook.files[0]!.error).toBe("Network unavailable. Check your connection and retry.");
+    });
+    it("blames storage access, not the network, when the browser is online", async () => {
+      const hook = await failTransport(true);
+      expect(hook.files[0]!.error).toContain("could not reach file storage");
+      expect(hook.files[0]!.error).not.toMatch(/network unavailable/i);
+    });
+    it("reports failed separately from busy so the page can explain a disabled Send", async () => {
+      const hook = await failTransport(true);
+      expect(hook.busy).toBe(true);
+      expect(hook.failed).toBe(true);
+      expect(hook.ids).toEqual([]);
+    });
+    it("passes the storage-blocked key through unchanged", () => {
+      expect(supportUploadErrorKey(new Error("helpdesk.upload_storage_blocked"))).toBe("helpdesk.upload_storage_blocked");
+    });
+  });
 });

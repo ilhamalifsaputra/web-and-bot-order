@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { LoadingRegion } from "../shared/LoadingRegion";
+import { Skeleton } from "../ui/skeleton";
 import type { AnalyticsCurrency, AnalyticsMetric, AnalyticsRange } from "../../api/types";
 import { useAnalytics } from "../../hooks/useAnalytics";
 import { EmptyState } from "../shared/EmptyState";
@@ -131,7 +133,7 @@ export function SalesAnalyticsCard() {
       <CardContent>
         {excludedFxOrders > 0 && <p className="text-xs text-ink-soft">{excludedFxOrders} orders have unknown FX; combined revenue is incomplete.</p>}
         {excludedFxItems > 0 && <p className="text-xs text-ink-soft">{excludedFxItems} items have unknown FX; profit is incomplete.</p>}
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LoadingRegion label="Loading analytics" className="h-64 w-full pt-5"><Skeleton className="h-full w-full" /></LoadingRegion>}
         {isError && <p className="text-sm text-rust">Couldn't load analytics.</p>}
         {data && !hasPlottableValue && <EmptyState title="No data for this range." />}
         {data && hasPlottableValue && (

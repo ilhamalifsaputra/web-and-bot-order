@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -39,6 +40,7 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { BulkFailuresNotice } from "../components/shared/BulkFailuresNotice";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
@@ -47,11 +49,13 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatCard } from "../components/shared/StatCard";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { bulkFailureLines, toastBulkOutcome, withoutSucceeded, type BulkFailedItem, type BulkFailureLine } from "../lib/bulkOutcome";
 import { describeError } from "../lib/errorMessages";
 import { exactFieldsOf } from "../lib/exactFields";
 import { visibleSelection } from "../lib/selection";
@@ -287,7 +291,7 @@ function ProductScopePicker({
           aria-label="Search products"
         />
         <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
-          {isLoading && <p className="px-1 py-2 text-sm text-ink-soft">Loading products...</p>}
+          {isLoading && <LinesSkeleton label="Loading products" lines={3} className="px-1 py-2" />}
           {!isLoading && filtered.length === 0 && (
             <p className="px-1 py-2 text-sm text-ink-soft">No products found.</p>
           )}
@@ -343,13 +347,17 @@ export function VouchersPage() {
   const [viewing, setViewing] = useState<Voucher | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Voucher | null>(null);
   useEffect(() => {
+    // Nothing typed since the last search (including the mount): leave the
+    // page alone, or a Next click inside these 300 ms is undone.
+    if (qDraft === q) return;
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
-  }, [qDraft]);
-  const { data, isError } = useVouchers(q, status, page);
+  }, [qDraft, q]);
+  const { data, isError, refetch } = useVouchers(q, status, page);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  useEffect(() => { setSelected(new Set()); }, [q, status, page]);
+  const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
+  useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [q, status, page]);
 
   const vouchers = data?.vouchers ?? [];
   // What the bulk bar counts and the bulk actions act on — never an id whose
@@ -483,21 +491,16 @@ export function VouchersPage() {
 
   const bulkAction = useMutation({
     mutationFn: (vars: { ids: number[]; action: "activate" | "deactivate" | "delete" }) =>
-      apiPost<{ succeeded: number[]; failed: { id: number; error: string }[] }>("/api/vouchers/bulk-action", vars),
+      apiPost<{ succeeded: number[]; failed: BulkFailedItem[] }>("/api/vouchers/bulk-action", vars),
     onSuccess: (result, vars) => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
-      setSelected(new Set());
-      const verb = vars.action === "activate" ? "Activated" : vars.action === "deactivate" ? "Deactivated" : "Deleted";
-      toast.success(
-        result.failed.length > 0
-          ? `${verb} ${result.succeeded.length} of ${vars.ids.length} vouchers — ${result.failed.length} skipped.`
-          : `${verb} ${result.succeeded.length} voucher${result.succeeded.length === 1 ? "" : "s"}.`,
-      );
+      setSelected(current => withoutSucceeded(current, result.succeeded));
+      setBulkFailures(bulkFailureLines(result.failed, id => vouchers.find(v => v.id === id)?.code ?? `Voucher #${id}`));
+      const done = vars.action === "activate" ? "Activated" : vars.action === "deactivate" ? "Deactivated" : "Deleted";
+      toastBulkOutcome({ done, noun: "voucher", succeeded: result.succeeded.length, failed: result.failed.length });
     },
     onError: (e: Error) => toast.error(describeError(e)),
   });
-
-  if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;
 
   const now = new Date();
 
@@ -514,7 +517,7 @@ export function VouchersPage() {
         }
       />
 
-      <VoucherStats data={data} />
+      <VoucherStats unavailable={isError && !data} data={data} />
 
       <VouchersVoucherCode showForm={showForm} mode={mode} editingId={editingId} update={update} create={create} form={form} setForm={setForm} data={data} />
 
@@ -544,9 +547,13 @@ export function VouchersPage() {
         </div>
       </FilterBar>
 
+      <BulkFailuresNotice failures={bulkFailures} onDismiss={() => setBulkFailures([])} />
+
       <VoucherBulkActions visibleSelected={visibleSelected} bulkAction={bulkAction} setSelected={setSelected} />
 
-      <VouchersTable allSelected={allSelected} toggleSelectAll={toggleSelectAll} vouchers={vouchers} selected={selected} toggleSelected={toggleSelected} handleCopy={handleCopy} copiedId={copiedId} now={now} setViewing={setViewing} openEditForm={openEditForm} openDuplicateForm={openDuplicateForm} toggle={toggle} setPendingDelete={setPendingDelete} data={data} status={status} q={q} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="vouchers" onRetry={() => void refetch()}>
+        <VouchersTable allSelected={allSelected} toggleSelectAll={toggleSelectAll} vouchers={vouchers} selected={selected} toggleSelected={toggleSelected} handleCopy={handleCopy} copiedId={copiedId} now={now} setViewing={setViewing} openEditForm={openEditForm} openDuplicateForm={openDuplicateForm} toggle={toggle} setPendingDelete={setPendingDelete} data={data} status={status} q={q} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">
@@ -729,7 +736,7 @@ function VouchersVoucherCode({ showForm, mode, editingId, update, create, form, 
               />
             </div>
           )}
-          <Button type="submit" disabled={create.isPending || update.isPending} className="self-end">
+          <Button type="submit" pending={create.isPending || update.isPending} className="self-end">
             {mode === "edit"
               ? (update.isPending ? "Saving…" : "Save Changes")
               : (create.isPending ? "Creating…" : "Create")}
@@ -751,6 +758,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       <Button
         size="sm"
         variant="outline"
+        pending={bulkAction.isPending && bulkAction.variables?.action === "activate"}
         disabled={bulkAction.isPending}
         onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "activate" })}
       >
@@ -759,6 +767,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       <Button
         size="sm"
         variant="outline"
+        pending={bulkAction.isPending && bulkAction.variables?.action === "deactivate"}
         disabled={bulkAction.isPending}
         onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "deactivate" })}
       >
@@ -766,7 +775,7 @@ function VoucherBulkActions({ visibleSelected, bulkAction, setSelected }: {
       </Button>
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+          <Button size="sm" variant="destructive" pending={bulkAction.isPending && bulkAction.variables?.action === "delete"} disabled={bulkAction.isPending}>
             Delete {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
           </Button>
         }
@@ -843,19 +852,20 @@ function VoucherDetailsDialog({ viewing, setViewing, now }: {
   ));
 }
 
-function VoucherStats({ data }: {
+function VoucherStats({ unavailable, data }: {
+  unavailable: boolean;
   data: NoInfer<VouchersData> | undefined;
 }) {
   return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-    <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
-    <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} />
-    <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} />
+    <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} unavailable={unavailable} />
+    <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} unavailable={unavailable} />
+    <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} unavailable={unavailable} />
     <StatCard
       label="Redemptions (currently held)"
       hint="Redemptions still held by an order. A cancelled, rejected or expired order releases its redemption, so this can go down."
       value={data?.stats.totalRedemptions ?? 0}
       icon={Repeat}
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
   </div>);
 }

@@ -29,14 +29,14 @@ describe("OrderProgress", () => {
 
   it("shows every step checked and no spinner when completed", () => {
     const { container } = render(<OrderProgress fulfillment={f({ status: "SUCCESS" })} />);
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(list().querySelector('[aria-current="step"]')).not.toBeInTheDocument();
     expect(list().querySelectorAll("li .bg-grass-tint")).toHaveLength(3);
   });
 
   it("shows the problem variant on the processing step when fulfillment failed", () => {
     const { container } = render(<OrderProgress fulfillment={f({ status: "FAILED" })} />);
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(list().querySelectorAll("li .bg-amberx-tint")).toHaveLength(1);
     expect(list().querySelectorAll("li .bg-grass-tint")).toHaveLength(1);
   });
@@ -44,7 +44,7 @@ describe("OrderProgress", () => {
   it("shows the review variant without a spinner for NEEDS_REVIEW", () => {
     const { container } = render(<OrderProgress fulfillment={f({ status: "NEEDS_REVIEW" })} />);
     expect(screen.getByRole("heading", { name: "We're checking your order" })).toBeInTheDocument();
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
   });
 
   it("marks Payment as the pending step before payment", () => {
@@ -54,7 +54,7 @@ describe("OrderProgress", () => {
 
   it("shows a MANUAL order waiting on a static clock with Processing still current, never a spinner", () => {
     const { container } = render(<OrderProgress fulfillment={f({ mode: "MANUAL", provider: "MANUAL", status: "QUEUED" })} />);
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(list().querySelector('[aria-current="step"]')).toHaveTextContent("Processing");
   });
 
@@ -81,7 +81,7 @@ describe("OrderProgress", () => {
       titleKey: "web.fulfillment_processing_title", bodyKey: "web.fulfillment_processing_body",
     };
     const { container } = render(<OrderProgress fulfillment={f({ presentation })} />);
-    expect(Boolean(container.querySelector(".animate-spin"))).toBe(spinner);
+    expect(Boolean(container.querySelector("[class*='animate-spin']"))).toBe(spinner);
     if (progress === null) expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     else expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", String(progress));
     expect(screen.queryByRole("list", { name: "Order progress" })).not.toBeInTheDocument();

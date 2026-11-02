@@ -1,4 +1,5 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { LinesSkeleton } from "../../components/shared/LoadingRegion";
 import { ProgressBar } from "../../components/shared/ProgressBar";
 import { useReviewsKpis } from "../../hooks/useReviewsKpis";
 
@@ -28,7 +29,7 @@ export function RatingDistributionCard(): React.JSX.Element {
         <CardTitle as="h2">Rating Distribution</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LinesSkeleton label="Loading rating distribution" lines={5} />}
         {isError && <p className="text-sm text-rust">Couldn't load rating distribution.</p>}
         {!isLoading &&
           !isError &&

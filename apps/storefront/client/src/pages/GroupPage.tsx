@@ -10,6 +10,7 @@
  * product a moved ranking repeats is dropped.
  */
 import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { PackageSearch, Store } from "lucide-react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { apiGet } from "../api/client";
@@ -170,7 +171,7 @@ function GroupCatalog({ data, category, fx, hasNextPage, loadMoreBusy, loadMoreF
 
       {hasNextPage && (
         <div className="mt-8 flex flex-col items-center gap-2">
-          <Button variant="soft" onClick={onLoadMore} disabled={loadMoreBusy} aria-busy={loadMoreBusy}>
+          <Button variant="soft" onClick={onLoadMore} pending={loadMoreBusy}>
             {t("web.group_load_more")}
           </Button>
           {loadMoreFailed && (
@@ -186,7 +187,7 @@ function GroupCatalog({ data, category, fx, hasNextPage, loadMoreBusy, loadMoreF
 
 function GroupPageSkeleton() {
   return (
-    <div aria-busy="true" aria-label={t("web.loading")}>
+    <LoadingRegion>
       <Skeleton className="mb-3 h-4 w-40" />
       <div className="mb-6">
         <Skeleton className="h-8 w-48" />
@@ -197,6 +198,6 @@ function GroupPageSkeleton() {
           <ProductCardSkeleton key={i} />
         ))}
       </div>
-    </div>
+    </LoadingRegion>
   );
 }

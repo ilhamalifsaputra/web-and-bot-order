@@ -1,4 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +19,7 @@ import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpe
 import { EmptyState } from "../components/shared/EmptyState";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { useSse } from "../hooks/useSse";
 import { describeError } from "../lib/errorMessages";
@@ -201,9 +203,17 @@ export function OrderDetailPage() {
   return <OrderDetailSession key={orderId} orderId={orderId} />;
 }
 
+/** What stands in for the order while there is no data yet: the load failed
+ * (with Retry) or is still in flight. */
+function OrderDetailUnavailable({ isError, onRetry }: { isError: boolean; onRetry: () => void }) {
+  return isError
+    ? <QueryErrorNotice what="order" hasData={false} onRetry={onRetry} />
+    : <DetailPageSkeleton label="Loading order" />;
+}
+
 function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
   const qc = useQueryClient();
-  const { data, isError } = useOrderDetail(orderId ?? "");
+  const { data, isError, refetch } = useOrderDetail(orderId ?? "");
   useOrderProviderStream({ orderId, qc });
   const [rejectReason, setRejectReason] = useState("");
   const [fulfillContent, setFulfillContent] = useState("");
@@ -321,17 +331,10 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
     }
   }
 
-  if (isError) {
-    return (
-      <PageLayout title="Order Detail">
-        <p className="text-sm text-rust">Failed to load order.</p>
-      </PageLayout>
-    );
-  }
   if (!data) {
     return (
       <PageLayout title="Order Detail">
-        <p>Loading…</p>
+        <OrderDetailUnavailable isError={isError} onRetry={() => void refetch()} />
       </PageLayout>
     );
   }
@@ -391,6 +394,8 @@ function OrderDetailSession({ orderId }: { orderId: string | undefined }) {
         title={`Order ${order.orderCode}`}
         breadcrumb={[{ label: "Orders", href: "/orders" }]}
       />
+
+      <QueryErrorNotice isError={isError} what="order" hasData onRetry={() => void refetch()} />
 
       {actionError && <p className="mb-4 text-sm text-rust">{actionError}</p>}
 
@@ -529,7 +534,7 @@ function OrderDetailOverpayment({ overpayment, canReturnOverpayment, creditOverp
         ) : canReturnOverpayment ? (
           <ConfirmDialog
             trigger={
-              <Button size="sm" disabled={creditOverpayment.isPending}>
+              <Button size="sm" pending={creditOverpayment.isPending}>
                 <HandCoins className="h-4 w-4" />
                 Return{" "}
                 {formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")}{" "}
@@ -607,7 +612,7 @@ function RejectOrderForm({ canReject, rejectReason, setRejectReason, reject, set
         className="w-64"
       />
       <ConfirmDialog
-        trigger={<Button variant="destructive" disabled={reject.isPending}><X className="h-4 w-4 text-rust" />{reject.isPending ? "Rejecting…" : "Reject"}</Button>}
+        trigger={<Button variant="destructive" pending={reject.isPending}><X className="h-4 w-4 text-rust" />{reject.isPending ? "Rejecting…" : "Reject"}</Button>}
         title="Reject this order?"
         description={rejectReason.trim() ? `Reason: ${rejectReason}` : "A reason is required to reject."}
         confirmLabel="Reject"
@@ -779,7 +784,7 @@ function SupplierActions({ orderId, data, refresh }: {
   return (
     <>
       {data.canRecheckSupplier && (
-        <Button disabled={recheck.isPending} aria-busy={recheck.isPending} onClick={() => recheck.mutate()}>
+        <Button pending={recheck.isPending} onClick={() => recheck.mutate()}>
           <Search className="h-4 w-4" />
           {recheck.isPending ? "Checking…" : "Check supplier now"}
         </Button>
@@ -919,7 +924,7 @@ function OrderDetailActionsActions({ orderId, refresh, canResend, resending, res
 
       {canResend && (
         <ConfirmDialog
-          trigger={<Button variant="outline" disabled={resending}><RefreshCw className="h-4 w-4" />{resending ? "Resending…" : "Resend to Telegram"}</Button>}
+          trigger={<Button variant="outline" pending={resending}><RefreshCw className="h-4 w-4" />{resending ? "Resending…" : "Resend to Telegram"}</Button>}
           title="Resend credentials to the buyer?"
           description="Queues a fresh account-credentials message to the buyer's Telegram — use this if they say they never received it."
           confirmLabel="Resend"
@@ -930,7 +935,7 @@ function OrderDetailActionsActions({ orderId, refresh, canResend, resending, res
 
       {canAct && (
         <ConfirmDialog
-          trigger={<Button disabled={approve.isPending}><Check className="h-4 w-4 text-grass" />{approve.isPending ? "Approving…" : "Approve & Deliver"}</Button>}
+          trigger={<Button pending={approve.isPending}><Check className="h-4 w-4 text-grass" />{approve.isPending ? "Approving…" : "Approve & Deliver"}</Button>}
           title="Approve and deliver order?"
           description="Stock will be delivered to the customer and the order marked as delivered."
           confirmLabel="Approve"
@@ -943,7 +948,7 @@ function OrderDetailActionsActions({ orderId, refresh, canResend, resending, res
 
       {canCredit && (
         <ConfirmDialog
-          trigger={<Button variant="outline" disabled={creditBalance.isPending}><CircleDollarSign className="h-4 w-4" />{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
+          trigger={<Button variant="outline" pending={creditBalance.isPending}><CircleDollarSign className="h-4 w-4" />{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
           title="Credit to wallet balance?"
           description="The paid amount will be credited to the buyer's wallet balance."
           confirmLabel="Credit"
@@ -962,7 +967,7 @@ function OrderDetailActionsActions({ orderId, refresh, canResend, resending, res
 
       {canCreditCancelled && (
         <ConfirmDialog
-          trigger={<Button variant="outline" disabled={creditBalance.isPending}><CircleDollarSign className="h-4 w-4" />{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
+          trigger={<Button variant="outline" pending={creditBalance.isPending}><CircleDollarSign className="h-4 w-4" />{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
           title="Credit this cancelled order's payment to the buyer?"
           description="This order is cancelled, but its payment was never returned. The paid amount will be credited to the buyer's wallet balance — nothing else about the order changes."
           confirmLabel="Credit"
@@ -981,7 +986,7 @@ function OrderDetailActionsActions({ orderId, refresh, canResend, resending, res
             rows={4}
           />
           <ConfirmDialog
-            trigger={<Button disabled={fulfill.isPending}><Send className="h-4 w-4" />{fulfill.isPending ? "Sending…" : "Send to Buyer"}</Button>}
+            trigger={<Button pending={fulfill.isPending}><Send className="h-4 w-4" />{fulfill.isPending ? "Sending…" : "Send to Buyer"}</Button>}
             title="Send this delivery content to the buyer?"
             description="The buyer will be notified with the content below, and the order will be marked delivered."
             confirmLabel="Send"

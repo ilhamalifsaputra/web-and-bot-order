@@ -36,7 +36,6 @@ import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
 import PasswordInput from "../components/shop/PasswordInput";
-import Spinner from "../components/shop/Spinner";
 import TelegramLoginButton from "../components/shop/TelegramLoginButton";
 import Alert, { type AlertTone } from "../components/ui/Alert";
 import Button from "../components/ui/Button";
@@ -159,8 +158,7 @@ export default function LoginPage() {
                 required
               />
             </FormField>
-            <Button type="submit" variant="primary" fullWidth disabled={loginMutation.isPending}>
-              {loginMutation.isPending && <Spinner />}
+            <Button type="submit" variant="primary" fullWidth pending={loginMutation.isPending}>
               {t("web.login_submit")}
             </Button>
             <div className="flex items-center justify-between text-sm">

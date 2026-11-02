@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -809,5 +809,155 @@ describe("SupportPage", () => {
     await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Classify")).toBeInTheDocument();
+  });
+});
+
+describe("SupportPage — failed loads keep the page usable", () => {
+  const SEARCH = /ticket, order, or customer/i;
+
+  /** Serves admins normally and fails the ticket list while `failing()` is
+   *  true. Returns the ticket-list URLs requested, in order. */
+  function mockFailingTickets(failing: () => boolean) {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      return failing() ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse(supportData([TICKET_OPEN]));
+    });
+    return listUrls;
+  }
+
+  it("first-load failure keeps the search and filters, never claims there are no tickets, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls = mockFailingTickets(() => failing);
+    render(<SupportPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load tickets.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(SEARCH)).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Status filter" })).toBeInTheDocument();
+    expect(screen.queryByText(/no support tickets/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no matching tickets/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable")).toHaveLength(6);
+    expect(listUrls).toHaveLength(1);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load tickets.")).not.toBeInTheDocument();
+  });
+
+  it("a search typed while the list is failing survives Retry", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls = mockFailingTickets(() => failing);
+    render(<SupportPage />, { wrapper: Wrapper });
+    await screen.findByText("Failed to load tickets.");
+
+    await user.type(screen.getByPlaceholderText(SEARCH), "budi");
+    // The search applies itself after a 300 ms debounce.
+    await waitFor(() => expect(listUrls).toHaveLength(2));
+    expect(listUrls[1]).toContain("q=budi");
+    expect(await screen.findByText("Failed to load tickets.")).toBeInTheDocument();
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(3);
+    expect(listUrls[2]).toContain("q=budi");
+    expect(screen.getByPlaceholderText(SEARCH)).toHaveValue("budi");
+  });
+
+  it("a failed 30 s poll keeps the rows on screen with a Couldn't refresh notice, and Retry clears it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let failing = false;
+    const listUrls = mockFailingTickets(() => failing);
+    render(<SupportPage />, { wrapper: Wrapper });
+    await vi.waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(1);
+
+    failing = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await vi.waitFor(() => expect(screen.getByText(/Couldn't refresh tickets/)).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument();
+    expect(screen.queryByText("Failed to load tickets.")).not.toBeInTheDocument();
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await vi.waitFor(() => expect(screen.queryByText(/Couldn't refresh tickets/)).not.toBeInTheDocument());
+    expect(listUrls).toHaveLength(3);
+    expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument();
+  });
+});
+
+describe("SupportPage — search debounce", () => {
+  it("the search debounce that fires after mount does not send Next back to page 1", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      const page = url.includes("page=2") ? 2 : 1;
+      return jsonResponse(supportData([{ ...TICKET_OPEN, id: page, message: `Ticket on page ${page}` }], { total: 60, page }));
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("Ticket on page 2")).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(screen.getByText("Ticket on page 2")).toBeInTheDocument();
+    expect(listUrls.at(-1)).toContain("page=2");
+  });
+});
+
+/** The page a list request asks for; a request without `page` asks for 1. */
+function requestedPage(url: string): string {
+  return new URL(url, "http://admin.test").searchParams.get("page") ?? "1";
+}
+
+describe("SupportPage — search resets the page", () => {
+  it("typing a search after moving to page 2 asks for page 1 of the results", async () => {
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      listUrls.push(url);
+      const page = Number(requestedPage(url));
+      return jsonResponse(supportData([{ ...TICKET_OPEN, id: page, message: `Ticket on page ${page}` }], { total: 60, page }));
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(screen.getByText("Ticket on page 2")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(/ticket, order, or customer/i), { target: { value: "refund" } });
+    await waitFor(() => expect(listUrls.at(-1)).toContain("q=refund"));
+    expect(requestedPage(listUrls.at(-1)!)).toBe("1");
+    expect(listUrls.filter((u) => u.includes("q=refund") && requestedPage(u) === "2")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByText("Ticket on page 1")).toBeInTheDocument());
+  });
+});
+
+describe("SupportPage bulk bar pending", () => {
+  it("marks only the clicked bulk action as pending", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const router = mockFetchRouter();
+    const base = router.getMockImplementation()!;
+    router.mockImplementation((input, init) =>
+      (init?.method ?? "GET") === "POST" ? new Promise(() => {}) : base(input, init),
+    );
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "Select ticket #1" }));
+    await user.click(screen.getByRole("button", { name: /^resolve$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^resolve$/i })).toHaveAttribute("aria-busy", "true"));
+    const close = screen.getByRole("button", { name: /close 1 ticket/i });
+    expect(close).toBeDisabled();
+    expect(close).not.toHaveAttribute("aria-busy");
   });
 });

@@ -140,7 +140,7 @@ export function SupplierNoteDialog({
           <Button variant="outline" disabled={submit.isPending} onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button
+          <Button pending={submit.isPending}
             variant={confirmVariant}
             disabled={!note.trim() || submit.isPending}
             aria-busy={submit.isPending}

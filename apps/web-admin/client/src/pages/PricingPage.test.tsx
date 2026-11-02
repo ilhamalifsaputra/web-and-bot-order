@@ -28,7 +28,8 @@ beforeEach(() => {
 describe("PricingPage", () => {
   it("shows server preview, saves a dirty policy after confirmation, and reloads", async () => {
     renderPage();
-    await screen.findByText("Rp115.000");
+    // First test of the file: the page's modules load cold here, which can outlast the default 1 s wait.
+    await screen.findByText("Rp115.000", {}, { timeout: 5000 });
     expect(screen.getByRole("button", { name: "Simpan default" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Markup (%)"), { target: { value: "20" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Simpan default" })).toBeEnabled());
@@ -257,5 +258,56 @@ describe("PricingPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: /^hapus\s*aturan\s*games$/i }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(apiDelete).toHaveBeenCalledWith("/api/pricing/categories/1"));
+  });
+});
+
+describe("PricingPage — failed loads keep the page usable", () => {
+  function renderWithClient() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<MemoryRouter><QueryClientProvider client={qc}><PricingPage /></QueryClientProvider></MemoryRouter>);
+    return qc;
+  }
+
+  it("a failed first load shows the message and Retry; Retry loads the form", async () => {
+    let failing = true;
+    vi.mocked(apiGet).mockImplementation(async () => {
+      if (failing) throw new Error("Database unavailable");
+      return DATA;
+    });
+    renderWithClient();
+
+    expect(await screen.findByText("Database unavailable")).toBeInTheDocument();
+    expect(apiGet).toHaveBeenCalledTimes(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Rp115.000");
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Database unavailable")).not.toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps the markup the admin typed, with Couldn't refresh and Retry", async () => {
+    let failing = false;
+    vi.mocked(apiGet).mockImplementation(async () => {
+      if (failing) throw new Error("Database unavailable");
+      return DATA;
+    });
+    const qc = renderWithClient();
+    await screen.findByText("Rp115.000");
+    const markup = screen.getByLabelText("Markup (%)");
+    fireEvent.change(markup, { target: { value: "20" } });
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["pricing"] }); });
+    expect(await screen.findByText(/Couldn't refresh pricing rules/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Markup (%)")).toBe(markup);
+    expect(markup).toHaveValue("20");
+    expect(apiGet).toHaveBeenCalledTimes(2);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh pricing rules/)).not.toBeInTheDocument());
+    expect(apiGet).toHaveBeenCalledTimes(3);
+    expect(screen.getByLabelText("Markup (%)")).toHaveValue("20");
   });
 });

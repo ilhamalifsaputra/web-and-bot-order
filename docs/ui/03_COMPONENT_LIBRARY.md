@@ -322,7 +322,7 @@ stats, settings sections, detail-page blocks, list-page summary cards).
 
 Not a separate component — the pattern `Card > CardHeader > CardTitle` +
 `CardContent` with:
-- Loading branch: `<p className="text-sm text-ink-soft">Loading…</p>`
+- Loading branch: `<KpiSkeleton label="Loading X" />` (`components/shared/LoadingRegion.tsx`) — never a zero or a "Loading…" line
 - Error branch: `<p className="text-sm text-rust">Couldn't load X.</p>`
 - Data branch: big number `font-display text-3xl font-semibold text-ink`, subtext
   `mt-1 text-xs text-ink-soft`, optional `StatTrend` (below) for a day-over-day
@@ -695,7 +695,11 @@ New and touched pages should use toast.
 
 **File:** `components/ui/skeleton.tsx`
 **Purpose:** loading placeholder shaped like the content it's replacing.
-**Style:** `animate-pulse bg-muted`.
+**Style:** `motion-safe:animate-pulse bg-muted`, `aria-hidden`. Wrap a group in
+`LoadingRegion` (`components/shared/LoadingRegion.tsx`: a busy `role="status"`
+named "Loading <what>"); `LinesSkeleton` / `KpiSkeleton` cover card bodies and KPI
+values, `DetailPageSkeleton` (`components/shared/RouteFallback.tsx`) a detail page.
+`RouteFallback` is the one Suspense fallback for lazy routes.
 **Table use:** `components/shared/SkeletonRow.tsx` renders a full `TableRow` of
 `Skeleton`s (one per column) — consumed internally by `DataTable`'s `isLoading`
 state, not typically imported directly by pages. See `08_UX_RULES.md` for when to
@@ -758,11 +762,13 @@ Covered in full in `02_ADMIN_LAYOUT.md` §§2–3 — the shell components (`Sid
 
 ## Loading Spinner
 
-There is no dedicated spinner component — the app prefers **skeletons** for
-anything with a knowable shape (tables, cards, KPI values — see Skeleton above) and
-reserves an inline spinning icon (`Loader2` from Lucide, `animate-spin`) for small,
-in-place indicators where a skeleton doesn't apply — e.g. a button's own pending
-state ("Creating…" with a spinning icon), or the toast `loading` type's icon. Do not
+`components/ui/spinner.tsx` (`LoaderCircle`, `aria-hidden`, spins only under
+`motion-safe`). The app prefers **skeletons** for anything with a knowable shape
+(tables, cards, KPI values — see Skeleton above) and reserves the Spinner for small,
+in-place indicators where a skeleton doesn't apply — the toast `loading` icon, a
+search refetch. A mutation button never places it by hand: use
+`<Button pending={m.isPending}>` (spinner in place of the leading icon, label kept,
+disabled + `aria-busy`, idle width held). Do not
 introduce a full-page spinner for initial page loads — use a skeleton shaped like
 the eventual content instead (see `08_UX_RULES.md`).
 

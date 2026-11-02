@@ -7,7 +7,6 @@ import type { TrackOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import type { EmptyStateAction } from "../components/shop/EmptyState";
 import EmptyState from "../components/shop/EmptyState";
-import Spinner from "../components/shop/Spinner";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
@@ -169,8 +168,7 @@ export default function TrackOrderPage() {
           <FormField label={t("web.track_access_token")} htmlFor="track_access_token">
             <Input id="track_access_token" type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} autoComplete="off" maxLength={1024} required />
           </FormField>
-          <Button type="submit" variant="primary" fullWidth disabled={!canSubmit}>
-            {lookupMutation.isPending && <Spinner />}
+          <Button pending={lookupMutation.isPending} type="submit" variant="primary" fullWidth disabled={!canSubmit}>
             {t("web.track_submit")}
           </Button>
         </form>

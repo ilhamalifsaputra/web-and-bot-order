@@ -208,7 +208,7 @@ export function CategoryDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={saving || !name.trim() || group === ""}>
+          <Button pending={saving} onClick={() => void save()} disabled={saving || !name.trim() || group === ""}>
             {saving ? "Saving…" : editing ? "Save" : "Create"}
           </Button>
         </DialogFooter>

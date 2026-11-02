@@ -79,3 +79,27 @@ describe("unified compact help center", () => {
     expect(apiGet).not.toHaveBeenCalled();
   });
 });
+
+// H6 (UI-states audit): crypto.randomUUID is secure-context only; calling it
+// during render on plain http threw and blanked the page.
+describe("help center on plain http", () => {
+  it("renders the form when crypto.randomUUID does not exist", async () => {
+    const real = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
+    try {
+      show();
+      await waitFor(() => expect(screen.getByLabelText(/Help category/)).toBeEnabled());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("help center ticket history loading", () => {
+  it("shows a busy status region, not an empty list, while history loads", async () => {
+    vi.mocked(apiGet).mockImplementation(async (path) => path.endsWith("/options") ? options : new Promise(() => {}));
+    show();
+    const region = await screen.findByRole("status", { name: "Loading…" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+  });
+});

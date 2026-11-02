@@ -1,4 +1,5 @@
 import { keyedContent } from "../lib/keyedContent";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /** Order detail uses canonical backend fulfillment, full-detail SSE refetches
  * and five-second polling while payment or delivery is outstanding.
  * Historical amounts preserve their settlement and central-IDR bases. */
@@ -12,7 +13,6 @@ import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 import OrderProgress from "../components/shop/OrderProgress";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import StatusBadge from "../components/shop/StatusBadge";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
@@ -25,7 +25,8 @@ import { currentLang, t } from "../lib/i18n";
 import { isOrderLive } from "../lib/orderFulfillment";
 import { preferredScrollBehavior } from "../lib/scrollBehavior";
 import { useIsDesktop } from "../lib/useMediaQuery";
-import ErrorPage from "./ErrorPage";
+import { RefreshFailedNotice } from "../components/shop/LoadFailed";
+import { loadFailureView } from "./loadFailureView";
 
 export default function OrderDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
@@ -86,13 +87,14 @@ export default function OrderDetailPage() {
     }
   }, [data]);
 
-  if (error) {
-    if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
-    return null;
-  }
+  // H4: only a failed FIRST load replaces the page (404 and 401 as before). A
+  // failed poll or refetch keeps what is on screen (credentials, an unsent
+  // edit) and says the view may be stale (`refreshFailed` below).
+  const failure = loadFailureView(error, data !== undefined, () => void refetch());
+  if (failure !== undefined) return failure;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-56" />
         <div className="card mb-5 space-y-3 p-4">
           <Skeleton className="h-4 w-2/3" />
@@ -100,10 +102,11 @@ export default function OrderDetailPage() {
         </div>
         <Skeleton className="mb-5 h-40 w-full" />
         <Skeleton className="ml-auto h-32 w-full max-w-md" />
-      </div>
+      </LoadingRegion>
     );
   }
 
+  const refreshFailed = Boolean(error);
   const { order, delivered, pending_payment: pendingPayment, processing } = data;
   const showBulk = Boolean(order.bulk_discount) && order.bulk_discount !== "0";
   const showVoucher = Boolean(order.discount) && order.discount !== "0";
@@ -169,6 +172,7 @@ export default function OrderDetailPage() {
 
   return (
     <div className="min-w-0">
+      {refreshFailed && <RefreshFailedNotice onRetry={() => void refetch()} pending={isFetching} />}
       <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0 flex-1">
           <div className="text-xs text-ink-faint mb-2 break-words">
@@ -252,13 +256,12 @@ function CustomerInfoSection({ fields, canEdit, editMode, startEdit, infoError, 
             ))}
           </div>
           <div className="flex flex-wrap gap-2 mt-4">
-            <Button
+            <Button pending={infoMutation.isPending}
               variant="primary"
               className="min-h-11"
               disabled={!canEdit || !infoValid || infoMutation.isPending}
               onClick={() => infoMutation.mutate(answers)}
             >
-              {infoMutation.isPending && <Spinner />}
               {t("web.order_info_save_btn")}
             </Button>
             <Button

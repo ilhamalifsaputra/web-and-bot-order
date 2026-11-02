@@ -26,6 +26,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
@@ -224,14 +225,6 @@ export function UsersPage() {
 
   const banTarget = data?.users.find((u) => u.id === banTargetId) ?? null;
 
-  if (isError) {
-    return (
-      <PageLayout title="Customers">
-        <p className="text-rust">Failed to load customers.</p>
-      </PageLayout>
-    );
-  }
-
   const roles = data?.roles ?? [];
   const pageUsers = data?.users ?? [];
   // What the bulk bar counts and the export link carries — never an id whose
@@ -316,7 +309,9 @@ export function UsersPage() {
         </div>
       )}
 
-      <UsersSelectAllCustomersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} copyTelegramId={copyTelegramId} setBanTargetId={setBanTargetId} pageUsers={pageUsers} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="customers" onRetry={() => void refetch()}>
+        <UsersSelectAllCustomersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} copyTelegramId={copyTelegramId} setBanTargetId={setBanTargetId} pageUsers={pageUsers} isLoading={isLoading} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">

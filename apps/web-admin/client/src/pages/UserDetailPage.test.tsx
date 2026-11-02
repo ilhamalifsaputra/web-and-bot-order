@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { UserDetailPage } from "./UserDetailPage";
 import { apiPost } from "../api/client";
@@ -186,9 +187,10 @@ describe("UserDetailPage — wallet adjustment currency", () => {
     await user.type(screen.getByPlaceholderText("Amount (+ or −)"), "5");
     await user.type(screen.getByPlaceholderText("Reason (required)"), "goodwill");
     await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "goodwill", currency: "IDR" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "goodwill", currency: "IDR" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
   });
 
@@ -205,10 +207,222 @@ describe("UserDetailPage — wallet adjustment currency", () => {
     await user.type(screen.getByPlaceholderText("Amount (+ or −)"), "5");
     await user.type(screen.getByPlaceholderText("Reason (required)"), "top up");
     await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "top up", currency: "USDT" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "top up", currency: "USDT" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
+  });
+});
+
+describe("UserDetailPage — wallet adjustment confirmation and retry", () => {
+  /** The page loads, and reloads after a success, from a fresh Response each time. */
+  function serveUser() {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+  }
+
+  /** A response that reached the client, which is what ends a key's life. */
+  function answerOk() {
+    vi.mocked(apiPost).mockImplementationOnce(async (_path, _body, options) => {
+      options?.onResponse?.(200);
+      return { ok: true, newBalance: "500005" };
+    });
+  }
+
+  function walletKeys(): string[] {
+    return vi.mocked(apiPost).mock.calls.map((call) => (call[2] as { idempotencyKey: string }).idempotencyKey);
+  }
+
+  async function openPage() {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    serveUser();
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    return user;
+  }
+
+  async function fillForm(user: ReturnType<typeof userEvent.setup>, delta: string, note: string) {
+    if (delta) await user.type(screen.getByPlaceholderText("Amount (+ or −)"), delta);
+    if (note) await user.type(screen.getByPlaceholderText("Reason (required)"), note);
+  }
+
+  it("states the customer, currency, signed amount, direction and reason for a credit", async () => {
+    const user = await openPage();
+    await fillForm(user, "10.000", "goodwill");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Credit this wallet?")).toBeInTheDocument();
+    expect(within(dialog).getByText("Andi Santoso")).toBeInTheDocument();
+    expect(within(dialog).getByText("IDR")).toBeInTheDocument();
+    expect(within(dialog).getByText("+Rp10.000")).toBeInTheDocument();
+    expect(within(dialog).getByText("goodwill")).toBeInTheDocument();
+  });
+
+  it("states a debit as a debit with its minus sign, in USDT", async () => {
+    const user = await openPage();
+    await user.click(screen.getByRole("button", { name: "USDT" }));
+    await fillForm(user, "-2.5", "correction");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Debit this wallet?")).toBeInTheDocument();
+    expect(within(dialog).getByText("USDT")).toBeInTheDocument();
+    expect(within(dialog).getByText("-2.5 USDT")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Debit wallet" })).toBeInTheDocument();
+  });
+
+  it("sends nothing when the confirmation is cancelled, and keeps the form filled", async () => {
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText("Amount (+ or −)")).toHaveValue("5");
+  });
+
+  it.each([
+    ["no amount", "", "goodwill", null],
+    ["no reason", "5", "", null],
+    ["a blank reason", "5", "   ", null],
+    ["a zero amount", "0", "goodwill", /cannot be zero/i],
+    ["an unreadable amount", "1.2.3", "goodwill", /written like/i],
+  ])("offers no confirmation with %s", async (_label, delta, note, hint) => {
+    const user = await openPage();
+    await fillForm(user, delta, note);
+
+    expect(screen.getByRole("button", { name: "Adjust" })).toBeDisabled();
+    if (hint) expect(screen.getByText(hint)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["rupiah fractions", "IDR", "10,5"],
+    ["a USDT amount that could mean one or a thousand", "USDT", "1.000"],
+    ["more USDT decimals than the wallet holds", "USDT", "1.23456"],
+  ])("offers no confirmation for %s, which the server would refuse", async (_label, currency, delta) => {
+    const user = await openPage();
+    if (currency === "USDT") await user.click(screen.getByRole("button", { name: "USDT" }));
+    await fillForm(user, delta, "goodwill");
+
+    expect(screen.getByRole("button", { name: "Adjust" })).toBeDisabled();
+  });
+
+  it("reuses the key after a network failure and keeps the form filled", async () => {
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    vi.mocked(apiPost).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByPlaceholderText("Amount (+ or −)")).toHaveValue("5");
+    expect(screen.getByPlaceholderText("Reason (required)")).toHaveValue("goodwill");
+
+    answerOk();
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2));
+
+    const [first, second] = walletKeys();
+    expect(second).toBe(first);
+  });
+
+  it.each([
+    ["no response", new TypeError("Failed to fetch")],
+    ["a 502", Object.assign(new Error("/api/users/7/wallet responded 502"), { status: 502 })],
+    ["a 429", Object.assign(new Error("error.rate_limited"), { status: 429 })],
+  ])("reloads the customer and calls the outcome unknown after %s", async (_label, failure) => {
+    // Spied rather than read from the DOM: sonner's toasts outlive a test's render.
+    const showError = vi.spyOn(toast, "error");
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    const loads = vi.mocked(globalThis.fetch).mock.calls.length;
+    vi.mocked(apiPost).mockRejectedValueOnce(failure);
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+
+    await waitFor(() => expect(showError).toHaveBeenCalledTimes(1));
+    expect(showError.mock.calls[0]?.[0]).toMatch(/outcome.*unknown.*ledger.*without changing anything/i);
+    await waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.length).toBe(loads + 1));
+    expect(screen.getByPlaceholderText("Amount (+ or −)")).toHaveValue("5");
+  });
+
+  it("keeps an answered refusal's own message and does not call it unknown", async () => {
+    const showError = vi.spyOn(toast, "error");
+    const user = await openPage();
+    await fillForm(user, "-5", "correction");
+    vi.mocked(apiPost).mockRejectedValueOnce(Object.assign(new Error("Amount cannot be zero."), { status: 422 }));
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Debit wallet" }));
+
+    await waitFor(() => expect(showError).toHaveBeenCalledTimes(1));
+    expect(showError).toHaveBeenCalledWith("Amount cannot be zero.");
+  });
+
+  it("holds the key and says so plainly while the first attempt is still running", async () => {
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    vi.mocked(apiPost).mockImplementationOnce(async (_path, _body, options) => {
+      options?.onResponse?.(409);
+      throw Object.assign(new Error("idempotency_request_in_progress"), { status: 409 });
+    });
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+
+    expect(await screen.findByText(/still being processed/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    answerOk();
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2));
+
+    const [first, second] = walletKeys();
+    expect(second).toBe(first);
+  });
+
+  it("mints a new key for the next adjustment after a success, even for the same values", async () => {
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    answerOk();
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+    await waitFor(() => expect(screen.getByPlaceholderText("Amount (+ or −)")).toHaveValue(""));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await fillForm(user, "5", "goodwill");
+    answerOk();
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.click(await screen.findByRole("button", { name: "Credit wallet" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2));
+
+    const [first, second] = walletKeys();
+    expect(second).not.toBe(first);
+  });
+
+  it("sends once for a double click, and blocks the action until the answer arrives", async () => {
+    const user = await openPage();
+    await fillForm(user, "5", "goodwill");
+    let finish: (value: unknown) => void = () => {};
+    vi.mocked(apiPost).mockImplementationOnce((_path, _body, options) => new Promise((resolve) => {
+      finish = (value) => {
+        options?.onResponse?.(200);
+        resolve(value);
+      };
+    }));
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+    await user.dblClick(await screen.findByRole("button", { name: "Credit wallet" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Processing…" })).toBeDisabled();
+
+    finish({ ok: true, newBalance: "500005" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(apiPost).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -407,5 +621,14 @@ describe("UserDetailPage — anchor navigation", () => {
 
     expect(ledgerAnchor).toBeInTheDocument();
     expect(ticketsAnchor).toBeInTheDocument();
+  });
+});
+
+describe("UserDetailPage loading", () => {
+  it("shows a busy page skeleton, not a bare Loading… line, while the customer loads", () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise(() => {}));
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    expect(screen.getByRole("status", { name: "Loading customer" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
 import { guestMenuGroups, MenuGroup, MenuItem } from "./AccountPage.helpers";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * TSX port of apps/storefront/views/account.njk, since restructured for the
  * phone: the page used to be one undifferentiated wall of five identical link
@@ -73,6 +74,8 @@ import { formatIdr, formatNativeUsdt, formatOrderAmount } from "../lib/format";
 import { t } from "../lib/i18n";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 /**
  * The same five destinations as before, grouped so each card answers one
@@ -232,7 +235,7 @@ export default function AccountPage() {
   // table-vs-cards swap; this page's split happens at a wider point.
   const isDashboard = useMediaQuery("(min-width: 1024px)");
 
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["account"],
     queryFn: () => apiGet<AccountData>("/api/v1/account"),
     retry: false,
@@ -282,14 +285,11 @@ export default function AccountPage() {
   // STO-006/performance.md: rendering nothing while the initial query is
   // pending reads as a blank/broken page on a slow connection — show a
   // skeleton shaped like the loaded layout instead.
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
       <div className="lg:relative lg:left-1/2 lg:w-screen lg:-translate-x-1/2">
-        <div
-          aria-busy="true"
-          aria-label={t("web.loading")}
-          className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6"
-        >
+        <LoadingRegion className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6">
           <div className="card card-pad flex items-center gap-4">
             <Skeleton className="h-14 w-14 rounded-full" />
             <div className="min-w-0 flex-1 space-y-2">
@@ -327,7 +327,7 @@ export default function AccountPage() {
               </div>
             ))}
           </div>
-        </div>
+        </LoadingRegion>
       </div>
     );
   }

@@ -557,7 +557,7 @@ function SettlementsRecordAProviderPayout({ dialogOpen, setDialogOpen, setForm, 
         <Button variant="outline" onClick={() => setDialogOpen(false)}>
           Cancel
         </Button>
-        <Button disabled={!canSubmit} onClick={() => record.mutate()}>
+        <Button pending={record.isPending} disabled={!canSubmit} onClick={() => record.mutate()}>
           {record.isPending ? "Recording…" : "Record settlement"}
         </Button>
       </DialogFooter>

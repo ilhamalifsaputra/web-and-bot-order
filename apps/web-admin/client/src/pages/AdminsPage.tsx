@@ -5,6 +5,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { FilterBar } from "../components/shared/FilterBar";
 import { Shield, Check, Plus, LogOut, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,7 +26,7 @@ import { useAdmins } from "../hooks/useAdmins";
 
 export function AdminsPage() {
   const qc = useQueryClient();
-  const { data, isError } = useAdmins();
+  const { data, isError, refetch } = useAdmins();
   const [addId, setAddId] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -63,11 +64,12 @@ export function AdminsPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Admins"><p className="text-sm text-rust">Failed to load admins.</p></PageLayout>;
 
   return (
     <PageLayout title="Admins">
       <PageHeader title="Admins" />
+
+      <QueryErrorNotice isError={isError} what="admins" hasData={Boolean(data)} onRetry={() => void refetch()} />
 
       {/* F-006: brought up to the same Label-above-field treatment used by
        *  Vouchers' inline "New Voucher" form (post F-014) and the
@@ -87,7 +89,7 @@ export function AdminsPage() {
             className="w-44"
           />
         </div>
-        <Button onClick={() => add.mutate()} disabled={!addId || add.isPending}>
+        <Button onClick={() => add.mutate()} pending={add.isPending} disabled={!addId}>
           <Plus className="h-4 w-4" />
           Add Admin
         </Button>

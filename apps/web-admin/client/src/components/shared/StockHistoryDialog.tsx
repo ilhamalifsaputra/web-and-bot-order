@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { LinesSkeleton } from "../shared/LoadingRegion";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,7 +69,7 @@ export function StockHistoryDialog({ stockItemId, onClose }: StockHistoryDialogP
         </DialogHeader>
         <div className="max-h-[60vh] overflow-y-auto">
           {isLoading ? (
-            <p className="text-sm text-ink-soft">Loading history…</p>
+            <LinesSkeleton label="Loading history" lines={4} />
           ) : isError ? (
             <p role="alert" className="text-sm text-destructive">{describeError(error as Error)}</p>
           ) : !data || data.events.length === 0 ? (

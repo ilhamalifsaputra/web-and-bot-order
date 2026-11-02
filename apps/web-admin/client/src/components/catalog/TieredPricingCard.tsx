@@ -1,4 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { LinesSkeleton } from "../shared/LoadingRegion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -70,7 +71,7 @@ export function TieredPricingCard({ denominationId, productId, isGame }: TieredP
       </CardHeader>
       <CardContent>
         {isError && <p className="text-sm text-rust">Gagal memuat harga bertingkat.</p>}
-        {!isError && !data && <p className="text-sm text-ink-soft">Memuat harga bertingkat…</p>}
+        {!isError && !data && <LinesSkeleton label="Memuat harga bertingkat" lines={3} />}
         {data && <TieredPricingEditor initial={data} denominationId={denominationId} productId={productId} unit={isGame ? "item" : "paket"} />}
       </CardContent>
     </Card>
@@ -160,7 +161,7 @@ function TieredPricingEditor({ initial, denominationId, productId, unit }: {
       <TierSimulator base={base} tiers={tiers} enabled={enabled} valid={valid} unit={unit} />
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" disabled={!valid || !dirty || save.isPending} onClick={() => save.mutate()}>
+        <Button type="button" pending={save.isPending} disabled={!valid || !dirty} onClick={() => save.mutate()}>
           <Save className="h-4 w-4" aria-hidden="true" />
           {save.isPending ? "Menyimpan…" : "Simpan harga bertingkat"}
         </Button>

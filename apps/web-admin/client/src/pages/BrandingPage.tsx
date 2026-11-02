@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Save, SquarePen } from "lucide-react";
@@ -257,7 +258,7 @@ export function BrandingPage() {
     <PageLayout title="Branding">
       <PageHeader title="Branding" />
 
-      {isLoading && <p className="text-sm text-ink-soft">Loading branding…</p>}
+      {isLoading && <LinesSkeleton label="Loading branding" lines={4} className="max-w-2xl" />}
       {isError && <p className="text-sm text-rust">Failed to load branding.</p>}
 
       {data && (

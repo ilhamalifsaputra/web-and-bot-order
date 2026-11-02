@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { KpiSkeleton } from "../shared/LoadingRegion";
 import { useDashboardKpis } from "../../hooks/useDashboardKpis";
 
 export function OrdersKpiCard() {
@@ -9,7 +10,7 @@ export function OrdersKpiCard() {
         <CardTitle>Orders Today</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <KpiSkeleton label="Loading orders" />}
         {isError && <p className="text-sm text-rust">Couldn't load orders.</p>}
         {data && (
           <>

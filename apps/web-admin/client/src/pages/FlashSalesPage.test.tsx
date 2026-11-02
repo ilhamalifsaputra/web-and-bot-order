@@ -277,3 +277,32 @@ describe("FlashSalesPage", () => {
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
 });
+
+describe("FlashSalesPage — first-load failure keeps the page usable", () => {
+  it("keeps the search and filters, never claims there are no SKUs, and Retry loads the rows", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let failing = true;
+    const listUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      listUrls.push(String(input));
+      return failing
+        ? jsonResponse({ error: "Database unavailable" }, 500)
+        : jsonResponse({ denominations: [AUTO_FLASH_ROW] });
+    });
+    render(<FlashSalesPage />, { wrapper: Wrapper });
+
+    expect(await screen.findByText("Failed to load denominations.")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Filter by SKU, product, or category…")).toBeInTheDocument();
+    expect(screen.queryByText("No SKUs found")).not.toBeInTheDocument();
+    // The four stat cards have no numbers to show: a dash, never a made-up 0.
+    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(listUrls).toEqual(["/api/flash-sales/denominations"]);
+
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("Netflix 1 Month")).toBeInTheDocument());
+    expect(listUrls).toHaveLength(2);
+    expect(screen.queryByText("Failed to load denominations.")).not.toBeInTheDocument();
+  });
+});

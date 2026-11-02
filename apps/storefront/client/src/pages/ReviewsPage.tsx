@@ -13,6 +13,7 @@
  * width. Rating/comment payload is unchanged.
  */
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { Star } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet, apiPost } from "../api/client";
@@ -20,7 +21,6 @@ import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import Stars from "../components/shop/Stars";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
@@ -31,6 +31,8 @@ import Textarea from "../components/ui/Textarea";
 import { humanError } from "../lib/errors";
 import { t } from "../lib/i18n";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 interface ReviewSubmission {
   order_id: number;
@@ -85,8 +87,7 @@ function PendingReviewCard({
         placeholder={t("web.review_placeholder")}
       />
       <div className="mt-3 text-right">
-        <Button type="submit" variant="primary" size="sm" disabled={submitting}>
-          {submitting && <Spinner />}
+        <Button type="submit" variant="primary" size="sm" pending={submitting}>
           {t("web.review_submit")}
         </Button>
       </div>
@@ -134,15 +135,16 @@ export default function ReviewsPage() {
     onError: () => refetch(),
   });
 
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-48" />
         <div className="space-y-3">
           <Skeleton className="h-32 w-full" />
           <Skeleton className="h-32 w-full" />
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

@@ -17,6 +17,14 @@ describe("StatCard", () => {
     expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
   });
 
+  it("shows a dash with an accessible 'Unavailable' label instead of a number or a skeleton when unavailable", () => {
+    const { container } = render(<StatCard label="Total Orders" value={0} unavailable />);
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getByText("—")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+  });
+
   it("applies a distinguishing accent class for success/warning/danger tones", () => {
     const { container: success } = render(<StatCard label="Delivered" value={1} tone="success" />);
     expect(success.querySelector(".border-l-grass")).not.toBeNull();

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { parsePositiveId, parsePageParam } from "../../lib/params";
+import { normalizeIdempotencyKey } from "../../lib/idempotencyKey";
 import { OrderStatus, OrderKind, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
@@ -41,6 +42,7 @@ import {
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { paymentsMutationRateLimited } from "../../auth";
 import { displayDateTime } from "../../dateDisplay";
+import { readonlyPendingInternalOrder, readonlyUnderpaidOrder } from "../../lib/readonlyOrders";
 
 const PAGE_SIZE = 50;
 
@@ -90,16 +92,6 @@ const CREDIT_ANYWAY_IDEMPOTENCY_ENDPOINT = "web-admin.payments.creditUnderpaidTo
 const MATCH_IDEMPOTENCY_ENDPOINT = "web-admin.payments.manualMatch";
 const CREDIT_IDEMPOTENCY_ENDPOINT = "web-admin.payments.creditBalance";
 const DISMISS_IDEMPOTENCY_ENDPOINT = "web-admin.payments.dismissTx";
-
-/** An `Idempotency-Key` header, trimmed and length-capped — a repeat header
- * takes the first value. Empty/oversized values are treated as "no key"
- * (opt out) rather than rejected, since this is additive and must never turn
- * a missing/malformed header into a hard failure. */
-function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
-  const raw = (Array.isArray(header) ? header[0] : header) ?? "";
-  const trimmed = raw.trim();
-  return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;
-}
 
 export default async function paymentsApiRoutes(app: FastifyInstance): Promise<void> {
   // Idempotency keys are claimed before each mutation runs (backend audit E2),
@@ -179,8 +171,13 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       processedAt: r.createdAt.toISOString(),
       processedAtDisplay: displayDateTime(r.createdAt),
     }));
-    const underpaidWithDisplay = underpaid.map((o) => ({ ...o, createdAtDisplay: displayDateTime(o.createdAt) }));
-    const pendingInternalWithDisplay = pendingInternal.map((o) => ({ ...o, expiresAtDisplay: displayDateTime(o.expiresAt) }));
+    const isReadonly = req.admin!.role === "readonly";
+    const underpaidWithDisplay = underpaid.map((o) =>
+      isReadonly ? readonlyUnderpaidOrder(o) : { ...o, createdAtDisplay: displayDateTime(o.createdAt) },
+    );
+    const pendingInternalWithDisplay = pendingInternal.map((o) =>
+      isReadonly ? readonlyPendingInternalOrder(o) : { ...o, expiresAtDisplay: displayDateTime(o.expiresAt) },
+    );
 
     return reply.send({
       enabled: binanceEnabled,

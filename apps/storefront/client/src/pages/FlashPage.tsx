@@ -1,4 +1,5 @@
 import * as m from "motion/react-m";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * "Flash sale" — the products whose sale window is open right now. The nav
  * drawer only links here when `flash_active` says a sale is running, but the
@@ -25,6 +26,7 @@ import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import { useSortParam } from "../lib/useSortParam";
+import { LoadFailedState } from "../components/shop/LoadFailed";
 ;
 
 const SKELETON_CARDS = Array.from({ length: 4 }, (_, i) => i);
@@ -32,7 +34,7 @@ const SKELETON_CARDS = Array.from({ length: 4 }, (_, i) => i);
 export default function FlashPage() {
   const { data: ctx } = useShopContext();
   const [sort, setSort] = useSortParam({ allowCheapest: true });
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["flash", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/flash?sort=${sort}`),
   });
@@ -40,9 +42,10 @@ export default function FlashPage() {
   // empty-state card itself, which paints from `data` alone.
   const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
 
+  if (!data && error) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-40" />
@@ -52,7 +55,7 @@ export default function FlashPage() {
             <ProductCardSkeleton key={i} />
           ))}
         </div>
-      </div>
+      </LoadingRegion>
     );
   }
 

@@ -98,7 +98,7 @@ export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): R
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSend} disabled={!text.trim() || sendReply.isPending}>
+          <Button pending={sendReply.isPending} onClick={handleSend} disabled={!text.trim() || sendReply.isPending}>
             {sendReply.isPending ? "Saving…" : isEditing ? "Update Reply" : "Save Reply"}
           </Button>
         </DialogFooter>

@@ -110,7 +110,7 @@ export function ResetPage() {
             />
           </div>
 
-          <Button className="w-full" type="submit" disabled={loading}>
+          <Button pending={loading} className="w-full" type="submit" disabled={loading}>
             {loading ? "Resetting…" : "Reset password"}
           </Button>
 

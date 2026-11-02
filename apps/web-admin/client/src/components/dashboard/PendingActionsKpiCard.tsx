@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { KpiSkeleton } from "../shared/LoadingRegion";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { useDashboardKpis } from "../../hooks/useDashboardKpis";
 import type { DashboardKpis } from "../../api/types";
@@ -26,7 +27,7 @@ export function PendingActionsKpiCard() {
         <CardTitle>Pending Actions</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <KpiSkeleton label="Loading pending actions" />}
         {isError && <p className="text-sm text-rust">Couldn't load pending actions.</p>}
         {pa && (
           <>

@@ -126,7 +126,7 @@ function SaveSession({
               <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
                 {cancelLabel}
               </Button>
-              <Button variant={variant} disabled={busy} onClick={() => void handleConfirm()}>
+              <Button pending={phase === "saving"} variant={variant} disabled={busy} onClick={() => void handleConfirm()}>
                 {phase === "saving" ? "Saving…" : confirmLabel}
               </Button>
             </DialogFooter>

@@ -1,4 +1,6 @@
 import { Badge } from "@/components/ui/badge";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -156,10 +158,10 @@ function DetectionPanel() {
     queryFn: () =>
       apiGet<{ issues: DetectionIssue[] }>("/api/catalog/detection/issues?reviewStatus=OPEN"),
   });
-  const [busyId, setBusyId] = useState<number | null>(null);
+  const [busy, setBusy] = useState<{ id: number; action: "resolve" | "dismiss" } | null>(null);
 
   async function review(id: number, action: "resolve" | "dismiss") {
-    setBusyId(id);
+    setBusy({ id, action });
     try {
       await apiPost(`/api/catalog/detection/issues/${id}/${action}`, {});
       toast.success(action === "resolve" ? "Isu deteksi ditandai selesai." : "Isu deteksi diabaikan.");
@@ -170,12 +172,15 @@ function DetectionPanel() {
     } catch (err) {
       toast.error(describeError(err, "Gagal memperbarui isu deteksi."));
     } finally {
-      setBusyId(null);
+      setBusy(null);
     }
   }
 
   const metrics = metricsQuery.data?.metrics ?? null;
   const issues = issuesQuery.data?.issues ?? [];
+  // Empty sentences and the queue count only describe data that loaded.
+  const metricsLoaded = metricsQuery.data !== undefined;
+  const issuesLoaded = issuesQuery.data !== undefined;
 
   return (
     <Card className="mb-6">
@@ -183,8 +188,9 @@ function DetectionPanel() {
         <CardTitle>Deteksi</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {metricsQuery.isLoading && <p className="text-sm text-ink-soft">Memuat ringkasan deteksi…</p>}
-        {!metricsQuery.isLoading && !metrics && (
+        {metricsQuery.isLoading && <LinesSkeleton label="Memuat ringkasan deteksi" lines={3} />}
+        <QueryErrorNotice what="detection summary" hasData={metricsLoaded} isError={metricsQuery.isError} onRetry={() => void metricsQuery.refetch()} />
+        {metricsLoaded && !metrics && (
           <p className="text-sm text-ink-soft">Deteksi katalog belum pernah dijalankan.</p>
         )}
         {metrics && (
@@ -207,9 +213,10 @@ function DetectionPanel() {
         )}
 
         <div>
-          <p className="mb-2 text-sm font-medium text-ink">Antrean tinjauan ({issues.length})</p>
-          {issuesQuery.isLoading && <p className="text-sm text-ink-soft">Memuat isu deteksi…</p>}
-          {!issuesQuery.isLoading && issues.length === 0 && (
+          <p className="mb-2 text-sm font-medium text-ink">Antrean tinjauan{issuesLoaded ? ` (${issues.length})` : ""}</p>
+          {issuesQuery.isLoading && <LinesSkeleton label="Memuat isu deteksi" lines={3} />}
+          <QueryErrorNotice what="detection issues" hasData={issuesLoaded} isError={issuesQuery.isError} onRetry={() => void issuesQuery.refetch()} />
+          {issuesLoaded && issues.length === 0 && (
             <p className="text-sm text-ink-soft">Tidak ada isu deteksi yang perlu ditinjau.</p>
           )}
           <ul className="space-y-2">
@@ -231,7 +238,8 @@ function DetectionPanel() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={busyId === issue.id}
+                    pending={busy?.id === issue.id && busy.action === "resolve"}
+                    disabled={busy?.id === issue.id}
                     onClick={() => void review(issue.id, "resolve")}
                   >
                     Resolve
@@ -239,7 +247,8 @@ function DetectionPanel() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={busyId === issue.id}
+                    pending={busy?.id === issue.id && busy.action === "dismiss"}
+                    disabled={busy?.id === issue.id}
                     onClick={() => void review(issue.id, "dismiss")}
                   >
                     Dismiss
@@ -485,7 +494,7 @@ export function DigiflazzSyncPage() {
         title="Sync Digiflazz"
         description="Pull Digiflazz's Game price list, review, and bulk-import new titles into the catalog."
         actions={
-          <Button size="sm" onClick={() => void runSync()} disabled={loadingPreview}>
+          <Button size="sm" onClick={() => void runSync()} pending={loadingPreview}>
             {loadingPreview ? `Syncing… ${Math.floor(elapsedMs / 1000)}s` : "Sync dari Digiflazz"}
           </Button>
         }
@@ -509,7 +518,7 @@ function DigiflazzSyncHourlySyncStatus({ syncStatus }: {
     </CardHeader>
     <CardContent>
       {syncStatus.data === undefined && (
-        <p className="text-sm text-ink-soft">Loading sync status…</p>
+        <LinesSkeleton label="Loading sync status" lines={2} />
       )}
       {syncStatus.data === null && (
         <p className="text-sm text-ink-soft">
@@ -680,7 +689,7 @@ function DigiflazzSyncSudahAda({ preview, filter, setFilter, categoryId, changeC
 
       {newGroups.length > 0 && (
         <div className="flex flex-col items-start gap-1">
-          <Button onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
+          <Button pending={importing} onClick={() => void applyImport()} disabled={importing || loadingPreview || !!previewError || !categoryId || hasInvalidCheckedPrice}>
             {importing ? "Importing…" : "Impor Terpilih"}
           </Button>
           {hasInvalidCheckedPrice && (

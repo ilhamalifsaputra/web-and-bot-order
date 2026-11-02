@@ -25,11 +25,10 @@
  *     and nothing here needs loosening.
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { ValidationError } from "@app/core/errors";
 import { guestOrderRecoveryUrl } from "@app/core/guestOrderAccess";
-import { StockActorType } from "@app/core/enums";
-import { prisma, getOrderByCode, cancelOrder } from "@app/db";
+import { prisma, getOrderByCode } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
+import { cancelAsBuyer } from "./buyerCancel";
 import { checkoutView, payView, payState, transactionStatusView } from "./checkout";
 import { decryptGameSn, gameTopupDetails } from "./gameTopupDetails";
 import { csrfOk } from "./cart";
@@ -69,7 +68,19 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     if (checkoutReadLimited(req, customer)) {
       return reply.code(429).send({ error: "error.rate_limited" });
     }
-    return reply.send(await checkoutView(req, customer, null, null));
+    return reply.send({
+      ...(await checkoutView(req, customer, null, null)),
+      // A real (password-holding) account's session — not a guest-checkout
+      // session, which has nobody to "log in again" (H2, UI-states audit).
+      signed_in: customer !== null && !customer.user.isGuest,
+      // The requester's OWN session CSRF token, so a checkout tab whose buyer
+      // signed in again in another tab picks up the new session's token on
+      // its next read instead of failing every POST with csrf_failed. Never
+      // sent to an anonymous caller (there is no session to protect), and it
+      // is the same value the shell already puts in this session's meta tag.
+      // Additive.
+      ...(customer ? { csrf_token: customer.csrf } : {}),
+    });
   });
 
   // ---- Voucher preview: recompute totals WITHOUT creating an order ----
@@ -142,19 +153,10 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: "csrf_failed" });
     }
     const order = await getOrderByCode(prisma, req.params.code);
-    if (order && order.userId === customer.userId) {
-      try {
-        await prisma.$transaction((tx) =>
-          cancelOrder(tx, order.id, "user_cancelled", {
-            type: StockActorType.CUSTOMER,
-            customerId: customer.userId,
-          }),
-        );
-      } catch (e) {
-        if (!(e instanceof ValidationError)) throw e; // already paid/delivered → just bounce
-      }
-    }
-    return reply.send({ ok: true });
+    // A foreign or unknown code answers `cancelled: false`, never a 404, so it
+    // reads the same as an owned order that could not be cancelled.
+    const cancelled = order?.userId === customer.userId ? await cancelAsBuyer(order.id, customer.userId) : false;
+    return reply.send({ ok: true, cancelled });
   });
 };
 

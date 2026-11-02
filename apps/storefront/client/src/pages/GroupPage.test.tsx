@@ -197,6 +197,17 @@ describe("GroupPage", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
+  it("shows Load more as a pending button (spinner, label kept) while the next page loads", async () => {
+    renderGroup("top-up-games", (path) => (path.includes("offset=2") ? new Promise(() => {}) : gamePage));
+    await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load more" })).toHaveAttribute("data-pending", "true"));
+    const button = screen.getByRole("button", { name: "Load more" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector("[data-slot=spinner]")).toBeInTheDocument();
+  });
+
   it("says so under the button when Load more fails, keeping what is shown", async () => {
     renderGroup("top-up-games", (path) => {
       if (path.includes("offset=2")) throw Object.assign(new Error("boom"), { status: 500 });

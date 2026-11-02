@@ -316,6 +316,9 @@ export interface CartPageData {
   bulk_discount?: string;
   /** subtotal − bulk_discount, before any voucher. */
   total?: string;
+  /** Whether this answer is a signed-in session's cart (false: the anonymous
+   * cookie cart). Absent from an older server. */
+  signed_in?: boolean;
 }
 
 /** One volume tier as configured — JSON twin of TierRuleView (apps/storefront/src/tierView.ts). */
@@ -400,6 +403,11 @@ export interface CheckoutData {
   /** True for an anonymous visitor: the checkout collects a contact email and
    * the order is placed against a synthetic guest account (guest checkout). */
   is_guest: boolean;
+  /** A real (password-holding) account's session; false for a guest-checkout
+   * session and an anonymous visitor. Absent from an older server. */
+  signed_in?: boolean;
+  /** The requester's own session CSRF token (any session); adopted by apiGet. */
+  csrf_token?: string;
   /** True when this shop HAS a working gateway but every one of them was
    * filtered out because the total is under its minimum. Distinguishes the one
    * cause the buyer can actually fix (buy a bit more) from the one they cannot
@@ -648,6 +656,9 @@ export interface ShopContext {
    * older/mocked payload reads as "a normal registered customer", which keeps
    * the full menu — the safe direction to be wrong in for a signed-in user. */
   is_guest?: boolean;
+  /** The one order an order-recovery (/track) session may open, else null.
+   * Absent from an older server. */
+  order_scope?: string | null;
   /** Display-currency preference (Task 4): account preference > the
    * `shop_currency` cookie > null when neither is set. `null` means "no
    * preference chosen yet" — renders exactly like today (Rp primary + "≈ $"

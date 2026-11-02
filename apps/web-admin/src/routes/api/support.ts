@@ -39,7 +39,7 @@ import {
   logAdminAction,
   type TicketFilter,
 } from "@app/db";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { blockReadonlyReads, currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getFileResolver } from "../../lib/telegramCheck";
 import { BodyTooLargeError, readBodyWithLimit } from "@app/core/boundedBody";
 
@@ -47,6 +47,7 @@ import { BodyTooLargeError, readBodyWithLimit } from "@app/core/boundedBody";
 const MAX_SUPPORT_PHOTO_BYTES = 20 * 1024 * 1024;
 import { displayDate, displayDateTime, displayShortDateTime } from "../../dateDisplay";
 import { parseStatusChange } from "../../lib/ticketStatusChange";
+import { readonlyLinkedOrder, readonlyOrderSummary } from "../../lib/readonlyOrders";
 
 /** Telegram file ids are URL-safe base64-ish tokens; anything else is not one. */
 const TELEGRAM_FILE_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
@@ -250,7 +251,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // Exports the full filtered result set (not just the current page) as a CSV
   // download — listTicketsPaged defaults to take: 50, so this must pass an
   // explicit override or the export would silently truncate.
-  app.get("/api/support/export", { preHandler: currentAdmin }, async (req, reply) => {
+  app.get("/api/support/export", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const filter = buildTicketFilter(q);
     const tickets = await listTicketsPaged(prisma, { ...filter, limit: 100000 });
@@ -284,6 +285,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     const ticket = await getTicketWithOrder(prisma, ticketId);
     if (!ticket) return reply.code(404).send({ error: "Ticket not found." });
     const cutoff = overdueCutoff();
+    const isReadonly = req.admin!.role === "readonly";
 
     const [messages, ticketUser, ticketUserContact, totalSpent, orderCount, recentOrders, openTicketCount] = await Promise.all([
       // Task 3: the admin-facing ticket detail view must include internal
@@ -345,7 +347,11 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         // render assignedAt itself or two admins in different timezones
         // would see different times for the same assignment.
         assignedAtDisplay: displayDateTime(ticket.assignedAt),
-        order: ticket.order ? { ...ticket.order, createdAtDisplay: displayDate(ticket.order.createdAt) } : null,
+        order: !ticket.order
+          ? null
+          : isReadonly
+            ? readonlyLinkedOrder(ticket.order)
+            : { ...ticket.order, createdAtDisplay: displayDate(ticket.order.createdAt) },
       },
       messages: await Promise.all(messages.map(async (m) => ({
         ...m,
@@ -357,7 +363,9 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       customer: {
         totalSpent,
         orderCount,
-        recentOrders: recentOrders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
+        recentOrders: recentOrders.map((o) =>
+          isReadonly ? readonlyOrderSummary(o) : { ...o, createdAtDisplay: displayDate(o.createdAt) },
+        ),
         openTicketCount,
       },
       // telegramUserId is a Prisma BigInt column (Phase H) — reply.send()'s
@@ -736,12 +744,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   // fish for Telegram file_ids.
   //
   // Only a file id attached to a support ticket or ticket message is served:
-  // the bot can see every file anyone ever sent it (payment proofs included),
-  // and this route is open to every admin role. The bytes go out as an image
+  // the bot can see every file anyone ever sent it (payment proofs included).
+  // Readonly admins are refused, matching /api/support/media. The bytes go out as an image
   // type from a fixed allowlist with nosniff, never Telegram's own
   // content-type, so a non-image upload can't render as HTML in the panel's
   // origin.
-  app.get("/api/support/photo/:fileId", { preHandler: currentAdmin }, async (req, reply) => {
+  app.get("/api/support/photo/:fileId", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const fileId = (req.params as { fileId: string }).fileId;
     if (!TELEGRAM_FILE_ID_RE.test(fileId) || !(await isTicketAttachmentFileId(prisma, fileId))) {
       return reply.code(404).send({ error: "Photo not found." });

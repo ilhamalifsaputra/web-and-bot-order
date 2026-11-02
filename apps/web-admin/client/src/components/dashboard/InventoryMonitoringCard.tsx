@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { LinesSkeleton } from "../shared/LoadingRegion";
 import { EmptyState } from "../shared/EmptyState";
 import { useInventory } from "../../hooks/useInventory";
 
@@ -15,7 +16,7 @@ export function InventoryMonitoringCard() {
         </a>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
+        {isLoading && <LinesSkeleton label="Loading inventory" lines={4} />}
         {isError && <p className="text-sm text-rust">Couldn't load inventory.</p>}
         {data && data.length === 0 && <EmptyState title="Stock levels are healthy." />}
         {data && data.length > 0 && (

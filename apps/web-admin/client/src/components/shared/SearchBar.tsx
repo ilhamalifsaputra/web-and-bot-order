@@ -1,4 +1,5 @@
-import { Loader2, Search } from "lucide-react";
+import { Search } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -9,7 +10,7 @@ interface SearchBarProps {
   onSearch?: () => void;
   placeholder?: string;
   className?: string;
-  /** Swaps the leading Search icon for a spinning Loader2 — for callers that
+  /** Swaps the leading Search icon for a spinning Spinner — for callers that
    * commit this field live (e.g. a debounced search) and want to show a
    * background refetch in flight. Reuses the app's existing inline-spinner
    * convention (08_UX_RULES.md §1); omit for the default Apply-button flow. */
@@ -20,7 +21,10 @@ export function SearchBar({ value, onChange, onSearch, placeholder, className, l
   return (
     <div className={cn("relative w-full sm:w-64", className)}>
       {loading ? (
-        <Loader2 className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-ink-faint" />
+        <>
+          <Spinner className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" />
+          <span role="status" className="sr-only">Searching…</span>
+        </>
       ) : (
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" />
       )}

@@ -65,3 +65,21 @@ describe("SetupShopPage", () => {
     await waitFor(() => expect(loc.href).toBe("/setup/done"));
   });
 });
+
+describe("SetupShopPage pending buttons", () => {
+  it("marks only Skip as pending when Skip is clicked, keeping the primary label", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter>
+        <SetupShopPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^skip$/i }));
+    const skip = await screen.findByRole("button", { name: /^skip$/i });
+    await waitFor(() => expect(skip).toHaveAttribute("aria-busy", "true"));
+    const primary = screen.getByRole("button", { name: "Save & finish" });
+    expect(primary).toBeDisabled();
+    expect(primary).not.toHaveAttribute("aria-busy");
+    expect(screen.queryByText("Saving…")).not.toBeInTheDocument();
+  });
+});

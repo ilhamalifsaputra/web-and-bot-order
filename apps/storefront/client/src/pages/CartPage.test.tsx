@@ -84,6 +84,27 @@ describe("CartPage", () => {
     vi.clearAllMocks();
   });
 
+  // H2 (UI-states audit): GET /cart also serves anonymous visitors, so a
+  // signed-in buyer whose session died gets the anonymous (empty) cart back.
+  it("says the session ended, not 'cart empty', when a signed-in cart refetch comes back anonymous", async () => {
+    let answer: CartPageData = { ...cartData, signed_in: true };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderCart(() => answer, { ...context, customer: { username: "alice", email: null, telegram_linked: false } }, queryClient);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    answer = { items: [], subtotal: "0", signed_in: false };
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ["cart"] }); });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Your session ended. Log in again to see your cart.");
+    expect(within(alert).getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login?next=/cart");
+    expect(screen.queryByText("Your cart is empty — browse the products.")).not.toBeInTheDocument();
+  });
+
+  it("an anonymous visitor's empty cart is still just empty", async () => {
+    renderCart(() => ({ items: [], subtotal: "0", signed_in: false }));
+    expect(await screen.findByText("Your cart is empty — browse the products.")).toBeInTheDocument();
+    expect(screen.queryByText("Your session ended. Log in again to see your cart.")).not.toBeInTheDocument();
+  });
+
   it("preserves a newer quantity draft when the earlier update finishes", async () => {
     let release!: (value: CartPageData) => void;
     (apiPost as Mock).mockImplementation(() => new Promise((resolve) => { release = resolve; }));

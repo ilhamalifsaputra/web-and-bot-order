@@ -20,12 +20,14 @@ import { Megaphone, MessageSquare, MoreVertical, Send, Trash2, X } from "lucide-
 import { useId, useState } from "react";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { isOutcomeUnknown, useIdempotentPost } from "../api/idempotency";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
 
@@ -83,6 +85,18 @@ function TelegramPreview({ message, imageUrl }: { message: string; imageUrl: str
   );
 }
 
+/** Shown when a send got no answer: the row may exist, and only the History list
+ * can say. An unchanged retry carries the same key, so it cannot send twice; an
+ * edited one is a new broadcast, which is why the list comes first. */
+const SEND_OUTCOME_UNKNOWN =
+  "We could not confirm this broadcast. Check the History list before sending again. If it is not there, send again without changing anything.";
+
+/** A count we have, or nothing at all: an unknown audience must never read as an
+ * empty one. */
+function recipientLabel(count: number | undefined): string {
+  return count === undefined ? "Telegram users" : `${count} Telegram users`;
+}
+
 /** Poll cadence while a broadcast is still queued or mid-send. */
 const IN_FLIGHT_POLL_MS = 4_000;
 
@@ -110,7 +124,8 @@ function useBroadcast() {
 export function BroadcastPage() {
   const fieldId = useId();
   const qc = useQueryClient();
-  const { data, isError } = useBroadcast();
+  const idempotentPost = useIdempotentPost();
+  const { data, isError, refetch } = useBroadcast();
   const [form, setForm] = useState({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
   const maxMessage = form.webImageUrl ? 1024 : 4000;
   const overLimit = form.message.length > maxMessage;
@@ -120,7 +135,7 @@ export function BroadcastPage() {
   const [pendingCancel, setPendingCancel] = useState<BroadcastRow | null>(null);
 
   const send = useMutation({
-    mutationFn: () => apiPost("/api/broadcast", {
+    mutationFn: () => idempotentPost("/api/broadcast", {
       message: form.message,
       segment: form.segment,
       scheduled_at: form.scheduled_at,
@@ -128,9 +143,18 @@ export function BroadcastPage() {
     }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast"] });
+      toast.success(form.scheduled_at ? "Broadcast scheduled." : "Broadcast queued to send.");
       setForm({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
     },
-    onError: (e: Error) => toast.error(describeError(e)),
+    onError: (e: Error) => {
+      if (isOutcomeUnknown(e)) {
+        // The row may exist even though the post failed; the list settles it.
+        void qc.invalidateQueries({ queryKey: ["broadcast"] });
+        toast.error(SEND_OUTCOME_UNKNOWN);
+        return;
+      }
+      toast.error(describeError(e));
+    },
   });
 
   const cancel = useMutation({
@@ -143,7 +167,7 @@ export function BroadcastPage() {
   });
 
   const saveDraft = useMutation({
-    mutationFn: () => apiPost("/api/broadcast", {
+    mutationFn: () => idempotentPost("/api/broadcast", {
       message: form.message,
       segment: form.segment,
       scheduled_at: "",
@@ -176,7 +200,7 @@ export function BroadcastPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Broadcast"><p className="text-sm text-rust">Failed to load broadcast.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Broadcast"><QueryErrorNotice what="broadcast" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
 
   return (
     <PageLayout title="Broadcast">
@@ -184,6 +208,8 @@ export function BroadcastPage() {
         title="Broadcast"
         description="Send announcements, promotions, product updates, and offers to selected customer segments."
       />
+
+      <QueryErrorNotice isError={isError} what="broadcast" hasData onRetry={() => void refetch()} />
 
       <BroadcastEditorLayout setForm={setForm} form={form} overLimit={overLimit} maxMessage={maxMessage} fieldId={fieldId} data={data} send={send} saveDraft={saveDraft} />
 
@@ -456,7 +482,7 @@ function BroadcastAudienceAndSchedule({ fieldId, form, setForm, data }: {
         <SelectContent>
           <SelectItem value="_none_">— pick segment —</SelectItem>
           {(data?.segments ?? []).map(s => (
-            <SelectItem key={s} value={s}>{s} ({data?.counts[s] ?? 0})</SelectItem>
+            <SelectItem key={s} value={s}>{s}{data?.counts[s] === undefined ? "" : ` (${data.counts[s]})`}</SelectItem>
           ))}
         </SelectContent>
       </Select>
@@ -493,14 +519,15 @@ function BroadcastActions({ form, overLimit, send, data, saveDraft }: {
         </Button>
       }
       title={form.scheduled_at ? "Schedule broadcast?" : "Send broadcast now?"}
-      description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${data?.counts[form.segment] ?? 0} Telegram users in the ${form.segment} segment. This cannot be undone.`}
+      description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${recipientLabel(data?.counts[form.segment])} in the ${form.segment} segment. This cannot be undone.`}
       confirmLabel={form.scheduled_at ? "Schedule" : "Send"}
       variant="default"
       onConfirm={() => send.mutate()}
     />
     <Button
       type="button" variant="secondary"
-      disabled={!form.message || !form.segment || overLimit || saveDraft.isPending}
+      pending={saveDraft.isPending}
+      disabled={!form.message || !form.segment || overLimit}
       onClick={() => saveDraft.mutate()}
     >
       Save Draft

@@ -15,6 +15,10 @@ interface StatCardProps {
   icon?: LucideIcon;
   tone?: StatCardTone;
   isLoading?: boolean;
+  /** The count could not be loaded (a failed first load): shows a dash
+   *  with an "Unavailable" label for screen readers, never a made-up 0 or
+   *  a skeleton that never resolves. Wins over `isLoading`. */
+  unavailable?: boolean;
   /** Optional — lets a card double as a quick filter. */
   onClick?: () => void;
 }
@@ -46,6 +50,7 @@ export function StatCard({
   icon: Icon,
   tone = "neutral",
   isLoading,
+  unavailable,
   onClick,
 }: StatCardProps): React.JSX.Element {
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
@@ -76,12 +81,21 @@ export function StatCard({
           <p className="text-xs text-ink-soft truncate" title={hint ?? label}>{label}</p>
           {Icon && <Icon className={cn("h-4 w-4 shrink-0", TONE_ICON_CLASS[tone])} />}
         </div>
-        {isLoading ? (
-          <Skeleton className="h-7 w-16" />
-        ) : (
-          <div className="font-display text-xl font-semibold text-ink break-words">{value}</div>
-        )}
+        <StatCardValue value={value} isLoading={isLoading} unavailable={unavailable} />
       </CardContent>
     </Card>
   )
+}
+
+function StatCardValue({ value, isLoading, unavailable }: { value: React.ReactNode; isLoading?: boolean; unavailable?: boolean }) {
+  if (unavailable) {
+    return (
+      <div className="font-display text-xl font-semibold text-ink-soft">
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">Unavailable</span>
+      </div>
+    )
+  }
+  if (isLoading) return <Skeleton className="h-7 w-16" />
+  return <div className="font-display text-xl font-semibold text-ink break-words">{value}</div>
 }

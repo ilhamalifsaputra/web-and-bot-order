@@ -119,6 +119,12 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       // AccountPage already read it. Always false for anonymous visitors:
       // there is no account to describe yet.
       is_guest: customer?.user.isGuest === true,
+      // The order code an order-recovery (/track) session is limited to, else
+      // null. Every other /api path answers 404 for such a session
+      // (plugins/auth.ts), so the SPA uses this to explain why the rest of the
+      // shop is closed to it instead of showing endless skeletons (H5,
+      // UI-states audit). The code is the buyer's own; additive.
+      order_scope: customer?.orderScope ?? null,
       favicon_url: favicon || "/static/favicon.svg",
       logo_url: logo || "",
       bot_username: botUsername,

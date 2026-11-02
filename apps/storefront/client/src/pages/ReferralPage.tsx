@@ -24,6 +24,7 @@
  * pre-formatted on the server.
  */
 import { useEffect } from "react";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { useQuery } from "@tanstack/react-query";
 import { Copy, Gift, Users } from "lucide-react";
 import { apiGet } from "../api/client";
@@ -34,9 +35,11 @@ import Skeleton from "../components/shop/Skeleton";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
+import { LoadFailedState } from "../components/shop/LoadFailed";
+import { isUnauthorized } from "../lib/errors";
 
 export default function ReferralPage() {
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["account-referral"],
     queryFn: () => apiGet<ReferralData>("/api/v1/account/referral"),
     retry: false,
@@ -48,12 +51,13 @@ export default function ReferralPage() {
     }
   }, [error]);
 
+  if (!data && error && !isUnauthorized(error)) return <LoadFailedState onRetry={() => void refetch()} />;
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-48" />
         <Skeleton className="h-40 w-full" />
-      </div>
+      </LoadingRegion>
     );
   }
 

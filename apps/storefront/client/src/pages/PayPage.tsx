@@ -1,5 +1,5 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { advanceCardState } from "./PayPage.helpers";
+import { LoadingRegion } from "../components/shop/LoadingState";
 /**
  * TSX port of apps/storefront/views/pay.njk + its polled fragment
  * views/_pay_status.njk. Two independent data sources, exactly like the NJK:
@@ -42,7 +42,7 @@ import { advanceCardState } from "./PayPage.helpers";
  * itself, and every fetch/poll/state-machine/countdown mechanism below, is
  * byte-unchanged.
  */
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   BadgeCheck,
@@ -58,7 +58,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet } from "../api/client";
 import type { PayData, PayState, PayStatusData } from "../api/types";
 import GameTopupDetailCard from "../components/shop/GameTopupDetailCard";
 import Skeleton from "../components/shop/Skeleton";
@@ -77,6 +77,7 @@ import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import { useShopContext } from "../lib/useShopContext";
 import ErrorState from "../components/shop/ErrorState";
 import ErrorPage from "./ErrorPage";
+import { usePaymentCancel, type CancelResult } from "./usePaymentCancel";
 
 /**
  * TSX port of _pay_status.njk — the polled status chip. Design-system
@@ -99,14 +100,14 @@ function StatusStrip({ state }: { state: PayState }) {
   }
   if (state === "confirming") {
     return (
-      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />}>
         {t("web.status_confirming")}
       </Badge>
     );
   }
   if (state === "processing") {
     return (
-      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />}>
         {t("web.status_processing")}
       </Badge>
     );
@@ -208,8 +209,6 @@ function useCountdown(expiresAtIso: string | null): string {
 
 export default function PayPage({ variant = "order" }: { variant?: "order" | "topup" } = {}) {
   const { code = "" } = useParams<{ code: string }>();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const isTopup = variant === "topup";
   // The only seam between the two order kinds — see the file header.
   const { apiBase, loginNextBase, deliveredHref, closedHref, closedLabelKey, payPagePath } = paymentRoutePaths({ isTopup, code });
@@ -229,30 +228,13 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   // (null for every other order type).
   const { isGame, retryHref, retryLabelKey, deliveredLabelKey } = paymentDestinations({ poll, data, isTopup });
 
-  const cancelMutation = useMutation({
-    mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
-    onSuccess: () => {
-      // Retire the payable invoice snapshots; revisiting must read the backend
-      // rather than briefly offering the cancelled invoice again.
-      queryClient.removeQueries({ queryKey: ["pay", apiBase, code], exact: true });
-      queryClient.removeQueries({ queryKey: ["pay-status", apiBase, code], exact: true });
-      if (!isTopup) {
-        void queryClient.invalidateQueries({ queryKey: ["account-order", code] });
-        void queryClient.invalidateQueries({ queryKey: ["account-orders"] });
-        void queryClient.invalidateQueries({ queryKey: ["account-orders-preview"] });
-        if (data?.product_slug) {
-          void queryClient.invalidateQueries({ queryKey: ["product", data.product_slug] });
-        }
-      }
-      navigate(retryHref);
-    },
+  const { cancelMutation, cancelDialogOpen, setCancelDialogOpen, cancelNoticeKey } = usePaymentCancel({
+    apiBase,
+    code,
+    isTopup,
+    productSlug: data?.product_slug,
+    retryHref,
   });
-
-  // The one logic addition Task 14 makes: the cancel button no longer fires
-  // cancelMutation directly (Global Constraints / Task 1 audit §F item 3) —
-  // it opens this dialog first. onConfirm below calls the exact same
-  // mutate() call the old onClick did.
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
 
@@ -281,10 +263,10 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
   }
   if (!data) {
     return (
-      <div aria-busy="true" aria-label={t("web.loading")}>
+      <LoadingRegion>
         <Skeleton className="mb-6 h-8 w-56" />
         <Skeleton className="mx-auto h-72 w-full max-w-md" />
-      </div>
+      </LoadingRegion>
     );
   }
 
@@ -319,7 +301,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
       {/* Cart → Pay → Done describes the Premium catalog checkout only: a Game
           Top Up (InstantBuy) and a wallet top-up never had a cart step. */}
       {!isGame && !isTopup && <Stepper step={state === "delivered" ? 3 : 2} />}
-      <PaymentPageContent emailedTo={emailedTo} isTopup={isTopup} order={order} data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} stripState={stripState} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} retryHref={retryHref} retryLabelKey={retryLabelKey} closedHref={closedHref} closedLabelKey={closedLabelKey} />
+      <PaymentPageContent emailedTo={emailedTo} isTopup={isTopup} order={order} data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} stripState={stripState} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} retryHref={retryHref} retryLabelKey={retryLabelKey} closedHref={closedHref} closedLabelKey={closedLabelKey} cancelNoticeKey={cancelNoticeKey} />
     </>
   );
 }
@@ -366,7 +348,7 @@ function PendingPayment({ state, data, order, priceAndPayLine, payPagePath, coun
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
   countdownText: string;
-  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<CancelResult, Error, void, unknown>;
   setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   cancelDialogOpen: boolean;
 }) {
@@ -381,7 +363,7 @@ function PendingPaymentPanel({ data, order, priceAndPayLine, payPagePath, countd
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
   countdownText: string;
-  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<CancelResult, Error, void, unknown>;
   setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   cancelDialogOpen: boolean;
 }) {
@@ -418,7 +400,7 @@ function PendingPaymentPanel({ data, order, priceAndPayLine, payPagePath, countd
   </>);
 }
 
-function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, underpayment, state, isGame, deliveredHref, deliveredLabelKey, stripState, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen, retryHref, retryLabelKey, closedHref, closedLabelKey }: {
+function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, underpayment, state, isGame, deliveredHref, deliveredLabelKey, stripState, priceAndPayLine, payPagePath, countdownText, cancelMutation, setCancelDialogOpen, cancelDialogOpen, retryHref, retryLabelKey, closedHref, closedLabelKey, cancelNoticeKey }: {
   emailedTo: string | null;
   isTopup: boolean;
   order: { code: string; status: string; currency: string; total: string; qris_admin_fee: string | null; qris_grand_total: string | null; payment_ref: string | null; expires_at_iso: string | null; };
@@ -433,13 +415,14 @@ function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, und
   priceAndPayLine: (payable: string | null) => import("react").JSX.Element | null;
   payPagePath: string;
   countdownText: string;
-  cancelMutation: import("@tanstack/react-query").UseMutationResult<{ ok: boolean; }, Error, void, unknown>;
+  cancelMutation: import("@tanstack/react-query").UseMutationResult<CancelResult, Error, void, unknown>;
   setCancelDialogOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
   cancelDialogOpen: boolean;
   retryHref: string;
   retryLabelKey: "web.wallet_topup_retry" | "web.back_to_product" | "web.back_to_cart";
   closedHref: "/account" | "/account/orders";
   closedLabelKey: "web.account_title" | "web.account_orders";
+  cancelNoticeKey: string | null;
 }) {
   return (<div className="max-w-2xl mx-auto">
     <h1 className="page-title mb-1">{t("web.pay_title")}</h1>
@@ -458,6 +441,10 @@ function PaymentPageContent({ emailedTo, isTopup, order, data, presentation, und
     )}
 
     <PayPayStatus data={data} presentation={presentation} underpayment={underpayment} state={state} isGame={isGame} deliveredHref={deliveredHref} deliveredLabelKey={deliveredLabelKey} isTopup={isTopup} stripState={stripState} />
+
+    {/* Here and not by the cancel button: that button leaves with the invoice
+          once the real state arrives, and this explains why it did. */}
+    {cancelNoticeKey && <Alert variant="banner" tone="warning">{t(cancelNoticeKey)}</Alert>}
 
     <PendingPayment state={state} data={data} order={order} priceAndPayLine={priceAndPayLine} payPagePath={payPagePath} countdownText={countdownText} cancelMutation={cancelMutation} setCancelDialogOpen={setCancelDialogOpen} cancelDialogOpen={cancelDialogOpen} />
 

@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { KpiSkeleton } from "../shared/LoadingRegion";
 import { CurrencyStack, type CurrencyAmount } from "../shared/CurrencyAmount";
 import { useDashboardKpis } from "../../hooks/useDashboardKpis";
 
@@ -21,7 +22,7 @@ export function RefundsKpiCard() {
         <CardHeader>
           <CardTitle>Refunds Today</CardTitle>
         </CardHeader>
-        <CardContent>Loading…</CardContent>
+        <CardContent><KpiSkeleton label="Loading refunds" /></CardContent>
       </Card>
     );
   }

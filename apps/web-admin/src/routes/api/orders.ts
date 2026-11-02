@@ -50,6 +50,7 @@ import {
 } from "@app/db";
 import { DIGIFLAZZ_STATUS_UNRESOLVED } from "@app/core/orderFulfillment";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
+import { readonlyOrderListRow } from "../../lib/readonlyOrders";
 import { orderMoneyView } from "../orderMoneyView";
 import { displayDate, displayDateTime } from "../../dateDisplay";
 import { MASKED_CREDENTIAL, CREDENTIAL_KEY_ERROR_MESSAGE } from "./stock";
@@ -181,11 +182,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       countOrders(prisma, filter),
     ]);
 
-    const ordersWithDisplay = orders.map((o) => ({
-      ...o,
-      createdAtDisplay: displayDate(o.createdAt),
-      eligibility: computeOrderEligibility(o.status, o.user?.telegramId ?? null, { digiflazzInFlight: isDigiflazzInFlight(o) }),
-    }));
+    const isReadonly = req.admin!.role === "readonly";
+    const ordersWithDisplay = orders.map((o) => {
+      const eligibility = computeOrderEligibility(o.status, o.user?.telegramId ?? null, { digiflazzInFlight: isDigiflazzInFlight(o) });
+      return isReadonly
+        ? readonlyOrderListRow(o, eligibility)
+        : { ...o, createdAtDisplay: displayDate(o.createdAt), eligibility };
+    });
     return reply.send({
       orders: ordersWithDisplay,
       total,
@@ -437,7 +440,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         ? `Admin ${req.admin!.userId} approved and delivered order ${orderId} via the web panel`
         : `Admin ${req.admin!.userId} approved payment for order ${orderId} via the web panel; queued for manual fulfilment`,
     );
-    return reply.send({ ok: true });
+    // `settled` tells the page which of the two happened: only "delivered"
+    // reached the buyer; "processing" still needs fulfilment.
+    return reply.send({ ok: true, settled });
   });
 
   // Manual re-send of the buyer's account-credentials DM — the fallback for
@@ -766,7 +771,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     }
 
     const succeeded: number[] = [];
-    const failed: { id: number; error: string }[] = [];
+    const failed: ({ id: number } & ReturnType<typeof errorBody>)[] = [];
 
     for (const orderId of ids) {
       // Raw (no decrypt): every action here decides on status/kind/user and
@@ -850,7 +855,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         }
         succeeded.push(orderId);
       } catch (e) {
-        failed.push({ id: orderId, error: e instanceof ValidationError ? e.message : "error.unexpected" });
+        // errorBody, not the bare key: the page fills `{product}` and the like
+        // from `error_args`, and shows the placeholder itself without them.
+        failed.push({ id: orderId, ...(e instanceof ValidationError ? errorBody(e) : { error: "error.unexpected" }) });
       }
     }
 

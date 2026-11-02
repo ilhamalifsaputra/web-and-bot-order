@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -229,5 +229,69 @@ describe("CategoriesPage", () => {
     const [url, init] = calls(fetchMock, "POST")[0]!;
     expect(url).toBe("/api/catalog/categories/5/active");
     expect(JSON.parse(String(init.body))).toEqual({ active: true });
+  });
+});
+
+describe("CategoriesPage — failed loads keep the page usable", () => {
+  function renderWithClient() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <CategoriesPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return qc;
+  }
+  function catalogFetch(failing: () => boolean) {
+    const calls = { n: 0 };
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls.n += 1;
+      return failing() ? jsonResponse({ error: "Database unavailable" }, 500) : jsonResponse({ categories: [APPS], products: [PRODUCT] });
+    }));
+    return calls;
+  }
+
+  it("a failed first load shows Retry and the header, never 'No categories yet'; Retry loads the rows", async () => {
+    let failing = true;
+    const calls = catalogFetch(() => failing);
+    renderWithClient();
+
+    expect(await screen.findByText("Failed to load categories.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new category/i })).toBeInTheDocument();
+    expect(screen.queryByText("No categories yet")).not.toBeInTheDocument();
+    expect(calls.n).toBe(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("/c/apps")).toBeInTheDocument();
+    expect(calls.n).toBe(2);
+    expect(screen.queryByText("Failed to load categories.")).not.toBeInTheDocument();
+  });
+
+  it("a failed refresh keeps an open New category form and its typed name, with Couldn't refresh and Retry", async () => {
+    let failing = false;
+    const calls = catalogFetch(() => failing);
+    const qc = renderWithClient();
+    await screen.findByText("/c/apps");
+    fireEvent.click(screen.getByRole("button", { name: /new category/i }));
+    const dialog = await screen.findByRole("dialog");
+    const name = within(dialog).getByLabelText("Name");
+    fireEvent.change(name, { target: { value: "Streaming" } });
+
+    failing = true;
+    await act(async () => { await qc.refetchQueries({ queryKey: ["catalog"] }); });
+    expect(await screen.findByText(/Couldn't refresh categories/)).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).getByLabelText("Name")).toBe(name);
+    expect(name).toHaveValue("Streaming");
+    expect(calls.n).toBe(2);
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry", hidden: true }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh categories/)).not.toBeInTheDocument());
+    expect(calls.n).toBe(3);
+    expect(name).toHaveValue("Streaming");
   });
 });

@@ -1,7 +1,9 @@
 /**
  * Client half of the opt-in `Idempotency-Key` contract the six payment
  * mutations implement (deliver / refund / cancel / match / credit / dismiss in
- * src/routes/api/payments.ts, on top of packages/db/src/crud/idempotency.ts).
+ * src/routes/api/payments.ts, on top of packages/db/src/crud/idempotency.ts),
+ * the wallet adjustment in src/routes/api/users.ts, and creating a broadcast in
+ * src/routes/api/broadcast.ts.
  * Clone of the storefront hook (apps/storefront/client/src/api/idempotency.ts),
  * same as api/client.ts is a clone of its storefront twin.
  *
@@ -13,7 +15,8 @@
  *     set of the request's meaningful fields (`{ orderId }` for the three
  *     per-order actions, `{ binanceTxId, orderCode, gateway }` for match,
  *     `{ binanceTxId, orderCode }` for credit, `{ binanceTxId, gateway }` for
- *     dismiss), and the routes store the response for
+ *     dismiss, `{ userId, delta, currency, note }` for the wallet adjustment),
+ *     and the routes store the response for
  *     EVERY exit, 4xx included — a replayed failure is still a replay, so the
  *     admin gets the identical error back without the mutation being
  *     reconsidered.
@@ -35,9 +38,10 @@
  *      all (timeout, connection dropped, laptop asleep mid-flight) — and also
  *      two statuses that DID arrive but answered nothing:
  *
- *      - **5xx.** No route here ever stores one. `respond()` — the only caller
- *        of `saveIdempotentResponse` — is used with 200/400/404/422 and
- *        nothing else, because a 500 is an escaped `throw` and a 502/504 is
+ *      - **5xx.** No route here ever stores one. Responses are stored by
+ *        `respond()` with 200/400/404/422, and by the wallet route's own direct
+ *        `saveIdempotentResponse` call with 200 inside its money transaction,
+ *        and nothing else, because a 500 is an escaped `throw` and a 502/504 is
  *        the reverse proxy giving up before the app replied at all. A 504 over
  *        a refund that actually paid out is the textbook double-payment case:
  *        the row IS stored (with its real 200), and only reusing the key
@@ -65,8 +69,11 @@
  * underlying state has moved on.
  *
  * 401/403 need no special case: both short-circuit before the idempotency
- * block too, but both drive a full page reload in this codebase, which takes
- * the whole ref map with it regardless of what this decided.
+ * block too (a 401 means the session ended, a 403 that this admin may not run
+ * the action), so the server stored nothing under the key. They count as
+ * answered, so the key is dropped like any other known outcome. Nothing reloads
+ * the page for them: a 401 only raises the session-expired banner
+ * (api/sessionExpiry.ts) and the admin's draft stays where it is.
  *
  * TWO REQUESTS IN FLIGHT AT ONCE (a double-tapped confirm that outruns the
  * button's disabled state) are deduped too: the server reserves the key on the
@@ -112,6 +119,13 @@ function newIdempotencyKey(): string {
 /** The server's error code for "the first attempt with this key is still
  * running" — the one 409 that leaves the outcome unknown. */
 const REQUEST_IN_PROGRESS = "idempotency_request_in_progress";
+
+/** True when a failed post got no answer: no response at all, a 5xx or a 429.
+ * The mutation may or may not have run; the hook holds the key for these. */
+export function isOutcomeUnknown(err: unknown): boolean {
+  const status = (err as { status?: number } | null | undefined)?.status;
+  return status === undefined || status >= 500 || status === 429;
+}
 
 /** `apiPost`, with the `Idempotency-Key` lifecycle above applied. */
 export type IdempotentPost = <T>(path: string, body: unknown) => Promise<T>;

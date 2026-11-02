@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,16 +16,20 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
+import { isOutcomeUnknown, useIdempotentPost } from "../api/idempotency";
 import { CardRow } from "../components/shared/CardRow";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { CurrencyBadge } from "../components/shared/CurrencyBadge";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { describeError } from "../lib/errorMessages";
+import { readWalletDelta } from "../lib/walletAdjustment";
 
 interface UserDetail {
   user: {
@@ -65,6 +70,10 @@ function countLabel(shown: number, total: number | undefined): string {
   return String(total);
 }
 
+/** Editing the form mints a new key, so a changed retry is a second adjustment. */
+const WALLET_OUTCOME_UNKNOWN =
+  "The outcome of this adjustment is unknown. Check the Wallet Ledger below. If the adjustment is not there, retry without changing anything.";
+
 function useUserDetail(userId: string) {
   return useQuery<UserDetail>({
     queryKey: ["user", userId],
@@ -76,20 +85,27 @@ export function UserDetailPage() {
   const { userId } = useParams<{ userId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data, isError } = useUserDetail(userId ?? "");
+  const { data, isError, refetch } = useUserDetail(userId ?? "");
   const [walletForm, setWalletForm] = useState({ delta: "", note: "" });
   const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
   const [banReason, setBanReason] = useState("");
 
+  const idempotentPost = useIdempotentPost();
+
   const wallet = useMutation({
-    mutationFn: () => apiPost(`/api/users/${userId}/wallet`, { ...walletForm, currency: walletCurrency }),
+    mutationFn: () => idempotentPost(`/api/users/${userId}/wallet`, { ...walletForm, currency: walletCurrency }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["user", userId] });
       setWalletForm({ delta: "", note: "" });
       setWalletCurrency("IDR");
       toast.success("Wallet adjusted.");
     },
-    onError: (e: Error) => toast.error(describeError(e)),
+    onError: (e: Error) => {
+      // The balance and ledger may have moved even though the post failed, so
+      // reload them. They are how the admin settles an unknown outcome.
+      void qc.invalidateQueries({ queryKey: ["user", userId] });
+      toast.error(isOutcomeUnknown(e) ? WALLET_OUTCOME_UNKNOWN : describeError(e));
+    },
   });
 
   const setRole = useMutation({
@@ -111,8 +127,8 @@ export function UserDetailPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Customer"><p className="text-sm text-rust">Failed to load user.</p></PageLayout>;
-  if (!data) return <PageLayout title="Customer"><p>Loading…</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Customer"><QueryErrorNotice what="user" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
+  if (!data) return <PageLayout title="Customer"><DetailPageSkeleton label="Loading customer" /></PageLayout>;
 
   const { user } = data;
   return (
@@ -121,6 +137,8 @@ export function UserDetailPage() {
         title={user.fullName ?? user.username ?? `User #${user.id}`}
         breadcrumb={[{ label: "Customers", href: "/users" }]}
       />
+
+      <QueryErrorNotice isError={isError} what="user" hasData onRetry={() => void refetch()} />
 
       {/* User info */}
       <UserDetailProfile user={user} setRole={setRole} data={data} walletCurrency={walletCurrency} setWalletCurrency={setWalletCurrency} walletForm={walletForm} setWalletForm={setWalletForm} wallet={wallet} ban={ban} banReason={banReason} setBanReason={setBanReason} />
@@ -234,7 +252,7 @@ export function UserDetailPage() {
 }
 
 function UserDetailProfile({ user, setRole, data, walletCurrency, setWalletCurrency, walletForm, setWalletForm, wallet, ban, banReason, setBanReason }: {
-  user: { id: number; username: string | null; fullName: string | null; telegramId: string | null; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string; preferredCurrency: string | null; };
+  user: UserDetail["user"];
   setRole: import("@tanstack/react-query").UseMutationResult<unknown, Error, string, unknown>;
   data: UserDetail;
   walletCurrency: "IDR" | "USDT";
@@ -247,6 +265,21 @@ function UserDetailProfile({ user, setRole, data, walletCurrency, setWalletCurre
   setBanReason: import("react").Dispatch<import("react").SetStateAction<string>>;
 }) {
   return (<div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
+    <UserProfileCard user={user} setRole={setRole} data={data} />
+
+    <div className="flex flex-col gap-4">
+      <WalletAdjustmentCard user={user} walletCurrency={walletCurrency} setWalletCurrency={setWalletCurrency} walletForm={walletForm} setWalletForm={setWalletForm} wallet={wallet} />
+      <AccountBanCard user={user} ban={ban} banReason={banReason} setBanReason={setBanReason} />
+    </div>
+  </div>);
+}
+
+function UserProfileCard({ user, setRole, data }: {
+  user: UserDetail["user"];
+  setRole: import("@tanstack/react-query").UseMutationResult<unknown, Error, string, unknown>;
+  data: UserDetail;
+}) {
+  return (
     <Card>
       <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
       <CardContent className="divide-y divide-line">
@@ -285,51 +318,102 @@ function UserDetailProfile({ user, setRole, data, walletCurrency, setWalletCurre
         <CardRow label="Total spent" value={<CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} />} />
       </CardContent>
     </Card>
+  );
+}
 
-    <div className="flex flex-col gap-4">
-      {/* Wallet adjust */}
-      <Card>
-        <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex gap-2">
-            <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
-            <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
-          </div>
-          <div className="flex gap-2">
-            <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
-            <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
-            <Button onClick={() => wallet.mutate()} disabled={wallet.isPending}>Adjust</Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Ban / unban */}
-      <Card>
-        <CardHeader><CardTitle>Account</CardTitle></CardHeader>
-        <CardContent>
-          {user.banned ? (
-            <ConfirmDialog
-              trigger={<Button variant="outline"><CircleCheck className="h-4 w-4" />Unban user</Button>}
-              title="Unban this user?"
-              description="The user will be able to use the bot again."
-              confirmLabel="Unban"
-              variant="default"
-              onConfirm={() => ban.mutate(false)}
-            />
+function WalletAdjustmentCard({ user, walletCurrency, setWalletCurrency, walletForm, setWalletForm, wallet }: {
+  user: UserDetail["user"];
+  walletCurrency: "IDR" | "USDT";
+  setWalletCurrency: import("react").Dispatch<import("react").SetStateAction<"IDR" | "USDT">>;
+  walletForm: { delta: string; note: string; };
+  setWalletForm: import("react").Dispatch<import("react").SetStateAction<{ delta: string; note: string; }>>;
+  wallet: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  const walletDelta = readWalletDelta(walletForm.delta, walletCurrency);
+  const walletNote = walletForm.note.trim();
+  return (
+    <Card>
+      <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex gap-2">
+          <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
+          <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
+        </div>
+        <div className="flex gap-2">
+          <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
+          <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
+          {walletDelta.ok && walletNote ? (
+            <WalletAdjustConfirm user={user} adjustment={walletDelta} currency={walletCurrency} note={walletNote} wallet={wallet} />
           ) : (
-            <div className="flex gap-2">
-              <Input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} className="flex-1" />
-              <ConfirmDialog
-                trigger={<Button variant="destructive"><Ban className="h-4 w-4" />Ban user</Button>}
-                title="Ban this user?"
-                description="The user will be blocked from using the bot."
-                confirmLabel="Ban"
-                onConfirm={() => ban.mutate(true)}
-              />
-            </div>
+            <Button disabled>Adjust</Button>
           )}
-        </CardContent>
-      </Card>
-    </div>
-  </div>);
+        </div>
+        {!walletDelta.ok && walletDelta.hint && <p className="text-xs text-rust">{walletDelta.hint}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function WalletAdjustConfirm({ user, adjustment, currency, note, wallet }: {
+  user: UserDetail["user"];
+  adjustment: Extract<ReturnType<typeof readWalletDelta>, { ok: true }>;
+  currency: "IDR" | "USDT";
+  note: string;
+  wallet: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
+}) {
+  return (
+    <ConfirmDialog
+      trigger={<Button pending={wallet.isPending}>Adjust</Button>}
+      title={adjustment.credit ? "Credit this wallet?" : "Debit this wallet?"}
+      description={adjustment.credit ? "This adds money to the customer's wallet." : "This takes money out of the customer's wallet."}
+      confirmLabel={adjustment.credit ? "Credit wallet" : "Debit wallet"}
+      variant={adjustment.credit ? "default" : "destructive"}
+      // Awaited so the dialog holds its busy state until the answer
+      // arrives. The mutation's own onError shows the failure.
+      onConfirm={async () => { await wallet.mutateAsync().catch(() => undefined); }}
+    >
+      <div className="divide-y divide-line">
+        <CardRow label="Customer" value={user.fullName ?? user.username ?? `User #${user.id}`} />
+        <CardRow label="Currency" value={currency} />
+        <CardRow label="Amount" value={<span className="font-mono">{adjustment.credit ? "+" : ""}{formatCurrencyDisplay(adjustment.amount, currency)}</span>} />
+        <CardRow label="Reason" value={note} />
+      </div>
+    </ConfirmDialog>
+  );
+}
+
+function AccountBanCard({ user, ban, banReason, setBanReason }: {
+  user: UserDetail["user"];
+  ban: import("@tanstack/react-query").UseMutationResult<unknown, Error, boolean, unknown>;
+  banReason: string;
+  setBanReason: import("react").Dispatch<import("react").SetStateAction<string>>;
+}) {
+  return (
+    <Card>
+      <CardHeader><CardTitle>Account</CardTitle></CardHeader>
+      <CardContent>
+        {user.banned ? (
+          <ConfirmDialog
+            trigger={<Button variant="outline"><CircleCheck className="h-4 w-4" />Unban user</Button>}
+            title="Unban this user?"
+            description="The user will be able to use the bot again."
+            confirmLabel="Unban"
+            variant="default"
+            onConfirm={() => ban.mutate(false)}
+          />
+        ) : (
+          <div className="flex gap-2">
+            <Input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} className="flex-1" />
+            <ConfirmDialog
+              trigger={<Button variant="destructive"><Ban className="h-4 w-4" />Ban user</Button>}
+              title="Ban this user?"
+              description="The user will be blocked from using the bot."
+              confirmLabel="Ban"
+              onConfirm={() => ban.mutate(true)}
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }

@@ -8,7 +8,7 @@
  *   - Esc = cancel (`Modal.onClose` is wired to `onCancel`);
  *   - `tone="danger"` renders the confirm button as `<Button variant="danger">`
  *     (rust); `tone="default"` renders it `variant="primary"`;
- *   - `confirmPending` disables BOTH buttons and shows a `<Spinner>` in the
+ *   - `confirmPending` disables BOTH buttons and uses `<Button pending>` for the
  *     confirm button.
  *
  * Business-agnostic: caller supplies all copy and the two handlers.
@@ -16,7 +16,6 @@
 import { useRef, type ReactNode } from "react";
 import Modal from "./Modal";
 import Button from "./Button";
-import Spinner from "./Spinner";
 
 export interface AlertDialogProps {
   open: boolean;
@@ -67,9 +66,8 @@ export default function AlertDialog({
           <Button
             variant={tone === "danger" ? "danger" : "primary"}
             onClick={onConfirm}
-            disabled={confirmPending}
+            pending={confirmPending}
           >
-            {confirmPending && <Spinner />}
             {confirmLabel}
           </Button>
         </>

@@ -12,7 +12,6 @@ import Button from "../ui/Button";
 import Textarea from "../ui/Textarea";
 import AttachmentPicker from "./AttachmentPicker";
 import ProgressBar from "./ProgressBar";
-import Spinner from "./Spinner";
 
 const MAX_MESSAGE_LENGTH = 2000;
 const DRAFT_SAVE_DEBOUNCE_MS = 500;
@@ -28,6 +27,8 @@ export interface TicketComposerProps {
   uploadProgress: number;
   uploadSlot?: ReactNode;
   uploadBusy?: boolean;
+  /** True while a file has failed: it keeps Send disabled, so say why. */
+  uploadFailed?: boolean;
   hasUploads?: boolean;
 }
 
@@ -42,6 +43,7 @@ export default function TicketComposer({
   uploadProgress,
   uploadSlot,
   uploadBusy = false,
+  uploadFailed = false,
   hasUploads = false,
 }: TicketComposerProps) {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,14 +90,18 @@ export default function TicketComposer({
         </span>
       </div>
       {uploadSlot ?? <AttachmentPicker files={files} onChange={onFilesChange} disabled={pending} />}
-      {pending && files.length > 0 && (
+      {pending && files.length > 0 && uploadProgress > 0 && (
         <div className="mt-2">
           <ProgressBar value={uploadProgress} />
         </div>
       )}
       <div className="mt-3 text-right">
-        <Button type="submit" variant="primary" size="sm" disabled={pending || uploadBusy || (!message.trim() && !hasUploads)}>
-          {pending && <Spinner />}
+        {uploadFailed && (
+          <p role="status" className="mb-2 text-xs text-ink-soft">
+            {t("helpdesk.upload_failed_blocks_send")}
+          </p>
+        )}
+        <Button pending={pending} type="submit" variant="primary" size="sm" disabled={pending || uploadBusy || (!message.trim() && !hasUploads)}>
           <Send className="w-3.5 h-3.5" /> {t("web.support_reply")}
         </Button>
       </div>

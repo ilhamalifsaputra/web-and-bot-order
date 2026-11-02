@@ -44,6 +44,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
 import { SelectFilter } from "../components/shared/SelectFilter";
@@ -218,6 +219,9 @@ export function SupportPage() {
   });
 
   useEffect(() => {
+    // Nothing typed since the last search (including the mount): leave the
+    // page alone, or a Next click inside these 300 ms is undone.
+    if (qDraft === q) return;
     const timer = setTimeout(() => {
       setQ(qDraft);
       // Bail out to the *same* object reference when page is already 1 —
@@ -231,7 +235,7 @@ export function SupportPage() {
       setFilters((f) => (f.page === 1 ? f : { ...f, page: 1 }));
     }, 300);
     return () => clearTimeout(timer);
-  }, [qDraft]);
+  }, [qDraft, q]);
 
   const { data, isError, refetch } = useTickets(q, filters);
   // Super-admin-only data source (mirrors AdminsPage) — a non-super admin
@@ -264,14 +268,6 @@ export function SupportPage() {
    *  touch `status`, so they can never trigger the diffing effect's status
    *  branch in the first place. A ticket genuinely closed by a *different*
    *  admin (not seeded here) still surfaces its diff-toast normally. */
-
-  if (isError) {
-    return (
-      <PageLayout title="Support Tickets">
-        <p className="text-sm text-rust">Failed to load tickets.</p>
-      </PageLayout>
-    );
-  }
 
   const items = data?.items ?? [];
   const allOnPageSelected = items.length > 0 && items.every((t) => selected.has(t.id));
@@ -376,13 +372,15 @@ export function SupportPage() {
         }
       />
 
-      <SupportStats data={data} toggleOverdueFilter={toggleOverdueFilter} />
+      <SupportStats unavailable={isError && !data} data={data} toggleOverdueFilter={toggleOverdueFilter} />
 
       <SupportStatusFilter applyFilters={applyFilters} clearFilters={clearFilters} qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} draft={draft} setDraft={setDraft} />
 
       <SupportAssignSelectedTicketsTo visibleSelected={visibleSelected} bulkAction={bulkAction} assignableAdmins={assignableAdmins} setSelected={setSelected} />
 
-      <SupportTicketsTable allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} items={items} selected={selected} toggleSelected={toggleSelected} hoveredMessageId={hoveredMessageId} setHoveredMessageId={setHoveredMessageId} assign={assign} adminNameById={adminNameById} assignableAdmins={assignableAdmins} navigate={navigate} classify={classify} resolve={resolve} reopen={reopen} setCloseTarget={setCloseTarget} data={data} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="tickets" onRetry={() => void refetch()}>
+        <SupportTicketsTable allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} items={items} selected={selected} toggleSelected={toggleSelected} hoveredMessageId={hoveredMessageId} setHoveredMessageId={setHoveredMessageId} assign={assign} adminNameById={adminNameById} assignableAdmins={assignableAdmins} navigate={navigate} classify={classify} resolve={resolve} reopen={reopen} setCloseTarget={setCloseTarget} data={data} hasActiveFilter={hasActiveFilter} refetch={refetch} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">
@@ -415,29 +413,30 @@ export function SupportPage() {
   );
 }
 
-function SupportStats({ data, toggleOverdueFilter }: {
+function SupportStats({ unavailable, data, toggleOverdueFilter }: {
+  unavailable: boolean;
   data: NoInfer<SupportData> | undefined;
   toggleOverdueFilter: () => void;
 }) {
   return (<div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-    <StatCard label="Needs attention" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} />
-    <StatCard label="In progress" value={data?.stats.inProgress ?? 0} icon={Clock} isLoading={!data} />
-    <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} />
+    <StatCard label="Needs attention" value={data?.stats.open ?? 0} icon={MessageCircle} isLoading={!data} unavailable={unavailable} />
+    <StatCard label="In progress" value={data?.stats.inProgress ?? 0} icon={Clock} isLoading={!data} unavailable={unavailable} />
+    <StatCard label="Waiting for customer" value={data?.stats.waitingCustomer ?? 0} icon={Clock} isLoading={!data} unavailable={unavailable} />
     <StatCard
       label="Overdue"
       value={data?.stats.overdue ?? 0}
       icon={AlertTriangle}
       tone="danger"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
       onClick={toggleOverdueFilter}
     />
-    <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} />
+    <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} unavailable={unavailable} />
     <StatCard
       label="Resolved Today"
       value={data?.stats.resolvedToday ?? 0}
       icon={CheckCircle2}
       tone="success"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
   </div>);
 }
@@ -585,6 +584,7 @@ function SupportAssignSelectedTicketsTo({ visibleSelected, bulkAction, assignabl
       <Button
         size="sm"
         variant="outline"
+        pending={bulkAction.isPending && bulkAction.variables?.action === "resolve"}
         disabled={bulkAction.isPending}
         onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "resolve" })}
       >
@@ -593,7 +593,7 @@ function SupportAssignSelectedTicketsTo({ visibleSelected, bulkAction, assignabl
 
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+          <Button size="sm" variant="destructive" pending={bulkAction.isPending && bulkAction.variables?.action === "close"} disabled={bulkAction.isPending}>
             Close {visibleSelected.size} ticket{visibleSelected.size === 1 ? "" : "s"}
           </Button>
         }

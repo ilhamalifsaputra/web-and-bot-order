@@ -1,6 +1,6 @@
 import { ProgressBar } from "@/components/shared/ProgressBar";
 import { Button } from "@/components/ui/button";
-import { CircleCheckIcon, Loader2, Upload, X } from "lucide-react";
+import { CircleCheckIcon, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 function csrfToken(): string {
@@ -74,14 +74,9 @@ function uploadWithProgress(
 /** Save button label/content for each phase — shared by both the `row` and
  * `dropzone` variants so they can't drift apart on this. */
 function saveButtonContent(phase: UploadPhase, uploadProgress: number): React.ReactNode {
-  if (phase === "processing") {
-    return (
-      <span className="inline-flex items-center gap-1.5">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-        Finishing up…
-      </span>
-    );
-  }
+  // The spinner comes from the Button's own `pending` state; this phase has
+  // no measurable progress, so it shows words, not a percentage.
+  if (phase === "processing") return "Finishing up…";
   if (phase === "sending") {
     return `Saving…${uploadProgress > 0 ? ` ${uploadProgress}%` : ""}`;
   }
@@ -248,7 +243,7 @@ export function ImageUploadField({
           pendingFile && (
             <div className="mt-2">
               <div className="flex gap-2">
-                <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
+                <Button size="sm" pending={uploading} onClick={() => void confirmUpload()}>
                   {saveButtonContent(phase, uploadProgress)}
                 </Button>
                 <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>Cancel</Button>
@@ -360,7 +355,7 @@ function ImageUploadStatus({ justSaved, pendingFile, uploading, confirmUpload, p
     pendingFile && (
       <div className="mt-2">
         <div className="flex gap-2">
-          <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
+          <Button size="sm" pending={uploading} onClick={() => void confirmUpload()}>
             {saveButtonContent(phase, uploadProgress)}
           </Button>
           <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>

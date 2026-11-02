@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useSearchParams } from "react-router-dom";
 import { currentLang, t } from "../lib/i18n";
+import { recoveryScopeAllows } from "../lib/recoveryScope";
 import { useShopContext } from "../lib/useShopContext";
 import Footer from "./layout/Footer";
 import MobileDrawer from "./layout/MobileDrawer";
@@ -20,6 +21,7 @@ import MobileTabBar from "./layout/MobileTabBar";
 import { isTabBarHidden } from "./layout/MobileTabBar.helpers";
 import Navbar from "./layout/Navbar";
 import { PageTransition } from "./PageTransition";
+import RecoveryScopeNotice from "./shop/RecoveryScopeNotice";
 import { SearchOverlayProvider } from "./shop/SearchOverlay";
 import Toast from "./shop/Toast";
 
@@ -101,7 +103,13 @@ export default function Layout() {
           navigation (T15); id is also the skip link's target (T14). */}
       <main id="main-content" className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 lg:px-6" tabIndex={-1}>
         <PageTransition>
-          <Outlet />
+          {/* H5: an order-recovery session can open only its one order; any
+              other page would sit on a skeleton fed by 404s. */}
+          {ctx?.order_scope && !recoveryScopeAllows(location.pathname, ctx.order_scope) ? (
+            <RecoveryScopeNotice orderCode={ctx.order_scope} />
+          ) : (
+            <Outlet />
+          )}
         </PageTransition>
       </main>
 

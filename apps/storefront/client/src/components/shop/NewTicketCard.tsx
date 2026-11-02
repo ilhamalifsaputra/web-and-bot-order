@@ -43,7 +43,6 @@ import FormField from "../ui/FormField";
 import Input from "../ui/Input";
 import Select from "../ui/Select";
 import Textarea from "../ui/Textarea";
-import Spinner from "./Spinner";
 import ProgressBar from "./ProgressBar";
 import EvidenceUploader from "./EvidenceUploader";
 import DataSafetyNotice from "./DataSafetyNotice";
@@ -330,9 +329,7 @@ export default function NewTicketCard({
   }
 
   const submitLabel: ReactNode = isSubmitting ? (
-    <>
-      <Spinner /> {t("web.support_sending")}
-    </>
+    t("web.support_sending")
   ) : (
     <>
       <Send className="w-4 h-4" aria-hidden="true" /> {t("web.support_send_ticket")}
@@ -414,14 +411,14 @@ export default function NewTicketCard({
           variant="primary"
           fullWidth
           className="sm:w-auto"
-          disabled={isSubmitting}
-          aria-busy={isSubmitting}
+          pending={isSubmitting}
         >
           {submitLabel}
         </Button>
       </div>
 
-      {isSubmitting && value.files.length > 0 && (
+      {/* Real progress only: no bar until the browser has measured bytes sent. */}
+      {isSubmitting && value.files.length > 0 && uploadProgress > 0 && (
         <div className="mt-3">
           <ProgressBar value={uploadProgress} />
         </div>

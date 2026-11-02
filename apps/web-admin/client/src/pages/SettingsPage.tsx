@@ -1,4 +1,5 @@
 import type { HealthEntry } from "@/api/types";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { SettingsHealthCard, type HealthSection } from "@/components/shared/SettingsHealthCard";
 import { SettingsNav, type SettingsNavLink } from "@/components/shared/SettingsNav";
 import { SettingsSaveStatus } from "@/components/shared/SettingsSaveStatus";
@@ -728,7 +729,7 @@ function QuickActionsMenu({
           Restore Backup
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onRefreshConnections} disabled={refreshing}>
-          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "motion-safe:animate-spin" : ""}`} />
           Refresh Connections
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -744,7 +745,7 @@ export function SettingsPage() {
   const [query, setQuery] = useState("");
 
   // Password change
-  const { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa } = useSettingsSecurity({ markSaved, invalidate });
+  const { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, tfaBusy, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa } = useSettingsSecurity({ markSaved, invalidate });
 
   // 2FA
 
@@ -802,7 +803,9 @@ export function SettingsPage() {
     onSuccess: () => { invalidate(); markSaved(); },
   });
   const reorderGroups = useMutation({
-    mutationFn: (groups: string[]) => apiPost("/api/settings/services/order", { groups }),
+    // `moved` names the clicked arrow ("<group>:up"), so only that button
+    // shows as pending; a swap changes both groups' slots.
+    mutationFn: ({ groups }: { groups: string[]; moved: string }) => apiPost("/api/settings/services/order", { groups }),
     onSuccess: () => { invalidate(); markSaved(); },
     onError: (err) => toast.error(describeError(err, "Failed to save the website order.")),
   });
@@ -826,7 +829,7 @@ export function SettingsPage() {
     return (
       <PageLayout title="Settings">
         <PageHeader title="Settings" />
-        {isLoading && <p className="text-ink-soft">Loading settings…</p>}
+        {isLoading && <LinesSkeleton label="Loading settings" lines={6} className="max-w-3xl" />}
         {isError && <p className="text-rust">Failed to load settings.</p>}
       </PageLayout>
     );
@@ -928,7 +931,7 @@ export function SettingsPage() {
                 <SettingsChangePassword setPwConfirmOpen={setPwConfirmOpen} pwCurrent={pwCurrent} setPwCurrent={setPwCurrent} pwNew={pwNew} setPwNew={setPwNew} pwConfirmOpen={pwConfirmOpen} changePassword={changePassword} />
 
                 {/* Two-Factor Authentication */}
-                <SettingsTwoFactorAuthentication tfaError={tfaError} data={data} tfaAction={tfaAction} tfaSaving={tfaSaving} totpCode={totpCode} setTotpCode={setTotpCode} setTfaEnableConfirmOpen={setTfaEnableConfirmOpen} disablePw={disablePw} setDisablePw={setDisablePw} disableTotp={disableTotp} setDisableTotp={setDisableTotp} setTfaDisableConfirmOpen={setTfaDisableConfirmOpen} tfaEnableConfirmOpen={tfaEnableConfirmOpen} enableTwoFa={enableTwoFa} tfaDisableConfirmOpen={tfaDisableConfirmOpen} disableTwoFa={disableTwoFa} />
+                <SettingsTwoFactorAuthentication tfaError={tfaError} data={data} tfaAction={tfaAction} tfaSaving={tfaSaving} tfaBusy={tfaBusy} totpCode={totpCode} setTotpCode={setTotpCode} setTfaEnableConfirmOpen={setTfaEnableConfirmOpen} disablePw={disablePw} setDisablePw={setDisablePw} disableTotp={disableTotp} setDisableTotp={setDisableTotp} setTfaDisableConfirmOpen={setTfaDisableConfirmOpen} tfaEnableConfirmOpen={tfaEnableConfirmOpen} enableTwoFa={enableTwoFa} tfaDisableConfirmOpen={tfaDisableConfirmOpen} disableTwoFa={disableTwoFa} />
 
               </CardContent>
             </Card>
@@ -1456,11 +1459,12 @@ function SettingsChangePassword({ setPwConfirmOpen, pwCurrent, setPwCurrent, pwN
   </div>);
 }
 
-function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving, totpCode, setTotpCode, setTfaEnableConfirmOpen, disablePw, setDisablePw, disableTotp, setDisableTotp, setTfaDisableConfirmOpen, tfaEnableConfirmOpen, enableTwoFa, tfaDisableConfirmOpen, disableTwoFa }: {
+function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving, tfaBusy, totpCode, setTotpCode, setTfaEnableConfirmOpen, disablePw, setDisablePw, disableTotp, setDisableTotp, setTfaDisableConfirmOpen, tfaEnableConfirmOpen, enableTwoFa, tfaDisableConfirmOpen, disableTwoFa }: {
   tfaError: string | null;
   data: import("../hooks/useSettings").SettingsData;
-  tfaAction: (path: string, body: Record<string, string>) => Promise<void>;
+  tfaAction: (path: string, body: Record<string, string>, action: "enable" | "cancel") => Promise<void>;
   tfaSaving: boolean;
+  tfaBusy: "enable" | "cancel" | null;
   totpCode: string;
   setTotpCode: import("react").Dispatch<import("react").SetStateAction<string>>;
   setTfaEnableConfirmOpen: import("react").Dispatch<import("react").SetStateAction<boolean>>;
@@ -1487,12 +1491,12 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
         <p className="text-sm text-ink-soft mb-3">
           2FA is not enabled. Enable it for extra account security.
         </p>
-        <Button
-          onClick={() => tfaAction("/api/settings/2fa/begin", {})}
+        <Button pending={tfaBusy === "enable"}
+          onClick={() => tfaAction("/api/settings/2fa/begin", {}, "enable")}
           disabled={tfaSaving}
           variant="outline"
         >
-          {tfaSaving ? "…" : "Enable 2FA"}
+          Enable 2FA
         </Button>
       </div>
     )}
@@ -1523,7 +1527,8 @@ function SettingsTwoFactorAuthentication({ tfaError, data, tfaAction, tfaSaving,
           </Button>
           <Button
             variant="ghost"
-            onClick={() => tfaAction("/api/settings/2fa/cancel", {})}
+            onClick={() => tfaAction("/api/settings/2fa/cancel", {}, "cancel")}
+            pending={tfaBusy === "cancel"}
             disabled={tfaSaving}
           >
             Cancel
@@ -1619,7 +1624,10 @@ function useSettingsSecurity({ markSaved, invalidate }: {
 
   const [tfaError, setTfaError] = useState<string | null>(null);
 
-  const [tfaSaving, setTfaSaving] = useState(false);
+  // Which 2FA button is in flight ("enable" = Enable 2FA, "cancel" = Cancel
+  // setup), so only that one shows the spinner; any of them disables the rest.
+  const [tfaBusy, setTfaBusy] = useState<"enable" | "cancel" | null>(null);
+  const tfaSaving = tfaBusy !== null;
 
   const [disablePw, setDisablePw] = useState("");
 
@@ -1640,8 +1648,8 @@ function useSettingsSecurity({ markSaved, invalidate }: {
     return "Password changed successfully.";
   }
 
-  async function tfaAction(path: string, body: Record<string, string>) {
-    setTfaSaving(true);
+  async function tfaAction(path: string, body: Record<string, string>, action: "enable" | "cancel") {
+    setTfaBusy(action);
     setTfaError(null);
     try {
       await apiPost(path, body);
@@ -1652,7 +1660,7 @@ function useSettingsSecurity({ markSaved, invalidate }: {
     } catch (err) {
       setTfaError(err instanceof Error ? err.message : "Failed");
     } finally {
-      setTfaSaving(false);
+      setTfaBusy(null);
     }
   }
 
@@ -1675,7 +1683,7 @@ function useSettingsSecurity({ markSaved, invalidate }: {
     markSaved();
     return "Two-factor authentication disabled.";
   }
-  return { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa };
+  return { pwCurrent, setPwCurrent, pwNew, setPwNew, pwConfirmOpen, setPwConfirmOpen, totpCode, setTotpCode, tfaError, tfaSaving, tfaBusy, disablePw, setDisablePw, disableTotp, setDisableTotp, tfaEnableConfirmOpen, setTfaEnableConfirmOpen, tfaDisableConfirmOpen, setTfaDisableConfirmOpen, changePassword, tfaAction, enableTwoFa, disableTwoFa };
 }
 
 function useSettingsTransfer({ invalidate, markSaved }: {
@@ -2010,7 +2018,7 @@ function SettingsGeneral({ generalVisible, generalFields, fieldQueryFor, onSaved
 }
 
 function SettingsServices({ servicesVisible, data, query, setPendingService, reorderGroups }: {
-  reorderGroups: import("@tanstack/react-query").UseMutationResult<unknown, Error, string[], unknown>;
+  reorderGroups: import("@tanstack/react-query").UseMutationResult<unknown, Error, { groups: string[]; moved: string }, unknown>;
   servicesVisible: boolean;
   data: import("../hooks/useSettings").SettingsData;
   query: string;
@@ -2056,8 +2064,9 @@ function SettingsServices({ servicesVisible, data, query, setPendingService, reo
                     variant="ghost"
                     size="icon-xs"
                     aria-label={`Move ${group.label} up`}
+                    pending={reorderGroups.isPending && reorderGroups.variables?.moved === `${group.key}:up`}
                     disabled={reorderGroups.isPending || index === 0}
-                    onClick={() => reorderGroups.mutate(moveKey(all.map((g) => g.key), index, -1))}
+                    onClick={() => reorderGroups.mutate({ groups: moveKey(all.map((g) => g.key), index, -1), moved: `${group.key}:up` })}
                   >
                     <ChevronUp className="h-4 w-4" />
                   </Button>
@@ -2065,8 +2074,9 @@ function SettingsServices({ servicesVisible, data, query, setPendingService, reo
                     variant="ghost"
                     size="icon-xs"
                     aria-label={`Move ${group.label} down`}
+                    pending={reorderGroups.isPending && reorderGroups.variables?.moved === `${group.key}:down`}
                     disabled={reorderGroups.isPending || index === all.length - 1}
-                    onClick={() => reorderGroups.mutate(moveKey(all.map((g) => g.key), index, 1))}
+                    onClick={() => reorderGroups.mutate({ groups: moveKey(all.map((g) => g.key), index, 1), moved: `${group.key}:down` })}
                   >
                     <ChevronDown className="h-4 w-4" />
                   </Button>

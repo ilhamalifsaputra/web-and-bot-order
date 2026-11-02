@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { DetailPageSkeleton } from "../components/shared/RouteFallback";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -20,6 +21,7 @@ import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
 import { DenominationIdentityFields } from "../components/shared/DenominationIdentityFields";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { draftsToFields, fieldToDraft, fieldsAreValid } from "../lib/additionalFields";
 import { familyOfGroup } from "../lib/catalogFamily";
 import { exactFieldsOf } from "../lib/exactFields";
@@ -101,7 +103,7 @@ function isValidPrice(value: string): boolean {
   return !Number.isNaN(Number(value.trim()));
 }
 
-function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
+function DenominationEditForm({ data, refreshNotice }: { data: ProductDetailForEdit; refreshNotice: React.ReactNode }) {
   const fieldId = useId();
   const { productId, denomId } = useParams<{ productId: string; denomId: string }>();
   const navigate = useNavigate();
@@ -195,6 +197,8 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
         ]}
       />
 
+      {refreshNotice}
+
       <div className="max-w-lg flex flex-col gap-4">
         <DenominationIdentityFields fieldId={fieldId} isGame={isGame} productName={data?.product.name} name={name} setName={setName} durationLabel={durationLabel} setDurationLabel={setDurationLabel} qtyValue={qtyValue} setQtyValue={setQtyValue} qtyUnit={qtyUnit} setQtyUnit={setQtyUnit} type={type} setType={setType} />
 
@@ -279,7 +283,7 @@ function DenominationEditForm({ data }: { data: ProductDetailForEdit }) {
 
         {error && <p className="text-sm text-rust">{error}</p>}
 
-        <Button disabled={!canSubmit || save.isPending} onClick={() => save.mutate()}>
+        <Button pending={save.isPending} disabled={!canSubmit || save.isPending} onClick={() => save.mutate()}>
           {save.isPending ? "Saving…" : "Save Changes"}
         </Button>
 
@@ -367,12 +371,18 @@ function useDenominationDraft({ denomination, pricing, productId }: {
 
 export function DenominationEditPage() {
   const { productId, denomId } = useParams<{ productId: string; denomId: string }>();
-  const { data, isError } = useQuery<ProductDetailForEdit>({
+  const { data, isError, refetch } = useQuery<ProductDetailForEdit>({
     queryKey: ["catalog", productId],
     queryFn: async () => apiGet<ProductDetailForEdit>(`/api/catalog/${productId}`),
     enabled: !!productId,
   });
-  if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
-  if (!data?.product.denominations.some(d => d.id === Number(denomId))) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
-  return <DenominationEditForm key={denomId} data={data} />;
+  if (isError && !data) return <PageLayout title="Edit Denomination"><QueryErrorNotice what="denomination" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
+  if (!data) return <PageLayout title="Edit Denomination"><DetailPageSkeleton label="Loading denomination" /></PageLayout>;
+  // A loaded product without this denomination (deleted, or a stale link) is
+  // a final answer, not a load still in flight.
+  if (!data.product.denominations.some(d => d.id === Number(denomId))) return <PageLayout title="Edit Denomination"><p className="text-sm text-ink-soft">This denomination no longer exists.</p></PageLayout>;
+  // The form keeps its typed prices and fields when a later refresh fails; the
+  // notice is drawn inside it, under the header.
+  const refreshNotice = <QueryErrorNotice isError={isError} what="denomination" hasData onRetry={() => void refetch()} />;
+  return <DenominationEditForm key={denomId} data={data} refreshNotice={refreshNotice} />;
 }

@@ -29,6 +29,7 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -120,7 +121,7 @@ export function FlashSalesPage() {
   const fieldId = useId();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data, isLoading, isError } = useFlashSaleDenominations();
+  const { data, isLoading, isError, refetch } = useFlashSaleDenominations();
   // Computed once per render (not a ticking clock) — same convention as
   // VouchersPage's own `isExpiringSoon` "now", good enough for a countdown
   // that only needs to be roughly right between refetches.
@@ -290,13 +291,8 @@ export function FlashSalesPage() {
     },
   });
 
-  if (isError) {
-    return (
-      <PageLayout title="Flash Sales">
-        <p className="text-sm text-rust">Failed to load denominations.</p>
-      </PageLayout>
-    );
-  }
+  // A failed first load has no counts; the cards must not read 0.
+  const statsUnavailable = isError && !data;
 
   return (
     <PageLayout title="Flash Sales">
@@ -309,10 +305,10 @@ export function FlashSalesPage() {
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Scheduled" value={scheduledCount} icon={Clock} isLoading={isLoading} />
-        <StatCard label="Running" value={runningCount} icon={Zap} tone="success" isLoading={isLoading} />
-        <StatCard label="Expired" value={expiredCount} icon={Ban} isLoading={isLoading} />
-        <StatCard label="Discounted SKU" value={discountedCount} icon={Tag} isLoading={isLoading} />
+        <StatCard label="Scheduled" value={scheduledCount} icon={Clock} isLoading={isLoading} unavailable={statsUnavailable} />
+        <StatCard label="Running" value={runningCount} icon={Zap} tone="success" isLoading={isLoading} unavailable={statsUnavailable} />
+        <StatCard label="Expired" value={expiredCount} icon={Ban} isLoading={isLoading} unavailable={statsUnavailable} />
+        <StatCard label="Discounted SKU" value={discountedCount} icon={Tag} isLoading={isLoading} unavailable={statsUnavailable} />
       </div>
 
       <FlashSalesFilters hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} filter={filter} setFilter={setFilter} fieldId={fieldId} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} categories={categories} statusFilter={statusFilter} setStatusFilter={setStatusFilter} sortBy={sortBy} setSortBy={setSortBy} />
@@ -342,7 +338,9 @@ export function FlashSalesPage() {
         </div>
       )}
 
-      <FlashSalesSelectAllSKUsMatchingThe allFilteredSelected={allFilteredSelected} toggleSelectAllFiltered={toggleSelectAllFiltered} selected={selected} toggleSelected={toggleSelected} now={now} navigate={navigate} openEditSchedule={openEditSchedule} bulkEnd={bulkEnd} filtered={filtered} isLoading={isLoading} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="denominations" onRetry={() => void refetch()}>
+        <FlashSalesSelectAllSKUsMatchingThe allFilteredSelected={allFilteredSelected} toggleSelectAllFiltered={toggleSelectAllFiltered} selected={selected} toggleSelected={toggleSelected} now={now} navigate={navigate} openEditSchedule={openEditSchedule} bulkEnd={bulkEnd} filtered={filtered} isLoading={isLoading} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      </QueryFailureGate>
     </PageLayout>
   );
 }
@@ -412,7 +410,7 @@ function FlashSalesSetFlashSaleOn({ dialogOpen, setDialogOpen, openNewFlashSale,
         <DialogClose asChild>
           <Button variant="outline">Cancel</Button>
         </DialogClose>
-        <Button disabled={!canSubmit || bulkApply.isPending} onClick={() => bulkApply.mutate()}>
+        <Button pending={bulkApply.isPending} disabled={!canSubmit || bulkApply.isPending} onClick={() => bulkApply.mutate()}>
           {bulkApply.isPending ? "Applying…" : "Apply"}
         </Button>
       </DialogFooter>

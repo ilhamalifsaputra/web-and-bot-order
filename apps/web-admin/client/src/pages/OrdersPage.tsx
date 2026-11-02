@@ -24,13 +24,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Check, Eye, MoreVertical, RefreshCw, Send, ShoppingCart, X, XCircle } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet } from "../api/client";
 import { UnresolvedAtSupplierBadge } from "../components/orders/UnresolvedAtSupplierBadge";
+import { BulkFailuresNotice } from "../components/shared/BulkFailuresNotice";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyParts } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
 import { DateInput } from "../components/shared/DateInput";
@@ -39,17 +41,19 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { OrderStatusBadge } from "../components/shared/OrderStatusBadge";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
 import { useOrdersKpis } from "../hooks/useOrdersKpis";
-import { describeError } from "../lib/errorMessages";
 import { DIGIFLAZZ_UNRESOLVED, orderStatusLabel } from "../lib/orderStatus";
 import { PAYMENT_METHOD_LABELS, paymentMethodLabel } from "../lib/paymentMethod";
+import type { BulkFailureLine } from "../lib/bulkOutcome";
 import { visibleSelection } from "../lib/selection";
 import { OrdersKpiRow } from "./orders/OrdersKpiRow";
 import { OrderStatusTabs } from "./orders/OrderStatusTabs";
 import { statusesForTab, type StatusTabKey } from "./orders/OrderStatusTabs.helpers";
+import { useOrderActions, type BulkActionResult, type DeliverTarget } from "./orders/useOrderActions";
 
 interface OrderItemRow {
   id: number;
@@ -109,9 +113,18 @@ interface OrdersData {
   statuses: string[];
 }
 
-interface BulkActionResult {
-  succeeded: number[];
-  failed: { id: number; error: string }[];
+/** Beyond this the dialog gives the count: a wall of codes hides the sentence
+ * that matters. */
+const MAX_CODES_IN_DIALOG = 5;
+
+function deliverDescription({ rows, skipped }: DeliverTarget): string {
+  const subject = rows.length <= MAX_CODES_IN_DIALOG
+    ? rows.map((row) => row.orderCode).join(", ")
+    : `${rows.length} orders`;
+  const left = skipped === 0
+    ? ""
+    : ` ${skipped} other selected order${skipped === 1 ? "" : "s"} can't be delivered and will be left out.`;
+  return `${subject}: stock or credentials go to the buyer now, and this cannot be undone. An order fulfilled by hand or by a supplier is queued for fulfilment instead.${left}`;
 }
 
 /** The one narrowing the list accepts beyond status: orders unresolved at
@@ -162,10 +175,13 @@ function useOrders(filters: Filters) {
 
 const PAYMENT_METHOD_VALUES = Object.keys(PAYMENT_METHOD_LABELS);
 
+function hasAnyFilter({ status, digiflazz, paymentMethod, q, since, until }: Filters): boolean {
+  return [status, digiflazz, paymentMethod, q, since, until].some(Boolean);
+}
+
 export function OrdersPage() {
   const fieldId = useId();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialStatus = searchParams.get("status") ?? "";
   // Lets other pages (e.g. Support's "Order History" row action) deep-link
@@ -192,106 +208,21 @@ export function OrdersPage() {
     pageSize: 20,
   });
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [cancelTarget, setCancelTarget] = useState<{ ids: number[] } | null>(null);
-  const [cancelReason, setCancelReason] = useState("");
-
+  const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
   const { data, isLoading, isError, refetch } = useOrders(filters);
   const { data: kpis } = useOrdersKpis();
+  const pageOrders = data?.orders ?? [];
+  const actions = useOrderActions({ orders: pageOrders, setSelected, setBulkFailures });
 
   // A stale selection surviving a new page/filter result set would let a
   // bulk action silently apply to rows no longer on screen — clear it
   // whenever the query changes.
   useEffect(() => {
     setSelected(new Set());
+    setBulkFailures([]);
   }, [filters]);
 
-  function invalidateAll() {
-    void queryClient.invalidateQueries({ queryKey: ["orders"] });
-  }
-
-  const deliverMutation = useMutation({
-    mutationFn: (orderId: number) => apiPost(`/api/orders/${orderId}/approve`, {}),
-    onSuccess: () => {
-      invalidateAll();
-      toast.success("Order approved and delivered.");
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  const resendRequests = useRef(new Set<number>());
-  const [resendingIds, setResendingIds] = useState<number[]>([]);
-  useEffect(() => {
-    const requests = resendRequests.current;
-    return () => { requests.clear(); };
-  }, []);
-  async function resendDelivery(orderId: number) {
-    if (resendRequests.current.has(orderId)) return;
-    resendRequests.current.add(orderId);
-    setResendingIds(current => [...current, orderId]);
-    try {
-      await apiPost(`/api/orders/${orderId}/resend`, {});
-      if (resendRequests.current.has(orderId)) toast.success("Delivery credentials resent.");
-    } catch (error) {
-      if (resendRequests.current.has(orderId)) toast.error(describeError(error as Error));
-    } finally {
-      if (resendRequests.current.delete(orderId)) setResendingIds(current => current.filter(id => id !== orderId));
-    }
-  }
-
-  const bulkMutation = useMutation({
-    mutationFn: (vars: { ids: number[]; action: "deliver" | "resend" }) =>
-      apiPost<BulkActionResult>("/api/orders/bulk-action", vars),
-    onSuccess: (result) => {
-      invalidateAll();
-      setSelected(new Set());
-      toast.success(`${result.succeeded.length} succeeded, ${result.failed.length} failed.`);
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  // Row cancel (single id) uses the dedicated /cancel route so the audit log
-  // reads "cancel_order"; a multi-id selection goes through /bulk-action
-  // (logs one "order_bulk_cancel" summary row instead) — same Dialog drives
-  // both, the response is normalized to the bulk shape either way so the
-  // toast copy doesn't need to branch.
-  const cancelMutation = useMutation({
-    mutationFn: async (vars: { ids: number[]; reason: string }): Promise<BulkActionResult> => {
-      if (vars.ids.length === 1) {
-        await apiPost(`/api/orders/${vars.ids[0]}/cancel`, { reason: vars.reason });
-        return { succeeded: vars.ids, failed: [] };
-      }
-      return apiPost<BulkActionResult>("/api/orders/bulk-action", {
-        ids: vars.ids,
-        action: "cancel",
-        reason: vars.reason,
-      });
-    },
-    onSuccess: (result) => {
-      invalidateAll();
-      setSelected(new Set());
-      setCancelTarget(null);
-      setCancelReason("");
-      toast.success(
-        result.failed.length > 0
-          ? `${result.succeeded.length} succeeded, ${result.failed.length} failed.`
-          : result.succeeded.length > 1
-            ? `${result.succeeded.length} orders cancelled.`
-            : "Order cancelled.",
-      );
-    },
-    onError: (e: Error) => toast.error(describeError(e)),
-  });
-
-  if (isError) {
-    return (
-      <PageLayout title="Orders">
-        <p className="text-rust">Failed to load orders.</p>
-      </PageLayout>
-    );
-  }
-
   const statuses = data?.statuses ?? [];
-  const pageOrders = data?.orders ?? [];
   // What the bulk bar counts and the export link carries. The bulk actions
   // already scope themselves through eligibleSelectedIds(), which filters
   // pageOrders, so they were never exposed to a stale id.
@@ -332,7 +263,7 @@ export function OrdersPage() {
     setSearchParams({});
   }
 
-  const hasActiveFilter = Boolean(filters.status || filters.digiflazz || filters.paymentMethod || filters.q || filters.since || filters.until);
+  const hasActiveFilter = hasAnyFilter(filters);
 
   const { exportParams } = buildOrderExportParams({ filters });
 
@@ -360,28 +291,7 @@ export function OrdersPage() {
     return pageOrders.filter((o) => selected.has(o.id) && predicate(o)).map((o) => o.id);
   }
 
-  function runBulk(action: "deliver" | "resend", predicate: (row: OrderRow) => boolean, ineligibleMessage: string) {
-    const ids = eligibleSelectedIds(predicate);
-    if (ids.length === 0) {
-      toast.error(ineligibleMessage);
-      return;
-    }
-    bulkMutation.mutate({ ids, action });
-  }
-
-  function openCancelDialog(ids: number[]) {
-    setCancelTarget({ ids });
-    setCancelReason("");
-  }
-
-  function confirmCancel() {
-    if (!cancelTarget) return;
-    if (!cancelReason.trim()) {
-      toast.error("A cancellation reason is required.");
-      return;
-    }
-    cancelMutation.mutate({ ids: cancelTarget.ids, reason: cancelReason.trim() });
-  }
+  const selectedRows = pageOrders.filter((o) => selected.has(o.id));
 
   return (
     <PageLayout title="Orders">
@@ -424,9 +334,13 @@ export function OrdersPage() {
         </div>
       )}
 
-      <OrdersBulkActions visibleSelected={visibleSelected} bulkMutation={bulkMutation} runBulk={runBulk} cancelMutation={cancelMutation} eligibleSelectedIds={eligibleSelectedIds} openCancelDialog={openCancelDialog} setSelected={setSelected} />
+      <BulkFailuresNotice failures={bulkFailures} onDismiss={() => setBulkFailures([])} />
 
-      <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverMutation={deliverMutation} resendingIds={resendingIds} resendDelivery={resendDelivery} openCancelDialog={openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      <OrdersBulkActions visibleSelected={visibleSelected} bulkMutation={actions.bulkMutation} resendSelected={() => actions.resendRows(selectedRows)} askBulkDeliver={() => actions.askBulkDeliver(selectedRows)} cancelMutation={actions.cancelMutation} eligibleSelectedIds={eligibleSelectedIds} openCancelDialog={actions.openCancelDialog} setSelected={setSelected} />
+
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="orders" onRetry={() => void refetch()}>
+        <OrdersSelectAllOrdersOnThis allOnPageSelected={allOnPageSelected} toggleSelectAllOnPage={toggleSelectAllOnPage} selected={selected} toggleSelected={toggleSelected} navigate={navigate} deliverPending={actions.deliverPending} askDeliver={(row) => actions.setDeliverTarget({ rows: [row], bulk: false, skipped: 0 })} resendingIds={actions.resendingIds} resendDelivery={actions.resendDelivery} openCancelDialog={actions.openCancelDialog} pageOrders={pageOrders} isLoading={isLoading} refetch={refetch} hasActiveFilter={hasActiveFilter} clearFilters={clearFilters} />
+      </QueryFailureGate>
 
       {data && (
         <div className="mt-4">
@@ -440,8 +354,30 @@ export function OrdersPage() {
         </div>
       )}
 
-      <Orders cancelTarget={cancelTarget} setCancelTarget={setCancelTarget} cancelReason={cancelReason} setCancelReason={setCancelReason} cancelMutation={cancelMutation} confirmCancel={confirmCancel} />
+      <Orders cancelTarget={actions.cancelTarget} setCancelTarget={actions.setCancelTarget} cancelReason={actions.cancelReason} setCancelReason={actions.setCancelReason} cancelMutation={actions.cancelMutation} confirmCancel={actions.confirmCancel} />
+
+      {actions.deliverTarget && (
+        <DeliverConfirm target={actions.deliverTarget} setTarget={actions.setDeliverTarget} confirm={actions.confirmDeliver} />
+      )}
     </PageLayout>
+  );
+}
+
+function DeliverConfirm({ target, setTarget, confirm }: {
+  target: DeliverTarget;
+  setTarget: (target: DeliverTarget | null) => void;
+  confirm: (target: DeliverTarget) => void;
+}) {
+  return (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => { if (!open) setTarget(null); }}
+      title={target.rows.length === 1 ? `Deliver order ${target.rows[0]!.orderCode}?` : `Deliver ${target.rows.length} orders?`}
+      description={deliverDescription(target)}
+      confirmLabel="Deliver"
+      variant="default"
+      onConfirm={() => confirm(target)}
+    />
   );
 }
 
@@ -525,13 +461,14 @@ function OrdersFilters({ applyFilters, clearFilters, draft, setDraft, fieldId, s
   </FilterBar>);
 }
 
-function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage, selected, toggleSelected, navigate, deliverMutation, resendingIds, resendDelivery, openCancelDialog, pageOrders, isLoading, refetch, hasActiveFilter, clearFilters }: {
+function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage, selected, toggleSelected, navigate, deliverPending, askDeliver, resendingIds, resendDelivery, openCancelDialog, pageOrders, isLoading, refetch, hasActiveFilter, clearFilters }: {
   allOnPageSelected: boolean;
   toggleSelectAllOnPage: () => void;
   selected: Set<number>;
   toggleSelected: (id: number) => void;
   navigate: import("react-router-dom").NavigateFunction;
-  deliverMutation: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>;
+  deliverPending: boolean;
+  askDeliver: (row: OrderRow) => void;
   resendingIds: number[];
   resendDelivery: (orderId: number) => Promise<void>;
   openCancelDialog: (ids: number[]) => void;
@@ -689,7 +626,7 @@ function OrdersSelectAllOrdersOnThis({ allOnPageSelected, toggleSelectAllOnPage,
                       View Order
                     </DropdownMenuItem>
                     {row.eligibility.canAct && (
-                      <DropdownMenuItem onSelect={() => deliverMutation.mutate(row.id)}>
+                      <DropdownMenuItem disabled={deliverPending} onSelect={() => askDeliver(row)}>
                         <Check className="h-4 w-4" />
                         Deliver
                       </DropdownMenuItem>
@@ -774,7 +711,7 @@ function Orders({ cancelTarget, setCancelTarget, cancelReason, setCancelReason, 
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setCancelTarget(null)}>Back</Button>
-          <Button variant="destructive" disabled={cancelMutation.isPending} onClick={confirmCancel}>
+          <Button pending={cancelMutation.isPending} variant="destructive" disabled={cancelMutation.isPending} onClick={confirmCancel}>
             {cancelMutation.isPending ? "Cancelling…" : "Cancel Order"}
           </Button>
         </DialogFooter>
@@ -783,10 +720,11 @@ function Orders({ cancelTarget, setCancelTarget, cancelReason, setCancelReason, 
   ));
 }
 
-function OrdersBulkActions({ visibleSelected, bulkMutation, runBulk, cancelMutation, eligibleSelectedIds, openCancelDialog, setSelected }: {
+function OrdersBulkActions({ visibleSelected, bulkMutation, resendSelected, askBulkDeliver, cancelMutation, eligibleSelectedIds, openCancelDialog, setSelected }: {
   visibleSelected: Set<number>;
   bulkMutation: import("@tanstack/react-query").UseMutationResult<BulkActionResult, Error, { ids: number[]; action: "deliver" | "resend"; }, unknown>;
-  runBulk: (action: "deliver" | "resend", predicate: (row: OrderRow) => boolean, ineligibleMessage: string) => void;
+  resendSelected: () => void;
+  askBulkDeliver: () => void;
   cancelMutation: import("@tanstack/react-query").UseMutationResult<BulkActionResult, Error, { ids: number[]; reason: string; }, unknown>;
   eligibleSelectedIds: (predicate: (row: OrderRow) => boolean) => number[];
   openCancelDialog: (ids: number[]) => void;
@@ -798,16 +736,18 @@ function OrdersBulkActions({ visibleSelected, bulkMutation, runBulk, cancelMutat
       <Button
         size="sm"
         variant="outline"
+        pending={bulkMutation.isPending && bulkMutation.variables?.action === "deliver"}
         disabled={bulkMutation.isPending}
-        onClick={() => runBulk("deliver", (o) => o.eligibility.canAct, "None of the selected orders can be delivered.")}
+        onClick={askBulkDeliver}
       >
         Mark Delivered
       </Button>
       <Button
         size="sm"
         variant="outline"
+        pending={bulkMutation.isPending && bulkMutation.variables?.action === "resend"}
         disabled={bulkMutation.isPending}
-        onClick={() => runBulk("resend", (o) => o.eligibility.canResend, "None of the selected orders can be resent.")}
+        onClick={resendSelected}
       >
         Resend
       </Button>

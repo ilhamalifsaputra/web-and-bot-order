@@ -4,6 +4,7 @@ import { render, screen, waitFor, fireEvent, within, act } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { BroadcastPage } from "./BroadcastPage";
 import { FakeXHR } from "@/test/fakeXhr";
@@ -37,6 +38,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  // sonner keeps toasts in a module-level store across tests.
+  toast.dismiss();
 });
 
 describe("BroadcastPage", () => {
@@ -284,6 +287,135 @@ describe("BroadcastPage", () => {
     await user.click(sendButton);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText(/200 Telegram users in the ALL segment/)).toBeInTheDocument();
+  });
+
+  describe("sending", () => {
+    const LOADED = { segments: ["ALL", "RESELLERS"], counts: { ALL: 200 }, history: [] };
+    const toastOfKind = (kind: string) => document.querySelector<HTMLElement>(`[data-sonner-toast][data-type="${kind}"]`);
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+    /** Answers GETs with the list and POSTs with whatever the test queues,
+     *  counting both, so a resend and a refetch are exact numbers. */
+    function mockApi(answers: Array<() => Promise<Response>>, list: unknown = LOADED) {
+      const calls = { posts: [] as Array<{ key: string | undefined; body: string }>, gets: 0 };
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+        if (init?.method === "POST") {
+          calls.posts.push({
+            key: new Headers(init.headers).get("Idempotency-Key") ?? undefined,
+            body: String(init.body),
+          });
+          return answers.shift()!();
+        }
+        calls.gets += 1;
+        return json(list);
+      });
+      return calls;
+    }
+
+    async function fillForm(user: ReturnType<typeof userEvent.setup>, segment: RegExp = /ALL/) {
+      await waitFor(() => expect(screen.getByText(/no broadcasts/i)).toBeInTheDocument());
+      await user.type(screen.getByPlaceholderText("Write your broadcast message..."), "Flash sale");
+      await user.click(screen.getByRole("combobox"));
+      await user.click(await screen.findByRole("option", { name: segment }));
+    }
+
+    async function sendAndConfirm(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole("button", { name: "Send Broadcast" }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Send" }));
+    }
+
+    it("shows a success toast and clears the form once sent", async () => {
+      const calls = mockApi([async () => json({ broadcast: { id: 1 }, total: 200 }, 201)]);
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user);
+      await sendAndConfirm(user);
+
+      await waitFor(() => expect(toastOfKind("success")).toHaveTextContent("Broadcast queued to send."));
+      expect(calls.posts).toHaveLength(1);
+      expect(calls.posts[0]!.key).toEqual(expect.any(String));
+      expect((screen.getByPlaceholderText("Write your broadcast message...") as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("an unknown outcome keeps the form, says to check the list, and refetches it", async () => {
+      const calls = mockApi([async () => { throw new TypeError("Failed to fetch"); }]);
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user);
+      const getsBefore = calls.gets;
+      await sendAndConfirm(user);
+
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent(/check the history list before sending again/i));
+      expect(toastOfKind("error")).not.toHaveTextContent("Failed to fetch");
+      await waitFor(() => expect(calls.gets).toBe(getsBefore + 1));
+      expect((screen.getByPlaceholderText("Write your broadcast message...") as HTMLTextAreaElement).value).toBe("Flash sale");
+      expect(toastOfKind("success")).toBeNull();
+    });
+
+    it("a 502 is unknown too, and the retry carries the same key so it cannot send twice", async () => {
+      const calls = mockApi([
+        async () => json({ error: "Bad gateway" }, 502),
+        async () => json({ broadcast: { id: 1 }, total: 200 }, 201),
+      ]);
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user);
+      await sendAndConfirm(user);
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent(/check the history list/i));
+
+      await sendAndConfirm(user);
+      await waitFor(() => expect(toastOfKind("success")).toBeInTheDocument());
+      expect(calls.posts).toHaveLength(2);
+      expect(calls.posts[1]!.key).toBe(calls.posts[0]!.key);
+    });
+
+    it("a refusal the server answered shows its reason and starts a new key next time", async () => {
+      const calls = mockApi([
+        async () => json({ error: "Attached image was not found — please re-upload." }, 400),
+        async () => json({ broadcast: { id: 1 }, total: 200 }, 201),
+      ]);
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user);
+      await sendAndConfirm(user);
+      await waitFor(() => expect(toastOfKind("error")).toHaveTextContent(/please re-upload/));
+
+      await sendAndConfirm(user);
+      await waitFor(() => expect(calls.posts).toHaveLength(2));
+      expect(calls.posts[1]!.key).not.toBe(calls.posts[0]!.key);
+    });
+
+    it("cancelling the confirm sends nothing", async () => {
+      const calls = mockApi([]);
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user);
+      await user.click(screen.getByRole("button", { name: "Send Broadcast" }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(calls.posts).toHaveLength(0);
+    });
+
+    it("never claims 0 recipients for a segment whose count it does not have", async () => {
+      mockApi([]);
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user, /RESELLERS/);
+      await user.click(screen.getByRole("button", { name: "Send Broadcast" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/Telegram users in the RESELLERS segment/)).toBeInTheDocument();
+      expect(within(dialog).queryByText(/\b0 Telegram users/)).not.toBeInTheDocument();
+    });
+
+    it("shows a real zero when the server says the segment is empty", async () => {
+      mockApi([], { ...LOADED, counts: { ALL: 200, RESELLERS: 0 } });
+      const user = userEvent.setup();
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await fillForm(user, /RESELLERS/);
+      await user.click(screen.getByRole("button", { name: "Send Broadcast" }));
+      expect(within(await screen.findByRole("dialog")).getByText(/\b0 Telegram users in the RESELLERS segment/)).toBeInTheDocument();
+    });
   });
 
   it("shows the failure reason as subtext under a Failed status badge", async () => {

@@ -12,6 +12,7 @@
  * self-contained component).
  */
 import { useEffect, useMemo, useState } from "react";
+import { LoadingRegion } from "./LoadingState";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ExternalLink, RotateCcw } from "lucide-react";
@@ -27,7 +28,6 @@ import TicketStatusBadge from "./TicketStatusBadge";
 import TicketMessageThread from "./TicketMessageThread";
 import TicketComposer from "./TicketComposer";
 import Skeleton from "./Skeleton";
-import Spinner from "./Spinner";
 import Toast from "./Toast";
 
 const SUBJECT_MAX = 80;
@@ -146,11 +146,11 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
       <div className="mb-4">{backLink}</div>
 
       {!data && !error && (
-        <div aria-busy="true" aria-label={t("web.loading")} className="space-y-3">
+        <LoadingRegion className="space-y-3">
           <Skeleton className="h-6 w-1/3" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-3/4" />
-        </div>
+        </LoadingRegion>
       )}
 
       {error && (error as Error & { status?: number }).status !== 401 && !data && (
@@ -263,10 +263,9 @@ function TicketActions({
           <Button
             variant="soft"
             size="sm"
-            disabled={reopenMutation.isPending}
+            pending={reopenMutation.isPending}
             onClick={() => reopenMutation.mutate()}
           >
-            {reopenMutation.isPending && <Spinner />}
             <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
           </Button>
         )}
@@ -281,10 +280,9 @@ function TicketActions({
           <Button
             variant="soft"
             size="sm"
-            disabled={closeMutation.isPending}
+            pending={closeMutation.isPending}
             onClick={() => closeMutation.mutate()}
           >
-            {closeMutation.isPending && <Spinner />}
             <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
           </Button>
         </div>

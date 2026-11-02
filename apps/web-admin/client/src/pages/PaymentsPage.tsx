@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -29,8 +30,9 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet } from "../api/client";
-import { useIdempotentPost } from "../api/idempotency";
+import { isOutcomeUnknown, useIdempotentPost } from "../api/idempotency";
 import type { HealthLevel } from "../api/types";
+import { BulkFailuresNotice } from "../components/shared/BulkFailuresNotice";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount.helpers";
 import { DataTable } from "../components/shared/DataTable";
@@ -38,6 +40,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice, QueryFailureGate } from "../components/shared/QueryErrorNotice";
 import { Pagination } from "../components/shared/Pagination";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { SearchBar } from "../components/shared/SearchBar";
@@ -45,6 +48,7 @@ import { StatCard } from "../components/shared/StatCard";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { statusLabel } from "../components/shared/StatusBadge.helpers";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
+import { sendSequentially, toastBulkOutcome, withoutSucceeded, type BulkFailureLine } from "../lib/bulkOutcome";
 import { describeError } from "../lib/errorMessages";
 import { HEALTH_DOT } from "../lib/healthDot";
 import { visibleSelection } from "../lib/selection";
@@ -111,6 +115,13 @@ function isPositiveAmount(amount: string | null): boolean {
   const s = amount.trim();
   return !s.startsWith("-") && /[1-9]/.test(s);
 }
+
+/** Shown for a dismiss that got no answer. It stays selected and its idempotency
+ * key is held, so trying again replays the first attempt rather than repeating it. */
+const DISMISS_OUTCOME_UNKNOWN =
+  "No answer from the server, so this one may have gone through. Dismiss it again without changing anything: it will not run twice.";
+
+const isRateLimited = (error: unknown) => (error as { status?: number } | null)?.status === 429;
 
 /**
  * True when Dismiss must not be offered on this unmatched row: on TokoPay,
@@ -327,13 +338,17 @@ export function PaymentsPage() {
   const [pendingCredit, setPendingCredit] = useState<TxRow | null>(null);
   const [creditOrderCode, setCreditOrderCode] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkFailures, setBulkFailures] = useState<BulkFailureLine[]>([]);
   useEffect(() => {
+    // Nothing typed since the last search (including the mount): leave the
+    // page alone, or a Next click inside these 300 ms is undone.
+    if (qDraft === q) return;
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
-  }, [qDraft]);
-  useEffect(() => { setSelected(new Set()); }, [outcome, kind, q, page]);
+  }, [qDraft, q]);
+  useEffect(() => { setSelected(new Set()); setBulkFailures([]); }, [outcome, kind, q, page]);
   const actionableApplied = actionable && isActionableOutcome(outcome);
-  const { data, isError } = usePayments(outcome, kind, q, page, actionableApplied);
+  const { data, isError, refetch } = usePayments(outcome, kind, q, page, actionableApplied);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
@@ -400,22 +415,34 @@ export function PaymentsPage() {
     });
   }
 
+  // One at a time, stopping at the first 429: all six payment routes share one
+  // per-admin quota (paymentsMutationRateLimited), so firing the whole selection
+  // in parallel spends it at once and locks this admin out of refund and match
+  // as well, for nothing. A 429 ran nothing, so that transfer and the ones behind
+  // it count as not attempted and stay selected for another go.
   const bulkDismiss = useMutation({
-    mutationFn: async (ids: number[]) => {
+    mutationFn: (ids: number[]) => {
       const selectedIds = new Set(ids);
-      const rows = ledgerRows.filter(tx => selectedIds.has(tx.id));
-      const results = await Promise.allSettled(rows.map(tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway })));
-      const failed = results.filter(r => r.status === "rejected").length;
-      return { succeeded: results.length - failed, failed };
+      return sendSequentially(
+        ledgerRows.filter(tx => selectedIds.has(tx.id)),
+        tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference, gateway: tx.gateway }),
+        isRateLimited,
+      );
     },
-    onSuccess: ({ succeeded, failed }) => {
+    onSuccess: ({ succeeded, failed, stopped, notAttempted }) => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
-      setSelected(new Set());
-      toast.success(failed > 0 ? `Dismissed ${succeeded} of ${succeeded + failed} transfers — ${failed} failed.` : `Dismissed ${succeeded} transfer${succeeded === 1 ? "" : "s"}.`);
+      setSelected(current => withoutSucceeded(current, succeeded.map(tx => tx.id)));
+      const lines: BulkFailureLine[] = failed.map(({ item, error }) => ({
+        label: item.reference,
+        reason: isOutcomeUnknown(error) ? DISMISS_OUTCOME_UNKNOWN : describeError(error),
+      }));
+      if (stopped !== null) {
+        lines.push({ label: `Not attempted (${notAttempted.length})`, reason: `${describeError(stopped)} These transfers stay selected.` });
+      }
+      setBulkFailures(lines);
+      toastBulkOutcome({ done: "Dismissed", noun: "transfer", succeeded: succeeded.length, failed: failed.length, notAttempted: notAttempted.length });
     },
   });
-
-  if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;
 
   const { canSubmitMatch, showSuggestions } = paymentMatchingAvailability({ matchForm, orderCodeFocused, suggestLoading, searched });
 
@@ -430,7 +457,11 @@ export function PaymentsPage() {
         </div>
       )}
 
-      <PaymentStats data={data} />
+      {/* Above the Underpaid Orders card: its Deliver/Refund/Credit actions
+          act on rows this failed refresh may have made stale. */}
+      <QueryErrorNotice isError={isError && Boolean(data)} what="payments" hasData onRetry={() => void refetch()} />
+
+      <PaymentStats unavailable={isError && !data} data={data} />
 
       {/* Manual match form. Wrapped so "Match to order…" can scroll to it:
           this React 18 Card/Input pair does not forward refs. */}
@@ -445,9 +476,13 @@ export function PaymentsPage() {
       {/* Ledger search + outcome filter */}
       <PaymentsLedgerSearchOutcomeFilter qDraft={qDraft} setQDraft={setQDraft} fieldId={fieldId} outcome={outcome} changeOutcome={changeOutcome} data={data} kind={kind} setKind={setKind} setPage={setPage} />
 
+      <BulkFailuresNotice failures={bulkFailures} onDismiss={() => setBulkFailures([])} />
+
       <PaymentBulkDismissBar visibleSelected={visibleSelected} bulkDismiss={bulkDismiss} setSelected={setSelected} />
 
-      <PaymentsSelectAllEligibleTransfers allEligibleSelected={allEligibleSelected} toggleSelectAllEligible={toggleSelectAllEligible} eligibleRows={eligibleRows} selected={selected} toggleSelected={toggleSelected} startMatchFromRow={startMatchFromRow} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} setPendingDismiss={setPendingDismiss} data={data} outcome={outcome} kind={kind} changeOutcome={changeOutcome} setKind={setKind} />
+      <QueryFailureGate isError={isError} hasData={Boolean(data)} what="payments" showRefreshNotice={false} onRetry={() => void refetch()}>
+        <PaymentsSelectAllEligibleTransfers allEligibleSelected={allEligibleSelected} toggleSelectAllEligible={toggleSelectAllEligible} eligibleRows={eligibleRows} selected={selected} toggleSelected={toggleSelected} startMatchFromRow={startMatchFromRow} setPendingCredit={setPendingCredit} setCreditOrderCode={setCreditOrderCode} setPendingDismiss={setPendingDismiss} data={data} outcome={outcome} kind={kind} changeOutcome={changeOutcome} setKind={setKind} />
+      </QueryFailureGate>
 
       <PaymentsPagination data={data} page={page} setPage={setPage} />
 
@@ -463,7 +498,8 @@ export function PaymentsPage() {
   );
 }
 
-function PaymentStats({ data }: {
+function PaymentStats({ unavailable, data }: {
+  unavailable: boolean;
   data: NoInfer<PaymentsData> | undefined;
 }) {
   return (<div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -472,7 +508,7 @@ function PaymentStats({ data }: {
       hint="Payment records of any outcome written today across every gateway."
       value={data?.todayCount ?? 0}
       icon={Clock}
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
     <StatCard
       label="Unmatched"
@@ -480,7 +516,7 @@ function PaymentStats({ data }: {
       value={data?.counts["unmatched"] ?? 0}
       icon={Hourglass}
       tone="warning"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
     <StatCard
       label="Failed Deliveries"
@@ -488,7 +524,7 @@ function PaymentStats({ data }: {
       value={data?.counts["delivery_failed"] ?? 0}
       icon={XCircle}
       tone="danger"
-      isLoading={!data}
+      isLoading={!data} unavailable={unavailable}
     />
   </div>);
 }
@@ -537,7 +573,7 @@ function PaymentsManualMatch({ matchCardRef, matchError, matchForm, setMatchForm
             {showSuggestions && (
               <div className="absolute left-0 right-0 top-full z-10 mt-1 rounded-md border border-line bg-card shadow-lift">
                 {suggestLoading && (
-                  <div className="px-3 py-2 text-xs text-ink-faint">Searching…</div>
+                  <div role="status" className="flex items-center gap-1.5 px-3 py-2 text-xs text-ink-faint"><Spinner className="size-3" />Searching…</div>
                 )}
                 {!suggestLoading && suggestion && (
                   <button
@@ -562,7 +598,7 @@ function PaymentsManualMatch({ matchCardRef, matchError, matchForm, setMatchForm
             )}
           </div>
           <ConfirmDialog
-            trigger={<Button variant="outline" disabled={match.isPending || !canSubmitMatch}>Match</Button>}
+            trigger={<Button variant="outline" pending={match.isPending} disabled={!canSubmitMatch}>Match</Button>}
             title="Confirm manual match?"
             description={`Match transfer ${matchForm.binance_tx_id} to order ${matchForm.order_code}.`}
             confirmLabel="Match"
@@ -708,7 +744,7 @@ function PaymentsLedgerSearchOutcomeFilter({ qDraft, setQDraft, fieldId, outcome
         <SelectContent>
           <SelectItem value="_all_">All</SelectItem>
           {(data?.outcomes ?? []).map(o => (
-            <SelectItem key={o} value={o}>{o} ({data?.counts[o] ?? 0})</SelectItem>
+            <SelectItem key={o} value={o}>{o}{data?.counts[o] !== undefined ? ` (${data.counts[o]})` : ""}</SelectItem>
           ))}
         </SelectContent>
       </Select>
@@ -958,7 +994,7 @@ function PaymentsAddToBuyerAposS({ pendingCredit, setPendingCredit, setCreditOrd
             onChange={e => setCreditOrderCode(e.target.value)}
             autoComplete="off"
           />
-          {creditSuggestLoading && <p className="text-xs text-ink-faint">Searching…</p>}
+          {creditSuggestLoading && <p role="status" className="flex items-center gap-1.5 text-xs text-ink-faint"><Spinner className="size-3" />Searching…</p>}
           {!creditSuggestLoading && creditOrderCode.trim() && !creditSuggestion && (
             <p className="text-xs text-ink-faint">No matching order code</p>
           )}
@@ -966,7 +1002,8 @@ function PaymentsAddToBuyerAposS({ pendingCredit, setPendingCredit, setCreditOrd
         <DialogFooter>
           <Button variant="outline" onClick={() => { setPendingCredit(null); setCreditOrderCode(""); }}>Back</Button>
           <Button
-            disabled={!creditSuggestion || creditToBalance.isPending}
+            pending={creditToBalance.isPending}
+            disabled={!creditSuggestion}
             onClick={() => creditToBalance.mutate()}
           >
             Add to credit balance
@@ -1180,7 +1217,7 @@ function PaymentOverrideDialog({ pendingDeliver, setPendingDeliver, deliverReaso
       </label>
       <DialogFooter>
         <Button variant="outline" onClick={() => setPendingDeliver(null)}>Cancel</Button>
-        <Button disabled={!deliverReason.trim() || deliverAnyway.isPending} onClick={() => {
+        <Button pending={deliverAnyway.isPending} disabled={!deliverReason.trim()} onClick={() => {
           deliverAnyway.mutate(pendingDeliver.id, { onSuccess: () => setPendingDeliver(null) });
         }}>Deliver anyway</Button>
       </DialogFooter>
@@ -1204,20 +1241,20 @@ function ActionablePaymentsNotice({ actionableApplied, clearActionable }: {
 
 function PaymentBulkDismissBar({ visibleSelected, bulkDismiss, setSelected }: {
   visibleSelected: Set<number>;
-  bulkDismiss: import("@tanstack/react-query").UseMutationResult<{ succeeded: number; failed: number; }, Error, number[], unknown>;
+  bulkDismiss: import("@tanstack/react-query").UseMutationResult<unknown, Error, number[], unknown>;
   setSelected: import("react").Dispatch<import("react").SetStateAction<Set<number>>>;
 }) {
+  const count = `${visibleSelected.size} transfer${visibleSelected.size === 1 ? "" : "s"}`;
   return (visibleSelected.size > 0 && (
     <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-[color,background-color,border-color,opacity,transform] duration-150">
       <span className="text-ink-soft">{visibleSelected.size} selected</span>
-      <Button
-        size="sm"
-        variant="destructive"
-        disabled={bulkDismiss.isPending}
-        onClick={() => bulkDismiss.mutate(Array.from(visibleSelected))}
-      >
-        Dismiss {visibleSelected.size} transfer{visibleSelected.size === 1 ? "" : "s"}
-      </Button>
+      <ConfirmDialog
+        trigger={<Button size="sm" variant="destructive" pending={bulkDismiss.isPending}>Dismiss {count}</Button>}
+        title={`Dismiss ${count}?`}
+        description={`Mark ${count} as dismissed. They are sent one at a time; if the rate limit is reached, the rest stay selected and are not attempted.`}
+        confirmLabel="Dismiss"
+        onConfirm={() => bulkDismiss.mutate(Array.from(visibleSelected))}
+      />
       <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
     </div>
   ));

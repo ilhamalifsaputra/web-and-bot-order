@@ -128,4 +128,26 @@ describe("TicketComposer", () => {
     setup();
     expect(screen.getByRole("button", { name: /reply/i })).toBeDisabled();
   });
+
+  it("explains why Send is disabled while an upload has failed and keeps the draft", () => {
+    const onMessageChange = vi.fn();
+    const { rerender } = render(
+      <TicketComposer ticketId={7} message="my draft" onMessageChange={onMessageChange} files={[]} onFilesChange={vi.fn()} onSubmit={vi.fn()} pending={false} uploadProgress={0} uploadBusy uploadFailed />,
+    );
+    expect(screen.getByText("Remove or retry the failed file to send.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reply/i })).toBeDisabled();
+    expect(screen.getByPlaceholderText("Tell us what's wrong…")).toHaveValue("my draft");
+    rerender(
+      <TicketComposer ticketId={7} message="my draft" onMessageChange={onMessageChange} files={[]} onFilesChange={vi.fn()} onSubmit={vi.fn()} pending={false} uploadProgress={0} uploadBusy={false} uploadFailed={false} />,
+    );
+    expect(screen.queryByText("Remove or retry the failed file to send.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reply/i })).toBeEnabled();
+  });
+
+  it("shows no reason while a file is merely uploading", () => {
+    render(
+      <TicketComposer ticketId={7} message="my draft" onMessageChange={vi.fn()} files={[]} onFilesChange={vi.fn()} onSubmit={vi.fn()} pending={false} uploadProgress={0} uploadBusy />,
+    );
+    expect(screen.queryByText("Remove or retry the failed file to send.")).not.toBeInTheDocument();
+  });
 });

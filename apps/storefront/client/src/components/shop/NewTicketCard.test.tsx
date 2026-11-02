@@ -154,4 +154,16 @@ describe("NewTicketCard", () => {
     rerender(<NewTicketCard {...makeProps({ value: withFile, isSubmitting: true, uploadProgress: 40 })} />);
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
   });
+
+  it("shows no 0% bar before the browser has measured any upload progress", () => {
+    const withFile: NewTicketFormValue = {
+      ...emptyValue,
+      files: [new File(["x"], "a.png", { type: "image/png" })],
+    };
+    render(<NewTicketCard {...makeProps({ value: withFile, isSubmitting: true, uploadProgress: 0 })} />);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    const submit = screen.getByRole("button", { name: /sending/i });
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute("aria-busy", "true");
+  });
 });

@@ -87,7 +87,7 @@ describe("canonical transaction presentation", () => {
   it("stops every transaction spinner while a paid manual order waits", async () => {
     const { container } = renderPay(respondFor({ ...basePay, state: "processing", presentation: presentation({ phase: "MANUAL_WAITING", spinner: false, progress: null, topUp: false, transactionType: "PREMIUM_APPS", titleKey: "web.order_processing_title", bodyKey: "web.order_processing_body" }) }));
     await screen.findByRole("heading", { name: "Waiting to be prepared" });
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
   it("renders the status title as a section-title and the page title without a forced size (H-41, H-36)", async () => {
@@ -107,7 +107,7 @@ describe("canonical transaction presentation", () => {
     expect(await screen.findByRole("heading", { name: "Paid too little" })).toBeInTheDocument();
     expect(screen.getByText("5.1 USDT")).toBeInTheDocument();
     expect(screen.getByText("3 USDT")).toBeInTheDocument();
-    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+    expect(container.querySelector("[class*='animate-spin']")).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Contact admin/ })).toHaveAttribute("href", "https://t.me/shopsupport");
   });
@@ -479,6 +479,153 @@ describe("PayPage", () => {
 
       await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
       expect(apiPost).not.toHaveBeenCalled();
+    });
+  });
+
+  // The cancel answer now says whether the record really is cancelled. Before,
+  // any 200 read as cancelled: a payment landing between the last poll and the
+  // tap left the buyer on the cart, believing a paid order was gone.
+  describe("cancel outcome", () => {
+    const orderMessage = "This order could not be cancelled because its status changed. Its current status is shown on this page.";
+    const topupMessage = "This top-up could not be cancelled because its status changed. Its current status is shown on this page.";
+    const orderUnknown = "We could not confirm whether this order was cancelled. Check its status on this page before trying again.";
+    const topupUnknown = "We could not confirm whether this top-up was cancelled. Check its status on this page before trying again.";
+    const waiting: PayData = { ...basePay, state: "waiting", is_qris: true };
+
+    const variants = [
+      { name: "premium order", apiBase: "/orders", path: "/checkout/ORD1/pay", pay: { ...waiting, product_slug: "netflix", game_target: null }, successStub: "cart-page-stub", message: orderMessage, unknown: orderUnknown },
+      { name: "game top-up", apiBase: "/orders", path: "/checkout/ORD1/pay", pay: { ...waiting, product_slug: "mobile-legends", game_target: [{ game_id: "1", zone_id: "2" }] }, successStub: "product-page-stub", message: orderMessage, unknown: orderUnknown },
+      { name: "wallet top-up", apiBase: "/wallet/topup", path: "/wallet/topup/ORD1/pay", pay: waiting, successStub: "topup-form-stub", message: topupMessage, unknown: topupUnknown },
+    ] as const;
+    type Variant = (typeof variants)[number];
+
+    function renderVariant(v: Variant, respond: (path: string) => unknown) {
+      (apiGet as Mock).mockImplementation(async (path: string) => respond(path));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={[v.path]}>
+            <Routes>
+              <Route path="/checkout/:code/pay" element={<PayPage />} />
+              <Route path="/wallet/topup/:code/pay" element={<PayPage variant="topup" />} />
+              <Route path="/cart" element={<div>cart-page-stub</div>} />
+              <Route path="/p/:slug" element={<div>product-page-stub</div>} />
+              <Route path="/wallet/topup" element={<div>topup-form-stub</div>} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      return client;
+    }
+
+    async function confirmCancel() {
+      await screen.findByRole("heading", { name: "Payment" });
+      fireEvent.click(screen.getByRole("button", { name: "Cancel this order" }));
+      await screen.findByRole("alertdialog");
+      fireEvent.click(screen.getByRole("button", { name: "Yes, cancel" }));
+    }
+
+    const fetchesOf = (suffix: string) => (apiGet as Mock).mock.calls.filter((c) => (c[0] as string).endsWith(suffix)).length;
+
+    it.each(variants)("$name: cancelled true retires the invoice and leaves for the retry page", async (v) => {
+      const client = renderVariant(v, respondFor(v.pay));
+      (apiPost as Mock).mockResolvedValue({ ok: true, cancelled: true });
+      await confirmCancel();
+      expect(await screen.findByText(v.successStub)).toBeInTheDocument();
+      expect(client.getQueryData(["pay", v.apiBase, "ORD1"])).toBeUndefined();
+      expect(client.getQueryData(["pay-status", v.apiBase, "ORD1"])).toBeUndefined();
+    });
+
+    it.each(variants)("$name: an older server's answer without the field keeps the old path", async (v) => {
+      renderVariant(v, respondFor(v.pay));
+      (apiPost as Mock).mockResolvedValue({ ok: true });
+      await confirmCancel();
+      expect(await screen.findByText(v.successStub)).toBeInTheDocument();
+    });
+
+    it.each(variants)("$name: cancelled false stays, re-reads the real state, says why and keeps the queries", async (v) => {
+      let paid = false;
+      const client = renderVariant(v, (path) => {
+        if (path.endsWith("/status")) return { state: paid ? "processing" : "waiting", redirect: null };
+        return { ...v.pay, state: paid ? "processing" : "waiting" };
+      });
+      (apiPost as Mock).mockImplementation(async () => {
+        paid = true;
+        return { ok: true, cancelled: false };
+      });
+      await confirmCancel();
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(v.message);
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      // The real state replaced the invoice: nothing left to pay, nothing to cancel.
+      await screen.findByText(/your order is being processed/);
+      expect(screen.queryByRole("button", { name: "Cancel this order" })).not.toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent(v.message);
+      expect(screen.queryByText(v.successStub)).not.toBeInTheDocument();
+      expect(client.getQueryData(["pay", v.apiBase, "ORD1"])).toBeDefined();
+      expect(client.getQueryData(["pay-status", v.apiBase, "ORD1"])).toBeDefined();
+      expect(apiPost).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["a 500", Object.assign(new Error("boom"), { status: 500 })],
+      ["no answer", new TypeError("Failed to fetch")],
+    ])("order: %s shows the unknown outcome, stays, and never retries", async (_label, failure) => {
+      const v = variants[0];
+      const client = renderVariant(v, respondFor(v.pay));
+      await screen.findByRole("heading", { name: "Payment" });
+      const statusFetches = fetchesOf("/status");
+      (apiPost as Mock).mockRejectedValue(failure);
+      await confirmCancel();
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(v.unknown);
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      expect(screen.getByRole("heading", { name: "Payment" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cancel this order" })).toBeEnabled();
+      await waitFor(() => expect(fetchesOf("/status")).toBeGreaterThan(statusFetches));
+      expect(client.getQueryData(["pay", v.apiBase, "ORD1"])).toBeDefined();
+      expect(apiPost).toHaveBeenCalledTimes(1);
+    });
+
+    it("wallet top-up: a failed request uses the top-up wording", async () => {
+      const v = variants[2];
+      renderVariant(v, respondFor(v.pay));
+      (apiPost as Mock).mockRejectedValue(Object.assign(new Error("boom"), { status: 502 }));
+      await confirmCancel();
+      expect(await screen.findByRole("alert")).toHaveTextContent(v.unknown);
+      expect(screen.queryByText(v.successStub)).not.toBeInTheDocument();
+    });
+
+    it("trying again clears the previous failure while the new attempt runs", async () => {
+      const v = variants[0];
+      renderVariant(v, respondFor(v.pay));
+      (apiPost as Mock).mockRejectedValueOnce(Object.assign(new Error("boom"), { status: 500 }));
+      await confirmCancel();
+      await screen.findByRole("alert");
+      (apiPost as Mock).mockReturnValueOnce(new Promise(() => {}));
+      await confirmCancel();
+      await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    });
+
+    it("a stale session falls through to the page's own login redirect", async () => {
+      const v = variants[0];
+      const assign = vi.fn();
+      vi.stubGlobal("location", { ...window.location, assign });
+      let signedIn = true;
+      renderVariant(v, (path) => {
+        if (!signedIn) throw Object.assign(new Error("unauthorized"), { status: 401 });
+        return respondFor(v.pay)(path);
+      });
+      (apiPost as Mock).mockImplementation(async () => {
+        signedIn = false;
+        throw Object.assign(new Error("unauthorized"), { status: 401 });
+      });
+      try {
+        await confirmCancel();
+        await waitFor(() => expect(assign).toHaveBeenCalledWith("/login?next=/checkout/ORD1/pay"));
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   });
 

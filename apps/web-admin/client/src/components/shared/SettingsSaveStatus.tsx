@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import type { FieldSaveStatus } from "@/hooks/useSettings";
 
 interface SettingsSaveStatusProps {
@@ -40,7 +40,7 @@ export function SettingsSaveStatus({ fieldStatuses, lastSavedAt }: SettingsSaveS
   if (statuses.includes("saving")) {
     return (
       <span className="flex items-center gap-1.5 text-xs text-ink-soft" role="status" aria-live="polite">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        <Spinner className="h-3.5 w-3.5" />
         Saving…
       </span>
     );

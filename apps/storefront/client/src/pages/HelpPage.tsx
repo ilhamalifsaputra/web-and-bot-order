@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from "react";
+import { LoadingRegion } from "../components/shop/LoadingState";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Send } from "lucide-react";
@@ -8,12 +9,13 @@ import { t } from "../lib/i18n";
 import { tError } from "../lib/errors";
 import { useSupportUploads } from "../lib/supportUploads";
 import Button from "../components/ui/Button";
+import Skeleton from "../components/ui/Skeleton";
 import FormField from "../components/ui/FormField";
 import Select from "../components/ui/Select";
 import Textarea from "../components/ui/Textarea";
 import SupportUploadPicker from "../components/shop/SupportUploadPicker";
 import { TicketCard } from "../components/shop/TicketRow";
-import Spinner from "../components/shop/Spinner";
+import { randomUuid } from "../lib/randomId";
 
 interface Category { key: string; issues: string[]; order: boolean }
 interface Options { categories: Category[]; media: { enabled: boolean; imageBytes?: number; videoBytes?: number } }
@@ -36,7 +38,7 @@ function SupportTicketForm() {
   const [issue, setIssue] = useState("");
   const [order, setOrder] = useState(() => params.get("order") ?? "");
   const [description, setDescription] = useState("");
-  const [requestId] = useState(() => crypto.randomUUID());
+  const [requestId] = useState(() => randomUuid());
   const [formError, setFormError] = useState<string | null>(null);
   const options = useQuery({ queryKey: ["support-v2-options"], queryFn: () => apiGet<Options>("/api/v1/account/support/options"), retry: false });
   const uploads = useSupportUploads(undefined, options.data?.media);
@@ -65,7 +67,7 @@ function SupportTicketForm() {
             <FormField className="[&>label]:normal-case [&>label]:tracking-normal" htmlFor="support-description" label={t("helpdesk.description")} hint={t("helpdesk.description_hint")} error={formError ? <span role="alert">{formError}</span> : undefined} required><Textarea id="support-description" rows={3} required minLength={10} maxLength={2000} value={description} onChange={(event) => setDescription(event.target.value)} className="min-h-0 max-h-48 resize-y [field-sizing:content]" placeholder={t("helpdesk.description_placeholder")} /></FormField>
             <SupportUploadPicker uploads={uploads} enabled={options.data?.media.enabled ?? false} disabled={create.isPending} />
           </fieldset>
-          <Button type="submit" variant="primary" className="w-full sm:w-auto" disabled={create.isPending || uploads.busy || !options.data}>{create.isPending ? <Spinner /> : <Send className="h-4 w-4" aria-hidden="true" />}{t("helpdesk.send_ticket")}</Button>
+          <Button type="submit" variant="primary" className="w-full sm:w-auto" pending={create.isPending} disabled={uploads.busy || !options.data}><Send className="h-4 w-4" aria-hidden="true" />{t("helpdesk.send_ticket")}</Button>
         </form>}
       </section>);
 }
@@ -81,7 +83,7 @@ function SupportTicketHistory() {
   return (<section className="card min-w-0 p-4 sm:p-5" aria-labelledby="ticket-history-title">
         <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="ticket-history-title" className="text-base font-semibold">{t("helpdesk.history")} <span className="text-sm font-normal text-ink-soft">{list.data?.total ?? ""}</span></h2><select className="field max-w-full text-sm" aria-label={t("helpdesk.filter")} value={filter} onChange={(event) => { setFilter(event.target.value); setPage(1); }}><option value="all">{t("helpdesk.all")}</option><option value="waiting_for_support">{t("helpdesk.status_new")}</option><option value="in_progress">{t("helpdesk.status_progress")}</option><option value="waiting_for_you">{t("helpdesk.status_waiting")}</option><option value="resolved">{t("helpdesk.resolved")}</option><option value="closed">{t("helpdesk.closed")}</option></select></div>
         <input type="search" className="field my-3 w-full" aria-label={t("web.help_search_tickets")} placeholder={t("web.help_search_tickets")} value={search} onChange={(event) => setSearch(event.target.value)} />
-        {list.isLoading && <p role="status" className="py-4 text-sm text-ink-soft">{t("web.loading")}</p>}
+        {list.isLoading && <LoadingRegion className="space-y-2 py-1">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)}</LoadingRegion>}
         {list.isError && <div role="alert" className="space-y-2"><p className="text-sm">{tError(list.error)}</p><Button variant="soft" size="sm" onClick={() => void list.refetch()}>{t("helpdesk.retry")}</Button></div>}
         {!list.isLoading && !list.isError && !list.data?.tickets.length && <p className="py-6 text-center text-sm text-ink-soft">{t("web.no_tickets_desc")}</p>}
         <ul className="space-y-2">{list.data?.tickets.map((ticket) => <li key={ticket.id}><TicketCard ticket={ticket} onSelect={(id) => navigate(`/account/support/${id}`)} /></li>)}</ul>

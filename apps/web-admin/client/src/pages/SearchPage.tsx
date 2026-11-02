@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LinesSkeleton } from "../components/shared/LoadingRegion";
 import { useQuery } from "@tanstack/react-query";
 import { PackageSearch, SearchX, Users } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -88,7 +89,7 @@ export function SearchPage() {
       </FilterBar>
 
       {isError && <p className="text-sm text-rust">Failed to load results.</p>}
-      {isFetching && <p className="text-sm text-ink-soft">Searching…</p>}
+      {isFetching && <LinesSkeleton label="Searching" lines={4} />}
 
       {data && !isFetching && (
         <>

@@ -1,6 +1,7 @@
 import { Input } from "@/components/ui/input";
+import { LoadingRegion } from "../components/shared/LoadingRegion";
 import { useSupportUploads } from "../lib/supportUploads";
-import { SupportUploadPicker } from "../components/support/SupportUploadPicker";
+import { SupportUploadPicker, type SupportUploadOptionsState } from "../components/support/SupportUploadPicker";
 import { SettingsToggle } from "@/components/shared/SettingsToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +27,7 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { PageHeader } from "../components/shared/PageHeader";
 import { PageLayout } from "../components/shared/PageLayout";
+import { QueryErrorNotice } from "../components/shared/QueryErrorNotice";
 import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
 import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
 import { TicketConversation, type ConversationMessage } from "../components/support/TicketConversation";
@@ -172,7 +174,7 @@ function parsePhotoIds(csv: string | null, max = 3): string[] {
 
 function TicketDetailSkeleton() {
   return (
-    <div role="status" aria-busy="true" aria-label="Loading ticket">
+    <LoadingRegion label="Loading ticket">
       <div className="mb-6 flex flex-col gap-2">
         <Skeleton className="h-3 w-20" />
         <Skeleton className="h-8 w-56 max-w-full" />
@@ -211,7 +213,7 @@ function TicketDetailSkeleton() {
           </Card>
         </div>
       </div>
-    </div>
+    </LoadingRegion>
   );
 }
 
@@ -222,7 +224,7 @@ export function TicketDetailPage() {
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const mediaOptions = useQuery({ queryKey: ["support-media-options"], queryFn: () => apiGet<{ enabled: boolean; imageBytes?: number; videoBytes?: number }>("/api/support/media/options") });
   const uploads = useSupportUploads(Number(ticketId), mediaOptions.data);
-  const { data, isError } = useTicket(ticketId ?? "");
+  const { data, isError, refetch } = useTicket(ticketId ?? "");
   const { data: adminsData } = useAdmins();
   const linkedOrder = useLinkedOrderUnits(data?.ticket.orderId ?? null);
   const [reply, setReply] = useState("");
@@ -317,7 +319,7 @@ export function TicketDetailPage() {
     onError: (e: Error) => toast.error(describeError(e)),
   });
 
-  if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;
+  if (isError && !data) return <PageLayout title="Ticket"><QueryErrorNotice what="ticket" hasData={false} onRetry={() => void refetch()} /></PageLayout>;
   if (!data) return <PageLayout title="Ticket"><TicketDetailSkeleton /></PageLayout>;
 
   const { ticket, messages, user, customer, timeline } = data;
@@ -340,7 +342,7 @@ export function TicketDetailPage() {
   const identity = describeTicketCustomer(user);
 
   const composer = isClosed ? null : (
-    <TicketDetailReply uploads={uploads} mediaEnabled={mediaOptions.data?.enabled ?? false} replyError={replyError} reply={reply} setReply={setReply} internal={internal} setInternal={setInternal} sendReply={sendReply} />
+    <TicketDetailReply uploads={uploads} optionsState={uploadOptionsState(mediaOptions)} onRetryOptions={() => void mediaOptions.refetch()} replyError={replyError} reply={reply} setReply={setReply} internal={internal} setInternal={setInternal} sendReply={sendReply} />
   );
 
   return (
@@ -353,6 +355,8 @@ export function TicketDetailPage() {
           <TicketResolutionActions ticket={ticket} isClosed={isClosed} progress={progress} resolve={resolve} reopen={reopen} close={close} />
         }
       />
+
+      <QueryErrorNotice isError={isError} what="ticket" hasData onRetry={() => void refetch()} />
 
       <TicketTitleEditor key={ticket.subject} ticketId={ticket.id} initialTitle={ticket.subject} />
       <EvidenceHold ticketId={ticket.id} held={ticket.legalHold ?? false} />
@@ -374,9 +378,16 @@ export function TicketDetailPage() {
   );
 }
 
-function TicketDetailReply({ uploads, mediaEnabled, replyError, reply, setReply, internal, setInternal, sendReply }: {
+function uploadOptionsState(query: { isError: boolean; isPending: boolean; data?: { enabled: boolean } }): SupportUploadOptionsState {
+  if (query.isError) return "error";
+  if (query.isPending) return "loading";
+  return query.data?.enabled ? "enabled" : "disabled";
+}
+
+export function TicketDetailReply({ uploads, optionsState, onRetryOptions, replyError, reply, setReply, internal, setInternal, sendReply }: {
   uploads: ReturnType<typeof useSupportUploads>;
-  mediaEnabled: boolean;
+  optionsState: SupportUploadOptionsState;
+  onRetryOptions: () => void;
   replyError: string | null;
   reply: string;
   setReply: import("react").Dispatch<import("react").SetStateAction<string>>;
@@ -395,13 +406,14 @@ function TicketDetailReply({ uploads, mediaEnabled, replyError, reply, setReply,
       maxLength={2000}
       disabled={sendReply.isPending}
     />
-    <SupportUploadPicker uploads={uploads} enabled={mediaEnabled} disabled={sendReply.isPending} />
+    <SupportUploadPicker uploads={uploads} optionsState={optionsState} onRetryOptions={onRetryOptions} disabled={sendReply.isPending} />
     {internal && <p className="rounded-md border border-dashed border-line bg-sand p-2 text-xs" role="status">Internal note: visible to admins only. No customer notification.</p>}
     <div className="flex flex-wrap items-center justify-between gap-3">
       {/* Internal note: stored and audited, never sent to the customer,
             and it does not advance the ticket's status. */}
       <SettingsToggle id="TicketDetailPage-mode" label="Internal note (not visible to the customer)" checked={internal} onCheckedChange={setInternal} disabled={sendReply.isPending} />
-      <Button onClick={() => sendReply.mutate()} disabled={(!reply.trim() && !uploads.ids.length) || sendReply.isPending || uploads.busy}>
+      {uploads.failed && <p className="basis-full text-xs text-ink-soft" role="status">Remove or retry the failed file to send.</p>}
+      <Button onClick={() => sendReply.mutate()} pending={sendReply.isPending} disabled={(!reply.trim() && !uploads.ids.length) || uploads.busy}>
         {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
         {sendReply.isPending ? "Saving…" : internal ? "Save internal note" : "Send reply"}
       </Button>
@@ -418,17 +430,17 @@ function TicketResolutionActions({ ticket, isClosed, progress, resolve, reopen, 
   close: import("@tanstack/react-query").UseMutationResult<unknown, Error, void, unknown>;
 }) {
   return (<>
-    {["OPEN", "WAITING_ADMIN"].includes(ticket.status) && <Button variant="outline" disabled={progress.isPending} onClick={() => progress.mutate()}>Start processing</Button>}
+    {["OPEN", "WAITING_ADMIN"].includes(ticket.status) && <Button variant="outline" pending={progress.isPending} onClick={() => progress.mutate()}>Start processing</Button>}
     {/* Mirrors the backend's resolveTicket guard (status NOT IN
                 [RESOLVED, CLOSED]). */}
     {ticket.status !== "RESOLVED" && !isClosed && (
-      <Button variant="outline" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
+      <Button variant="outline" onClick={() => resolve.mutate()} pending={resolve.isPending}>
         <CheckCircle2 className="h-4 w-4" />
         Resolve
       </Button>
     )}
     {isClosed && (
-      <Button variant="outline" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
+      <Button variant="outline" onClick={() => reopen.mutate()} pending={reopen.isPending}>
         <RotateCcw className="h-4 w-4" />
         Reopen
       </Button>
@@ -707,7 +719,7 @@ function ticketAdminLabels({ adminsData }: {
 function EvidenceHold({ ticketId, held }: { ticketId: number; held: boolean }) {
   const qc = useQueryClient();
   const hold = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/evidence-hold`, { held: !held }), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
-  return <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft"><Button variant="outline" size="sm" disabled={hold.isPending} aria-pressed={held} onClick={() => hold.mutate()}><Lock className="h-3.5 w-3.5" />{held ? "Release evidence hold" : "Preserve evidence"}</Button><span>{held ? "Retention paused for this ticket." : "Closed-ticket evidence follows the retention policy."}</span></div>;
+  return <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-soft"><Button variant="outline" size="sm" pending={hold.isPending} aria-pressed={held} onClick={() => hold.mutate()}><Lock className="h-3.5 w-3.5" />{held ? "Release evidence hold" : "Preserve evidence"}</Button><span>{held ? "Retention paused for this ticket." : "Closed-ticket evidence follows the retention policy."}</span></div>;
 }
 
 function TicketTitleEditor({ ticketId, initialTitle }: { ticketId: number; initialTitle: string }) {
@@ -715,5 +727,5 @@ function TicketTitleEditor({ ticketId, initialTitle }: { ticketId: number; initi
   const [title, setTitle] = useState(initialTitle);
   const qc = useQueryClient();
   const save = useMutation({ mutationFn: () => apiPost(`/api/support/${ticketId}/title`, { title }), onSuccess: () => { setOpen(false); void qc.invalidateQueries({ queryKey: ["ticket", String(ticketId)] }); }, onError: (error: Error) => toast.error(describeError(error)) });
-  return <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpen(true)}>Edit title</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogTitle>Edit ticket title</DialogTitle><DialogDescription>Correct the issue title without changing the public ticket number.</DialogDescription><form className="space-y-3" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label htmlFor="support-title" className="text-sm">Title</label><Input id="support-title" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={100} disabled={save.isPending} /><Button type="submit" disabled={!title.trim() || save.isPending}>Save title</Button></form></DialogContent></Dialog></>;
+  return <><Button size="sm" variant="ghost" className="mb-2" onClick={() => setOpen(true)}>Edit title</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogTitle>Edit ticket title</DialogTitle><DialogDescription>Correct the issue title without changing the public ticket number.</DialogDescription><form className="space-y-3" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}><label htmlFor="support-title" className="text-sm">Title</label><Input id="support-title" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={100} disabled={save.isPending} /><Button type="submit" pending={save.isPending} disabled={!title.trim()}>Save title</Button></form></DialogContent></Dialog></>;
 }

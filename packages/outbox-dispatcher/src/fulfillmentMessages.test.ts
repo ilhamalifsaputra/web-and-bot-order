@@ -5,7 +5,7 @@ import {
   recordBybitBscConfirmationProgress, recordBybitBscPaymentDetected, wakeFulfillmentMessage, creditOrderToBalance, transitionOrderStatus, adoptTransactionMessage,
   markCredentialsDelivered,
 } from "@app/db";
-import { encryptDeliveredContent, encryptCustomerDataForInsert, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { encryptDeliveredContent, encryptCustomerData, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 import { DELIVERING_SLOW_AFTER_MS, FulfillmentMessageWorker, type FulfillmentTelegramApi } from "./fulfillmentMessages";
 
@@ -1076,7 +1076,7 @@ describe("a delivered Digiflazz game top-up shows its Game ID, Zone/Server ID an
     await db.orderItem.create({ data: { orderId: order.id, productId: denomination.id, quantity: 1, unitPrice: 1000, warrantyDaysSnapshot: 0 } });
     // Stored the way checkout writes it: an encrypted envelope, never the answers.
     await db.order.update({ where: { id: order.id }, data: {
-      customerData: encryptCustomerDataForInsert(JSON.stringify(opts.customerData ?? [{ uid: "12345678", zone: "2201", password: "hunter2-secret" }])),
+      customerData: encryptCustomerData(JSON.stringify(opts.customerData ?? [{ uid: "12345678", zone: "2201", password: "hunter2-secret" }]), order.id),
       deliveredContent: opts.sn === null ? null : encryptDeliveredContent(opts.sn ?? "SN-OK-123", order.id),
     } });
     return order;

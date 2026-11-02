@@ -196,11 +196,12 @@ function keyForVersion(version: number): Buffer {
  * the value will be stored (use the *Aad helpers above, never a literal); it
  * is bound into a v2 envelope and ignored by v1, which is what writers emit
  * while CREDENTIAL_ENVELOPE_WRITE_V2 is off. Fresh random IV per call (AES-GCM
- * requires a unique IV per key — reuse would leak plaintext). `forceV1` writes
- * a v1 envelope whatever the flag says, for a row whose id does not exist yet. */
-export function encryptCredentials(plaintext: string, aad: string, opts: { forceV1?: boolean } = {}): string {
+ * requires a unique IV per key — reuse would leak plaintext). There is no way
+ * to force v1 past the flag: a row whose id does not exist yet is encrypted
+ * once its id exists (see createOrderDirect / createOrderFromCart). */
+export function encryptCredentials(plaintext: string, aad: string): string {
   if (!aad) throw new CredentialEnvelopeError("encryptCredentials needs a non-empty context (AAD).");
-  const version = opts.forceV1 ? 1 : credentialEnvelopeWriteVersion();
+  const version = credentialEnvelopeWriteVersion();
   const key = keyForVersion(CURRENT_KEY_VERSION);
   const iv = randomBytes(IV_LENGTH_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, iv);
@@ -405,16 +406,10 @@ export function tryDecryptDeliveredContent(
 // before this change stays plaintext until scripts/backfill-encrypt-customer-data.ts
 // rewrites it.
 
-/** An UPDATE of an existing order's answers (the id is known, so a v2 envelope binds to it). */
+/** The buyer's answers of an order, bound to its id under v2. New orders are written in the same
+ * transaction right after their INSERT, once the id exists; edits use it directly. */
 export function encryptCustomerData(plaintext: string, orderId: number): string {
   return encryptCredentials(plaintext, customerDataAad(orderId));
-}
-
-/** The INSERT of a new order: its id does not exist yet, so the value is a v1
- * envelope (no AAD) whatever CREDENTIAL_ENVELOPE_WRITE_V2 says. v1 decrypts
- * without a context, and scripts/reencrypt-credentials-v2.ts binds it later. */
-export function encryptCustomerDataForInsert(plaintext: string): string {
-  return encryptCredentials(plaintext, "orders.customer_data:insert", { forceV1: true });
 }
 
 /** Fulfillment-path read: throws on an unreadable value so nothing is sent to a

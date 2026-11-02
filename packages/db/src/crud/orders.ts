@@ -59,7 +59,6 @@ import {
   decryptDeliveredContent,
   tryDecryptDeliveredContent,
   encryptCustomerData,
-  encryptCustomerDataForInsert,
   tryDecryptCustomerData,
 } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
@@ -990,7 +989,8 @@ export async function createOrderFromCart(
         totalAmount: ZERO,
         voucherId: voucher ? voucher.id : null,
         status: OrderStatus.PENDING_PAYMENT,
-        customerData: customerDataToStore ? encryptCustomerDataForInsert(customerDataToStore) : customerDataToStore,
+        // Encrypted in the final-totals update below, once the id exists to bind the envelope to.
+        customerData: null,
         inputConfigSnapshot: infoLine ? inputConfigSnapshot(infoLine.product) : null,
         fulfillmentProvider: fulfillmentProviderFor({ items: cart.map(ci => ({ product: ci.product })) }),
         fulfillmentSku: cart.find(ci => ci.product.autoDeliverySource === "digiflazz")?.product.supplierSku ?? null,
@@ -1120,7 +1120,11 @@ export async function createOrderFromCart(
   const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : ZERO;
   await db.order.update({
     where: { id: order.id },
-    data: { uniqueCents: cents, totalAmount: q4(finalBeforeCents.plus(cents)) },
+    data: {
+      uniqueCents: cents,
+      totalAmount: q4(finalBeforeCents.plus(cents)),
+      customerData: customerDataToStore ? encryptCustomerData(customerDataToStore, order.id) : customerDataToStore,
+    },
   });
 
   // 9. Wallet debit (atomic). Cart orders are charged in IDR (TokoPay/QRIS),
@@ -1307,7 +1311,8 @@ export async function createOrderDirect(
         uniqueCents: ZERO,
         totalAmount: ZERO,
         status: OrderStatus.PENDING_PAYMENT,
-        customerData: customerDataToStore ? encryptCustomerDataForInsert(customerDataToStore) : customerDataToStore,
+        // Encrypted in the final-totals update below, once the id exists to bind the envelope to.
+        customerData: null,
         inputConfigSnapshot: product.additionalFields ? inputConfigSnapshot(product) : null,
         fulfillmentProvider: fulfillmentProviderFor({ items: [{ product }] }),
         fulfillmentSku: product.autoDeliverySource === "digiflazz" ? product.supplierSku : null,
@@ -1377,7 +1382,12 @@ export async function createOrderDirect(
   const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : ZERO;
   await db.order.update({
     where: { id: order.id },
-    data: { uniqueCents: cents, walletUsed, totalAmount: q4(afterDiscount.minus(walletUsed).plus(cents)) },
+    data: {
+      uniqueCents: cents,
+      walletUsed,
+      totalAmount: q4(afterDiscount.minus(walletUsed).plus(cents)),
+      customerData: customerDataToStore ? encryptCustomerData(customerDataToStore, order.id) : customerDataToStore,
+    },
   });
 
   if (walletUsed.greaterThan(ZERO)) {

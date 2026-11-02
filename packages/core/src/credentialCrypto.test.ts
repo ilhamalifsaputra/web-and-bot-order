@@ -28,12 +28,12 @@ import {
   customerDataAad,
   botSessionAad,
   encryptCustomerData,
-  encryptCustomerDataForInsert,
   decryptCustomerData,
   tryDecryptCustomerData,
   encryptBotSession,
   decryptBotSession,
 } from "./credentialCrypto";
+import * as credentialCrypto from "./credentialCrypto";
 import { logger } from "./logger";
 
 const ORIGINAL_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY;
@@ -666,11 +666,12 @@ describe("Order.customerData and BotSession helpers", () => {
     expect(() => decryptCustomerData(stored, 8)).toThrow(CredentialEnvelopeError);
   });
 
-  it("the INSERT variant is v1 even with the write flag on, and decrypts under any order id", () => {
+  it("there is no way to force a v1 envelope past the write flag (new orders bind their answers once the id exists)", () => {
+    expect("encryptCustomerDataForInsert" in credentialCrypto).toBe(false);
     process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
-    const stored = encryptCustomerDataForInsert(ANSWERS);
-    expect(credentialEnvelopeVersion(stored)).toBe(1);
-    expect(decryptCustomerData(stored, 999)).toBe(ANSWERS);
+    // An options object from older callers must not downgrade the envelope.
+    const stored = (credentialCrypto.encryptCredentials as (p: string, aad: string, opts?: unknown) => string)(ANSWERS, customerDataAad(7), { forceV1: true });
+    expect(credentialEnvelopeVersion(stored)).toBe(2);
   });
 
   it("null stays null", () => {

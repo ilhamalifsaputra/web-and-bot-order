@@ -8,7 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { prisma, initDb, setSetting, createCategory, createCatalogProduct, createDenomination } from "@app/db";
 import { OrderStatus } from "@app/core/enums";
-import { encryptDeliveredContent, encryptCustomerDataForInsert, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { encryptDeliveredContent, encryptCustomerData, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 import { newJti, shopSessionJtiKey, makeCustomerSession, SHOP_COOKIE_NAME } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -70,14 +70,13 @@ async function makeOrder(userId: number, opts: { denomId?: number; status?: stri
     data: {
       orderCode: `ORD-GTD-${counter}`, userId, subtotalAmount: "15000", totalAmount: "15000",
       status: opts.status ?? OrderStatus.DELIVERED, currency: "IDR", paymentMethod: "TOKOPAY", paymentState: "PAID", kind: "PRODUCT",
-      // Stored the way checkout writes it: an encrypted envelope, never the answers.
-      customerData: encryptCustomerDataForInsert(JSON.stringify(answers)),
       items: { create: [{ productId: opts.denomId ?? gameDenomId, quantity: 1, unitPrice: "15000", warrantyDaysSnapshot: 0 }] },
     },
   });
   const deliveredContent = opts.deliveredContent ? opts.deliveredContent(order.id)
     : opts.sn === null ? null : encryptDeliveredContent(opts.sn ?? LONG_SN, order.id);
-  return prisma.order.update({ where: { id: order.id }, data: { deliveredContent } });
+  // Stored the way checkout writes it: an encrypted envelope bound to the order, never the answers.
+  return prisma.order.update({ where: { id: order.id }, data: { deliveredContent, customerData: encryptCustomerData(JSON.stringify(answers), order.id) } });
 }
 
 const get = (url: string, cookie: string) => app.inject({ method: "GET", url, cookies: { [SHOP_COOKIE_NAME]: cookie } });

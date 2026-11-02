@@ -78,13 +78,16 @@ passes a non-envelope value through as legacy plain text while
 when it is false.
 
 **The id does not exist at insert.** `createOrderFromCart` and
-`createOrderDirect` write the column inside `db.order.create`. At those two
-sites the value is written as a **v1 envelope (no AAD) regardless of
-`CREDENTIAL_ENVELOPE_WRITE_V2`**, and v1 must decrypt without an AAD.
-`updateOrderCustomerData` knows the id and uses the flag like the other
-columns. `scripts/reencrypt-credentials-v2.ts` gains this column so a later
-v2 rollout binds every value to its row. (The implementation plan must verify
-the exact writer behaviour when the flag is on and no AAD is supplied.)
+`createOrderDirect` create the row with `customerData: null` and write the
+encrypted answers in the "final totals" `db.order.update` that already runs on
+the new id in the same transaction, so the envelope follows
+`CREDENTIAL_ENVELOPE_WRITE_V2` and, as v2, is bound to its own order like every
+other write. (An earlier draft forced a v1 envelope at insert; the whole-branch
+review replaced it, because new orders would then keep reintroducing v1 after
+the v2 re-encrypt and "v1 must be 0" could never hold. `encryptCredentials`
+has no way to force v1.) `updateOrderCustomerData` knows the id and uses the
+flag like the other columns. `scripts/reencrypt-credentials-v2.ts` gains this
+column so rows written before the flag was on are bound to their row too.
 
 ### 2. Write sites
 

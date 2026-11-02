@@ -45,7 +45,7 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
 
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
-import { decryptDeliveredContent, encryptDeliveredContent, encryptCustomerDataForInsert } from "@app/core/credentialCrypto";
+import { decryptDeliveredContent, encryptDeliveredContent, encryptCustomerData } from "@app/core/credentialCrypto";
 import { logger } from "@app/core/logger";
 import { DigiflazzRequestError } from "@app/core/suppliers/digiflazz";
 import {
@@ -212,7 +212,7 @@ async function createProcessingDigiflazzOrder(
   totalAmount = "15000",
   dispatch: { digiflazzDispatchedAt?: Date | null; digiflazzStatus?: string | null; digiflazzNextRecheckAt?: Date | null } = {},
 ) {
-  return prisma.order.create({
+  const order = await prisma.order.create({
     data: {
       orderCode,
       userId,
@@ -225,12 +225,15 @@ async function createProcessingDigiflazzOrder(
       digiflazzStatus: "pending_at_supplier",
       digiflazzNextRecheckAt: new Date(Date.now() + 30 * 60_000),
       ...dispatch,
-      // Stored the way checkout writes it: an encrypted envelope, never the answers.
-      customerData: encryptCustomerDataForInsert(JSON.stringify([{ user_id: "123456789" }])),
       items: {
         create: [{ productId: denomId, quantity: 1, unitPrice: totalAmount, warrantyDaysSnapshot: 0 }],
       },
     },
+  });
+  // Stored the way checkout writes it: an encrypted envelope bound to the order, never the answers.
+  return prisma.order.update({
+    where: { id: order.id },
+    data: { customerData: encryptCustomerData(JSON.stringify([{ user_id: "123456789" }]), order.id) },
   });
 }
 

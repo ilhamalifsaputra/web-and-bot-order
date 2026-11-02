@@ -15,7 +15,7 @@
 - **No schema change.** `Order.customerData` stays `String?` TEXT; `BotSession.data` stays `String`.
 - Key: env `CREDENTIAL_ENCRYPTION_KEY` (64 hex chars). Algorithm AES-256-GCM via `encryptCredentials` / `decryptCredentials`. Vitest already sets a test key (`vitest.config.ts`).
 - AAD strings are part of the stored data's key and must be exactly: `orders.customer_data:{orderId}` and `bot_sessions.data:{sessionKey}`.
-- At order **INSERT** the id does not exist: write a **v1 envelope (no AAD) regardless of `CREDENTIAL_ENVELOPE_WRITE_V2`**; v1 decrypts without a context. `updateOrderCustomerData` (id known) follows the flag.
+- (Superseded by the whole-branch review, see the note under Task 1.) At order **INSERT** the id does not exist: write a **v1 envelope (no AAD) regardless of `CREDENTIAL_ENVELOPE_WRITE_V2`**; v1 decrypts without a context. `updateOrderCustomerData` (id known) follows the flag.
 - A plaintext value is a JSON **array** (`[{"game_id":"123"}]`); an envelope is a JSON **object**. Legacy plaintext passes through `decryptCredentials` while `ALLOW_LEGACY_PLAINTEXT` is not false, and throws `LegacyPlaintextCredentialError` when it is false.
 - Fulfillment paths **throw** on an unreadable value (the order goes to "needs manual review"; nothing is ever sent to the supplier with an empty target). Display paths return `null` plus a warning that names the order id, never the content.
 - `parseCustomerData` lives in `packages/core/src/deliveryFields.ts`, which is **bundled into the browser clients**: it must NOT import `credentialCrypto` (Node `crypto`). Envelope detection there is inline.
@@ -91,6 +91,8 @@ Expected: all pass. Record the counts in the task report.
 ---
 
 ### Task 1: Crypto primitives and `EncryptedCustomerDataError`
+
+> **Superseded by the whole-branch review:** the v1-at-INSERT wording (`encryptCustomerDataForInsert`, `forceV1`) no longer holds. New orders are created with `customerData: null` and encrypted with `encryptCustomerData(…, order.id)` in the same transaction's final-totals update; `forceV1` and `encryptCustomerDataForInsert` were removed.
 
 **Files:**
 - Modify: `packages/core/src/credentialCrypto.ts` (`encryptCredentials` ~line 189; new helpers after the `deliveredContent` section, ~line 387)
@@ -401,6 +403,8 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 2: Order write sites and the two decrypting choke points
+
+> **Superseded by the whole-branch review:** the v1-at-INSERT wording (`encryptCustomerDataForInsert`, `forceV1`) no longer holds. New orders are created with `customerData: null` and encrypted with `encryptCustomerData(…, order.id)` in the same transaction's final-totals update; `forceV1` and `encryptCustomerDataForInsert` were removed.
 
 **Files:**
 - Modify: `packages/db/src/crud/orders.ts` (imports ~line 58; `withDecryptedStockCredentials` ~620; `StockCredentialsOrder` ~721; `withDisplayStockCredentials` ~734; create sites ~975 and ~1292; `updateOrderCustomerData` ~3512)

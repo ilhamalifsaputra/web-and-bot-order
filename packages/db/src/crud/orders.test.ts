@@ -2150,13 +2150,30 @@ describe("Order.customerData is encrypted at rest", () => {
     expect((await getOrder(prisma, order.id))!.customerData).toBe(ANSWERS);
   });
 
-  it("writes a v1 envelope at INSERT even when CREDENTIAL_ENVELOPE_WRITE_V2 is on (the id does not exist yet)", async () => {
+  it.each([
+    ["createOrderDirect", true],
+    ["createOrderDirect", false],
+    ["createOrderFromCart", true],
+    ["createOrderFromCart", false],
+  ] as const)("%s with CREDENTIAL_ENVELOPE_WRITE_V2 %s stores the flag's envelope version, bound to the new order when v2", async (writer, flagOn) => {
     const saved = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
-    process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    if (flagOn) process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    else delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
     try {
-      const order = await directOrder("Flag On Info");
-      expect(credentialEnvelopeVersion((await rawCustomerData(order.id))!)).toBe(1);
-      expect((await getOrder(prisma, order.id))!.customerData).toBe(ANSWERS);
+      let orderId: number;
+      if (writer === "createOrderDirect") {
+        orderId = (await directOrder(`Flag ${flagOn} Info`)).id;
+      } else {
+        const denom = await infoDenomination(`Cart Flag ${flagOn} Info`);
+        await addToCart(prisma, sample.user.id, denom.id, 1);
+        orderId = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user, customerData: ANSWERS }))!.id;
+      }
+
+      const stored = (await rawCustomerData(orderId))!;
+      expect(credentialEnvelopeVersion(stored)).toBe(flagOn ? 2 : 1);
+      expect(decryptCustomerData(stored, orderId)).toBe(ANSWERS);
+      if (flagOn) expect(() => decryptCustomerData(stored, orderId + 1)).toThrow();
+      expect((await getOrder(prisma, orderId))!.customerData).toBe(ANSWERS);
     } finally {
       if (saved === undefined) delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
       else process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = saved;

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { CircleAlert, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface QueryErrorNoticeProps {
@@ -20,17 +21,27 @@ interface QueryErrorNoticeProps {
  * With no data at all there is nothing to keep, so it says the load failed,
  * with Retry. A 401 is explained once by the session-ended banner in AppShell
  * (components/layout/SessionExpiredBanner.tsx), so this notice never repeats it.
+ *
+ * The two cases look different, not only read differently (UI-states audit,
+ * visual standard): a failed first load is an error (circle-alert, rust); a
+ * failed refresh over data still on screen is a warning (triangle-alert,
+ * amber), the same treatment as the storefront's RefreshFailedNotice.
  */
 export function QueryErrorNotice({ what, hasData, onRetry, isError = true }: QueryErrorNoticeProps): React.JSX.Element | null {
   if (!isError) return null;
   const text = hasData
     ? `Couldn't refresh ${what}. Showing what was loaded earlier.`
     : `Failed to load ${what}.`;
+  const Icon = hasData ? TriangleAlert : CircleAlert;
+  const tone = hasData
+    ? "border-amberx/30 bg-amberx-tint text-ink"
+    : "border-rust/30 bg-rust/5 text-rust";
   return (
     <div
       role={hasData ? "status" : "alert"}
-      className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-rust/30 bg-rust/5 px-3 py-2 text-sm text-rust"
+      className={`mb-4 flex flex-wrap items-center gap-3 rounded-md border px-3 py-2 text-sm ${tone}`}
     >
+      <Icon className={`h-4 w-4 shrink-0 ${hasData ? "text-amberx" : ""}`} aria-hidden="true" />
       <p className="min-w-0 flex-1">{text}</p>
       <Button size="sm" variant="outline" onClick={onRetry}>
         Retry

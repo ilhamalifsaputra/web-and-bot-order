@@ -1,4 +1,5 @@
 import * as React from "react";
+import { CircleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ErrorBoundaryProps {
@@ -23,7 +24,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   override render() {
     if (this.state.error) {
       return (
-        <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+        <div role="alert" className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+          <CircleAlert className="h-12 w-12 text-rust" aria-hidden="true" />
           <p className="font-semibold text-ink">Something went wrong.</p>
           <p className="text-sm text-ink-soft">This page hit an unexpected error and couldn't be displayed.</p>
           <Button variant="default" onClick={() => this.setState({ error: null })}>

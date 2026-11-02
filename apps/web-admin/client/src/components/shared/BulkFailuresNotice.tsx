@@ -1,6 +1,6 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { X } from "lucide-react";
+import { CircleAlert, X } from "lucide-react";
 import { ERROR_ALERT_CLASS } from "../../lib/errorAlert";
 import type { BulkFailureLine } from "../../lib/bulkOutcome";
 
@@ -13,6 +13,7 @@ export function BulkFailuresNotice({ failures, onDismiss }: {
   if (failures.length === 0) return null;
   return (
     <Alert variant="destructive" className={`mb-3 pr-10 ${ERROR_ALERT_CLASS}`}>
+      <CircleAlert aria-hidden="true" />
       <AlertTitle>Not completed</AlertTitle>
       <AlertDescription>
         <ul className="max-h-48 w-full overflow-y-auto">

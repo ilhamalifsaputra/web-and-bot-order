@@ -1,17 +1,17 @@
 {
   "audit_name": "Trustance Core UI States & Interaction Reliability Audit",
   "repository": "web-and-bot-order (branch worktree-ui-states-audit)",
-  "commit": "d158b647",
+  "commit": "92ca9cc7",
   "audit_date": "2026-11-02",
   "status": "in_progress",
   "summary": {
     "routes_discovered": 78,
     "modules_discovered": 14,
-    "findings_total": 62,
+    "findings_total": 66,
     "critical": 2,
     "high": 15,
-    "medium": 30,
-    "low": 15
+    "medium": 33,
+    "low": 16
   },
   "coverage": [
     {
@@ -155,7 +155,8 @@
         "f848a5ef",
         "b65c8a1b",
         "dcd14aff",
-        "a8e3bc2a"
+        "a8e3bc2a",
+        "aeb594b8"
       ]
     },
     {
@@ -1044,6 +1045,70 @@
       "line": "-",
       "state": "-",
       "commits": []
+    },
+    {
+      "id": "ADM-M16",
+      "severity": "Medium",
+      "title": "A single Deliver retried after a lost response reports not pending verification although it was delivered",
+      "status": "Open",
+      "confidence": "Confirmed",
+      "surface": "web-admin",
+      "module": "Orders",
+      "route": "/orders/:orderId, /orders",
+      "component": "POST /api/orders/:orderId/approve (single Deliver)",
+      "file": "apps/web-admin/src/routes/api/orders.ts",
+      "line": "-",
+      "state": "Success, Lost response",
+      "commits": []
+    },
+    {
+      "id": "ADM-M17",
+      "severity": "Medium",
+      "title": "Row Deliver or Resend and the bulk actions do not block each other",
+      "status": "Open",
+      "confidence": "Likely",
+      "surface": "web-admin",
+      "module": "Orders",
+      "route": "/orders",
+      "component": "useOrderActions (row and bulk mutations)",
+      "file": "apps/web-admin/client/src/pages/orders/useOrderActions.ts",
+      "line": "-",
+      "state": "Pending",
+      "commits": []
+    },
+    {
+      "id": "ADM-M18",
+      "severity": "Medium",
+      "title": "A second admin sending the same Idempotency-Key was given the first admin's wallet or broadcast response",
+      "status": "Fixed",
+      "confidence": "Confirmed",
+      "surface": "web-admin",
+      "module": "Customers / wallet, Broadcast",
+      "route": "/users/:userId, /broadcast",
+      "component": "POST /api/users/:userId/wallet, POST /api/broadcast",
+      "file": "apps/web-admin/src/routes/api/users.ts; apps/web-admin/src/routes/api/broadcast.ts",
+      "line": "-",
+      "state": "Success",
+      "commits": [
+        "d359284e"
+      ]
+    },
+    {
+      "id": "ADM-L4",
+      "severity": "Low",
+      "title": "A pending button lost a leading label component and measured layout on every commit",
+      "status": "Fixed",
+      "confidence": "Confirmed",
+      "surface": "both",
+      "module": "Button primitive",
+      "route": "all",
+      "component": "withoutLeadingIcon, usePendingWidth",
+      "file": "apps/web-admin/client/src/components/ui/button.tsx; apps/storefront/client/src/components/ui/Button.tsx",
+      "line": "-",
+      "state": "Pending",
+      "commits": [
+        "92ca9cc7"
+      ]
     }
   ],
   "tests": {

@@ -1,6 +1,6 @@
 # Findings
 
-Branch `worktree-ui-states-audit`, head `d158b647` (base `2ebb5de0`). Template and
+Branch `worktree-ui-states-audit`, head `92ca9cc7` (base `2ebb5de0`). Template and
 severity scale from the audit spec (sections 9 and 10). Machine-readable copy:
 [report.json](report.json); the two must match.
 
@@ -17,9 +17,9 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 
 | Status | Count |
 |---|---|
-| Fixed | 27 |
+| Fixed | 29 |
 | Verified | 0 |
-| Open | 33 |
+| Open | 35 |
 | Accepted Risk | 0 |
 | Not Tested | 2 |
 
@@ -27,8 +27,8 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 |---|---|
 | Critical | 2 |
 | High | 15 |
-| Medium | 30 |
-| Low | 15 |
+| Medium | 33 |
+| Low | 16 |
 
 ## Index
 
@@ -59,9 +59,13 @@ Line numbers marked "audit base" refer to commit `2ebb5de0` and may have moved.
 | ADM-M13 | Medium | Open | Bulk resend has no confirm and no idempotency key |
 | ADM-M14 | Medium | Fixed | Digiflazz detection showed "no issues" when its load failed |
 | ADM-M15 | Medium | Open | Digiflazz hourly sync status can skeleton forever if its SSE stream never connects |
+| ADM-M16 | Medium | Open | A single Deliver retried after a lost response reports not pending verification although it was delivered |
+| ADM-M17 | Medium | Open | Row Deliver or Resend and the bulk actions do not block each other |
+| ADM-M18 | Medium | Fixed | A second admin sending the same Idempotency-Key was given the first admin's wallet or broadcast response |
 | ADM-L1 | Low | Open | Remaining Low items from the admin audit |
 | ADM-L2 | Low | Open | Readonly ticket photo thumbnails render as broken images |
 | ADM-L3 | Low | Open | Wallet adjustments have no rate limit |
+| ADM-L4 | Low | Fixed | A pending button lost a leading label component and measured layout on every commit |
 | SF-H1 | High | Fixed | Lost checkout response turned into an empty cart and lost the order |
 | SF-H2 | High | Fixed | Session ending mid-checkout showed a wrong email error and a dead end |
 | SF-H3 | High | Fixed | Failed first loads showed endless skeletons on 11 routes |
@@ -311,12 +315,12 @@ Readonly export link lands on a plain-text 403 page.
 ### [ADM-H3] [High] Session expiry had no handling; a failed refetch unmounted drafts
 
 - Status: Fixed
-- Commit: `f848a5ef`, `b65c8a1b`, `dcd14aff`, `a8e3bc2a`
+- Commit: `f848a5ef`, `b65c8a1b`, `dcd14aff`, `a8e3bc2a`, `aeb594b8`
 - Confidence: Confirmed
 - Surface: web-admin
 - Module: Auth / session
 - Route: all
-- Component/Function: api/client.ts, main.tsx QueryClient, page early returns
+- Component/Function: api/client.ts, main.tsx QueryClient, page early returns (every admin page that fetches its own data)
 - File: apps/web-admin/client/src/api/sessionExpiry.ts; components/layout/SessionExpiredBanner.tsx
 - Line: -
 - State: Session expiry, Error
@@ -332,13 +336,13 @@ One non-blocking banner with Log in (new tab) and Reload; pages keep data and in
 Lost drafts, confusing dead ends.
 
 **Root cause**
-No 401 branch, bare QueryClient, if (isError) early returns.
+No 401 branch, bare QueryClient, if (isError) early returns. Six pages kept that early return after the first fix (Edit Denomination, Catalog, Product Detail, Stock Product, Categories, Admins), and Pricing swapped its form for an alert on any error; all now show the error only when there is no data.
 
 **Recommended fix**
 Done: central 401 flag, no retry on 401/403, SessionExpiredBanner, QueryErrorNotice/QueryFailureGate, filters kept on first-load failure.
 
 **Test case**
-api/sessionExpiry.test.tsx (21), TicketDetail/OrderDetail refetch tests, first-load tests on 9 list pages.
+api/sessionExpiry.test.tsx (21), TicketDetail/OrderDetail refetch tests, first-load tests on 9 list pages, and a first-load plus a typed-draft-survives-a-failed-refetch test on Edit Denomination (typed price and cost), Catalog (pasted CSV), Product Detail (name draft), Stock Product (credentials), Categories (New category name), Admins (Telegram ID) and Pricing (markup).
 
 **Regression risk**
 Shared notice on many pages.
@@ -973,6 +977,111 @@ Stream that never opens in a test.
 **Regression risk**
 Low.
 
+### [ADM-M16] [Medium] A single Deliver retried after a lost response reports not pending verification although it was delivered
+
+- Status: Open
+- Commit: -
+- Confidence: Confirmed
+- Surface: web-admin
+- Module: Orders
+- Route: /orders/:orderId, /orders
+- Component/Function: POST /api/orders/:orderId/approve (single Deliver)
+- File: apps/web-admin/src/routes/api/orders.ts
+- Line: -
+- State: Success, Lost response
+- Trigger/Precondition: The Deliver request succeeds on the server but the response never reaches the browser; the admin clicks Deliver again.
+
+**Actual behavior**
+The second request finds the order already delivered and answers that it is not pending verification, so the admin sees an error for an order that was in fact delivered.
+
+**Expected behavior**
+The retry recognises its own earlier delivery and shows success (an Idempotency-Key, as bulk deliver has), or the error says the order is already delivered.
+
+**Impact**
+A confusing error after a successful delivery; the admin may try to fix an order that is fine. No double delivery: the status claim still refuses the second run.
+
+**Root cause**
+The approve route has no Idempotency-Key, so a retry cannot be told apart from a second, different attempt.
+
+**Recommended fix**
+Send an Idempotency-Key from the single Deliver button and honour it in the route, as the bulk path does. Not fixed here.
+
+**Test case**
+Route test: same key twice returns the stored response once.
+
+**Regression risk**
+Low; the status claim already prevents double delivery.
+
+### [ADM-M17] [Medium] Row Deliver or Resend and the bulk actions do not block each other
+
+- Status: Open
+- Commit: -
+- Confidence: Likely
+- Surface: web-admin
+- Module: Orders
+- Route: /orders
+- Component/Function: useOrderActions (row and bulk mutations)
+- File: apps/web-admin/client/src/pages/orders/useOrderActions.ts
+- Line: -
+- State: Pending
+- Trigger/Precondition: A bulk action is running and the admin clicks Deliver or Resend on one of the same rows, or the other way round.
+
+**Actual behavior**
+The row button and the bulk bar are tracked separately, so both can be in flight for one order. Deliver is safe (the server's status claim lets only one run). Resend is not: the buyer can get the credentials twice (see ADM-M13).
+
+**Expected behavior**
+While any bulk action runs, row actions on the page are disabled, and the reverse.
+
+**Impact**
+Duplicate credentials DM for Resend; a spurious error toast for Deliver.
+
+**Root cause**
+Separate pending flags per mutation, with no shared busy state.
+
+**Recommended fix**
+Share one busy flag across row and bulk actions; pair it with the Resend confirmation and key in ADM-M13. Not fixed here.
+
+**Test case**
+Page test: a bulk action in flight disables the row buttons.
+
+**Regression risk**
+Low.
+
+### [ADM-M18] [Medium] A second admin sending the same Idempotency-Key was given the first admin's wallet or broadcast response
+
+- Status: Fixed
+- Commit: `d359284e`
+- Confidence: Confirmed
+- Surface: web-admin
+- Module: Customers / wallet, Broadcast
+- Route: /users/:userId, /broadcast
+- Component/Function: POST /api/users/:userId/wallet, POST /api/broadcast
+- File: apps/web-admin/src/routes/api/users.ts; apps/web-admin/src/routes/api/broadcast.ts
+- Line: -
+- State: Success
+- Trigger/Precondition: Two admins use the same key (a copied request, or a key reused by a script) for the same body.
+
+**Actual behavior**
+The idempotency ledger is keyed by key plus endpoint, and the request hash did not name the acting admin, so the second admin got the first admin's stored response and no wallet move or broadcast of their own, while seeing success.
+
+**Expected behavior**
+A key belongs to the admin who used it: another admin gets the key-reused refusal.
+
+**Impact**
+An admin believing they moved money or sent a broadcast when nothing ran for them.
+
+**Root cause**
+requestHash covered the body only.
+
+**Recommended fix**
+Done: the hash includes the acting admin's user id for both routes. Same-admin replay is unchanged.
+
+**Test case**
+users-wallet-idempotency.test.ts and broadcast.test.ts: another admin gets 409 key-reused with nothing moved; the same admin still replays the stored response once.
+
+**Regression risk**
+Keys stored by the old hash no longer match for an in-flight retry across the deploy (a short window; answered as key-reused).
+
 ### [ADM-L1] [Low] Remaining Low items from the admin audit
 
 - Status: Open
@@ -1077,6 +1186,41 @@ Optional throttle.
 
 **Regression risk**
 Low.
+
+### [ADM-L4] [Low] A pending button lost a leading label component and measured layout on every commit
+
+- Status: Fixed
+- Commit: `92ca9cc7`
+- Confidence: Confirmed
+- Surface: both
+- Module: Button primitive
+- Route: all
+- Component/Function: withoutLeadingIcon, usePendingWidth
+- File: apps/web-admin/client/src/components/ui/button.tsx; apps/storefront/client/src/components/ui/Button.tsx
+- Line: -
+- State: Pending
+- Trigger/Precondition: A pending button whose first child is a label component such as Trans or CurrencyAmount; any re-render of any button.
+
+**Actual behavior**
+The first non-DOM child was always treated as an icon, so the label vanished while pending. Every commit of every button read getBoundingClientRect, forcing a layout each time.
+
+**Expected behavior**
+Only a real icon is swapped for the spinner; idle widths are tracked without forcing layout.
+
+**Impact**
+Missing label while pending; avoidable layout work on busy pages.
+
+**Root cause**
+Any component element counted as an icon; a deps-less layout effect measured on each commit.
+
+**Recommended fix**
+Done: an icon is an svg, a Lucide icon (a forwardRef component without children) or a component named ...Icon; the idle width comes from a ResizeObserver (ignoring reports made while pending), with the old per-commit measure only where ResizeObserver does not exist.
+
+**Test case**
+loading-primitives.test.tsx and Button.test.tsx: leading label kept, icon by name dropped, no layout read on idle re-render, held width, disconnect on unmount.
+
+**Regression risk**
+Low; a custom icon component not named ...Icon keeps its place next to the spinner.
 
 ### [SF-H1] [High] Lost checkout response turned into an empty cart and lost the order
 

@@ -2180,6 +2180,25 @@ describe("Order.customerData is encrypted at rest", () => {
     }
   });
 
+  it.each(["createOrderDirect", "createOrderFromCart"] as const)(
+    "%s stores no answers for a product without info fields, whatever the caller passes",
+    async (writer) => {
+      const envelopeShaped = JSON.stringify({ keyVersion: 1, iv: "a", ciphertext: "b", authTag: "c" });
+      let orderId: number;
+      if (writer === "createOrderDirect") {
+        orderId = (await createOrderDirect(prisma, {
+          channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1, customerData: envelopeShaped,
+        }))!.id;
+      } else {
+        await addToCart(prisma, sample.user.id, sample.product.id, 1);
+        orderId = (await createOrderFromCart(prisma, { channel: "bot", user: sample.user, customerData: envelopeShaped }))!.id;
+      }
+
+      expect(await rawCustomerData(orderId)).toBeNull();
+      expect((await getOrder(prisma, orderId))!.customerData).toBeNull();
+    },
+  );
+
   it("an order without answers keeps customerData null", async () => {
     const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 });
     expect(await rawCustomerData(order!.id)).toBeNull();

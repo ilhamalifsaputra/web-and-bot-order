@@ -189,6 +189,29 @@ describe("game top-up details on the pay and order-detail payloads", () => {
     }
   });
 
+  it("answers that decrypt to an envelope-shaped value read as no answers with a content-free warning, not a 500", async () => {
+    const { userId, cookie } = await makeCustomer();
+    const order = await makeOrder(userId);
+    const envelopeShaped = JSON.stringify({ keyVersion: 1, iv: "a", ciphertext: "ODD-ROW-b", authTag: "c" });
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: encryptCustomerData(envelopeShaped, order.id) } });
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      for (const url of routes(order.orderCode)) {
+        const res = await get(url, cookie);
+        expect(res.statusCode, url).toBe(200);
+      }
+      const detail = (await get(`/api/v1/account/orders/${order.orderCode}`, cookie)).json();
+      expect(detail.order.customer_data).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: order.id, errorName: "EncryptedCustomerDataError" }),
+        expect.any(String),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ODD-ROW-b");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("a Premium Apps order has product_slug but no game_target or sn, and still its credentials path", async () => {
     const { userId, cookie } = await makeCustomer();
     const order = await makeOrder(userId, { denomId: premiumDenomId, sn: "PREMIUM-DELIVERY" });

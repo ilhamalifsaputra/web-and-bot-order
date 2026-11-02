@@ -15,6 +15,7 @@ import {
   updateDenomination,
 } from "@app/db";
 import { completeOrderWithWalletCredit, completeCartOrderWithWalletCredit } from "./wallet_checkout";
+import { parseCustomerData } from "@app/core/deliveryFields";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -71,6 +72,8 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
   it("forwards customerData verbatim onto the created order", async () => {
     await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
     const user = await freshUser();
+    // Answers are stored only for a product that asks for them (whole-branch review I3).
+    await giveGameIdField(sample.product.id);
     const customerData = JSON.stringify([{ game_id: "GID-WALLET" }]);
 
     const result = await prisma.$transaction((tx) =>
@@ -166,6 +169,8 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
   it("forwards customerData verbatim onto the created order (USDT track)", async () => {
     await adjustWallet(prisma, sample.user.id, "5", { currency: "USDT", reason: "admin_adjust" });
     const user = await freshUser();
+    // Answers are stored only for a product that asks for them (whole-branch review I3).
+    await giveGameIdField(sample.product.id);
     const customerData = JSON.stringify([{ game_id: "GID-WALLET-USDT" }]);
 
     const result = await prisma.$transaction((tx) =>
@@ -230,6 +235,12 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
   });
 });
 
+/** Give a denomination one required Game ID field, so the buyer's answers are kept on its orders. */
+async function giveGameIdField(denominationId: number) {
+  const fields = [{ key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" }];
+  await updateDenomination(prisma, denominationId, { additionalFields: JSON.stringify(fields) });
+}
+
 /** A manual (or manual_with_info) denomination with NO stock rows, in its own
  * category/product — mirrors settlePaidOrder.test.ts's makeManualDenom. */
 async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
@@ -275,6 +286,29 @@ describe("completeCartOrderWithWalletCredit — IDR track", () => {
 
     const sold = await prisma.stockItem.findMany({ where: { productId: sample.product.id, status: StockStatus.SOLD } });
     expect(sold).toHaveLength(1);
+  });
+
+  // Whole-branch review I3: a buyer must not be able to store an envelope-shaped
+  // value as their "answers" on a cart that asks for none — it would decrypt back
+  // to an envelope and make every answers reader refuse the order.
+  it("a cart without info fields stores no answers, even when the buyer sends an envelope-shaped customer_data", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    const user = await freshUser();
+
+    const result = await prisma.$transaction((tx) =>
+      completeCartOrderWithWalletCredit(tx, {
+        channel: "bot",
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        currency: OrderCurrency.IDR,
+        customerData: { keyVersion: 1, iv: "a", ciphertext: "b", authTag: "c" },
+      }),
+    );
+
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: result.order.id } })).customerData).toBeNull();
+    const read = (await getOrder(prisma, result.order.id))!;
+    expect(read.customerData).toBeNull();
+    expect(parseCustomerData(read.customerData)).toEqual([]);
   });
 
   it("insufficient IDR balance: throws, makes no wallet or stock change", async () => {

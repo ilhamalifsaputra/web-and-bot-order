@@ -22,6 +22,7 @@ import {
   BINANCE_API_SECRET_KEY,
   type BinanceInternalConfig,
   triggerDigiflazzDispatch,
+  updateDenomination,
 } from "@app/db";
 import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
@@ -432,6 +433,10 @@ describe("createInternalOrder", () => {
   // walletAmount/rate off args and spreads the rest into createOrderDirect, so
   // a manual_with_info checkout's collected answers must ride along untouched.
   it("forwards customerData verbatim onto the created order", async () => {
+    // Answers are kept only for a product that asks for them (whole-branch review I3).
+    await updateDenomination(prisma, sample.product.id, {
+      additionalFields: JSON.stringify([{ key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" }]),
+    });
     const customerData = JSON.stringify([{ game_id: "GID-123" }]);
     const order = await prisma.$transaction((tx) =>
       createInternalOrder(tx, { channel: "bot",

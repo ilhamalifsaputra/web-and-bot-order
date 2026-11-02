@@ -956,7 +956,9 @@ export async function createOrderFromCart(
   // persisted as-is (Finding #4, per-sku-delivery-flows audit 2026-07-13).
   // Re-validating data performCheckout already validated is a safe no-op —
   // valid data stays valid.
-  let customerDataToStore = args.customerData ?? null;
+  // No info line means nothing to answer: store null, never the caller's raw value (a buyer could
+  // otherwise store an envelope-shaped string that every answers reader then refuses).
+  let customerDataToStore: string | null = null;
   const infoLines = cart.filter((ci) => ci.product.deliveryType === DeliveryType.MANUAL_WITH_INFO || !!ci.product.additionalFields);
   if (infoLines.length > 1) throw new ValidationError("error.customer_data_incomplete");
   const infoLine = infoLines[0];
@@ -1282,7 +1284,8 @@ export async function createOrderDirect(
   // storefront's performCheckout, which already does the equivalent check
   // before calling createOrderFromCart (Finding #4, per-sku-delivery-flows
   // audit 2026-07-13). Re-validating already-valid data is a safe no-op.
-  let customerDataToStore = args.customerData ?? null;
+  // A product without info fields has nothing to answer: store null, never the caller's raw value.
+  let customerDataToStore: string | null = null;
   if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO || product.additionalFields) {
     const fields = parseInputFields(product.additionalFields);
     let parsedAnswers: unknown = null;

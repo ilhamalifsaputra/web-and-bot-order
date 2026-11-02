@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { createSupportUpload, finalizeSupportUpload, cleanupSupportMedia } from "./supportAttachments";
+import { createSupportUpload, finalizeSupportUpload, cleanupSupportMedia, ingestSupportTelegramMedia, discardSupportAttachment } from "./supportAttachments";
+import { logger } from "@app/core/logger";
 import { createTicket, addTicketMessage, listTicketMessages, setSupportLegalHold, reopenTicketAdmin } from "./support";
 import { SenderType } from "@app/core/enums";
 import { randomUUID } from "node:crypto";
@@ -11,6 +12,10 @@ let otherId: number;
 let adminId: number;
 const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const objects = new Map<string, { bytes: Buffer; type: string; etag: string }>();
+// JPEG SOI + APP0 JFIF header: enough for sniffImageMime to report image/jpeg.
+const jpeg = Buffer.from("ffd8ffe000104a46494600010100000100010000", "hex");
+let telegramBody: Buffer = jpeg;
+let uploadStatus: number | undefined;
 beforeAll(async () => { db = await makeTestDb(); });
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => {
@@ -19,14 +24,25 @@ beforeEach(async () => {
   const owner = await db.prisma.user.create({ data: { referralCode: randomUUID() } }); ownerId = owner.id;
   const other = await db.prisma.user.create({ data: { referralCode: randomUUID() } }); otherId = other.id;
   const admin = await db.prisma.user.create({ data: { referralCode: randomUUID(), role: "ADMIN" } }); adminId = admin.id;
-  objects.clear();
+  objects.clear(); telegramBody = jpeg; uploadStatus = undefined;
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname === "api.telegram.org") return new Response(new Uint8Array(telegramBody), { status: 200 });
     const key = decodeURIComponent(url.pathname); const method = init?.method ?? (input instanceof Request ? input.method : "GET");
     const headers = new Headers(init?.headers);
     if (method === "DELETE") { objects.delete(key); return new Response(null, { status: 204 }); }
     if (method === "PUT") {
-      const source = headers.get("x-amz-copy-source"); const original = source ? objects.get(source) : undefined;
+      const source = headers.get("x-amz-copy-source");
+      if (!source) {
+        // Mimic R2: a streamed body (chunked, no Content-Length) is refused
+        // with 411 MissingContentLength; only a fixed-length body is stored.
+        const body = init?.body;
+        if ((init as { duplex?: string } | undefined)?.duplex || body instanceof ReadableStream || !(body instanceof Uint8Array)) return new Response("<Error><Code>MissingContentLength</Code></Error>", { status: 411 });
+        if (uploadStatus) return new Response(null, { status: uploadStatus });
+        objects.set(key, { bytes: Buffer.from(body), type: headers.get("Content-Type") ?? "", etag: '"telegram-bytes"' });
+        return new Response(null, { status: 200 });
+      }
+      const original = objects.get(source);
       if (!original || original.etag !== headers.get("x-amz-copy-source-if-match")) return new Response(null, { status: 412 });
       objects.set(key, { ...original }); return new Response("<CopyObjectResult/>");
     }
@@ -144,4 +160,92 @@ describe("verified support attachment lifecycle", () => {
     expect(await db.prisma.supportTicket.findUnique({ where: { id: ticket.id } })).toMatchObject({ status: "CLOSED", legalHold: false });
   });
 
+});
+
+describe("Telegram media ingest", () => {
+  const token = "123456:SECRET-bot-token";
+  const ingest = (bytes = jpeg.length) => ingestSupportTelegramMedia(db.prisma, { ownerId, draftId: randomUUID(), fileId: "tg-file-id", filePath: "photos/file_1.jpg", token, mime: "image/jpeg", bytes });
+  const uploadPuts = () => vi.mocked(fetch).mock.calls.filter(([input, init]) => init?.method === "PUT" && !new Headers(init.headers).get("x-amz-copy-source") && !String(input).includes("api.telegram.org"));
+  it("stores a JPEG with a fixed-length body and records the Telegram file", async () => {
+    const id = await ingest();
+    const row = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } });
+    expect(row).toMatchObject({ status: "READY", telegramFileId: "tg-file-id", telegramBotId: "123456", mime: "image/jpeg", bytes: jpeg.length });
+    const puts = uploadPuts();
+    expect(puts).toHaveLength(1);
+    // undici derives Content-Length from a Buffer/Uint8Array body's byteLength.
+    const body = puts[0]![1]!.body as Uint8Array;
+    expect(body).toBeInstanceOf(Uint8Array);
+    expect(body.byteLength).toBe(jpeg.length);
+  });
+  it("refuses a Telegram body larger than declared without uploading anything", async () => {
+    telegramBody = Buffer.concat([jpeg, Buffer.alloc(64)]);
+    await expect(ingest()).rejects.toMatchObject({ key: "helpdesk.upload_failed" });
+    expect(uploadPuts()).toHaveLength(0);
+    expect((await db.prisma.supportAttachment.findFirstOrThrow({ where: { ownerId } })).status).toBe("REJECTED");
+  });
+  it("logs the failed stage and status without leaking the bot token when R2 refuses", async () => {
+    uploadStatus = 500;
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    try {
+      await expect(ingest()).rejects.toMatchObject({ key: "helpdesk.upload_failed" });
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ stage: "r2_upload", status: 500, attachmentId: expect.any(String) }), expect.any(String));
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain("SECRET-bot-token");
+      expect(logged).not.toContain("photos/file_1.jpg");
+      expect(logged).not.toContain("api.telegram.org");
+      expect((await db.prisma.supportAttachment.findFirstOrThrow({ where: { ownerId } })).status).toBe("REJECTED");
+    } finally { warn.mockRestore(); }
+  });
+});
+
+describe("discardSupportAttachment (customer removes a draft file)", () => {
+  it("rejects a READY draft row of the owner and expires it now, so cleanup deletes the object", async () => {
+    const id = await ready();
+    const before = Date.now();
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(true);
+    const row = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe("REJECTED");
+    expect(row.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(row.expiresAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    await cleanupSupportMedia(db.prisma, new Date(Date.now() + 1000));
+    expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).status).toBe("DELETED");
+  });
+  it("rejects a PENDING draft row too", async () => {
+    const intent = await createSupportUpload(db.prisma, { ownerId, draftId: randomUUID(), filename: "proof.png", mime: "image/png", bytes: png.length });
+    expect(await discardSupportAttachment(db.prisma, intent.id, ownerId)).toBe(true);
+    expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: intent.id } })).status).toBe("REJECTED");
+  });
+  it("refuses a row already attached to a ticket", async () => {
+    const id = await ready();
+    await createTicket(db.prisma, ownerId, "An issue with attached evidence", null, null, null, { attachmentIds: [id] });
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(false);
+    expect(await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "READY", attachedAt: expect.any(Date) });
+  });
+  it("refuses a row owned by someone else", async () => {
+    const id = await ready();
+    expect(await discardSupportAttachment(db.prisma, id, otherId)).toBe(false);
+    expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).status).toBe("READY");
+  });
+  it("is idempotent on an already REJECTED row and refuses DELETED/DELETING rows", async () => {
+    const id = await ready();
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(true);
+    const first = await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } });
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(false);
+    expect(await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "REJECTED", expiresAt: first.expiresAt });
+    for (const status of ["DELETED", "DELETING"] as const) {
+      const other = await ready();
+      await db.prisma.supportAttachment.update({ where: { id: other }, data: { status } });
+      expect(await discardSupportAttachment(db.prisma, other, ownerId)).toBe(false);
+      expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: other } })).status).toBe(status);
+    }
+  });
+  it("a discarded file can no longer be attached to a ticket", async () => {
+    const id = await ready();
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(true);
+    await expect(createTicket(db.prisma, ownerId, "An issue with removed evidence", null, null, null, { attachmentIds: [id] })).rejects.toMatchObject({ key: "helpdesk.media_verification_failed" });
+    expect(await db.prisma.supportTicket.count({ where: { userId: ownerId } })).toBe(0);
+  });
+  it("returns false for an unknown id", async () => {
+    expect(await discardSupportAttachment(db.prisma, randomUUID(), ownerId)).toBe(false);
+  });
 });

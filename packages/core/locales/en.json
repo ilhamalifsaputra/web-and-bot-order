@@ -1644,6 +1644,7 @@
   "helpdesk.r2_bucket_ambiguous": "Automatic storage selection requires exactly one bucket. Select a bucket in server configuration.",
   "helpdesk.reply_ready": "Reply text saved in this draft. Add files or send now.",
   "helpdesk.reply_unavailable": "The reply could not be saved. Check the ticket status and try again.",
+  "helpdesk.ticket_unavailable": "The ticket could not be created. Please start a new ticket and attach the files again.",
   "helpdesk.cancelled": "Draft cancelled.",
   "helpdesk.status_new": "New",
   "helpdesk.status_progress": "In progress",

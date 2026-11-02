@@ -38,6 +38,8 @@ export async function ingestSupportTelegramMedia(db: Db, args: { ownerId: number
     } finally { await reader.cancel().catch(() => undefined); }
     if (count !== args.bytes) throw new Error("Media size mismatch");
     const buffer = Buffer.concat(chunks, count);
+    // Drop the chunk references so only one copy is held during the PUT.
+    chunks.length = 0;
     stage = "r2_upload"; status = undefined;
     const result = await fetch(upload.url, { method: "PUT", headers: upload.headers, body: buffer, signal: AbortSignal.timeout(90_000) });
     status = result.status;

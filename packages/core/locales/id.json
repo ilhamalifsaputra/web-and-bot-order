@@ -1644,6 +1644,7 @@
   "helpdesk.r2_bucket_ambiguous": "Pemilihan penyimpanan otomatis membutuhkan tepat satu bucket. Pilih bucket melalui konfigurasi server.",
   "helpdesk.reply_ready": "Teks tersimpan dalam draf ini. Tambahkan lampiran atau kirim sekarang.",
   "helpdesk.reply_unavailable": "Balasan belum tersimpan. Periksa status tiket lalu coba lagi.",
+  "helpdesk.ticket_unavailable": "Tiket gagal dibuat. Silakan buat tiket baru dan lampirkan ulang filenya.",
   "helpdesk.cancelled": "Draf dibatalkan.",
   "helpdesk.status_new": "Baru",
   "helpdesk.status_progress": "Diproses",

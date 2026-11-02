@@ -5,12 +5,12 @@ import { supportMediaAvailable } from "@app/core/supportMedia";
 import { prisma, getTicket, addTicketMessage } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, addRemoveButtons, albumFollowUpTracker, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, addRemoveButtons, albumFollowUpTracker, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseAndConsumeMedia, removeMedia, removeTarget } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { backToMain, isPersistentLabel } from "../keyboards/customer";
 import { handleProductNumber, showMainMenu } from "../handlers/customer";
 
-/** Callback prefix of a reply bubble's "remove file n" button (0-based). */
+/** Callback prefix of a reply bubble's "remove this file" button; the attachment id follows. */
 const REMOVE = "v1:support:reply:rm:";
 
 /** A single reply draft can contain text and up to three verified files.
@@ -39,7 +39,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
   // (photos were already deleted once stored).
   const discardDraft = async () => { for (const accepted of acceptedInputs) await consumeInput(accepted); };
   for (;;) {
-    const keyboard = addRemoveButtons(current, new InlineKeyboard(), attachments.length, (index) => `${REMOVE}${index}`).text(t(current, "helpdesk.confirm"), "v1:support:reply:submit").row().text(t(current, "helpdesk.cancel"), `v1:ticket:view:${ticketId}`);
+    const keyboard = addRemoveButtons(current, new InlineKeyboard(), attachments, (id) => `${REMOVE}${id}`).text(t(current, "helpdesk.confirm"), "v1:support:reply:submit").row().text(t(current, "helpdesk.cancel"), `v1:ticket:view:${ticketId}`);
     const screen = `${t(current, "ticket.ask_reply")}\n${mediaEnabled ? t(current, "helpdesk.ask_media") : ""}\n${t(current, "helpdesk.attachments")}: ${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaLimitHint(current, mediaEnabled, attachments.length, "helpdesk.media_limit_hint_reply")}${body ? `\n${t(current, "helpdesk.reply_ready")}` : ""}`;
     await menuAnchor(current, `${screen}${error ? `\n\n${error}` : ""}`, keyboard);
     current = await conversation.wait();
@@ -51,8 +51,8 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
     if (action === `v1:ticket:view:${ticketId}`) { await discardDraft(); await menuAnchor(current, t(current, "helpdesk.cancelled"), new InlineKeyboard().text(t(current, "helpdesk.view"), action)); return; }
     if (await conversation.now() - started > 30 * 60_000) { await menuAnchor(current, t(current, "helpdesk.session_expired"), backToMain(current.session.lang)); return; }
     error = "";
-    const removing = removeIndex(action ?? "", REMOVE);
-    // A stale index changes nothing; the loop re-renders the bubble either way.
+    const removing = removeTarget(action ?? "", REMOVE);
+    // An id no longer in the draft changes nothing; the loop re-renders the bubble either way.
     if (removing !== null) await removeMedia(conversation, attachments, removing, info.id);
     else if (input) {
       if (!input.trim() || input.trim().length > 2000) { error = t(current, "helpdesk.description_quality"); continue; }
@@ -60,7 +60,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
     } else if (isMediaDocument(current)) { error = t(current, "helpdesk.send_as_photo");
     } else if (incomingMedia(current)) {
       const sameAlbum = albumFollowUp(current);
-      const refused = await refuseMedia(current, mediaEnabled, attachments.length);
+      const refused = await refuseAndConsumeMedia(current, mediaEnabled, attachments.length);
       if (refused) { error = refused; continue; }
       if (!sameAlbum) await menuAnchor(current, `${screen}\n\n${t(current, "helpdesk.uploading_bot")}`, keyboard);
       const stored = await ingestMedia(conversation, current, { ownerId: info.id, ticketId, draftId });

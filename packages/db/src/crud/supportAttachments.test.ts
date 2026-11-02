@@ -239,6 +239,12 @@ describe("discardSupportAttachment (customer removes a draft file)", () => {
       expect((await db.prisma.supportAttachment.findUniqueOrThrow({ where: { id: other } })).status).toBe(status);
     }
   });
+  it("a discarded file can no longer be attached to a ticket", async () => {
+    const id = await ready();
+    expect(await discardSupportAttachment(db.prisma, id, ownerId)).toBe(true);
+    await expect(createTicket(db.prisma, ownerId, "An issue with removed evidence", null, null, null, { attachmentIds: [id] })).rejects.toMatchObject({ key: "helpdesk.media_verification_failed" });
+    expect(await db.prisma.supportTicket.count({ where: { userId: ownerId } })).toBe(0);
+  });
   it("returns false for an unknown id", async () => {
     expect(await discardSupportAttachment(db.prisma, randomUUID(), ownerId)).toBe(false);
   });

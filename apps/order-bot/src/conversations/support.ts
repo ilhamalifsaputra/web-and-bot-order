@@ -3,9 +3,11 @@ import { InlineKeyboard } from "grammy";
 import { SUPPORT_CATEGORIES, supportIssue } from "@app/core/supportCatalog";
 import { supportMediaAvailable } from "@app/core/supportMedia";
 import { prisma, createTicket, getOrder, listUserOrders, getOpenTicketForOrder, logCustomerAction } from "@app/db";
+import { ValidationError } from "@app/core/errors";
+import { logger } from "@app/core/logger";
 import type { MyContext, MyConversation } from "../context";
 import { consumeInput, menuAnchor } from "../util/chat";
-import { MAX_SUPPORT_MEDIA, addRemoveButtons, albumFollowUpTracker, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseMedia, removeIndex, removeMedia } from "../util/supportMedia";
+import { MAX_SUPPORT_MEDIA, addRemoveButtons, albumFollowUpTracker, incomingMedia, ingestMedia, isMediaDocument, mediaChecklist, mediaLimitHint, refuseAndConsumeMedia, removeMedia, removeTarget } from "../util/supportMedia";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import * as ckb from "../keyboards/customer";
@@ -57,7 +59,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
       if ((orderPage + 1) * 5 < orders.length) keyboard.text(t(current, "helpdesk.next"), callback("next"));
       keyboard.row().text(t(current, "helpdesk.no_order"), callback("order:skip")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel"));
     } else if (step === "description") { text = t(current, "helpdesk.ask_description"); keyboard = navigation(current); }
-    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaLimitHint(current, mediaEnabled, attachments.length, "helpdesk.media_limit_hint")}`; keyboard = addRemoveButtons(current, new InlineKeyboard(), attachments.length, (index) => callback(`rm:${index}`)).text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
+    else if (step === "media") { text = `${t(current, mediaEnabled ? "helpdesk.ask_media" : "helpdesk.media_unavailable")}\n${attachments.length}/${MAX_SUPPORT_MEDIA}${mediaChecklist(current, attachments.length)}${mediaLimitHint(current, mediaEnabled, attachments.length, "helpdesk.media_limit_hint")}`; keyboard = addRemoveButtons(current, new InlineKeyboard(), attachments, (id) => callback(`rm:${id}`)).text(t(current, attachments.length ? "helpdesk.review" : "helpdesk.skip"), callback("review")).row().text(t(current, "helpdesk.back"), callback("back")).text(t(current, "helpdesk.cancel"), callback("cancel")); }
     else {
       const order = preselectedOrder?.id === orderId ? preselectedOrder : orders.find((item) => item.id === orderId);
       text = `<b>${t(current, "helpdesk.review")}</b>\n${t(current, `helpdesk.category_${category.toLowerCase()}`)} / ${t(current, issue!.labelKey)}\n${order ? `<code>${esc(order.orderCode)}</code>` : t(current, "helpdesk.no_order")}\n\n${esc(body.slice(0, 1200))}\n\n${t(current, "helpdesk.attachments")}: ${attachments.length}${mediaEnabled ? `\n${t(current, "helpdesk.media_limit_hint")}` : ""}`;
@@ -91,25 +93,37 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     } else if (step === "description" && input) {
       const trimmed = input.trim(); if (trimmed.length >= 10 && trimmed.length <= 2000) { body = trimmed; acceptedInputs.push(current); step = "media"; } else error = t(current, "helpdesk.description_quality");
     } else if (step === "media") {
-      const removing = removeIndex(action, "rm:");
+      const removing = removeTarget(action, "rm:");
       if (action === "review") step = "review";
-      // A stale index changes nothing; the loop re-renders the bubble either way.
+      // An id no longer in the draft changes nothing; the loop re-renders the bubble either way.
       else if (removing !== null) await removeMedia(conversation, attachments, removing, user.id);
       else if (isMediaDocument(current)) error = t(current, "helpdesk.send_as_photo");
       else if (incomingMedia(current)) {
         const sameAlbum = albumFollowUp(current);
-        const refused = await refuseMedia(current, mediaEnabled, attachments.length);
+        const refused = await refuseAndConsumeMedia(current, mediaEnabled, attachments.length);
         if (refused) { error = refused; continue; }
         if (!sameAlbum) await menuAnchor(current, `${screen.text}\n\n${t(current, "helpdesk.uploading_bot")}`, screen.keyboard);
         const stored = await ingestMedia(conversation, current, { ownerId: user.id, draftId });
         if ("id" in stored) attachments.push(stored.id); else error = stored.error;
       }
     } else if (step === "review" && action === "submit") {
+      // A refusal (e.g. an attachment that failed verification) comes back as
+      // a plain value so a conversation replay sees the same outcome.
       const ticket = await conversation.external(async () => {
-        const created = await createTicket(prisma, user.id, body, null, null, orderId, { category: issue!.category, subcategory: issueKey, subject: t(current, issue!.labelKey), origin: "BOT", requestKey: draftId, attachmentIds: attachments, dedupeOrder: true });
+        let created: Awaited<ReturnType<typeof createTicket>>;
+        try {
+          created = await createTicket(prisma, user.id, body, null, null, orderId, { category: issue!.category, subcategory: issueKey, subject: t(current, issue!.labelKey), origin: "BOT", requestKey: draftId, attachmentIds: attachments, dedupeOrder: true });
+        } catch (err) {
+          return { errorName: err instanceof Error ? err.name : typeof err, ...(err instanceof ValidationError ? { key: err.key } : {}) };
+        }
         await logCustomerAction(prisma, { customerId: user.id, telegramUserId: BigInt(current.from!.id), channel: "BOT", correlationId: String(current.update.update_id), action: "ticket_create", targetType: "ticket", targetId: created.id, details: "Created a support ticket via Telegram." });
         return { id: created.id, number: created.ticketNumber };
       });
+      if ("errorName" in ticket) {
+        // The typed description stays in the chat so the customer can reuse it.
+        logger.warn({ errorName: ticket.errorName, ...(ticket.key ? { key: ticket.key } : {}) }, "A support ticket from the Telegram wizard could not be created, so the customer was offered a fresh start instead.");
+        await menuAnchor(current, t(current, "helpdesk.ticket_unavailable"), new InlineKeyboard().text(t(current, "helpdesk.retry"), "v1:support:open").row().text(t(current, "menu.main"), "v1:menu:main")); return;
+      }
       for (const accepted of acceptedInputs) await consumeInput(accepted);
       await menuAnchor(current, t(current, "helpdesk.received", { number: ticket.number }), new InlineKeyboard().text(t(current, "helpdesk.view"), `v1:ticket:view:${ticket.id}`).row().text(t(current, "menu.main"), "v1:menu:main")); return;
     }

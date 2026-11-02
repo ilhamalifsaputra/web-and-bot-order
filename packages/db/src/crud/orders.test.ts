@@ -40,6 +40,7 @@ import {
   findUnderpaidReceived,
   getOrderRaw,
   updateOrderCustomerData,
+  withoutDeliveredContent,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock, setSetting } from "@app/db";
 import { VoucherType, VoucherScope, OrderKind, StockActorType, StockStatus, OrderCurrency, OrderStatus } from "@app/core/enums";
@@ -2226,5 +2227,30 @@ describe("Order.customerData is encrypted at rest", () => {
     await expect(getOrder(prisma, order.id)).rejects.toThrow();
     const display = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
     expect(display!.customerData).toBeNull();
+  });
+});
+
+describe("list and ticket rows carry neither delivered content nor buyer answers", () => {
+  it("withoutDeliveredContent drops customerData as well", () => {
+    const row = { id: 1, orderCode: "A", deliveredContent: "secret", customerData: '{"keyVersion":1}' };
+    expect(withoutDeliveredContent(row)).toEqual({ id: 1, orderCode: "A" });
+  });
+
+  it("tolerates a row that has no customerData", () => {
+    expect(withoutDeliveredContent({ id: 2, deliveredContent: null })).toEqual({ id: 2 });
+  });
+
+  it("listUserOrders rows have no customerData key", async () => {
+    await resetDb(prisma);
+    const sample = await buildSampleData(prisma);
+    await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 });
+
+    const rows = await listUserOrders(prisma, sample.user.id);
+
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Object.keys(row)).not.toContain("customerData");
+      expect(Object.keys(row)).not.toContain("deliveredContent");
+    }
   });
 });

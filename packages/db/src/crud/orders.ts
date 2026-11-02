@@ -1456,12 +1456,13 @@ export async function applyUsdtWalletToOrder(
 
 /**
  * List/summary rows are spread straight into admin JSON, so they never carry
- * the delivered secret; only getOrder's detail/reveal/resend paths read it.
+ * the delivered secret or the buyer's (encrypted) answers; only getOrder's
+ * detail/reveal/resend paths read them.
  */
 export function withoutDeliveredContent<T extends { deliveredContent: string | null }>(
   order: T,
-): Omit<T, "deliveredContent"> {
-  const { deliveredContent: _deliveredContent, ...rest } = order;
+): Omit<T, "deliveredContent" | "customerData"> {
+  const { deliveredContent: _deliveredContent, customerData: _customerData, ...rest } = order as T & { customerData?: unknown };
   return rest;
 }
 

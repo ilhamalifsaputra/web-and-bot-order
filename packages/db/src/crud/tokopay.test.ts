@@ -39,6 +39,7 @@ import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, 
 import { Decimal } from "@app/core/money";
 import { computeQrisAdminFee, qrisChargeAmount } from "@app/core/payments/tokopay";
 import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -86,6 +87,41 @@ describe("deliverPaidTokopayOrder", () => {
     const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-delivered-1" } });
     expect(ledgerRow?.outcome).toBe("matched");
     expect(ledgerRow?.orderId).toBe(order.id);
+  });
+
+  // Whole-branch review I1: settlement reads the order through getOrder, which
+  // must never throw on the buyer's answers — otherwise the paid order's
+  // delivery transaction rolls back on every retry, forever.
+  it.each([
+    ["a tampered answers envelope", "tampered"],
+    ["a plaintext answers row left over while strict mode is on", "strict-plaintext"],
+  ] as const)("still settles a paid order whose customerData is %s", async (_label, kind) => {
+    const order = await makePendingTokopayOrder();
+    const good = JSON.parse(encryptLegacyV1('[{"game_id":"SETTLE-1"}]')) as Record<string, unknown>;
+    const stored =
+      kind === "tampered"
+        ? JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") })
+        : '[{"game_id":"SETTLE-1"}]';
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: stored } });
+    const savedStrict = process.env.ALLOW_LEGACY_PLAINTEXT;
+    if (kind === "strict-plaintext") process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    try {
+      const result = await deliverPaidTokopayOrder(prisma, {
+        orderId: order.id,
+        trxId: `trx-answers-${kind}`,
+        amount: order.totalAmount,
+      });
+
+      expect(result.status).toBe("delivered");
+      if (result.status !== "delivered") throw new Error("expected delivered");
+      expect(result.order.status).toBe(OrderStatus.DELIVERED);
+      expect(result.order.customerData).toBeNull();
+    } finally {
+      if (savedStrict === undefined) delete process.env.ALLOW_LEGACY_PLAINTEXT;
+      else process.env.ALLOW_LEGACY_PLAINTEXT = savedStrict;
+    }
+    // The stored value is left as it was: nothing rewrites the buyer's answers on settlement.
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).customerData).toBe(stored);
   });
 
   // Checkout-6 (security audit, 2026-06-23): the auto-deliver path (no human

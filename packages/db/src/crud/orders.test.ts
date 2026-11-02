@@ -2216,15 +2216,27 @@ describe("Order.customerData is encrypted at rest", () => {
     expect((await getOrder(prisma, order.id))!.customerData).toBe(ANSWERS);
   });
 
-  it("an unreadable envelope throws from getOrder (a delivery must not run on empty answers) and is null for display", async () => {
+  it("an unreadable envelope reads as no answers from getOrder (settlement and delivery must not break on it) and is null for display", async () => {
     const order = await directOrder("Corrupt Info");
     const good = JSON.parse((await rawCustomerData(order.id))!) as Record<string, unknown>;
-    await prisma.order.update({
-      where: { id: order.id },
-      data: { customerData: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
-    });
+    const tampered = JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
+    await prisma.order.update({ where: { id: order.id }, data: { customerData: tampered } });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const read = await getOrder(prisma, order.id);
 
-    await expect(getOrder(prisma, order.id)).rejects.toThrow();
+      expect(read!.customerData).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: order.id, errorName: expect.any(String) }),
+        expect.stringContaining(String(order.id)),
+      );
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain(ANSWERS);
+      expect(logged).not.toContain(tampered);
+      expect(logged).not.toContain(String(good.ciphertext));
+    } finally {
+      warn.mockRestore();
+    }
     const display = await getOrderByCodeFullForDisplay(prisma, order.orderCode);
     expect(display!.customerData).toBeNull();
   });

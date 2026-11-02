@@ -60,7 +60,6 @@ import {
   tryDecryptDeliveredContent,
   encryptCustomerData,
   encryptCustomerDataForInsert,
-  decryptCustomerData,
   tryDecryptCustomerData,
 } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
@@ -621,7 +620,10 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * order kind. `Order.deliveredContent` (encrypted since Fase 6c) is decrypted
  * here too, throwing on an unreadable value like the stock credentials do.
  * `Order.customerData` (encrypted since the buyer-answers change) is decrypted
- * here too, throwing on an unreadable value.
+ * here too but does NOT throw: an unreadable answers value degrades to null
+ * plus a warning naming only the order id and error class (a missing key still
+ * throws). Settlement and delivery read through here and must not fail on the
+ * buyer's answers; the supplier paths decrypt their own raw rows instead.
  */
 function withDecryptedStockCredentials<
   T extends {
@@ -639,7 +641,10 @@ function withDecryptedStockCredentials<
   return {
     ...order,
     deliveredContent: decryptDeliveredContent(order.deliveredContent, order.id),
-    customerData: decryptCustomerData(order.customerData, order.id),
+    // Never the throwing variant: getOrder also serves payment settlement, credential delivery and
+    // ticket creation, and one unreadable answers value must not roll those back forever. No supplier
+    // path reads answers through here; each decrypts its own raw row and fails safe on its own.
+    customerData: tryDecryptCustomerData(order.customerData, { orderId: order.id, purpose: "an order read" }),
     items: order.items.map((item) =>
       item.stockItem
         ? {

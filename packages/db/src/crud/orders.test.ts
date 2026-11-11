@@ -721,6 +721,33 @@ describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)",
     expect(fresh!.paymentRef).toBeNull();
   });
 
+  it("stores the gateway charge together with the cached gateway result", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+    const ok = await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "tokopay", trxId: "TP1" }, new Decimal("50025"));
+    expect(ok).toBe(true);
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount!.toString()).toBe("50025");
+    expect(JSON.parse(row.paymentRef!).trxId).toBe("TP1");
+  });
+
+  it("writes neither the cache nor the charge when the claim sentinel no longer matches", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const ok = await commitGatewayResult(prisma, order.id, "not-the-sentinel", { gateway: "tokopay" }, new Decimal("50025"));
+    expect(ok).toBe(false);
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount).toBeNull();
+    expect(row.paymentRef).toBeNull();
+  });
+
+  it("leaves the charge null when none is passed", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+    expect(await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "paydisini" })).toBe(true);
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount).toBeNull();
+  });
+
   it("releaseGatewaySlot resets paymentRef to null only while the sentinel is present, and never clobbers a committed result", async () => {
     const order = await makeOrder("PENDING_PAYMENT");
     const sentinel1 = await claimGatewaySlot(prisma, order.id);

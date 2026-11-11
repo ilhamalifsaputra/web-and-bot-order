@@ -172,6 +172,17 @@ the admin Settings page. The message states the order total, our estimate and To
 payment is processed with TokoPay's figure, and says the built-in estimate table needs a code update. A
 drift does not block the payment; an `implausible` result does (section 1).
 
+### 6. Why the tariff is not fetched from TokoPay
+
+TokoPay's public API (docs.tokopay.id, checked 2026-11-11) has no endpoint that lists channels or
+tariffs. It offers `/v1/order` (`total_bayar`, `total_diterima`), `/v1/check-order` (`nominal`,
+`jumlah_bayar`), the callback (`total_dibayar`, `total_diterima`) and `/v1/merchant/balance`. The fee is
+therefore only knowable per transaction, which is what the snapshot in section 1 captures.
+
+The owner chose to keep the built-in table for the pre-QR estimate. After a tariff change, payments keep
+matching through the snapshot; only the storefront checkout estimate needs a code update, and the alert
+in section 5 says so.
+
 ## Error handling
 
 - `total_bayar` missing: snapshot null, estimate used everywhere. This is the only case that still

@@ -218,14 +218,17 @@ export async function checkTransaction(
   const statusStr = String(d.status ?? "").toLowerCase();
   const trxId = (typeof d.trx_id === "string" && d.trx_id) || (typeof d.reference === "string" && d.reference) || null;
   const paid = isProviderPaid(StatusProvider.TOKOPAY, statusStr);
-  // Task B3c (backend audit): the amount must come from TokoPay, and the
-  // fee-inclusive `total_bayar` (what the buyer actually paid) is read first.
-  // This used to fall back to `args.amountIdr` — the bare order total we asked
-  // about, which is BELOW the fee-inclusive charge callers compare against —
-  // so a genuine payment was flagged short-paid and parked as unmatched. A
-  // paid status without a usable amount is reported as NOT paid instead:
-  // nothing is delivered on it and the reconcile poller asks again.
-  const amountRaw = d.total_bayar ?? d.nominal ?? d.amount;
+  // The amount must be what the BUYER PAID, fee included, because callers
+  // compare it with the fee-inclusive charge stored on the order
+  // (`expectedTokopayCharge`). Only TokoPay's fee-inclusive fields are read:
+  // `total_bayar` (the /v1/order response), `jumlah_bayar` (/v1/check-order)
+  // and `total_dibayar` (the callback payload). `nominal` / `amount` are the
+  // bare order total WITHOUT the fee and are deliberately NOT a fallback: a
+  // fully paid order would compare short against its own charge and be flagged
+  // underpaid. A paid status without a fee-inclusive amount is reported as NOT
+  // paid and `unverified` instead: nothing is delivered on it, it is parked for
+  // manual review and the admins are alerted.
+  const amountRaw = d.total_bayar ?? d.jumlah_bayar ?? d.total_dibayar;
   let amount: Decimal | null = null;
   if (amountRaw !== undefined && amountRaw !== null && amountRaw !== "") {
     try {

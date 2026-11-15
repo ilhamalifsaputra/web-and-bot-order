@@ -53,7 +53,6 @@ import { acknowledgeCredentialsFile } from "./helpers/credentialsFile";
 import { flipSettledOrderBubble } from "../src/jobs";
 import { FulfillmentMessageWorker, type FulfillmentTelegramApi } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder } from "../src/payments/tokopayReconcile";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
 let sample: SampleData;
 
@@ -116,6 +115,12 @@ function stubStatus(data: Record<string, unknown>) {
 
 /** A PENDING_PAYMENT TokoPay order of either kind, anchored to its QRIS photo
  *  the way a real checkout leaves it. */
+/** What TokoPay itself reports above the order total in these fixtures. */
+const GATEWAY_FEE = 25;
+
+/** The fee-inclusive total the gateway reports for an order (order total + the fixture fee). */
+const qrisChargeAmount = (totalAmount: Decimal.Value) => new Decimal(totalAmount).plus(GATEWAY_FEE);
+
 async function makeAnchoredTokopayOrder(kind: string) {
   const order =
     kind === OrderKind.WALLET_TOPUP
@@ -142,6 +147,8 @@ async function makeAnchoredTokopayOrder(kind: string) {
   await prisma.$transaction(async (tx) => {
     await adoptTransactionMessage(tx, order!.id, 555, 4242, "photo");
     await setOrderPaymentMessage(tx, order!.id, 555, 4242);
+    // TokoPay's own total, stored when the checkout created the transaction.
+    await tx.order.update({ where: { id: order!.id }, data: { gatewayChargeAmount: qrisChargeAmount(order!.totalAmount) } });
   });
   return order!;
 }

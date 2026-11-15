@@ -35,7 +35,6 @@ import { telegramError } from "./helpers/ctx";
 import { acknowledgeCredentialsFile } from "./helpers/credentialsFile";
 import { FulfillmentMessageWorker } from "../../../packages/outbox-dispatcher/src/fulfillmentMessages";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/tokopayReconcile";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 
 let sample: SampleData;
@@ -106,8 +105,20 @@ function stubStatus(data: Record<string, unknown>) {
   );
 }
 
+/** What TokoPay itself reports above the order total in these fixtures. */
+const GATEWAY_FEE = 25;
+
+/** The fee-inclusive total the gateway reports for a pending order (order total + the fixture fee). */
+const chargeOf = (order: { totalAmount: Decimal.Value }) => new Decimal(order.totalAmount).plus(GATEWAY_FEE);
+
+/** Store the gateway's own total on the order, as the checkout does when it creates the transaction. */
+async function snapshotCharge(orderId: number) {
+  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+  await prisma.order.update({ where: { id: orderId }, data: { gatewayChargeAmount: chargeOf(order) } });
+}
+
 async function makeTokopayOrder() {
-  return prisma.$transaction(async (tx) => {
+  const created = await prisma.$transaction(async (tx) => {
     const o = await createOrderDirect(tx, { channel: "bot",
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
@@ -115,6 +126,8 @@ async function makeTokopayOrder() {
     });
     return finalizeOrderPayment(tx, o!.id, { currency: OrderCurrency.IDR });
   });
+  await snapshotCharge(created!.id);
+  return created;
 }
 
 describe("reconcileOrder (TokoPay poller safety net)", () => {
@@ -122,7 +135,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     expect(pending).toBeDefined();
-    const charge = qrisChargeAmount(pending!.totalAmount);
+    const charge = chargeOf(pending!);
     stubStatus({ status: "Paid", trx_id: "TRX-RC", total_bayar: charge.toString() });
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
@@ -131,6 +144,36 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(after?.status).toBe(OrderStatus.DELIVERED);
     const tx = await prisma.processedTokopayTx.findFirst({ where: { orderId: created!.id } });
     expect(tx?.outcome).toBe("matched");
+  });
+
+  it("pays the stored gateway charge: leaves PENDING_PAYMENT, is not UNDERPAID and sends no admin alert", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    expect(pending!.gatewayChargeAmount?.toString()).toBe(chargeOf(pending!).toString());
+    stubStatus({ status: "Paid", trx_id: "TRX-SNAP-OK", total_bayar: chargeOf(pending!).toString() });
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).not.toBe(OrderStatus.PENDING_PAYMENT);
+    expect(after?.status).not.toBe(OrderStatus.UNDERPAID);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("flags UNDERPAID with the stored gateway charge as the expected amount when only the order total arrives", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    stubStatus({ status: "Paid", trx_id: "TRX-SNAP-SHORT", total_bayar: new Decimal(pending!.totalAmount).toString() });
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.UNDERPAID);
+    const row = await prisma.qrisUnderpaidTx.findFirstOrThrow({ where: { orderId: created!.id } });
+    expect(row.expectedAmount.toString()).toBe(chargeOf(pending!).toString());
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // one alert per admin (ADMIN_IDS = "999,1000")
   });
 
   it("never delivers when the gateway reports only the bare order total (no admin fee) — flagged UNDERPAID instead", async () => {
@@ -153,7 +196,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
   it("keys the ledger on the order code, not a synthetic reconcile- key, when the gateway returns no trx_id", async () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
-    stubStatus({ status: "Paid", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() }); // no trx_id
+    stubStatus({ status: "Paid", total_bayar: chargeOf(pending!).toString() }); // no trx_id
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
 
@@ -171,7 +214,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
   it("makes a later webhook for the same payment collide on the poller's own ledger row", async () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
-    const charge = qrisChargeAmount(pending!.totalAmount);
+    const charge = chargeOf(pending!);
     stubStatus({ status: "Paid", total_bayar: charge.toString() }); // no trx_id
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
@@ -272,7 +315,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     await adoptTransactionMessage(prisma, created!.id, 555, 777, kind ?? "text");
     // null: a message adopted before its kind was recorded.
     if (kind === null) await prisma.fulfillmentMessage.update({ where: { orderId: created!.id }, data: { messageKind: null } });
-    stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+    stubStatus({ status: "Paid", trx_id: trxId, total_bayar: chargeOf(pending!).toString() });
 
     await reconcileOrder(api, CREDS, pending!);
     expect(api.editMessageText).not.toHaveBeenCalled();
@@ -289,7 +332,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
     await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
-    stubStatus({ status: "Paid", trx_id: "TRX-SENDING", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+    stubStatus({ status: "Paid", trx_id: "TRX-SENDING", total_bayar: chargeOf(pending!).toString() });
     await reconcileOrder(api, CREDS, pending!);
     const worker = new FulfillmentMessageWorker(api);
     await worker.tick(created!.id);
@@ -387,7 +430,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
       await adoptTransactionMessage(prisma, created!.id, 555, 777, "text");
-      stubStatus({ status: "Paid", trx_id: "TRX-EDITFAIL", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+      stubStatus({ status: "Paid", trx_id: "TRX-EDITFAIL", total_bayar: chargeOf(pending!).toString() });
 
       await reconcileOrder(api, CREDS, pending!);
       expect(api.editMessageText).not.toHaveBeenCalled();
@@ -451,7 +494,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
      *  paid in full (order total + the QRIS admin fee). */
     async function reconcilePaid(api: Api, trxId: string): Promise<void> {
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
-      stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+      stubStatus({ status: "Paid", trx_id: trxId, total_bayar: chargeOf(pending!).toString() });
       await reconcileOrder(api, CREDS, pending!);
       expect(api.editMessageText).not.toHaveBeenCalled();
       await acknowledgeCredentialsFile(pending!.id);
@@ -478,6 +521,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
         where: { id: order.id },
         data: { expiresAt: new Date(Date.now() + 30 * 60_000) },
       });
+      await snapshotCharge(order.id);
       await setOrderPaymentMessage(prisma, order.id, 555, 777);
       await adoptTransactionMessage(prisma, order.id, 555, 777, "photo");
       return order;
@@ -571,7 +615,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const [pending] = await listPendingTokopayOrders(prisma, new Date());
       await setOrderPaymentMessage(prisma, created!.id, 555, 777);
       await adoptTransactionMessage(prisma, created!.id, 555, 777, "photo");
-      stubStatus({ status: "Paid", trx_id: "TRX-DIGIFLAZZ", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+      stubStatus({ status: "Paid", trx_id: "TRX-DIGIFLAZZ", total_bayar: chargeOf(pending!).toString() });
       const api = fakeApi();
 
       await reconcileOrder(api, CREDS, pending!);

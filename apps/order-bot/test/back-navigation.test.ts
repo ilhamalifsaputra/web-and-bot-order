@@ -4,10 +4,13 @@ import "./setup-db";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // A QR payment screen without a real gateway call (typed Back on the QR wait).
-vi.mock("@app/core/payments/tokopay", async (orig) => ({
-  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
-  createTransaction: vi.fn().mockResolvedValue({ trxId: "TP-BACK", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: "100" }),
-}));
+vi.mock("@app/core/payments/tokopay", async (orig) => {
+  const { Decimal } = await import("@app/core/money");
+  return {
+    ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+    createTransaction: vi.fn(async (_creds: unknown, args: { amountIdr: unknown }) => ({ trxId: "TP-BACK", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: new Decimal(String(args.amountIdr)).plus(25).toFixed(0) })),
+  };
+});
 
 import { prisma, adjustWallet, createCatalogProduct, createCategory, createDenomination, createOrderDirect, createTicket, setSetting, upsertUser } from "@app/db";
 import { t as coreT } from "@app/core/i18n";

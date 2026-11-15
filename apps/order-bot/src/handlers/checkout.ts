@@ -74,6 +74,8 @@ import {
   enqueueNotification,
   claimGatewaySlot,
   commitGatewayResult,
+  commitTokopayGateway,
+  TokopayChargeUnavailableError,
   releaseGatewaySlot,
   logCustomerAction,
   setOrderPaymentRail,
@@ -86,7 +88,7 @@ import {
   adoptTransactionMessage,
   ownsTransactionMessageAt,
 } from "@app/db";
-import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
+import { createTransaction } from "@app/core/payments/tokopay";
 import { qrisCaptionAmounts } from "../util/qrisCaption";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
@@ -2035,11 +2037,6 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   clearAccountInput(ctx);
 
-  // Based on order.totalAmount (what's actually sent to the gateway as
-  // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
-  const adminFee = computeQrisAdminFee(order.totalAmount);
-  const chargeAmount = new Decimal(order.totalAmount).plus(adminFee);
-
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
   // Atomic claim before the external call — this order is visible to the
@@ -2061,13 +2058,17 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     return;
   }
   let gateway;
+  let chargeAmount: Decimal;
   try {
     gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
-    // Tagged `gateway: "tokopay"` to match the cache shape the storefront's own
-    // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
-    // parseCachedGateway() requires this discriminator before trusting the cache.
-    const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
-    if (!committed) {
+    // Stores TokoPay's own total on the order together with the cached
+    // transaction (tagged `gateway: "tokopay"` for the storefront's cache
+    // reader) and hands back the figure to print beside the QR. Throws when
+    // TokoPay reported no usable total; the catch below then cancels the order
+    // shell exactly as for a failed transaction creation.
+    const result = await commitTokopayGateway(prisma, { order, sentinel: claimSentinel, gateway });
+    chargeAmount = result.charge;
+    if (!result.committed) {
       logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
     }
     // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
@@ -2088,7 +2089,11 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
-    logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
+    if (err instanceof TokopayChargeUnavailableError) {
+      logger.error({ err }, `TokoPay created a transaction for order ${order.orderCode} but reported no usable total to pay, so no QR code was sent and the order shell is being cancelled — a payment could not have been verified against it`);
+    } else {
+      logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
+    }
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
@@ -2108,7 +2113,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   const payText = formatIdrFor(chargeAmount, lang);
   // Rows that add up (B7): the discounts between the gross subtotal and the
   // gateway nominal get their own lines — see util/qrisCaption.ts.
-  const rows = qrisCaptionAmounts(order, lang);
+  const rows = qrisCaptionAmounts(order, lang, chargeAmount);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
     subtotal: rows.subtotal,

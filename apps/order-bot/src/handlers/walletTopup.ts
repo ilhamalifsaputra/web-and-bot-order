@@ -40,11 +40,13 @@ import {
   cancelOrder,
   claimGatewaySlot,
   commitGatewayResult,
+  commitTokopayGateway,
+  TokopayChargeUnavailableError,
   releaseGatewaySlot,
   type WalletTopupLimits,
   type WalletTopupMethod,
 } from "@app/db";
-import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
+import { createTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
 import { triggerImmediatePoll as internalImmediatePoll } from "../payments/binanceInternal";
@@ -675,9 +677,6 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   delete sc(ctx).topupCurrency;
   delete sc(ctx).topupAmount;
 
-  const adminFee = computeQrisAdminFee(order.totalAmount);
-  const chargeAmount = new Decimal(order.totalAmount).plus(adminFee);
-
   const claimSentinel = await claimGatewaySlot(prisma, order.id);
   if (!claimSentinel) {
     logger.warn(`Lost the gateway claim for wallet top-up order ${order.orderCode} to a concurrent request — leaving the order for the other caller to finish instead of creating a second TokoPay transaction`);
@@ -685,15 +684,25 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
     return;
   }
   let gateway;
+  let chargeAmount: Decimal;
   try {
     gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
-    const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
-    if (!committed) {
+    // Stores TokoPay's own total on the order together with the cached
+    // transaction and hands back the figure to print beside the QR. Throws when
+    // TokoPay reported no usable total; the catch below then cancels the order
+    // shell exactly as for a failed transaction creation.
+    const result = await commitTokopayGateway(prisma, { order, sentinel: claimSentinel, gateway });
+    chargeAmount = result.charge;
+    if (!result.committed) {
       logger.warn(`Created a TokoPay transaction for wallet top-up order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
     }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
-    logger.error({ err }, `Failed to create a TokoPay transaction for wallet top-up order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
+    if (err instanceof TokopayChargeUnavailableError) {
+      logger.error({ err }, `TokoPay created a transaction for wallet top-up order ${order.orderCode} but reported no usable total to pay, so no QR code was sent and the order shell is being cancelled — a payment could not have been verified against it`);
+    } else {
+      logger.error({ err }, `Failed to create a TokoPay transaction for wallet top-up order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
+    }
     await prisma
       .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
       .catch(() => {});
@@ -706,7 +715,7 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
   // Same rows-that-add-up helper as the order checkout (B7): a top-up has no
   // discount, so this is normally just subtotal + fee = total to pay.
-  const rows = qrisCaptionAmounts(order, ctx.session.lang);
+  const rows = qrisCaptionAmounts(order, ctx.session.lang, chargeAmount);
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
     subtotal: rows.subtotal,

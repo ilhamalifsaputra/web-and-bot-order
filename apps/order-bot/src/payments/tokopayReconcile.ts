@@ -22,7 +22,8 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
-import { checkTransaction, qrisChargeAmount, RateLimitedError } from "@app/core/payments/tokopay";
+import { checkTransaction, RateLimitedError } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import {
   TOKOPAY_MAX_ORDERS_PER_CYCLE as MAX_ORDERS_PER_CYCLE,
@@ -181,7 +182,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
  */
 export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getTokopayCreds>>, order: PendingOrder): Promise<"ok" | "skipped" | "gateway_error"> {
   if (!creds) return "skipped";
-  const expectedCharge = qrisChargeAmount(order.totalAmount);
+  const expectedCharge = expectedTokopayCharge(order);
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
     status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });

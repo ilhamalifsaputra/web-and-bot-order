@@ -17,7 +17,9 @@ import {
   computeQrisAdminFee,
   qrisChargeAmount,
   type TokopayCreds,
+  type TokopayOrderInfo,
 } from "@app/core/payments/tokopay";
+import { readTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
@@ -25,7 +27,7 @@ import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, settlePaidOrder } from "./orders";
+import { getOrder, settlePaidOrder, commitGatewayResult } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
@@ -59,6 +61,48 @@ export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmou
     channel: (channel ?? "QRIS").trim() || "QRIS",
     minAmount: parseMinAmount(minAmountSetting),
   };
+}
+
+/** TokoPay created a transaction but did not report a usable total for the
+ *  buyer to pay (`readTokopayCharge`), so no payment instructions may be shown. */
+export class TokopayChargeUnavailableError extends Error {}
+
+/**
+ * Cache a freshly created TokoPay transaction on its order AND record what
+ * TokoPay says the buyer must pay — the figure every later paid-amount check
+ * reads (`expectedTokopayCharge`). The three places that create a TokoPay
+ * transaction (storefront pay page, bot checkout, bot wallet top-up) all go
+ * through here, so none of them can cache a transaction without its charge.
+ *
+ * Returns that charge for the caller to print beside the QR. Throws
+ * `TokopayChargeUnavailableError`, storing nothing, when TokoPay's total is
+ * missing or implausible: without it the payment could not be verified later,
+ * so the caller must treat this exactly like a failed transaction creation.
+ */
+export async function commitTokopayGateway(
+  db: Db,
+  args: {
+    order: { id: number; orderCode: string; totalAmount: Decimal.Value };
+    sentinel: string;
+    gateway: TokopayOrderInfo;
+  },
+): Promise<{ committed: boolean; charge: Decimal }> {
+  const reading = readTokopayCharge(args.order.totalAmount, args.gateway.totalBayar);
+  if (reading.kind !== "ok") {
+    throw new TokopayChargeUnavailableError(
+      reading.kind === "missing"
+        ? `TokoPay created a transaction for order ${args.order.orderCode} without reporting the total the buyer must pay, so no payment instructions were shown — the payment could not have been verified against anything`
+        : `TokoPay reported an implausible total for order ${args.order.orderCode} (order total ${new Decimal(args.order.totalAmount).toString()}), so no payment instructions were shown — check the transaction in the TokoPay dashboard`,
+    );
+  }
+  const committed = await commitGatewayResult(
+    db,
+    args.order.id,
+    args.sentinel,
+    { gateway: "tokopay", ...args.gateway },
+    reading.charge,
+  );
+  return { committed, charge: reading.charge };
 }
 
 /** PENDING, not-yet-expired TokoPay orders the reconcile poller should check,

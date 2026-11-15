@@ -32,6 +32,9 @@ import {
   cancelOrder,
   finalizeOrderPayment,
   createPaymentAttempt,
+  claimGatewaySlot,
+  commitTokopayGateway,
+  TokopayChargeUnavailableError,
 } from "@app/db";
 import { OrderCurrency, StockActorType } from "@app/core/enums";
 import { config } from "@app/core/config";
@@ -67,6 +70,53 @@ async function makePendingTokopayOrder() {
   });
   return order;
 }
+
+describe("commitTokopayGateway", () => {
+  const gatewayInfo = (totalBayar: string | null) => ({
+    trxId: "TP-COMMIT", payUrl: null, qrLink: "https://qr.example/x.png", qrString: null, totalBayar,
+  });
+
+  /** A pending TokoPay order whose totalAmount is exactly `total`. */
+  async function createPendingTokopayOrder(total: string) {
+    const order = await makePendingTokopayOrder();
+    return prisma.order.update({ where: { id: order.id }, data: { totalAmount: new Decimal(total) } });
+  }
+
+  it("stores TokoPay's total with the cached transaction and returns it", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
+    const r = await commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo("50025") });
+    expect(r.committed).toBe(true);
+    expect(r.charge.toString()).toBe("50025");
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount!.toString()).toBe("50025");
+    expect(JSON.parse(row.paymentRef!)).toMatchObject({ gateway: "tokopay", trxId: "TP-COMMIT", totalBayar: "50025" });
+  });
+
+  it("reports committed=false and stores nothing when the claim no longer matches", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    const r = await commitTokopayGateway(prisma, { order, sentinel: "not-the-sentinel", gateway: gatewayInfo("50025") });
+    expect(r.committed).toBe(false);
+    expect(r.charge.toString()).toBe("50025");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).gatewayChargeAmount).toBeNull();
+  });
+
+  it.each([
+    ["missing", null],
+    ["below the order total", "49000"],
+    ["not a number", "abc"],
+    ["absurdly high", "999999999"],
+  ])("throws and stores nothing when TokoPay's total is %s", async (_label, totalBayar) => {
+    const order = await createPendingTokopayOrder("50000");
+    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
+    await expect(
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo(totalBayar) }),
+    ).rejects.toBeInstanceOf(TokopayChargeUnavailableError);
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount).toBeNull();
+    expect(row.paymentRef).toBe(sentinel);
+  });
+});
 
 describe("deliverPaidTokopayOrder", () => {
   it("delivers a pending order and claims the trx id", async () => {

@@ -12,6 +12,7 @@ import { deliverPaidInternalOrder, deliverUnderpaidOrder, markUnderpaid, listPen
 import * as audit from "./audit";
 import { cancelOrder, countExpiredPending, createOrderDirect, fulfillManualOrder, listExpiredPendingOrders, listExpiringPendingPayments } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
+import { digiflazzCandidateWhere } from "./digiflazz";
 import { OrderStatus, PaymentMethod, DeliveryType, StockActorType } from "@app/core/enums";
 import * as users from "./users";
 import * as notifications from "./notifications";
@@ -115,13 +116,55 @@ describe("underpaid admin completion preserves provider facts", () => {
     await markUnderpaid(db.prisma, { orderId: order.id, binanceTxId: "underpaid-override", amount: order.totalAmount.div(2) });
     await expect(deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: " " })).rejects.toThrow();
     const result = await deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: "Approved goodwill shortfall" });
+    expect(result.kind).toBe("delivered");
+    expect(result.provider).toBe("STOCK");
     expect(result.order.status).toBe(OrderStatus.DELIVERED);
     expect(result.order.paymentState).toBe("UNDERPAID");
     expect(result.order.completionMode).toBe("ADMIN_OVERRIDE");
     expect(result.order.completedBy).toBe(sample.user.id);
     expect(result.order.completedAt).not.toBeNull();
     expect(result.order.completionReason).toBe("Approved goodwill shortfall");
-    expect(await db.prisma.auditLog.count({ where: { action: "underpaid_deliver", targetId: order.id } })).toBe(1);
+    const auditRows = await db.prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: order.id } });
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]!.details).toBe(
+      `Admin override for underpaid order ${order.orderCode}: Approved goodwill shortfall. Payment remains UNDERPAID; fulfillment delivered.`,
+    );
+  });
+
+  it("forwards a Digiflazz-routed order to the supplier: PROCESSING, a dispatch candidate, payment still UNDERPAID, no manual-queue notifications", async () => {
+    const order = (await createOrderDirect(db.prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await db.prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL, fulfillmentProvider: "DIGIFLAZZ" } });
+    await markUnderpaid(db.prisma, { orderId: order.id, binanceTxId: "digiflazz-underpaid", amount: order.totalAmount.div(2) });
+
+    const result = await deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: "Goodwill top-up" });
+    expect(result.kind).toBe("processing");
+    expect(result.provider).toBe("DIGIFLAZZ");
+    expect(result.credentials).toEqual([]);
+
+    const row = await db.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.status).toBe(OrderStatus.PROCESSING);
+    expect(row.digiflazzStatus).not.toBe("failed");
+    expect(row.paymentState).toBe("UNDERPAID");
+    expect(row.completionMode).toBe("ADMIN_OVERRIDE");
+    expect(row.completionReason).toBe("Goodwill top-up");
+    // The dispatcher (instant trigger and the recovery cron) selects it.
+    const candidate = await db.prisma.order.findFirst({ where: { id: order.id, ...digiflazzCandidateWhere(new Date()) } });
+    expect(candidate?.id).toBe(order.id);
+
+    // The Digiflazz branch, not the manual queue: no buyer "being prepared" DM
+    // and no admin/owner manual-queue alerts.
+    for (const event of ["ORDER_PROCESSING_DM", "ADMIN_MANUAL_ORDER_QUEUED", "OWNER_EMAIL_MANUAL_ORDER_QUEUED"]) {
+      expect(await db.prisma.notificationOutbox.count({ where: { orderId: order.id, event } }), event).toBe(0);
+    }
+    // Nor a "payment confirmed" email: the payment is still incomplete.
+    expect(await db.prisma.notificationOutbox.count({ where: { orderId: order.id, event: "payment.confirmed.customer" } })).toBe(0);
+
+    const auditRows = await db.prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: order.id } });
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]!.details).toContain("forwarded to Digiflazz");
+    expect(auditRows[0]!.details).toBe(
+      `Admin override for underpaid order ${order.orderCode}: Goodwill top-up. Payment remains UNDERPAID; fulfillment forwarded to Digiflazz.`,
+    );
   });
 
   it("queues a premium manual order, then records its manual completion without confirming payment", async () => {
@@ -130,7 +173,13 @@ describe("underpaid admin completion preserves provider facts", () => {
     await db.prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL } });
     await markUnderpaid(db.prisma, { orderId: order.id, binanceTxId: "manual-underpaid", amount: order.totalAmount.div(2) });
     const queued = await deliverUnderpaidOrder(db.prisma, { orderId: order.id, adminId: sample.user.id, reason: "Customer service exception" });
+    expect(queued.kind).toBe("processing");
+    expect(queued.provider).toBe("MANUAL");
     expect(queued.order.status).toBe(OrderStatus.PROCESSING);
+    const audit = await db.prisma.auditLog.findFirstOrThrow({ where: { action: "underpaid_deliver", targetId: order.id } });
+    expect(audit.details).toBe(
+      `Admin override for underpaid order ${order.orderCode}: Customer service exception. Payment remains UNDERPAID; fulfillment queued for manual fulfilment.`,
+    );
     const completed = await db.prisma.$transaction((tx) => fulfillManualOrder(tx, order.id, { adminId: sample.user.id, content: "Delivered account" }));
     expect(completed.order.status).toBe(OrderStatus.DELIVERED);
     expect(completed.order.paymentState).toBe("UNDERPAID");

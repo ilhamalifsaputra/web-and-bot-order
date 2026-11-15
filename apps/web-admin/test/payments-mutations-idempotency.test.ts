@@ -26,7 +26,7 @@ import {
   logAdminAction,
 } from "@app/db";
 import { logger } from "@app/core/logger";
-import { PaymentMethod } from "@app/core/enums";
+import { DeliveryType, PaymentMethod } from "@app/core/enums";
 import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
 // The instant Digiflazz dispatch is observed, not run: the manual-match test
@@ -168,10 +168,12 @@ describe("POST /api/payments/order/:orderId/deliver — Idempotency-Key", () => 
 
     const first = await deliver(order.id);
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({ ok: true });
+    expect(first.json()).toEqual({ ok: true, outcome: "delivered" });
 
     const second = await deliver(order.id);
     expect(second.statusCode).toBe(422);
+    // Delivered from stock: nothing for Digiflazz to do.
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
   });
 
   it("replays the exact success response for a repeated request with the same key, delivering only once", async () => {
@@ -180,16 +182,59 @@ describe("POST /api/payments/order/:orderId/deliver — Idempotency-Key", () => 
 
     const first = await deliver(order.id, { "idempotency-key": key });
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({ ok: true });
+    expect(first.json()).toEqual({ ok: true, outcome: "delivered" });
 
     const second = await deliver(order.id, { "idempotency-key": key });
     expect(second.statusCode).toBe(200);
-    expect(second.json()).toEqual({ ok: true });
+    expect(second.json()).toEqual({ ok: true, outcome: "delivered" });
+    expect(triggerDigiflazzDispatch).not.toHaveBeenCalled();
 
     const auditRows = await prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: order.id } });
     expect(auditRows).toHaveLength(1);
     // The replay queues no second credentials DM.
     expect(await prisma.notificationOutbox.count({ where: { orderId: order.id, event: "ORDER_DELIVERED_DM" } })).toBe(1);
+  });
+
+  it("forwards a Digiflazz-routed override to the supplier: triggers the dispatch once, after commit, and replays the stored outcome", async () => {
+    const order = await makeUnderpaidOrder("dtx-digiflazz");
+    await routeOrderToDigiflazz(prisma, order.id);
+    // Read the order's committed status from outside the request at the moment
+    // the trigger runs. Called inside the settlement transaction, this read
+    // would still see UNDERPAID.
+    let statusAtTrigger: Promise<string> | null = null;
+    vi.mocked(triggerDigiflazzDispatch).mockImplementation((orderId: number) => {
+      statusAtTrigger = prisma.order.findUniqueOrThrow({ where: { id: orderId } }).then((o) => o.status);
+    });
+    const key = "deliver-key-digiflazz";
+
+    const first = await deliver(order.id, { "idempotency-key": key });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ ok: true, outcome: "forwarded_to_supplier" });
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledWith(order.id);
+    expect(statusAtTrigger).not.toBeNull();
+    expect(await statusAtTrigger).toBe("PROCESSING");
+
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.status).toBe("PROCESSING");
+    expect(row.digiflazzStatus).not.toBe("failed");
+    expect(row.paymentState).toBe("UNDERPAID");
+
+    // The replay returns the stored body and starts no second dispatch.
+    const second = await deliver(order.id, { "idempotency-key": key });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ ok: true, outcome: "forwarded_to_supplier" });
+    expect(triggerDigiflazzDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers queued_manual for a manual-delivery SKU", async () => {
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { deliveryType: DeliveryType.MANUAL } });
+    const order = await makeUnderpaidOrder("dtx-manual");
+
+    const res = await deliver(order.id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, outcome: "queued_manual" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PROCESSING");
   });
 
   it("replays a stored 422 the same way — a retry doesn't re-attempt a delivery the order can no longer accept", async () => {

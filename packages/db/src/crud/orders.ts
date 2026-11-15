@@ -3265,10 +3265,14 @@ export async function settlePaidOrder(
   // column but never backfills it — see the migration's own comment), which
   // is exactly the pre-existing live-read behavior for those rows.
   const provider = fulfillmentProviderFor(order);
-  const isDigiflazz = provider === "DIGIFLAZZ" && order.completionMode !== "ADMIN_OVERRIDE";
-  if (provider === "DIGIFLAZZ" && order.completionMode === "ADMIN_OVERRIDE") {
-    await db.order.update({ where: { id: orderId }, data: { digiflazzStatus: "failed", digiflazzNextRecheckAt: null } });
-  }
+  // An admin override of an UNDERPAID order (completionMode ADMIN_OVERRIDE) on a
+  // Digiflazz-routed order is forwarded to the supplier exactly like a paid one:
+  // the admin has decided the order is to be fulfilled, and parking it for manual
+  // work left overrides looking stuck with nothing sent to Digiflazz. Payment
+  // facts stay UNDERPAID (see the paymentState writes below, keyed on
+  // completionMode); crediting such an order back is capped at what the buyer
+  // actually paid (creditOrderToBalance).
+  const isDigiflazz = provider === "DIGIFLAZZ";
   const isManual = provider !== "STOCK";
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────

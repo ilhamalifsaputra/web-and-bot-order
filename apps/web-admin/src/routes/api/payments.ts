@@ -251,17 +251,28 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(statusCode).send(body);
     };
 
+    let result: Awaited<ReturnType<typeof deliverUnderpaidOrder>>;
     try {
-      await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId, reason });
+      result = await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId, reason });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
-    // Committed: deliver the queued buyer DM (credentials file or "being
-    // prepared" note) now instead of on the dispatcher's next poll.
+    // Committed. A Digiflazz-routed override is now a dispatch candidate:
+    // place the supplier request right away instead of waiting for the
+    // recovery cron (the trigger ignores non-Digiflazz orders and never throws).
+    if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
+    // Deliver the queued buyer DM (credentials file or "being prepared" note)
+    // now instead of on the dispatcher's next poll.
     nudgeOutboxDispatcher();
-    logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
-    return respond(200, { ok: true });
+    const outcome = result.kind === "delivered"
+      ? "delivered"
+      : result.provider === "DIGIFLAZZ" ? "forwarded_to_supplier" : "queued_manual";
+    logger.info(
+      `Admin ${req.admin!.userId} overrode underpaid order ${result.order.orderCode} via the web panel; ` +
+        `the outcome is ${outcome.replace(/_/g, " ")} and the payment stays recorded as UNDERPAID.`,
+    );
+    return respond(200, { ok: true, outcome });
   });
 
   app.post("/api/payments/order/:orderId/refund", { preHandler: csrfProtect }, async (req, reply) => {

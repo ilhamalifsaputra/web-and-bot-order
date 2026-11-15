@@ -22,7 +22,8 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
-import { checkTransaction, qrisChargeAmount, RateLimitedError } from "@app/core/payments/tokopay";
+import { checkTransaction, RateLimitedError } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import {
   TOKOPAY_MAX_ORDERS_PER_CYCLE as MAX_ORDERS_PER_CYCLE,
@@ -181,7 +182,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
  */
 export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getTokopayCreds>>, order: PendingOrder): Promise<"ok" | "skipped" | "gateway_error"> {
   if (!creds) return "skipped";
-  const expectedCharge = qrisChargeAmount(order.totalAmount);
+  const expectedCharge = expectedTokopayCharge(order);
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
     status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
@@ -216,13 +217,13 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
         reason: "unverified_amount",
       });
       if (newlyParked) {
-        logger.warn(`TokoPay reports order ${order.orderCode} as paid but without an amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`);
+        logger.warn(`TokoPay reports order ${order.orderCode} as paid but with no fee-inclusive amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`);
         nudgeOutboxDispatcher();
       }
     } catch (err) {
       logger.error(
         { err, orderId: order.id },
-        `Could not park or alert on order ${order.orderCode}, which TokoPay reports as paid but without an amount — nothing was delivered, and the next reconcile cycle will try to record it again; if every cycle fails, the order will auto-cancel with nobody told`,
+        `Could not park or alert on order ${order.orderCode}, which TokoPay reports as paid but with no fee-inclusive amount — nothing was delivered, and the next reconcile cycle will try to record it again; if every cycle fails, the order will auto-cancel with nobody told`,
       );
     }
     return "ok";

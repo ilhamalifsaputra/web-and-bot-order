@@ -347,4 +347,24 @@ describe("markOrderUnderpaid", () => {
     expect(rows).toHaveLength(1);
     expect(new Decimal(rows[0]!.receivedAmount).toString()).toBe("9000");
   });
+
+  /** This file's pending order, as a TokoPay IDR order whose total is exactly `total`. */
+  async function createPendingTokopayOrder(total: string) {
+    return prisma.order.update({
+      where: { id: orderId },
+      data: { paymentMethod: "TOKOPAY", currency: "IDR", totalAmount: new Decimal(total) },
+    });
+  }
+
+  it("accepts an expected amount equal to the order's stored gateway charge", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+    expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "50000", expectedAmount: "50025" })).toBe(true);
+  });
+
+  it("refuses an expected amount that is neither the total nor the stored gateway charge", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+    expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "50000", expectedAmount: "50450" })).toBe(false);
+  });
 });

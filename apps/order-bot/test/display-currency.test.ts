@@ -8,16 +8,19 @@ import "./setup-db";
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@app/core/payments/tokopay", async (orig) => ({
-  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
-  createTransaction: vi.fn().mockResolvedValue({
-    trxId: "TP-TEST",
-    payUrl: null,
-    qrLink: "https://x/qr.png",
-    qrString: "000",
-    totalBayar: "100",
-  }),
-}));
+vi.mock("@app/core/payments/tokopay", async (orig) => {
+  const { Decimal } = await import("@app/core/money");
+  return {
+    ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+    createTransaction: vi.fn(async (_creds: unknown, args: { amountIdr: unknown }) => ({
+      trxId: "TP-TEST",
+      payUrl: null,
+      qrLink: "https://x/qr.png",
+      qrString: "000",
+      totalBayar: new Decimal(String(args.amountIdr)).plus(25).toFixed(0),
+    })),
+  };
+});
 
 vi.mock("@app/core/payments/paydisini", async (orig) => ({
   ...(await orig<typeof import("@app/core/payments/paydisini")>()),
@@ -302,8 +305,9 @@ describe("payment screens", () => {
     await primeQuote(ctx, sample.product.id, 1);
     await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
-    const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
-    const charge = new Decimal(order.totalAmount).plus(computeQrisAdminFee(order.totalAmount));
+    // The TokoPay mock above reports the order total + 25 as its own total.
+    const charge = new Decimal(order.totalAmount).plus(25);
+    expect(order.gatewayChargeAmount?.toString()).toBe(charge.toString());
     const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
     return { ctx, caption, charge, order };
   }

@@ -63,6 +63,8 @@ import {
   recordUnmatchedTokopayTx,
   getSetting,
   getTokopayCreds,
+  commitTokopayGateway,
+  TokopayChargeUnavailableError,
   resolveBybitConfig,
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
@@ -99,10 +101,9 @@ import {
   createTransaction,
   verifyCallback,
   checkTransaction,
-  computeQrisAdminFee,
-  qrisChargeAmount,
   type TokopayOrderInfo,
 } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import {
   createTransaction as createPaydisiniTransaction,
   verifyCallback as verifyPaydisiniCallback,
@@ -290,14 +291,6 @@ async function computeTotals(
     }
   }
   const total = Decimal.max(new Decimal(0), subtotal.minus(bulkDiscount).minus(voucherDiscount));
-  // QRIS admin fee preview (TokoPay only — @app/core/payments/tokopay is the
-  // one place this formula is computed) so the checkout page can show it
-  // before the buyer has even picked a payment method. Based on `total` (net
-  // of bulk discount/voucher), NOT `subtotal` — TokoPay's nominal (and so its
-  // own fee) is computed off the discounted total actually sent to the
-  // gateway, never the pre-discount gross (H-1 fix, backend audit 2026-07-31).
-  const qrisAdminFee = computeQrisAdminFee(total);
-  const qrisGrandTotal = total.plus(qrisAdminFee);
   // `lines` (the already-joined CartItem rows, each with its Denomination via
   // `ci.product`) rides along so checkoutView can build its per-item array
   // without a second cart query.
@@ -311,8 +304,6 @@ async function computeTotals(
     voucherDiscount,
     voucherError,
     total,
-    qrisAdminFee,
-    qrisGrandTotal,
     lines,
     // Index-aligned with `lines`: each line's engine result, so the summary can
     // show the per-line tier figures behind `bulkDiscount` without re-pricing.
@@ -475,8 +466,6 @@ export async function checkoutView(
     bulk_discount: totals.bulkDiscount.toString(),
     voucher_discount: totals.voucherDiscount.toString(),
     total: totals.total.toString(),
-    qris_admin_fee: totals.qrisAdminFee.toString(),
-    qris_grand_total: totals.qrisGrandTotal.toString(),
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
@@ -1091,12 +1080,12 @@ export async function payView(order: OrderRow) {
   // that page refreshes don't create extra transactions in TokoPay. Tagged
   // with `gateway: "tokopay"` since PayDisini below caches into the SAME
   // column — see the CachedGateway doc comment above parseCachedGateway.
-  // QRIS admin fee — derived from immutable order fields, so it's always safe
-  // to recompute (see @app/core/payments/tokopay computeQrisAdminFee doc).
-  // Based on order.totalAmount (what's actually sent to the gateway as
-  // `nominal`), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
-  const qrisAdminFee = isQris ? computeQrisAdminFee(order.totalAmount) : null;
-  const qrisGrandTotal = isQris ? qrisChargeAmount(order.totalAmount) : null;
+  // What the buyer must pay on a TokoPay order is TokoPay's own figure, stored
+  // on the order when its transaction is created (commitTokopayGateway). There
+  // is no fee formula in this codebase: until that figure exists the page has
+  // no fee and no grand total to show.
+  let qrisGrandTotal: Decimal | null =
+    isQris && order.gatewayChargeAmount != null ? expectedTokopayCharge(order) : null;
 
   let gateway: TokopayOrderInfo | null = null;
   let gatewayError = false;
@@ -1119,13 +1108,22 @@ export async function payView(order: OrderRow) {
               refId: order.orderCode,
               amountIdr: order.totalAmount,
             });
-            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
-            if (!committed) {
+            const result = await commitTokopayGateway(prisma, { order, sentinel: claimSentinel, gateway });
+            qrisGrandTotal = result.charge;
+            if (!result.committed) {
               logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
             }
           } catch (err) {
+            gateway = null;
             await releaseGatewaySlot(prisma, order.id, claimSentinel);
-            logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+            if (err instanceof TokopayChargeUnavailableError) {
+              logger.error(
+                { err },
+                `TokoPay created a transaction for order ${order.orderCode} but reported no usable total for the buyer to pay, so no QR code is shown and the buyer sees the contact fallback instead. The gateway slot was released, so a later visit to the pay page can create the transaction again.`,
+              );
+            } else {
+              logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+            }
             gatewayError = true;
           }
         } else {
@@ -1136,6 +1134,7 @@ export async function payView(order: OrderRow) {
       }
     }
   }
+  const qrisAdminFee = qrisGrandTotal ? qrisGrandTotal.minus(order.totalAmount) : null;
 
   // PayDisini transaction (QR / checkout link) — second IDR option,
   // alongside (not replacing) TokoPay above. Same lazy-create + cache
@@ -1326,7 +1325,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
-    const expectedCharge = qrisChargeAmount(order.totalAmount);
+    const expectedCharge = expectedTokopayCharge(order);
     let live;
     try {
       live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
@@ -1351,7 +1350,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         reason: "unverified_amount",
       });
       logger.warn(
-        `TokoPay's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
+        `TokoPay's live status reports order ${order.orderCode} as paid but carries no fee-inclusive amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
       );
       return reply.send({ status: "unverified" });
     }

@@ -1435,6 +1435,17 @@ describe("/api/v1/checkout + orders", () => {
       });
     });
 
+    // No QRIS admin fee figure exists before the QR: TokoPay sets it when the
+    // transaction is created, so the checkout totals carry no estimate of it.
+    it("GET /checkout carries no QRIS admin fee or fee-inclusive total", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.total).toBe("40000");
+      expect(body).not.toHaveProperty("qris_admin_fee");
+      expect(body).not.toHaveProperty("qris_grand_total");
+    });
+
     // The summary's "flash sale price applied" marker reads these flags, so
     // they must ride on the same payload as the totals they annotate — and the
     // totals must already be the discounted ones.

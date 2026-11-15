@@ -380,8 +380,6 @@ export interface CheckoutData {
   bulk_discount: string;
   voucher_discount: string;
   total: string;
-  qris_admin_fee: string;
-  qris_grand_total: string;
   total_usdt: string | null;
   voucher_code: string;
   error_key: string | null;

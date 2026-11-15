@@ -343,11 +343,12 @@ export async function expirePaymentAttempt(
  * These are captured DATA, not a financial event: nothing here posts to the
  * double-entry ledger (`crud/ledgerPostings.ts`). The revenue this payment
  * earned is already recognised by that file's `ORDER_PAYMENT` posting for the
- * order's own `totalAmount`, and TokoPay's `fee` is a LOCAL estimate of the
- * surcharge the buyer pays on top of that total — not a figure TokoPay reports
- * having deducted — so posting it as a `FEE` transaction would either
- * double-count money the order posting already nets out or invent a financial
- * event from an estimate. See `crud/tokopay.ts`'s call site for the full
+ * order's own `totalAmount`, and TokoPay's `fee` is the buyer-side surcharge
+ * implied by the gateway charge stored on the order (`gatewayChargeAmount`
+ * minus `totalAmount`) — what the buyer paid on top of that total, not a figure
+ * TokoPay reports having deducted from the merchant — so posting it as a `FEE`
+ * transaction would either double-count money the order posting already nets
+ * out or invent a financial event the shop never bore. See `crud/tokopay.ts`'s call site for the full
  * reasoning; it is pinned by a test in crud/tokopay.test.ts.
  *
  * All three are optional, and an omitted (or null) one leaves its column

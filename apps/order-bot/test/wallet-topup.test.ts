@@ -1,16 +1,19 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-vi.mock("@app/core/payments/tokopay", async (orig) => ({
-  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
-  createTransaction: vi.fn().mockResolvedValue({
-    trxId: "TP-TOPUP-TEST",
-    payUrl: null,
-    qrLink: "https://x/qr.png",
-    qrString: "000",
-    totalBayar: "100",
-  }),
-}));
+vi.mock("@app/core/payments/tokopay", async (orig) => {
+  const { Decimal } = await import("@app/core/money");
+  return {
+    ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+    createTransaction: vi.fn(async (_creds: unknown, args: { amountIdr: unknown }) => ({
+      trxId: "TP-TOPUP-TEST",
+      payUrl: null,
+      qrLink: "https://x/qr.png",
+      qrString: "000",
+      totalBayar: new Decimal(String(args.amountIdr)).plus(25).toFixed(0),
+    })),
+  };
+});
 
 vi.mock("@app/core/payments/paydisini", async (orig) => ({
   ...(await orig<typeof import("@app/core/payments/paydisini")>()),
@@ -25,6 +28,10 @@ vi.mock("@app/core/payments/paydisini", async (orig) => ({
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
+import { createTransaction as createTokopayTransaction } from "@app/core/payments/tokopay";
+import { Decimal } from "@app/core/money";
+import { formatIdrFor } from "@app/core/moneyFormat";
+import { t as coreT } from "@app/core/i18n";
 import {
   prisma,
   setSetting,
@@ -34,7 +41,7 @@ import {
 } from "@app/db";
 import { OrderKind, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, lastMarkup, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, sentIncludes, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { topupMethodsKb } from "../src/keyboards/customer";
@@ -230,6 +237,62 @@ describe("payTopup* handlers (representative rails)", () => {
     const itemCount = await prisma.orderItem.count({ where: { orderId: order!.id } });
     expect(itemCount).toBe(0);
     expect(calls(sink, "replyWithPhoto").length).toBe(1);
+  });
+
+  it("payTopupTokopay prints TokoPay's own total and stores it on the order", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    vi.mocked(createTokopayTransaction).mockResolvedValueOnce({
+      trxId: "TP-TOPUP-FEE", payUrl: null, qrLink: "https://x/qr-fee.png", qrString: "000", totalBayar: "50025",
+    });
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:topup:pay:tokopay",
+      session: { ...userSession(), scratch: { topupCurrency: "IDR", topupAmount: "50000" } },
+    });
+    const before = sink.length;
+    await walletTopup.payTopupTokopay(ctx);
+    const after = sink.slice(before);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order.status).toBe("PENDING_PAYMENT");
+    expect(order.gatewayChargeAmount?.toString()).toBe("50025");
+    const photos = calls(after, "replyWithPhoto");
+    expect(photos).toHaveLength(1);
+    const caption = (photos[0]!.args[1] as { caption: string }).caption;
+    expect(caption).toContain(formatIdrFor(new Decimal("50025"), "en"));
+    expect(caption).toContain(formatIdrFor(new Decimal("25"), "en"));
+    // Message budget: one QR photo, nothing else sent or edited by this step.
+    expect(calls(after, "sendPhoto")).toHaveLength(0);
+    expect(calls(after, "sendMessage")).toHaveLength(0);
+    expect(calls(after, "editMessageText")).toHaveLength(0);
+  });
+
+  it("payTopupTokopay shows no QR and cancels the top-up when TokoPay reports no total", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    vi.mocked(createTokopayTransaction).mockResolvedValueOnce({
+      trxId: "TP-TOPUP-NONE", payUrl: null, qrLink: "https://x/qr-none.png", qrString: "000", totalBayar: null,
+    });
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:topup:pay:tokopay",
+      session: { ...userSession(), scratch: { topupCurrency: "IDR", topupAmount: "50000" } },
+    });
+    const before = sink.length;
+    await walletTopup.payTopupTokopay(ctx);
+    const after = sink.slice(before);
+
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
+    expect(orders).toHaveLength(1);
+    expect(orders[0]!.status).toBe("CANCELLED");
+    expect(orders[0]!.adminNote).toContain("[cancel] gateway_create_failed");
+    expect(orders[0]!.gatewayChargeAmount).toBeNull();
+    expect(orders[0]!.paymentRef).toBeNull();
+    expect(calls(after, "replyWithPhoto")).toHaveLength(0);
+    expect(calls(after, "sendPhoto")).toHaveLength(0);
+    expect(calls(after, "sendMessage")).toHaveLength(0);
+    expect(calls(after, "deleteMessage")).toHaveLength(0);
+    expect(calls(after, "editMessageText")).toHaveLength(1);
+    expect(sentIncludes(after, coreT("checkout.payment_unavailable", "en"))).toBe(true);
   });
 
   it("payTopupInternal creates a USDT/BINANCE_INTERNAL WALLET_TOPUP order with a paymentRef, no HTTP call needed", async () => {

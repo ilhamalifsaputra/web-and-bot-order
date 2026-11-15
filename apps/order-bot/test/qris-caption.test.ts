@@ -6,7 +6,6 @@
 import { describe, it, expect } from "vitest";
 import { Decimal } from "@app/core/money";
 import { t as coreT } from "@app/core/i18n";
-import { computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { qrisCaptionAmounts, type QrisCaptionOrder } from "../src/util/qrisCaption";
 
@@ -19,8 +18,11 @@ const order = (over: Partial<QrisCaptionOrder> = {}): QrisCaptionOrder => ({
   ...over,
 });
 
+/** TokoPay's own total for a test order: the order total plus a 25 rupiah fee. */
+const chargeFor = (o: QrisCaptionOrder) => new Decimal(o.totalAmount).plus(25);
+
 function render(o: QrisCaptionOrder, lang: "en" | "id") {
-  const rows = qrisCaptionAmounts(o, lang);
+  const rows = qrisCaptionAmounts(o, lang, chargeFor(o));
   return coreT("checkout.qris_instructions", lang, {
     code: "ORD-1",
     subtotal: rows.subtotal,
@@ -59,8 +61,7 @@ describe("QRIS payment screen rows", () => {
     it(`[${lang}] the audit example: Rp100.000 with a 20% voucher shows the voucher and adds up`, () => {
       const text = render(order({ discountAmount: "20000", totalAmount: "80000" }), lang);
       expect(text).toContain(`🎟 Voucher: −${formatIdrFor("20000", lang)}`);
-      const fee = computeQrisAdminFee("80000");
-      expect(text).toContain(formatIdrFor(new Decimal(80000).plus(fee), lang));
+      expect(text).toContain(formatIdrFor(new Decimal("80025"), lang));
       expect(addsUp(text)).toBe(true);
     });
 
@@ -85,5 +86,22 @@ describe("QRIS payment screen rows", () => {
     const text = render(order({ subtotalAmount: "10010", discountAmount: "1501.5", totalAmount: "8509" }), "en");
     expect(text).toContain(`Voucher: −${formatIdrFor("1501", "en")}`);
     expect(addsUp(text)).toBe(true);
+  });
+
+  it("prints the charge it is given and derives the fee row from it", () => {
+    const rows = qrisCaptionAmounts(
+      { subtotalAmount: "50000", bulkDiscountAmount: "0", discountAmount: "0", walletUsed: "0", totalAmount: "50000" },
+      "id",
+      "50025",
+    );
+    expect(rows.chargeAmount.toString()).toBe("50025");
+    expect(rows.adminFee.toString()).toBe("25");
+    expect(rows.fee).toBe(formatIdrFor(new Decimal("25"), "id"));
+    expect(rows.amount).toBe(formatIdrFor(new Decimal("50025"), "id"));
+  });
+
+  it("never derives a negative fee row when the charge is below the order total", () => {
+    const rows = qrisCaptionAmounts(order(), "en", "99000");
+    expect(rows.adminFee.toString()).toBe("0");
   });
 });

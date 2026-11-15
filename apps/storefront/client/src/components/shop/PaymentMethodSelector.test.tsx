@@ -15,8 +15,6 @@ const data: CheckoutData = {
   bulk_discount: "0",
   voucher_discount: "0",
   total: "158000",
-  qris_admin_fee: "1206",
-  qris_grand_total: "159206",
   total_usdt: "9.88",
   voucher_code: "",
   error_key: null,

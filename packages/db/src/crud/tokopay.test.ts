@@ -32,12 +32,14 @@ import {
   cancelOrder,
   finalizeOrderPayment,
   createPaymentAttempt,
+  claimGatewaySlot,
+  commitTokopayGateway,
+  TokopayChargeUnavailableError,
 } from "@app/db";
 import { OrderCurrency, StockActorType } from "@app/core/enums";
 import { config } from "@app/core/config";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, FinancialTransactionType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { computeQrisAdminFee, qrisChargeAmount } from "@app/core/payments/tokopay";
 import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 import { encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
 
@@ -67,6 +69,71 @@ async function makePendingTokopayOrder() {
   });
   return order;
 }
+
+/** A pending TokoPay order whose totalAmount is exactly `total`. */
+async function createPendingTokopayOrder(total: string) {
+  const order = await makePendingTokopayOrder();
+  return prisma.order.update({ where: { id: order.id }, data: { totalAmount: new Decimal(total) } });
+}
+
+/** Store `charge` as the fee-inclusive total TokoPay reported for this order
+ *  (what `commitTokopayGateway` writes when the transaction is created). */
+async function setGatewayCharge(orderId: number, charge: Decimal.Value) {
+  await prisma.order.update({ where: { id: orderId }, data: { gatewayChargeAmount: new Decimal(charge) } });
+}
+
+describe("commitTokopayGateway", () => {
+  const gatewayInfo = (totalBayar: string | null) => ({
+    trxId: "TP-COMMIT", payUrl: null, qrLink: "https://qr.example/x.png", qrString: null, totalBayar,
+  });
+
+  it("stores TokoPay's total with the cached transaction and returns it", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
+    const r = await commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo("50025") });
+    expect(r.committed).toBe(true);
+    expect(r.charge.toString()).toBe("50025");
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount!.toString()).toBe("50025");
+    expect(JSON.parse(row.paymentRef!)).toMatchObject({ gateway: "tokopay", trxId: "TP-COMMIT", totalBayar: "50025" });
+  });
+
+  it("reports committed=false and stores nothing when the claim no longer matches", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    const r = await commitTokopayGateway(prisma, { order, sentinel: "not-the-sentinel", gateway: gatewayInfo("50025") });
+    expect(r.committed).toBe(false);
+    expect(r.charge.toString()).toBe("50025");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).gatewayChargeAmount).toBeNull();
+  });
+
+  it.each([
+    ["missing", null],
+    ["below the order total", "49000"],
+    ["not a number", "abc"],
+    ["absurdly high", "999999999"],
+  ])("throws and stores nothing when TokoPay's total is %s", async (_label, totalBayar) => {
+    const order = await createPendingTokopayOrder("50000");
+    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
+    await expect(
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo(totalBayar) }),
+    ).rejects.toBeInstanceOf(TokopayChargeUnavailableError);
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(row.gatewayChargeAmount).toBeNull();
+    expect(row.paymentRef).toBe(sentinel);
+  });
+
+  it("names the implausible total TokoPay sent, capped at 40 characters", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
+    await expect(
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo("50.025") }),
+    ).rejects.toThrow(`it sent "50.025" against an order total of 50000`);
+    const long = "9".repeat(45);
+    await expect(
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo(long) }),
+    ).rejects.toThrow(`it sent "${"9".repeat(40)}" (the first 40 of 45 characters) against an order total of 50000`);
+  });
+});
 
 describe("deliverPaidTokopayOrder", () => {
   it("delivers a pending order and claims the trx id", async () => {
@@ -224,9 +291,10 @@ describe("deliverPaidTokopayOrder", () => {
     const order = await makePendingTokopayOrder();
     // Pricing applies USE_UNIQUE_CENTS jitter, so totalAmount isn't a round
     // number — compute the expected excess from the actual total instead of
-    // assuming "5". "Expected" now includes the QRIS admin fee, since that's
-    // the amount actually charged (createTransaction) and checked.
-    const expectedCharge = qrisChargeAmount(order.totalAmount);
+    // assuming "5". "Expected" is the fee-inclusive charge TokoPay reported
+    // for this order (stored on it), since that's what the buyer was asked for.
+    const expectedCharge = order.totalAmount.plus(25);
+    await setGatewayCharge(order.id, expectedCharge);
     const paid = expectedCharge.plus("3"); // overpay by 3
 
     const result = await deliverPaidTokopayOrder(prisma, {
@@ -253,9 +321,10 @@ describe("deliverPaidTokopayOrder", () => {
     expect(payload.currency).toBe(result.order.currency);
   });
 
-  it("paying exactly total + QRIS admin fee is NOT flagged overpaid", async () => {
+  it("paying exactly the stored gateway charge (total + TokoPay fee) is NOT flagged overpaid", async () => {
     const order = await makePendingTokopayOrder();
-    const expectedCharge = qrisChargeAmount(order.totalAmount);
+    const expectedCharge = order.totalAmount.plus(25);
+    await setGatewayCharge(order.id, expectedCharge);
 
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
@@ -277,10 +346,9 @@ describe("deliverPaidTokopayOrder", () => {
   // order.totalAmount (net of any voucher/bulk discount) as `nominal` and
   // TokoPay adds its own fee on top of THAT — never the pre-discount gross
   // subtotal. A voucher-discounted order must deliver (not "amount mismatch"
-  // territory / short-paid) when paid exactly totalAmount + fee(totalAmount),
-  // even though that's less than totalAmount + fee(subtotalAmount) (the old,
-  // wrong formula this test would have failed under).
-  it("delivers a voucher-discounted order paid at exactly totalAmount + fee(totalAmount)", async () => {
+  // territory / short-paid) when paid exactly the charge TokoPay reported for
+  // that discounted nominal, which is what is stored on the order.
+  it("delivers a voucher-discounted order paid at exactly the gateway charge stored for its discounted total", async () => {
     const order = (await createOrderDirect(prisma, {
      channel: "bot",
       user: sample.user,
@@ -293,11 +361,10 @@ describe("deliverPaidTokopayOrder", () => {
     // or this test would pass even with the old, buggy subtotal-based formula.
     expect(order.totalAmount.toString()).not.toBe(order.subtotalAmount.toString());
 
-    // What a gateway billing 0.7% of the ACTUAL nominal (totalAmount) sent
-    // would charge — the exact figure the buyer's wallet/QR app would show.
-    const gatewayFee = new Decimal(100).plus(order.totalAmount.times("0.007")).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-    const expectedCharge = qrisChargeAmount(order.totalAmount);
-    expect(expectedCharge.toString()).toBe(order.totalAmount.plus(gatewayFee).toString());
+    // What TokoPay reported for the ACTUAL nominal (totalAmount) sent — the
+    // exact figure the buyer's wallet/QR app would show.
+    const expectedCharge = order.totalAmount.plus(25);
+    await setGatewayCharge(order.id, expectedCharge);
 
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
@@ -331,7 +398,7 @@ describe("deliverPaidTokopayOrder — Payment ledger confirmation (Task A2b)", (
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-ledger-confirm-1",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: order.totalAmount,
     });
     expect(result.status).toBe("delivered");
 
@@ -349,7 +416,7 @@ describe("deliverPaidTokopayOrder — Payment ledger confirmation (Task A2b)", (
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-no-ledger-row-1",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: order.totalAmount,
     });
     expect(result.status).toBe("delivered");
 
@@ -360,15 +427,16 @@ describe("deliverPaidTokopayOrder — Payment ledger confirmation (Task A2b)", (
 
 // Financial Ledger M3 (Task 3b): the settlement now also captures TokoPay's own
 // gateway trxId and its fee figures onto the confirmed Payment row. TokoPay is
-// the only one of the six rails with any fee-shaped figure at all, and
-// `computeQrisAdminFee` is a LOCAL estimate of the surcharge the buyer pays ON
-// TOP of the order total — not a cut TokoPay reports having deducted — so it is
+// the only one of the six rails with any fee-shaped figure at all: the
+// surcharge the buyer pays ON TOP of the order total (the order's stored gateway
+// charge minus its total) — not a cut TokoPay reports having deducted — so it is
 // captured as DATA and deliberately posts no `FEE` ledger transaction. The last
 // test in this block is what pins that decision in code rather than only in a
 // comment; see crud/tokopay.ts's call site for the accounting reasoning.
 describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Financial Ledger M3)", () => {
-  it("captures the gateway trxId, the estimated QRIS admin fee and the expected net receipt", async () => {
+  it("captures the gateway trxId, the buyer-side TokoPay fee and the expected net receipt", async () => {
     const order = await makePendingTokopayOrder();
+    await setGatewayCharge(order.id, order.totalAmount.plus(25));
     const attempt = await createPaymentAttempt(prisma, {
       orderId: order.id,
       method: PaymentMethod.TOKOPAY,
@@ -380,7 +448,7 @@ describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Fin
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-m3-capture-1",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: order.totalAmount.plus(25),
     });
     expect(result.status).toBe("delivered");
 
@@ -389,9 +457,9 @@ describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Fin
     // The gateway's own id, kept distinct from the reference this shop quoted.
     expect(confirmed.providerTransactionId).toBe("trx-m3-capture-1");
     expect(confirmed.reference).toBe("TOKOPAY-INV-M3");
-    expect(new Decimal(confirmed.fee!).equals(computeQrisAdminFee(order.totalAmount))).toBe(true);
+    expect(new Decimal(confirmed.fee!).toString()).toBe("25");
     // netAmount is the order total, not `amount - fee`: the buyer's gross
-    // payment is totalAmount + adminFee, so the total IS what the shop nets.
+    // payment is totalAmount + fee, so the total IS what the shop nets.
     expect(new Decimal(confirmed.netAmount!).equals(order.totalAmount)).toBe(true);
   });
 
@@ -400,6 +468,7 @@ describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Fin
       createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
     );
     expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+    await setGatewayCharge(order.id, "20025");
     const attempt = await createPaymentAttempt(prisma, {
       orderId: order.id,
       method: PaymentMethod.TOKOPAY,
@@ -410,19 +479,20 @@ describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Fin
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-m3-capture-topup-1",
-      amount: order.totalAmount,
+      amount: "20025",
     });
     expect(result.status).toBe("delivered");
 
     const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
     expect(confirmed.status).toBe("CONFIRMED");
     expect(confirmed.providerTransactionId).toBe("trx-m3-capture-topup-1");
-    expect(new Decimal(confirmed.fee!).equals(computeQrisAdminFee(order.totalAmount))).toBe(true);
+    expect(new Decimal(confirmed.fee!).toString()).toBe("25");
     expect(new Decimal(confirmed.netAmount!).equals(order.totalAmount)).toBe(true);
   });
 
-  it("posts NO FEE financial transaction — the estimated admin fee is captured data, never a ledger event", async () => {
+  it("posts NO FEE financial transaction — the buyer-side TokoPay fee is captured data, never a ledger event", async () => {
     const order = await makePendingTokopayOrder();
+    await setGatewayCharge(order.id, order.totalAmount.plus(25));
     await createPaymentAttempt(prisma, {
       orderId: order.id,
       method: PaymentMethod.TOKOPAY,
@@ -433,7 +503,7 @@ describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Fin
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-m3-no-fee-posting-1",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: order.totalAmount.plus(25),
     });
     expect(result.status).toBe("delivered");
 
@@ -448,6 +518,110 @@ describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Fin
     const feeAccounts = await prisma.ledgerAccount.findMany({ where: { code: { startsWith: "payment_fee." } }, select: { id: true } });
     expect(feeAccounts.length).toBeGreaterThan(0);
     expect(await prisma.ledgerEntry.count({ where: { accountId: { in: feeAccounts.map((a) => a.id) } } })).toBe(0);
+  });
+});
+
+// The figure every paid-amount check compares against is the fee-inclusive
+// total TokoPay itself reported when the transaction was created, stored on the
+// order as `gatewayChargeAmount` — never a fee re-derived locally from a tariff
+// TokoPay can change. Each case stores Rp25 on a Rp50.000 order: a fee no local
+// formula would produce, so a test can only pass by reading the stored figure.
+describe("deliverPaidTokopayOrder — matches against the order's stored gateway charge", () => {
+  it("paying exactly the stored charge is matched, not overpaid, and raises no overpaid alert", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-snap-exact-1", amount: "50025" });
+
+    expect(["delivered", "processing"]).toContain(result.status);
+    const ledgerRow = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "trx-snap-exact-1" } });
+    expect(ledgerRow.outcome).toBe("matched");
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID } }),
+    ).toBe(0);
+  });
+
+  it("paying above the stored charge is overpaid by exactly the difference to that charge", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-snap-over-1", amount: "50100" });
+
+    expect(["delivered", "processing"]).toContain(result.status);
+    const ledgerRow = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "trx-snap-over-1" } });
+    expect(ledgerRow.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows).toHaveLength(1);
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.paid).toBe("50100");
+    expect(payload.expected).toBe("50025");
+    expect(payload.excess).toBe("75");
+  });
+
+  it("captures the stored charge minus the total as the Payment fee, netting the order total", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: "TOKOPAY-INV-SNAP",
+    });
+
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-snap-fee-1", amount: "50025" });
+    expect(["delivered", "processing"]).toContain(result.status);
+
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(payment.status).toBe("CONFIRMED");
+    expect(payment.providerTransactionId).toBe("trx-snap-fee-1");
+    expect(payment.fee!.toString()).toBe("25");
+    expect(payment.netAmount!.toString()).toBe("50000");
+  });
+
+  it("an order with no stored charge expects the bare total and captures a zero fee", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    expect(order.gatewayChargeAmount).toBeNull();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-snap-none-1", amount: "50000" });
+    expect(["delivered", "processing"]).toContain(result.status);
+
+    const ledgerRow = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "trx-snap-none-1" } });
+    expect(ledgerRow.outcome).toBe("matched");
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(payment.fee!.toString()).toBe("0");
+    expect(payment.netAmount!.toString()).toBe("50000");
+  });
+
+  it("a wallet top-up paid above its stored charge credits the total and flags the ledger row overpaid", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    expect(order.totalAmount.toString()).toBe("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+
+    const result = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-snap-topup-1", amount: "50100" });
+    expect(result.status).toBe("delivered");
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).toString()).toBe("50000");
+    const ledgerRow = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "trx-snap-topup-1" } });
+    expect(ledgerRow.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows).toHaveLength(1);
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.expected).toBe("50025");
+    expect(payload.excess).toBe("75");
   });
 });
 
@@ -784,7 +958,8 @@ describe("deliverPaidTokopayOrder — re-claiming a trxId across non-delivering 
     // Terminal outcome 2: overpaid (still a real delivery, just flagged).
     const overpaidOrder = await makePendingTokopayOrder();
     const overpaidTrxId = "trx-terminal-overpaid-1";
-    const overpaidCharge = qrisChargeAmount(overpaidOrder.totalAmount).plus("5");
+    // No gateway charge is stored, so the bare total is what was expected.
+    const overpaidCharge = overpaidOrder.totalAmount.plus("5");
     const overpaidResult = await deliverPaidTokopayOrder(prisma, {
       orderId: overpaidOrder.id,
       trxId: overpaidTrxId,

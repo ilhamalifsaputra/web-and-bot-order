@@ -87,41 +87,6 @@ async function fetchTokopayJson(url: string, errorPrefix: string, timeoutMs: num
   }
 }
 
-/** QRIS admin-fee constants — TokoPay only; PayDisini and every other gateway
- * stay fee-free. Charged ON TOP of the order total. */
-export const QRIS_ADMIN_FEE_FLAT = new Decimal(100);
-export const QRIS_ADMIN_FEE_PERCENT = new Decimal("0.007"); // 0.70%
-
-/**
- * Rp100 + 0.70% of the amount TokoPay actually receives as `nominal`
- * (createTransaction/checkTransaction always pass `order.totalAmount` — net of
- * bulk discount / voucher / wallet credit — never the pre-discount subtotal),
- * rounded to the nearest whole Rupiah (IDR has no fractional currency in this
- * codebase). The ONE place this formula is computed — every caller (bot
- * checkout, storefront checkout/pay, webhook, reconcile poller, overpayment
- * check) must import this rather than re-deriving it inline.
- *
- * ⚠ Must be called with the SAME amount passed to createTransaction/
- *   checkTransaction as `nominal` (i.e. `order.totalAmount`) — TokoPay computes
- *   its own fee on top of that nominal, so basing this on any other figure
- *   (e.g. the pre-discount subtotal) desyncs the fee we expect from the fee
- *   TokoPay actually charges and makes every discounted order look short-paid
- *   (H-1, backend audit 2026-07-31).
- */
-export function computeQrisAdminFee(amountIdr: Decimal.Value): Decimal {
-  return QRIS_ADMIN_FEE_FLAT
-    .plus(new Decimal(amountIdr).times(QRIS_ADMIN_FEE_PERCENT))
-    .toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-}
-
-/** totalAmount (already net of discounts/wallet) + the QRIS admin fee — the
- * fee-inclusive amount expected to be paid by the buyer and verified on confirm.
- * (Note: createTransaction/checkTransaction are passed the base totalAmount,
- * as TokoPay automatically computes and adds its admin fee on top of nominal). */
-export function qrisChargeAmount(totalAmount: Decimal.Value): Decimal {
-  return new Decimal(totalAmount).plus(computeQrisAdminFee(totalAmount));
-}
-
 /** Create (or fetch — ref_id is idempotent) the gateway transaction for an order. */
 export async function createTransaction(
   creds: TokopayCreds,
@@ -218,14 +183,17 @@ export async function checkTransaction(
   const statusStr = String(d.status ?? "").toLowerCase();
   const trxId = (typeof d.trx_id === "string" && d.trx_id) || (typeof d.reference === "string" && d.reference) || null;
   const paid = isProviderPaid(StatusProvider.TOKOPAY, statusStr);
-  // Task B3c (backend audit): the amount must come from TokoPay, and the
-  // fee-inclusive `total_bayar` (what the buyer actually paid) is read first.
-  // This used to fall back to `args.amountIdr` — the bare order total we asked
-  // about, which is BELOW the fee-inclusive charge callers compare against —
-  // so a genuine payment was flagged short-paid and parked as unmatched. A
-  // paid status without a usable amount is reported as NOT paid instead:
-  // nothing is delivered on it and the reconcile poller asks again.
-  const amountRaw = d.total_bayar ?? d.nominal ?? d.amount;
+  // The amount must be what the BUYER PAID, fee included, because callers
+  // compare it with the fee-inclusive charge stored on the order
+  // (`expectedTokopayCharge`). Only TokoPay's fee-inclusive fields are read:
+  // `total_bayar` (the /v1/order response), `jumlah_bayar` (/v1/check-order)
+  // and `total_dibayar` (the callback payload). `nominal` / `amount` are the
+  // bare order total WITHOUT the fee and are deliberately NOT a fallback: a
+  // fully paid order would compare short against its own charge and be flagged
+  // underpaid. A paid status without a fee-inclusive amount is reported as NOT
+  // paid and `unverified` instead: nothing is delivered on it, it is parked for
+  // manual review and the admins are alerted.
+  const amountRaw = d.total_bayar ?? d.jumlah_bayar ?? d.total_dibayar;
   let amount: Decimal | null = null;
   if (amountRaw !== undefined && amountRaw !== null && amountRaw !== "") {
     try {

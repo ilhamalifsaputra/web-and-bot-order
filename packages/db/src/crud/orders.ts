@@ -375,10 +375,17 @@ export async function commitGatewayResult(
   orderId: number,
   sentinel: string,
   payload: unknown,
+  /** The fee-inclusive amount the gateway reported (TokoPay's `total_bayar`),
+   *  stored with the cache in ONE statement so the two can never disagree.
+   *  Omitted or null leaves `gatewayChargeAmount` untouched. */
+  gatewayChargeAmount?: Decimal.Value | null,
 ): Promise<boolean> {
   const committed = await db.order.updateMany({
     where: { id: orderId, paymentRef: sentinel },
-    data: { paymentRef: JSON.stringify(payload) },
+    data: {
+      paymentRef: JSON.stringify(payload),
+      ...(gatewayChargeAmount != null ? { gatewayChargeAmount: new Decimal(gatewayChargeAmount) } : {}),
+    },
   });
   return committed.count === 1;
 }

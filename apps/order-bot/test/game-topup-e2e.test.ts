@@ -78,7 +78,6 @@ import {
   DIGIFLAZZ_API_KEY_KEY,
 } from "@app/db";
 import { NotificationEvent, OrderKind, OrderStatus } from "@app/core/enums";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { Decimal } from "@app/core/money";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -117,7 +116,7 @@ beforeEach(async () => {
     payUrl: null,
     qrLink: "https://qr.test/qr.png",
     qrString: "000201",
-    totalBayar: String(args.amountIdr),
+    totalBayar: new Decimal(args.amountIdr).plus(25).toFixed(0),
   }));
   fx = await buildGameTopupFixtures(prisma);
   // An onboarded buyer: display currency chosen (IDR), language left at the
@@ -242,7 +241,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
       status: "Sukses", refId: order.orderCode, buyerSkuCode: "ml257", customerNo: "1234567891234",
       message: "success", rc: "00", sn: "SN-FIXTURE-1", price: new Decimal("57000"),
     });
-    const settled = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: `TP-${order.orderCode}`, amount: qrisChargeAmount(order.totalAmount) });
+    const settled = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: `TP-${order.orderCode}`, amount: new Decimal(order.totalAmount).plus(25) });
     expect(settled.status).toBe("processing");
     expect(await dispatchDigiflazzOrderNow(prisma, order.id)).toMatchObject({ claimed: 1, delivered: 1, failed: 0 });
     // Zone appended to the id per providerInputMapping {"keys":["user_id","zone_id"],"separator":""}.
@@ -506,7 +505,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
     it("a tracked TEXT payment message is edited silently to cancelled, so exactly one expiry push reaches the buyer (route 1a)", async () => {
       // No QR image from the gateway: the payment screen stays a text bubble.
       tokopayMock.createTransaction.mockImplementation(async (_creds: unknown, args: { refId: string; amountIdr: Decimal.Value }) => ({
-        trxId: `TP-${args.refId}`, payUrl: null, qrLink: null, qrString: "000201", totalBayar: String(args.amountIdr),
+        trxId: `TP-${args.refId}`, payUrl: null, qrLink: null, qrString: "000201", totalBayar: new Decimal(args.amountIdr).plus(25).toFixed(0),
       }));
       const tg = openBot();
       await openGameCategory(tg, /Game Top Up/);
@@ -531,7 +530,7 @@ describe("Game Top-up end to end through buildBot() with a fake Telegram transpo
 
     it("a wallet top-up's untracked text bubble is edited with the top-up wording, and its one push uses the top-up text (route 2a)", async () => {
       tokopayMock.createTransaction.mockImplementation(async (_creds: unknown, args: { refId: string; amountIdr: Decimal.Value }) => ({
-        trxId: `TP-${args.refId}`, payUrl: null, qrLink: null, qrString: "000201", totalBayar: String(args.amountIdr),
+        trxId: `TP-${args.refId}`, payUrl: null, qrLink: null, qrString: "000201", totalBayar: new Decimal(args.amountIdr).plus(25).toFixed(0),
       }));
       const tg = openBot();
       expect((await step(tg, () => tg.sendText("/start"))).screen).toEqual(["sendMessage"]);

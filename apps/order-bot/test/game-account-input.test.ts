@@ -15,16 +15,19 @@ vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
   checkGameNickname: kokinpayMock.checkGameNickname,
 }));
 
-vi.mock("@app/core/payments/tokopay", async (orig) => ({
-  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
-  createTransaction: vi.fn().mockResolvedValue({
-    trxId: "TP-TEST",
-    payUrl: null,
-    qrLink: "https://x/qr.png",
-    qrString: "000",
-    totalBayar: "100",
-  }),
-}));
+vi.mock("@app/core/payments/tokopay", async (orig) => {
+  const { Decimal } = await import("@app/core/money");
+  return {
+    ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+    createTransaction: vi.fn(async (_creds: unknown, args: { amountIdr: unknown }) => ({
+      trxId: "TP-TEST",
+      payUrl: null,
+      qrLink: "https://x/qr.png",
+      qrString: "000",
+      totalBayar: new Decimal(String(args.amountIdr)).plus(25).toFixed(0),
+    })),
+  };
+});
 
 import {
   prisma,

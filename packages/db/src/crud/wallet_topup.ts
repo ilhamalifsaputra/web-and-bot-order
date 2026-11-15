@@ -34,7 +34,7 @@ import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
-import { computeQrisAdminFee } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
@@ -921,7 +921,8 @@ export async function preservePaidWalletCreditFailure(
  * still receives the order total and the excess waits for an admin.
  *
  * The rule is the product branch's own: any excess above zero over what the
- * rail BILLED (`qrisChargeAmount(total)` on TokoPay, the bare total elsewhere).
+ * rail BILLED (the gateway charge stored on the order on TokoPay, the bare total
+ * elsewhere).
  * A payment the amount matcher accepted slightly BELOW the total is not an
  * overpayment.
  *
@@ -1105,7 +1106,10 @@ export async function creditUnderpaidTopupAnyway(
     // Only TokoPay adds a buyer-paid QRIS fee. PayDisini compares
     // received principal against the bare total, so its fee is zero here.
     if (order.paymentMethod === PaymentMethod.TOKOPAY || order.paymentMethod === PaymentMethod.PAYDISINI) {
-      const fee = order.paymentMethod === PaymentMethod.TOKOPAY ? computeQrisAdminFee(order.totalAmount) : ZERO;
+      const fee =
+        order.paymentMethod === PaymentMethod.TOKOPAY
+          ? expectedTokopayCharge(order).minus(order.totalAmount)
+          : ZERO;
       if (recordedReceived !== null && fee.gt(0) && received.lte(fee)) throw new ValidationError("error.underpaid_topup_fee_not_covered");
       received = Decimal.max(ZERO, Decimal.min(received.minus(fee), order.totalAmount));
     }

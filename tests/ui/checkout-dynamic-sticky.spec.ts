@@ -13,7 +13,7 @@ const product: ProductPageData = {
 };
 const context: ShopContext = { lang: "en", fx: "16000", shop_name: "Checkout UI Test", shop_tagline: "Digital products", cart_count: 2, customer: { username: "buyer", email: null, telegram_linked: false }, favicon_url: "", logo_url: "", bot_username: "testbot", support_telegram_url: null, wa_number: null, tzname: "Asia/Jakarta", currency: "IDR" };
 function preview(id = 1): CheckoutData {
-  return { items_empty: false, items: [{ denomination_id: id, delivery_type: "manual_with_info", additional_fields: [player, optional], qty: 1 }], subtotal: id === 1 ? "5078" : "7405", total: id === 1 ? "5078" : "7405", bulk_discount: "0", voucher_discount: "0", qris_admin_fee: "136", qris_grand_total: id === 1 ? "5214" : "7541", total_usdt: "0.33", voucher_code: "", error_key: null, binance_enabled: false, bybit_enabled: false, bybit_bsc_enabled: false, idr_enabled: true, paydisini_enabled: false, nowpayments_enabled: false, wallet_idr: "0", wallet_usdt: "0", wallet_idr_enabled: false, wallet_usdt_enabled: false, is_guest: false, below_all_minimums: false };
+  return { items_empty: false, items: [{ denomination_id: id, delivery_type: "manual_with_info", additional_fields: [player, optional], qty: 1 }], subtotal: id === 1 ? "5078" : "7405", total: id === 1 ? "5078" : "7405", bulk_discount: "0", voucher_discount: "0", total_usdt: "0.33", voucher_code: "", error_key: null, binance_enabled: false, bybit_enabled: false, bybit_bsc_enabled: false, idr_enabled: true, paydisini_enabled: false, nowpayments_enabled: false, wallet_idr: "0", wallet_usdt: "0", wallet_idr_enabled: false, wallet_usdt_enabled: false, is_guest: false, below_all_minimums: false };
 }
 async function mockApi(page: Page, data = product, ctx = context) {
   const unexpected: string[] = [];
@@ -55,7 +55,7 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
     await expect(page.getByRole("radio").nth(1)).toBeChecked();
     await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("4531475056881819915");
     await expect(primary).toBeEnabled();
-    await expect(primary).toContainText("Rp7,541");
+    await expect(primary).toContainText("Rp7,405");
     const layout = await page.locator(".denom-card").evaluateAll((cards) => cards.map((card) => {
       const price = card.lastElementChild! as HTMLElement;
       const name = card.querySelector(".line-clamp-2")! as HTMLElement;
@@ -73,7 +73,7 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
     await page.evaluate(() => window.scrollTo(0, 0));
     if (width < 1024) {
       await expect(sticky).toBeVisible();
-      await expect(sticky).toContainText("Rp7,541");
+      await expect(sticky).toContainText("Rp7,405");
       await expect(page.getByTestId("purchase-bar-spacer")).toBeAttached();
       const barHeight = (await sticky.boundingBox())!.height;
       await expect.poll(async () => (await page.getByTestId("purchase-bar-spacer").boundingBox())!.height).toBe(barHeight);
@@ -112,7 +112,7 @@ test("choosing a top-up amount retains account details and submits them with the
   await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("4531475056881819915");
   await expect(page.getByLabel("Region (Optional)", { exact: true })).toHaveValue("Europe");
   const primary = page.locator("#instant-buy-submit");
-  await expect(primary).toContainText("Rp7,541");
+  await expect(primary).toContainText("Rp7,405");
   await expect(primary).toBeEnabled();
   const orders: Array<Record<string, unknown>> = [];
   await page.route("**/api/v1/topup/order", async (route) => {

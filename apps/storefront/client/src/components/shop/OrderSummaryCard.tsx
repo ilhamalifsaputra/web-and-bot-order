@@ -13,8 +13,9 @@ import { idrRailPriceAndPay } from "./OrderSummaryCard.helpers";
  * fullWidth>`. The summary line rows — which numbers show, and where they
  * come from — are UNCHANGED: money is Decimal, formatted only at this render
  * boundary. Task 5 (multi-currency display): every row here is a
- * catalog/cart/checkout-preview IDR figure (subtotal, discounts, the QRIS
- * admin fee preview), so `formatPriceFor`/`<Price>` — both currency-aware —
+ * catalog/cart/checkout-preview IDR figure (subtotal, discounts, total; the
+ * QRIS admin fee has no figure before the QR — TokoPay sets it on the pay
+ * page), so `formatPriceFor`/`<Price>` — both currency-aware —
  * replace the old unconditional `formatIdr`; `currency` is read off the
  * shared `["context"]` query (`useShopContext`) rather than threaded as a
  * prop, same as `<Price>` itself. The voucher field composes
@@ -33,7 +34,7 @@ import type { KeyboardEvent, ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
 import { canonicalPurchaseName } from "../../api/canonical";
 import type { CheckoutData } from "../../api/types";
-import { formatIdr, formatPriceFor } from "../../lib/format";
+import { formatPriceFor } from "../../lib/format";
 import { t } from "../../lib/i18n";
 import { useShopContext } from "../../lib/useShopContext";
 import Alert from "../ui/Alert";
@@ -133,8 +134,7 @@ export default function OrderSummaryCard({
   const currency = ctx?.currency ?? null;
   // Final-review fix: a USD viewer on an IDR-settled method (QRIS/TokoPay,
   // PayDisini, wallet_idr) would otherwise see only "$" figures that don't
-  // match what they're charged — see idrRailPriceAndPay above. Non-null gates
-  // the Rp fee suffix too.
+  // match what they're charged — see idrRailPriceAndPay above.
   const priceAndPay = idrRailPriceAndPay(method, totals, currency, fx);
 
   return (
@@ -163,7 +163,7 @@ export default function OrderSummaryCard({
               </dl>
             </Card>
           )}
-          <OrderPriceBreakdown totals={totals} currency={currency} fx={fx} flashSummary={flashSummary} method={method} priceAndPay={priceAndPay} />
+          <OrderPriceBreakdown totals={totals} currency={currency} fx={fx} flashSummary={flashSummary} method={method} />
           {priceAndPay && <p className="mb-2 text-right text-sm text-ink-soft">{priceAndPay}</p>}
           {fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
           {/* The caller decides whether this in-flow CTA is offered;
@@ -238,13 +238,12 @@ function OrderSummaryCardVoucherCode({ voucherInput, onVoucherInputChange, onVou
   </Card>);
 }
 
-function OrderPriceBreakdown({ totals, currency, fx, flashSummary, method, priceAndPay }: {
+function OrderPriceBreakdown({ totals, currency, fx, flashSummary, method }: {
   totals: CheckoutData;
   currency: "USD" | "IDR" | null;
   fx: string | null | undefined;
   flashSummary: { percent: number; endsAt: string | null; } | null;
   method: string | null;
-  priceAndPay: string | null;
 }) {
   return (<div className="text-sm">
     <div className="flex justify-between py-2">
@@ -281,15 +280,12 @@ function OrderPriceBreakdown({ totals, currency, fx, flashSummary, method, price
         <span>−{formatPriceFor(totals.voucher_discount, currency, fx)}</span>
       </div>
     )}
+    {/* TokoPay sets the QRIS admin fee when it creates the QR, so before that
+        there is no figure to show — only a note that the pay page adds it. */}
     {method === "qris" && (
-      <div className="flex justify-between py-2">
+      <div className="flex justify-between gap-3 py-2">
         <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
-        <span>
-          {formatPriceFor(totals.qris_admin_fee, currency, fx)}
-          {priceAndPay && (
-            <span className="text-ink-faint"> · {formatIdr(totals.qris_admin_fee)}</span>
-          )}
-        </span>
+        <span className="text-right text-ink-soft">{t("web.qris_admin_fee_at_payment")}</span>
       </div>
     )}
     <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-line pb-2 pt-4">
@@ -297,7 +293,7 @@ function OrderPriceBreakdown({ totals, currency, fx, flashSummary, method, price
       {/* The page's key figure: larger than its label and in the display
           face, like the other big totals (PayPage, ProductPage). */}
       <span className="font-display">
-        <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-2xl" />
+        <Price value={totals.total} fx={fx} size="text-2xl" />
       </span>
     </div>
   </div>);

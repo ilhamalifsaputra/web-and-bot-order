@@ -780,7 +780,7 @@ function topupCheckoutHint({ configValid, selected, previewErrorKey, readyToPay,
             : !guestEmailValid ? t("web.checkout_contact_hint")
               : !anyMethod || !method ? t("web.checkout_payment_hint") : null;
 
-  const purchasePrice = totals ? formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, fx) : "";
+  const purchasePrice = totals ? formatPriceFor(totals.total, ctx?.currency ?? null, fx) : "";
 
   const barPriceAndPay = totals ? idrRailPriceAndPay(method, totals, ctx?.currency ?? null, fx) : null;
   return { checkoutHint, purchasePrice, barPriceAndPay };

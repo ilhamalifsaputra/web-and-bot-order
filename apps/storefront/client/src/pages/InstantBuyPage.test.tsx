@@ -114,8 +114,6 @@ const checkoutData: CheckoutData = {
   bulk_discount: "0",
   voucher_discount: "0",
   total: "20000",
-  qris_admin_fee: "240",
-  qris_grand_total: "20240",
   total_usdt: "1.25",
   voucher_code: "",
   error_key: null,
@@ -560,7 +558,7 @@ describe("InstantBuyPage", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 1, qty: 1, voucher_code: "OLD" }));
     fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }));
-    await act(async () => { resolveVoucher({ ...checkoutData, total: "1", qris_grand_total: "1", voucher_code: "OLD" }); });
+    await act(async () => { resolveVoucher({ ...checkoutData, total: "1", voucher_code: "OLD" }); });
     await waitFor(() => expect(document.getElementById("checkout-summary")).toBeInTheDocument());
     expect(within(document.getElementById("checkout-summary")!).queryByText("Rp1")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("User ID"), { target: { value: " 4531475056881819915 " } });
@@ -1314,8 +1312,9 @@ describe("InstantBuyPage", () => {
 
   // Final-review fix: a USD-display viewer on an IDR-settlement rail
   // (QRIS/PayDisini) sees the Rp payable next to the $ figure in the sticky
-  // bar, like the bot's payAlongsidePriceLine. fx 16000: qris_grand_total
-  // 20240 → $1.27, total 20000 → $1.25.
+  // bar, like the bot's payAlongsidePriceLine. fx 16000: total 20000 → $1.25.
+  // QRIS has no fee-inclusive figure before the QR, so its Rp payable is the
+  // plain total.
   describe("sticky bar Price · Pay line for a USD viewer", () => {
     const usdContext: ShopContext = { ...context, currency: "USD" };
     const bar = () => {
@@ -1326,7 +1325,8 @@ describe("InstantBuyPage", () => {
     it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: usdContext });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20,240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Price $1.25 · Pay Rp20,000"));
+      expect(bar()).not.toHaveTextContent("Rp20,240");
     });
 
     it("PayDisini: the Rp payable is the fee-free total", async () => {
@@ -1342,18 +1342,20 @@ describe("InstantBuyPage", () => {
       expect(bar()).not.toHaveTextContent("Pay Rp");
     });
 
-    it("QRIS for an IDR viewer: unchanged, Rp only", async () => {
+    it("QRIS for an IDR viewer: the plain total, Rp only", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true }, ctx: { ...context, currency: "IDR" } });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Rp20,240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Rp20,000"));
+      expect(bar()).not.toHaveTextContent("Rp20,240");
       expect(bar()).not.toHaveTextContent("Pay Rp");
       expect(bar()).not.toHaveTextContent("$");
     });
 
-    it("QRIS for a null-preference viewer: unchanged, no dual line", async () => {
+    it("QRIS for a null-preference viewer: the plain total, no dual line", async () => {
       renderInstantBuy({ checkout: { ...checkoutData, idr_enabled: true } });
       await screen.findByText("Summary");
-      await waitFor(() => expect(bar()).toHaveTextContent("Rp20,240"));
+      await waitFor(() => expect(bar()).toHaveTextContent("Rp20,000"));
+      expect(bar()).not.toHaveTextContent("Rp20,240");
       expect(bar()).not.toHaveTextContent("Pay Rp");
     });
   });

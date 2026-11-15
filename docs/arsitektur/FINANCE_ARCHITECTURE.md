@@ -1058,11 +1058,13 @@ introduced by the hardening pass.
 
 **1. No per-payment `FEE` ledger posting exists, on any rail — by design.**
 No gateway in this system reports a real, per-transaction fee figure. The only
-fee-shaped data anywhere is TokoPay's `computeQrisAdminFee`
-(`packages/core/src/payments/tokopay.ts:98`) — a **locally estimated** constant
-(Rp100 + 0.70%, `:79-80`) charged to the **buyer** as a surcharge on top of
-`order.totalAmount` via `qrisChargeAmount` (`:108`), not a fee TokoPay reports
-having deducted.
+fee-shaped data anywhere is TokoPay's buyer-side QRIS surcharge:
+`Order.gatewayChargeAmount − Order.totalAmount`, where `gatewayChargeAmount` is
+TokoPay's own `total_bayar`, stored when the transaction is created.
+`expectedTokopayCharge` (`packages/core/src/payments/tokopayCharge.ts`) is the
+one resolver; there is no fee formula in code. It is a surcharge billed to the
+**buyer** on top of `order.totalAmount`, not a fee TokoPay reports having
+deducted.
 
 Booking a `FEE` transaction from that estimate would either double-count money
 already correctly netted out (the order-payment posting books exactly
@@ -1190,7 +1192,7 @@ now a correct way to hand it back:
 - `findOverpaidExcess` (`packages/db/src/crud/overpayments.ts`) DERIVES the excess
   from whichever rail's row exists — `amount − what the order billed`. The billed
   figure is **not the same expression on every rail**: TokoPay's QRIS admin fee is
-  a buyer-side surcharge, so the buyer is billed `qrisChargeAmount(total)` and
+  a buyer-side surcharge, so the buyer is billed `expectedTokopayCharge(order)` and
   comparing against the bare total would invent an excess equal to the shop's own
   fee on every QRIS order. Each rail's expectation is taken from the TABLE the row
   came from, not from `Order.paymentMethod`.

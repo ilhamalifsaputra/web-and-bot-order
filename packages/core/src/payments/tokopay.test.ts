@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyCallback, checkTransaction, createTransaction, computeQrisAdminFee, qrisChargeAmount, RateLimitedError } from "./tokopay";
+import { verifyCallback, checkTransaction, createTransaction, RateLimitedError } from "./tokopay";
 
 const CREDS = { merchantId: "MERCH", secret: "s3cr3t" };
 const FULL_CREDS = { merchantId: "MERCH", secret: "s3cr3t", channel: "QRIS" };
@@ -92,35 +92,6 @@ describe("verifyCallback", () => {
   });
 });
 
-describe("computeQrisAdminFee", () => {
-  it("is Rp100 flat on a zero amount", () => {
-    expect(computeQrisAdminFee(0).toFixed(0)).toBe("100");
-  });
-
-  it("adds 0.70% of the amount on top of the flat fee", () => {
-    expect(computeQrisAdminFee(10000).toFixed(0)).toBe("170"); // 100 + 70
-  });
-
-  it("rounds a .5 fraction half-up to the nearest Rupiah", () => {
-    // 500 * 0.007 = 3.5 -> 100 + 3.5 = 103.5 -> 104
-    expect(computeQrisAdminFee(500).toFixed(0)).toBe("104");
-  });
-});
-
-describe("qrisChargeAmount", () => {
-  it("adds the fee computed on totalAmount itself to the order total (H-1 fix)", () => {
-    // totalAmount=1000 -> fee = 100 + 0.007*1000 = 107
-    expect(qrisChargeAmount(1000).toFixed(0)).toBe("1107");
-  });
-
-  it("bases the fee on the discounted total, not a separate pre-discount subtotal", () => {
-    // A discounted order: gateway only ever sees totalAmount as `nominal`, so
-    // the fee it actually adds is 0.7% of totalAmount, never the gross subtotal.
-    // totalAmount=500 -> fee = 100 + 0.007*500 = 103.5 -> 104 (half-up)
-    expect(qrisChargeAmount(500).toFixed(0)).toBe("604");
-  });
-});
-
 describe("checkTransaction", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -169,6 +140,58 @@ describe("checkTransaction", () => {
     const r = await checkTransaction(FULL_CREDS, { refId: "ORD-3c", amountIdr: 100000 });
     expect(r.paid).toBe(true);
     expect(r.amount.toFixed(0)).toBe("100800");
+  });
+
+  // The bare `nominal` / `amount` (order total WITHOUT TokoPay's fee) must never
+  // stand in for what the buyer paid: callers compare the result with the
+  // fee-inclusive charge stored on the order, so a fully paid order would look
+  // short and be flagged UNDERPAID. A paid status that carries only a bare
+  // figure is unverified instead.
+  it("reports NOT paid (unverified) when a paid status carries only the bare nominal", async () => {
+    stubFetchJson({ status: "success", data: { status: "Success", trx_id: "TP1", nominal: 50000 } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-BARE-1", amountIdr: 50000 });
+    expect(r.paid).toBe(false);
+    expect(r.unverified).toBe(true);
+    expect(r.amount.toString()).toBe("0");
+    expect(r.trxId).toBe("TP1");
+  });
+
+  it("reports NOT paid (unverified) when a paid status carries only the bare amount", async () => {
+    stubFetchJson({ status: "success", data: { status: "Success", trx_id: "TP1", amount: 50000 } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-BARE-2", amountIdr: 50000 });
+    expect(r.paid).toBe(false);
+    expect(r.unverified).toBe(true);
+    expect(r.amount.toString()).toBe("0");
+    expect(r.trxId).toBe("TP1");
+  });
+
+  it("reports paid with the fee-inclusive total_bayar when the bare nominal is also present", async () => {
+    stubFetchJson({ status: "success", data: { status: "Success", trx_id: "TP1", total_bayar: 50025, nominal: 50000 } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-FEE-1", amountIdr: 50000 });
+    expect(r.paid).toBe(true);
+    expect(r.unverified).toBe(false);
+    expect(r.amount.toString()).toBe("50025");
+  });
+
+  it("reads the fee-inclusive jumlah_bayar (the /v1/check-order field), never the bare nominal beside it", async () => {
+    stubFetchJson({ status: "success", data: { status: "Success", trx_id: "TP1", jumlah_bayar: 50025, nominal: 50000 } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-FEE-2", amountIdr: 50000 });
+    expect(r.paid).toBe(true);
+    expect(r.amount.toString()).toBe("50025");
+  });
+
+  it("reads the fee-inclusive total_dibayar (the callback payload field)", async () => {
+    stubFetchJson({ status: "success", data: { status: "Success", trx_id: "TP1", total_dibayar: 50025 } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-FEE-3", amountIdr: 50000 });
+    expect(r.paid).toBe(true);
+    expect(r.amount.toString()).toBe("50025");
+  });
+
+  it("treats an unpaid status with only the bare nominal as simply not paid yet, not unverified", async () => {
+    stubFetchJson({ status: "success", data: { status: "Unpaid", trx_id: "TP1", nominal: 50000 } });
+    const r = await checkTransaction(FULL_CREDS, { refId: "ORD-BARE-3", amountIdr: 50000 });
+    expect(r.paid).toBe(false);
+    expect(r.unverified).toBe(false);
   });
 
   it("throws when the gateway rejects the request", async () => {

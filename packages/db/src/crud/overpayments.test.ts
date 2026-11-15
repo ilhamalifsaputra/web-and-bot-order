@@ -10,7 +10,8 @@
  *    excess is `amount − what the order asked for`. The subtlety worth a test is
  *    that "what the order asked for" is not the same expression on every rail:
  *    TokoPay's QRIS admin fee is a buyer-side surcharge, so its own overpayment
- *    check compares against `qrisChargeAmount(total)` and a credit computed
+ *    check compares against the gateway charge stored on the order
+ *    (`expectedTokopayCharge`) and a credit computed
  *    against the bare total would hand the buyer the shop's own fee. The first
  *    case drives a REAL rail end to end (`deliverPaidInternalOrder`) rather than
  *    hand-writing the processed row, because a helper that reads a shape no rail
@@ -34,7 +35,6 @@ vi.mock("@app/core/config", async () => {
 
 import { Decimal } from "@app/core/money";
 import { FinancialTransactionType, LedgerDirection, OrderStatus, PaymentMethod } from "@app/core/enums";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
@@ -164,18 +164,18 @@ describe("findOverpaidExcess", () => {
     expect(await findOverpaidExcess(prisma, 999_999)).toBeNull();
   });
 
-  it("measures a TokoPay overpayment against the QRIS charge, not the bare total", async () => {
-    // TokoPay's admin fee is a buyer-side surcharge, so the buyer is BILLED
-    // `qrisChargeAmount(total)` and paying exactly that is not an overpayment.
-    // Comparing against `totalAmount` here would invent an excess equal to the
-    // shop's own fee and hand it to the buyer.
+  it("measures a TokoPay overpayment against the stored gateway charge, not the bare total", async () => {
+    // TokoPay's admin fee is a buyer-side surcharge, so the buyer is BILLED the
+    // gateway charge stored on the order and paying exactly that is not an
+    // overpayment. Comparing against `totalAmount` here would invent an excess
+    // equal to the shop's own fee and hand it to the buyer.
     const { user, product } = sample;
     const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
+    const billed = new Decimal(order.totalAmount).plus(25);
     await prisma.order.update({
       where: { id: order.id },
-      data: { paymentMethod: PaymentMethod.TOKOPAY },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: billed },
     });
-    const billed = qrisChargeAmount(order.totalAmount);
     await prisma.processedTokopayTx.create({
       data: { trxId: `tp-${order.id}`, orderId: order.id, amount: billed.plus("500"), outcome: "overpaid" },
     });
@@ -185,6 +185,29 @@ describe("findOverpaidExcess", () => {
     expect(found!.gateway).toBe(PaymentMethod.TOKOPAY);
     expect(found!.expectedAmount.toString()).toBe(billed.toString());
     expect(found!.excess.toString()).toBe("500");
+  });
+
+  it("reads a TokoPay overpayment against the Rp50.025 charge stored on a Rp50.000 order", async () => {
+    // Rp25 is a fee no local tariff formula produces, so this only passes when
+    // the expectation comes from the figure TokoPay reported for this order.
+    const { user, product } = sample;
+    const order = (await createOrderDirect(prisma, { channel: "bot", user, productId: product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, totalAmount: new Decimal("50000") },
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+    await prisma.processedTokopayTx.create({
+      data: { trxId: `tp-snap-${order.id}`, orderId: order.id, amount: new Decimal("50100"), outcome: "overpaid" },
+    });
+
+    const found = await findOverpaidExcess(prisma, order.id);
+
+    expect(found).not.toBeNull();
+    expect(found!.gateway).toBe(PaymentMethod.TOKOPAY);
+    expect(found!.receivedAmount.toString()).toBe("50100");
+    expect(found!.expectedAmount.toString()).toBe("50025");
+    expect(found!.excess.toString()).toBe("75");
   });
 
   it("reads a PayDisini and a NOWPayments row against the bare order total", async () => {

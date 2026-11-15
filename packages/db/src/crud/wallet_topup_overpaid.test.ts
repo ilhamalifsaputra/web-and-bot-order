@@ -50,7 +50,6 @@ import {
 } from "@app/db";
 import { NotificationEvent, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { checkNowpaymentsAmount, nowpaymentsInvoicePrice } from "@app/core/payments/nowpayments";
 
 let db: TestDb;
@@ -76,9 +75,13 @@ interface Rail {
   method: PaymentMethod;
   currency: "USDT" | "IDR";
   topupAmount: string;
-  /** What the rail bills the buyer for this order — TokoPay adds its QRIS
-   *  surcharge on top, every other rail bills the bare total. */
+  /** What the rail bills the buyer for this order — TokoPay adds its own
+   *  surcharge on top (the charge stored on the order), every other rail bills
+   *  the bare total. */
   billed: (order: Order) => Decimal;
+  /** The fee-inclusive charge the gateway reported, stored on the order when it
+   *  is created (TokoPay only — `commitTokopayGateway` writes it in production). */
+  gatewayCharge?: (order: Order) => Decimal;
   deliver: (orderId: number, txId: string, amount: Decimal.Value) => Promise<{ status: string }>;
   ledgerOutcome: (txId: string) => Promise<string | undefined>;
 }
@@ -128,7 +131,9 @@ const rails: Rail[] = [
     method: PaymentMethod.TOKOPAY,
     currency: "IDR",
     topupAmount: "50000",
-    billed: (o) => qrisChargeAmount(o.totalAmount),
+    // The fee-inclusive total TokoPay reported, stored on the order by makeTopup.
+    gatewayCharge: (o) => new Decimal(o.totalAmount).plus(25),
+    billed: (o) => new Decimal(o.totalAmount).plus(25),
     deliver: (orderId, trxId, amount) => deliverPaidTokopayOrder(prisma, { orderId, trxId, amount }),
     ledgerOutcome: async (id) => (await prisma.processedTokopayTx.findUnique({ where: { trxId: id } }))?.outcome,
   },
@@ -158,6 +163,11 @@ async function makeTopup(rail: Rail): Promise<Order> {
     } as Parameters<typeof createWalletTopupOrder>[1]),
   );
   expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+  if (rail.gatewayCharge) {
+    const gatewayChargeAmount = rail.gatewayCharge(order);
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount } });
+    return { ...order, gatewayChargeAmount };
+  }
   return order;
 }
 

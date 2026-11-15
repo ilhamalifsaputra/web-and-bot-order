@@ -34,7 +34,6 @@ import { AMOUNT_TOLERANCE } from "@app/core/formatters";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -59,13 +58,33 @@ beforeEach(async () => {
   adminB = (await mk(2)).id;
 });
 
-async function makePendingOrder(method: string, currency: "IDR" | "USDT") {
-  const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
-  return prisma.order.update({ where: { id: order.id }, data: { paymentMethod: method, currency } });
+/** The fee TokoPay reported on top of the total for every TokoPay order this
+ *  file creates. Rp25 is deliberately a figure no local tariff formula yields,
+ *  so a test only passes when the code reads the charge stored on the order. */
+const TOKOPAY_TEST_FEE = "25";
+
+/** What a TokoPay order created by this file's helpers asks the buyer to pay:
+ *  its stored gateway charge, total + TOKOPAY_TEST_FEE. */
+function tokopayCharge(order: { totalAmount: Decimal.Value }) {
+  return new Decimal(order.totalAmount).plus(TOKOPAY_TEST_FEE);
 }
 
-function makeTopupOrder(method: string, currency: "IDR" | "USDT", amount: string) {
-  return prisma.$transaction((tx) =>
+/** A TokoPay order gets the fee-inclusive charge TokoPay would have reported
+ *  stored on it (as `commitTokopayGateway` does); other rails store none. */
+function gatewayChargeFor(method: string, total: Decimal.Value) {
+  return method === PaymentMethod.TOKOPAY ? tokopayCharge({ totalAmount: total }) : null;
+}
+
+async function makePendingOrder(method: string, currency: "IDR" | "USDT") {
+  const order = (await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+  return prisma.order.update({
+    where: { id: order.id },
+    data: { paymentMethod: method, currency, gatewayChargeAmount: gatewayChargeFor(method, order.totalAmount) },
+  });
+}
+
+async function makeTopupOrder(method: string, currency: "IDR" | "USDT", amount: string) {
+  const order = await prisma.$transaction((tx) =>
     createWalletTopupOrder(tx, {
       userId: sample.user.id,
       amount,
@@ -74,6 +93,10 @@ function makeTopupOrder(method: string, currency: "IDR" | "USDT", amount: string
       ...(currency === "USDT" ? { rate: "16000" } : {}),
     }),
   );
+  return prisma.order.update({
+    where: { id: order.id },
+    data: { gatewayChargeAmount: gatewayChargeFor(method, order.totalAmount) },
+  });
 }
 
 async function expectValidation(p: Promise<unknown>, key: string) {
@@ -131,7 +154,7 @@ describe("findUnmatchedLedgerRow", () => {
 describe("manualMatchLedgerTx — success on each gateway", () => {
   it("TokoPay: claims the row, settles the order and names the admin in the status history", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-ok-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-ok-1", amount: tokopayCharge(order) });
 
     const result = await manualMatchLedgerTx(prisma, { reference: "tp-ok-1", orderId: order.id, adminId });
     expect(result.gateway).toBe("tokopay");
@@ -195,7 +218,7 @@ describe("manualMatchLedgerTx — success on each gateway", () => {
 
   it("a WALLET_TOPUP order matched through TokoPay credits the buyer's rupiah wallet", async () => {
     const order = await makeTopupOrder(PaymentMethod.TOKOPAY, "IDR", "20000");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-topup-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-topup-1", amount: tokopayCharge(order) });
 
     const result = await manualMatchLedgerTx(prisma, { reference: "tp-topup-1", orderId: order.id, adminId });
     expect(result.kind).toBe("delivered");
@@ -240,7 +263,7 @@ describe("manualMatchLedgerTx — refusals", () => {
 
   it.each(["matched", "dismissed", "delivery_failed"])("refuses a row whose outcome is %s", async (outcome) => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
-    await prisma.processedTokopayTx.create({ data: { trxId: `tp-${outcome}`, amount: qrisChargeAmount(order.totalAmount), outcome } });
+    await prisma.processedTokopayTx.create({ data: { trxId: `tp-${outcome}`, amount: tokopayCharge(order), outcome } });
     await expectValidation(
       manualMatchLedgerTx(prisma, { reference: `tp-${outcome}`, orderId: order.id, adminId }),
       "error.tx_not_unmatched",
@@ -263,7 +286,7 @@ describe("manualMatchLedgerTx — refusals", () => {
 
   it("refuses an ambiguous reference when no gateway is given", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "amb-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "amb-1", amount: tokopayCharge(order) });
     await recordUnmatchedBybitTx(prisma, { bybitTxId: "amb-1", amount: "5" });
     await expectValidation(
       manualMatchLedgerTx(prisma, { reference: "amb-1", orderId: order.id, adminId }),
@@ -327,7 +350,32 @@ describe("manualMatchLedgerTx — refusals", () => {
     );
   });
 
-  it("TokoPay: refuses an amount that covers the total but not the QRIS charge", async () => {
+  it("TokoPay: a Rp50.000 order with a stored Rp50.025 charge refuses a Rp50.000 row naming 50025 as required, and matches a Rp50.025 row", async () => {
+    const order = await prisma.order.update({
+      where: { id: (await makePendingOrder(PaymentMethod.TOKOPAY, "IDR")).id },
+      data: { totalAmount: new Decimal("50000") },
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-snap-short", amount: new Decimal("50000") });
+    const err = await manualMatchLedgerTx(prisma, { reference: "tp-snap-short", orderId: order.id, adminId }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).message).toBe("error.manual_match_amount_short");
+    expect((err as ValidationError).formatArgs).toMatchObject({ received: "50000", required: "50025", currency: "IDR" });
+    expect((await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-snap-short" } })).outcome).toBe("unmatched");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-snap-exact", amount: new Decimal("50025") });
+    const result = await manualMatchLedgerTx(prisma, { reference: "tp-snap-exact", orderId: order.id, adminId });
+    expect(result.gateway).toBe("tokopay");
+    expect(result.order.id).toBe(order.id);
+    expect(await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "tp-snap-exact" } })).toMatchObject({
+      outcome: "matched",
+      orderId: order.id,
+    });
+  });
+
+  it("TokoPay: refuses an amount that covers the total but not the stored gateway charge", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
     await recordUnmatchedTokopayTx(prisma, { trxId: "tp-short", amount: order.totalAmount });
     await expectValidation(
@@ -361,7 +409,7 @@ describe("manualMatchLedgerTx — refusals", () => {
 describe("manualMatchLedgerTx — failure leaves the row matchable again", () => {
   it("TokoPay: a delivery that throws (out of stock) reverts the row to unmatched and leaves the order unpaid", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-fail-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-fail-1", amount: tokopayCharge(order) });
     await wipeStock();
 
     await expect(manualMatchLedgerTx(prisma, { reference: "tp-fail-1", orderId: order.id, adminId })).rejects.toBeTruthy();
@@ -388,12 +436,12 @@ describe("QRIS deliver functions in manual mode", () => {
   it("TokoPay manual mode cannot claim a delivery_failed row", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
     await prisma.processedTokopayTx.create({
-      data: { trxId: "tp-df-1", amount: qrisChargeAmount(order.totalAmount), outcome: "delivery_failed" },
+      data: { trxId: "tp-df-1", amount: tokopayCharge(order), outcome: "delivery_failed" },
     });
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "tp-df-1",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: tokopayCharge(order),
       manual: { adminId },
     });
     expect(result.status).toBe("already_processed");
@@ -417,11 +465,11 @@ describe("QRIS deliver functions in manual mode", () => {
   it("TokoPay manual mode on an order that is no longer payable puts the row back to unmatched, not stale", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-stale-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-stale-1", amount: tokopayCharge(order) });
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "tp-stale-1",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: tokopayCharge(order),
       manual: { adminId },
     });
     expect(result.status).toBe("stale");
@@ -501,8 +549,9 @@ describe("manualMatchLedgerTx — true concurrency (forced race)", () => {
     await bulkAddStock(prisma, sample.product.id, ["race-cred-1", "race-cred-2"]);
     const a = await makePendingOrder(method, currency);
     const b = await makePendingOrder(method, currency);
-    // Same total on both, so whichever wins is an exact (not overpaid) match.
-    await prisma.order.update({ where: { id: b.id }, data: { totalAmount: a.totalAmount } });
+    // Same total (and, on TokoPay, the same stored gateway charge) on both, so
+    // whichever wins is an exact (not overpaid) match.
+    await prisma.order.update({ where: { id: b.id }, data: { totalAmount: a.totalAmount, gatewayChargeAmount: a.gatewayChargeAmount } });
     return { a, b };
   }
 
@@ -538,7 +587,7 @@ describe("manualMatchLedgerTx — true concurrency (forced race)", () => {
 
   it("TokoPay: both admins pass every pre-guard and read the row as unmatched, then only the compare-and-swap claim decides — exactly one wins", async () => {
     const { a, b } = await twoOrdersSameTotal(PaymentMethod.TOKOPAY, "IDR");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-race-1", amount: qrisChargeAmount(a.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-race-1", amount: tokopayCharge(a) });
 
     // Hold both callers at the claim's updateMany, after the deliver
     // function's own read saw "unmatched" for both.
@@ -563,7 +612,7 @@ describe("manualMatchLedgerTx — recovering a stranded QRIS manual claim", () =
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
     const at = elevenMinutesAgo();
     await prisma.processedTokopayTx.create({
-      data: { trxId: "tp-stranded-1", orderId: order.id, amount: qrisChargeAmount(order.totalAmount), outcome: "matched", createdAt: at, updatedAt: at },
+      data: { trxId: "tp-stranded-1", orderId: order.id, amount: tokopayCharge(order), outcome: "matched", createdAt: at, updatedAt: at },
     });
     const result = await manualMatchLedgerTx(prisma, { reference: "tp-stranded-1", orderId: order.id, adminId });
     expect(result.kind).toBe("delivered");
@@ -585,7 +634,7 @@ describe("manualMatchLedgerTx — recovering a stranded QRIS manual claim", () =
   it("a same-order matched row that is still fresh (possibly in flight) is refused", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
     await prisma.processedTokopayTx.create({
-      data: { trxId: "tp-fresh-1", orderId: order.id, amount: qrisChargeAmount(order.totalAmount), outcome: "matched" },
+      data: { trxId: "tp-fresh-1", orderId: order.id, amount: tokopayCharge(order), outcome: "matched" },
     });
     await expectValidation(
       manualMatchLedgerTx(prisma, { reference: "tp-fresh-1", orderId: order.id, adminId }),
@@ -599,7 +648,7 @@ describe("manualMatchLedgerTx — recovering a stranded QRIS manual claim", () =
     const other = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
     const at = elevenMinutesAgo();
     await prisma.processedTokopayTx.create({
-      data: { trxId: "tp-other-1", orderId: owner.id, amount: qrisChargeAmount(other.totalAmount), outcome: "matched", createdAt: at, updatedAt: at },
+      data: { trxId: "tp-other-1", orderId: owner.id, amount: tokopayCharge(other), outcome: "matched", createdAt: at, updatedAt: at },
     });
     await expectValidation(
       manualMatchLedgerTx(prisma, { reference: "tp-other-1", orderId: other.id, adminId }),
@@ -676,13 +725,22 @@ describe("dismissUnmatchedLedgerTx", () => {
 async function shortPaidSetup(gateway: "tokopay" | "paydisini", ref: string, opts: { hint?: boolean; markUnderpaid?: boolean } = {}) {
   const method = gateway === "tokopay" ? PaymentMethod.TOKOPAY : PaymentMethod.PAYDISINI;
   await bulkAddStock(prisma, sample.product.id, [`${ref}-cred-1`, `${ref}-cred-2`]);
-  const a = await prisma.order.update({ where: { id: (await makePendingOrder(method, "IDR")).id }, data: { totalAmount: "100000" } });
-  const c = await prisma.order.update({ where: { id: (await makePendingOrder(method, "IDR")).id }, data: { totalAmount: "30000" } });
+  // A TokoPay order's stored gateway charge follows its total (+ the Rp25 fee
+  // every TokoPay order in this file carries); PayDisini stores none.
+  const chargeFor = (total: string) => (gateway === "tokopay" ? new Decimal(total).plus(TOKOPAY_TEST_FEE) : null);
+  const a = await prisma.order.update({
+    where: { id: (await makePendingOrder(method, "IDR")).id },
+    data: { totalAmount: "100000", gatewayChargeAmount: chargeFor("100000") },
+  });
+  const c = await prisma.order.update({
+    where: { id: (await makePendingOrder(method, "IDR")).id },
+    data: { totalAmount: "30000", gatewayChargeAmount: chargeFor("30000") },
+  });
   const received = new Decimal("50000");
   const record = gateway === "tokopay" ? recordUnmatchedTokopayTx : recordUnmatchedPaydisiniTx;
   await record(prisma, { trxId: ref, amount: received, suggestedOrderId: opts.hint === false ? null : a.id });
   if (opts.markUnderpaid !== false) {
-    const expected = gateway === "tokopay" ? qrisChargeAmount(a.totalAmount) : new Decimal(a.totalAmount);
+    const expected = gateway === "tokopay" ? new Decimal("100025") : new Decimal(a.totalAmount);
     expect(
       await markOrderUnderpaid(prisma, {
         orderId: a.id,
@@ -853,7 +911,7 @@ describe("manualMatchLedgerTx — a QRIS match that fails inside its transaction
     const method = gateway === "tokopay" ? PaymentMethod.TOKOPAY : PaymentMethod.PAYDISINI;
     const order = await makePendingOrder(method, "IDR");
     const ref = `i1-${gateway}-${moved}`;
-    const amount = gateway === "tokopay" ? qrisChargeAmount(order.totalAmount) : new Decimal(order.totalAmount);
+    const amount = gateway === "tokopay" ? tokopayCharge(order) : new Decimal(order.totalAmount);
     await (gateway === "tokopay" ? recordUnmatchedTokopayTx : recordUnmatchedPaydisiniTx)(prisma, { trxId: ref, amount });
 
     // Another path settles (or the auto-cancel closes) the order after the
@@ -870,7 +928,7 @@ describe("manualMatchLedgerTx — a QRIS match that fails inside its transaction
 
   it("an error raised before the transaction ran reopens the row while the order is still unpaid", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "i1-pre", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "i1-pre", amount: tokopayCharge(order) });
     const db = aroundTx(async () => {
       throw new Error("connection reset before the transaction started");
     });
@@ -880,7 +938,7 @@ describe("manualMatchLedgerTx — a QRIS match that fails inside its transaction
 
   it("an error raised after OUR settlement committed leaves the row matched to the settled order", async () => {
     const order = await makePendingOrder(PaymentMethod.TOKOPAY, "IDR");
-    await recordUnmatchedTokopayTx(prisma, { trxId: "i1-post", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "i1-post", amount: tokopayCharge(order) });
     const db = aroundTx(async (run) => {
       await run();
       throw new Error("acknowledgement lost after commit");
@@ -907,7 +965,7 @@ describe("manualMatchLedgerTx — a top-up credited by another path in the meant
     const method = gateway === "tokopay" ? PaymentMethod.TOKOPAY : PaymentMethod.PAYDISINI;
     const order = await makeTopupOrder(method, "IDR", "20000");
     const ref = `i2-${gateway}`;
-    const amount = gateway === "tokopay" ? qrisChargeAmount(order.totalAmount) : new Decimal(order.totalAmount);
+    const amount = gateway === "tokopay" ? tokopayCharge(order) : new Decimal(order.totalAmount);
     await (gateway === "tokopay" ? recordUnmatchedTokopayTx : recordUnmatchedPaydisiniTx)(prisma, { trxId: ref, amount });
     const before = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
 

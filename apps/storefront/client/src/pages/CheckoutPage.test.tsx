@@ -36,8 +36,6 @@ const checkoutData: CheckoutData = {
   bulk_discount: "0",
   voucher_discount: "0",
   total: "158000",
-  qris_admin_fee: "1206", // 100 + 0.70% of 158000
-  qris_grand_total: "159206",
   total_usdt: "9.88",
   voucher_code: "",
   error_key: null,
@@ -161,23 +159,26 @@ describe("CheckoutPage", () => {
     expect(screen.queryByText("QRIS admin fee")).not.toBeInTheDocument();
   });
 
-  // QRIS admin fee (Rp100 + 0.70%): shown once QRIS is the selected method,
-  // both as a summary line and folded into the displayed grand total — not
-  // shown for any other payment method.
-  it("shows the QRIS admin fee breakdown and grand total when QRIS is selected", async () => {
+  // QRIS admin fee: TokoPay sets it when the QR is created, so before that the
+  // summary only says it is added on the payment page — no figure — and the
+  // order total stays the plain total. Not shown for any other method.
+  it("shows the QRIS admin fee note (no figure) and the plain total when QRIS is selected", async () => {
     renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
     await screen.findByRole("heading", { name: "Checkout" });
     // idr_enabled -> qris wins the default-selection cascade.
     const qrisRadio = screen.getByRole("radio", { name: /QRIS/ }) as HTMLInputElement;
     expect(qrisRadio.checked).toBe(true);
     expect(screen.getAllByText("QRIS admin fee").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Rp1,206").length).toBeGreaterThan(0);
-    // Order total row now shows the fee-inclusive grand total, not the bare total.
-    expect(screen.getAllByText("Rp159,206").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Added on the payment page").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Rp1,206")).not.toBeInTheDocument();
+    expect(screen.queryByText("Rp159,206")).not.toBeInTheDocument();
+    // The order total row shows the plain checkout total.
+    expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
 
-    // Switching to another method drops the fee line and reverts the total.
+    // Switching to another method drops the fee line; the total is unchanged.
     fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
     expect(screen.queryByText("QRIS admin fee")).not.toBeInTheDocument();
+    expect(screen.queryByText("Added on the payment page")).not.toBeInTheDocument();
     expect(screen.getAllByText("Rp158,000").length).toBeGreaterThan(0);
   });
 
@@ -650,8 +651,8 @@ describe("CheckoutPage", () => {
 
     // Final-review fix: a USD-display viewer on an IDR-settlement rail
     // (QRIS/PayDisini) must see the Rp payable next to the $ figure, like the
-    // bot's payAlongsidePriceLine. fx 16000: qris_grand_total 159206 → $9.96,
-    // total 158000 → $9.88.
+    // bot's payAlongsidePriceLine. fx 16000: total 158000 → $9.88. QRIS has no
+    // fee-inclusive figure before the QR, so its Rp payable is the plain total.
     describe("Price · Pay line for a USD viewer", () => {
       const usdContext: ShopContext = { ...context, currency: "USD" };
       const bar = () => document.querySelector(".fixed.bottom-0")!;
@@ -659,8 +660,8 @@ describe("CheckoutPage", () => {
       it("QRIS: shows the $ total and the Rp payable the rail will charge", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), usdContext);
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp159,206"));
-        expect(bar()).toHaveTextContent("$9.96");
+        await waitFor(() => expect(bar()).toHaveTextContent("Price $9.88 · Pay Rp158,000"));
+        expect(bar()).not.toHaveTextContent("$9.96");
       });
 
       it("PayDisini: the Rp payable is the fee-free total", async () => {
@@ -679,7 +680,7 @@ describe("CheckoutPage", () => {
       it("QRIS for an IDR / no-preference viewer: unchanged, Rp only", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }), { ...context, currency: "IDR" });
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Rp159,206"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Rp158,000"));
         expect(bar()).not.toHaveTextContent("Pay Rp");
         expect(bar()).not.toHaveTextContent("$");
       });
@@ -687,7 +688,7 @@ describe("CheckoutPage", () => {
       it("QRIS for a null-preference viewer: unchanged, no dual line", async () => {
         renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
         await screen.findByRole("heading", { name: "Checkout" });
-        await waitFor(() => expect(bar()).toHaveTextContent("Rp159,206"));
+        await waitFor(() => expect(bar()).toHaveTextContent("Rp158,000"));
         expect(bar()).not.toHaveTextContent("Pay Rp");
       });
     });

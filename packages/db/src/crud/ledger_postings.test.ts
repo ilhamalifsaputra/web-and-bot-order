@@ -459,6 +459,8 @@ describe("underpaid wallet top-up credited anyway (creditUnderpaidTopupAnyway)",
       currency: "IDR",
       method: PaymentMethod.TOKOPAY,
     });
+    // TokoPay reported Rp20.025 for this top-up (a Rp25 buyer-paid fee).
+    await prisma.order.update({ where: { id: topup.id }, data: { gatewayChargeAmount: new Decimal("20025") } });
     // Driven through the real gateway path that flags a shortfall, because that
     // is what writes the row `findUnderpaidReceived` reads: without it this
     // resolution credits nothing and there is no posting to assert on.
@@ -475,7 +477,7 @@ describe("underpaid wallet top-up credited anyway (creditUnderpaidTopupAnyway)",
       orderId: topup.id,
       adminId: ADMIN_ID,
     });
-    expect(credited.toString()).toBe("18260");
+    expect(credited.toString()).toBe("18475");
 
     const movement = await prisma.walletTransaction.findFirstOrThrow({
       where: { orderId: topup.id, reason: "admin_adjust" },
@@ -483,7 +485,7 @@ describe("underpaid wallet top-up credited anyway (creditUnderpaidTopupAnyway)",
     const posting = await postingByKey(`wallet:${movement.id}`);
     expect(posting.type).toBe(FinancialTransactionType.ADJUSTMENT);
     // The top-up order is the back-pointer, not the acting admin: what this
-    // posting claims is that a rail collected 18260 in principal against THIS order, which is
+    // posting claims is that a rail collected 18475 in principal against THIS order, which is
     // the figure M5's reconciliation has to tie back to a gateway payment.
     expect(posting.referenceType).toBe("order");
     expect(posting.referenceId).toBe(topup.id);
@@ -495,8 +497,8 @@ describe("underpaid wallet top-up credited anyway (creditUnderpaidTopupAnyway)",
     // the rail actually collected unrecorded on the asset side, which balances
     // and is still wrong.
     expect(entries).toEqual([
-      { code: "provider_clearing.idr", direction: "DEBIT", amount: "18260", currency: "IDR" },
-      { code: "wallet_liability.idr", direction: "CREDIT", amount: "18260", currency: "IDR" },
+      { code: "provider_clearing.idr", direction: "DEBIT", amount: "18475", currency: "IDR" },
+      { code: "wallet_liability.idr", direction: "CREDIT", amount: "18475", currency: "IDR" },
     ]);
     expect(entries.some((e) => e.code.startsWith("adjustment"))).toBe(false);
     await expectBalanced(posting.id);

@@ -686,6 +686,14 @@ model Order {
   fxRate                 Decimal?  @map("fx_rate")
   paymentMethod          String    @default("BINANCE_PAY") @map("payment_method")
   paymentRef             String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
+  /// What the gateway said the buyer must pay, fee included (TokoPay's
+  /// `total_bayar`), written in the same statement that caches the gateway
+  /// result in `paymentRef`. TokoPay payments are matched against THIS figure,
+  /// so a tariff change at the gateway can never make a paid order look short.
+  /// Null = no TokoPay transaction was recorded for this order (or it is not
+  /// a TokoPay order); readers then use the bare order total — see
+  /// `expectedTokopayCharge` (@app/core/payments/tokopayCharge).
+  gatewayChargeAmount    Decimal?  @map("gateway_charge_amount")
   paymentMsgChatId       BigInt?   @map("payment_msg_chat_id")
   paymentMsgId           Int?      @map("payment_msg_id")
   paymentProofFileId     String?   @map("payment_proof_file_id")

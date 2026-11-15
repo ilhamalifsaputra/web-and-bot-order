@@ -6,8 +6,8 @@
  *
  *     Subtotal            Rp100.000
  *     Voucher             −Rp20.000
- *     QRIS admin fee         +Rp660
- *     Total to pay         Rp80.660
+ *     QRIS admin fee          +Rp25
+ *     Total to pay         Rp80.025
  *
  * The screen used to print the GROSS subtotal, then the fee, then the net
  * total plus fee — so any discount was invisible and the arithmetic did not
@@ -22,7 +22,6 @@
  */
 import { Decimal } from "@app/core/money";
 import { formatIdrFor } from "@app/core/moneyFormat";
-import { computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { coreT } from "./i18n";
 
 export interface QrisCaptionOrder {
@@ -46,14 +45,24 @@ export interface QrisCaptionAmounts {
 
 const ZERO = new Decimal(0);
 
-export function qrisCaptionAmounts(order: QrisCaptionOrder, lang: string | null | undefined): QrisCaptionAmounts {
+/**
+ * `chargeAmount` is what the buyer must pay — TokoPay's own total for this
+ * transaction (commitTokopayGateway, @app/db), so the figure printed beside the
+ * QR is exactly what the buyer's banking app shows on scanning. The fee row is
+ * derived from it, never computed here.
+ */
+export function qrisCaptionAmounts(
+  order: QrisCaptionOrder,
+  lang: string | null | undefined,
+  chargeAmount: Decimal.Value,
+): QrisCaptionAmounts {
   const subtotal = new Decimal(order.subtotalAmount);
   const total = new Decimal(order.totalAmount);
   const bulk = Decimal.max(ZERO, new Decimal(order.bulkDiscountAmount));
   const wallet = Decimal.max(ZERO, new Decimal(order.walletUsed));
   const voucher = Decimal.max(ZERO, subtotal.minus(bulk).minus(wallet).minus(total));
-  const adminFee = computeQrisAdminFee(total);
-  const chargeAmount = total.plus(adminFee);
+  const charge = new Decimal(chargeAmount);
+  const adminFee = Decimal.max(ZERO, charge.minus(total));
   const l = lang ?? "en";
   const row = (key: string, amount: Decimal) =>
     amount.greaterThan(0) ? coreT(key, l, { amount: formatIdrFor(amount, l) }) : "";
@@ -64,8 +73,8 @@ export function qrisCaptionAmounts(order: QrisCaptionOrder, lang: string | null 
       row("checkout.qris_voucher_line", voucher) +
       row("checkout.qris_wallet_line", wallet),
     fee: formatIdrFor(adminFee, l),
-    amount: formatIdrFor(chargeAmount, l),
+    amount: formatIdrFor(charge, l),
     adminFee,
-    chargeAmount,
+    chargeAmount: charge,
   };
 }

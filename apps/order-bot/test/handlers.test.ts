@@ -3,16 +3,19 @@ import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@app/core/payments/tokopay", async (orig) => ({
-  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
-  createTransaction: vi.fn().mockResolvedValue({
-    trxId: "TP-TEST",
-    payUrl: null,
-    qrLink: "https://x/qr.png",
-    qrString: "000",
-    totalBayar: "100",
-  }),
-}));
+vi.mock("@app/core/payments/tokopay", async (orig) => {
+  const { Decimal } = await import("@app/core/money");
+  return {
+    ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+    createTransaction: vi.fn(async (_creds: unknown, args: { amountIdr: unknown }) => ({
+      trxId: "TP-TEST",
+      payUrl: null,
+      qrLink: "https://x/qr.png",
+      qrString: "000",
+      totalBayar: new Decimal(String(args.amountIdr)).plus(25).toFixed(0),
+    })),
+  };
+});
 
 // Same shape as the TokoPay mock above — buyNowPaydisini's own audit-wiring
 // test (Phase H) needs to get past its external gateway call without a real
@@ -101,6 +104,7 @@ import * as verification from "../src/handlers/verification";
 import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
+import { t as coreT } from "@app/core/i18n";
 import { gameInputFieldsLabel } from "../src/util/gameInfo";
 import { upsertUser } from "@app/db";
 import { logger } from "@app/core/logger";
@@ -4302,14 +4306,18 @@ describe("checkout handlers", () => {
     const caption = (photoCalls[0]!.args[1] as { caption?: string }).caption;
     expect(caption).toBeTruthy();
     // The gateway request is sent order.totalAmount (TokoPay adds its fee
-    // automatically on top of nominal), while the caption shows the fee breakdown.
-    const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
-    const fee = computeQrisAdminFee(order.totalAmount);
+    // automatically on top of nominal); the caption prints TokoPay's own total
+    // (the mock reports total + 25) and the fee row derived from it.
+    const fee = new Decimal(25);
     const chargeAmount = new Decimal(order.totalAmount).plus(fee);
     const lastCall = vi.mocked(mockedCreateTokopayTransaction).mock.lastCall!;
     expect(new Decimal(lastCall[1].amountIdr).toString()).toBe(new Decimal(order.totalAmount).toString());
     expect(sentIncludes(sink, formatIdr(fee))).toBe(true);
     expect(sentIncludes(sink, formatIdr(chargeAmount))).toBe(true);
+    expect(caption).toContain(formatIdrFor(fee, "en"));
+    expect(caption).toContain(formatIdrFor(chargeAmount, "en"));
+    // TokoPay's own total is stored on the order, for every later payment check.
+    expect(order.gatewayChargeAmount?.toString()).toBe(chargeAmount.toString());
     // paymentRef is cached as JSON tagged `gateway: "tokopay"` — the same
     // discriminator the storefront's parseCachedGateway() requires, so a
     // storefront view of a bot-created order is a cache HIT, not a re-fetch.
@@ -4362,6 +4370,38 @@ describe("checkout handlers", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
     expect(orders[0]!.status).toBe("CANCELLED");
+    expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER" } })).toBe(0);
+  });
+
+  // TokoPay's own total is what the buyer pays and what every later payment
+  // check compares against. A transaction that came back without one could never
+  // be verified, so no QR is shown and the order shell is cancelled — exactly
+  // like a failed creation, with no extra message.
+  it("buyNowTokopay shows no QR and cancels the order when TokoPay reports no total", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    vi.mocked(mockedCreateTokopayTransaction).mockResolvedValueOnce({
+      trxId: "TP-NO-TOTAL", payUrl: null, qrLink: "https://x/qr-none.png", qrString: "000", totalBayar: null,
+    });
+    const { ctx, sink } = customerCtx({ callbackData: "v1:payq:1:1" });
+    await primeQuote(ctx, sample.product.id, 1);
+    const before = sink.length;
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1, quoteNonce(ctx));
+    const after = sink.slice(before);
+
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
+    expect(orders.length).toBe(1);
+    expect(orders[0]!.status).toBe("CANCELLED");
+    expect(orders[0]!.adminNote).toContain("[cancel] gateway_create_failed");
+    expect(orders[0]!.gatewayChargeAmount).toBeNull();
+    expect(orders[0]!.paymentRef).toBeNull();
+    // No QR, and the buyer's bubble is edited exactly once to the unavailable text.
+    expect(calls(after, "replyWithPhoto")).toHaveLength(0);
+    expect(calls(after, "sendPhoto")).toHaveLength(0);
+    expect(calls(after, "sendMessage")).toHaveLength(0);
+    expect(calls(after, "deleteMessage")).toHaveLength(0);
+    expect(calls(after, "editMessageText")).toHaveLength(1);
+    expect(sentIncludes(after, coreT("checkout.payment_unavailable", "en"))).toBe(true);
     expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER" } })).toBe(0);
   });
 
@@ -4426,8 +4466,7 @@ describe("checkout handlers", () => {
     const order = (await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } }))!;
     expect(new Decimal(order.discountAmount).toString()).toBe("1");
     const caption = (calls(sink, "replyWithPhoto")[0]!.args[1] as { caption: string }).caption;
-    const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
-    const fee = computeQrisAdminFee(order.totalAmount);
+    const fee = new Decimal(25); // the TokoPay mock reports order total + 25
     // The voucher row is printed, and every printed row adds up to the payable.
     expect(caption).toContain(`Voucher: −${formatIdrFor("1", "en")}`);
     expect(caption).toContain(`Subtotal: ${formatIdrFor("10", "en")}`);
@@ -4502,7 +4541,7 @@ describe("checkout handlers", () => {
     // order a distinct one so its paymentRef cache write doesn't collide with
     // the 1st on the orders.payment_ref unique constraint.
     vi.mocked(mockedCreateTokopayTransaction).mockResolvedValueOnce({
-      trxId: "TP-TEST-2", payUrl: null, qrLink: "https://x/qr2.png", qrString: "001", totalBayar: "100",
+      trxId: "TP-TEST-2", payUrl: null, qrLink: "https://x/qr2.png", qrString: "001", totalBayar: "30",
     });
     const second = customerCtx({ callbackData: "v1:payq:2:1" });
     await primeQuote(second.ctx, other.id, 1);

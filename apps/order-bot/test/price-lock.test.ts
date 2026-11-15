@@ -18,10 +18,13 @@ import "./setup-db";
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@app/core/payments/tokopay", async (orig) => ({
-  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
-  createTransaction: vi.fn().mockResolvedValue({ trxId: "TP-TEST", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: "100" }),
-}));
+vi.mock("@app/core/payments/tokopay", async (orig) => {
+  const { Decimal } = await import("@app/core/money");
+  return {
+    ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+    createTransaction: vi.fn(async (_creds: unknown, args: { amountIdr: unknown }) => ({ trxId: "TP-TEST", payUrl: null, qrLink: "https://x/qr.png", qrString: "000", totalBayar: new Decimal(String(args.amountIdr)).plus(25).toFixed(0) })),
+  };
+});
 vi.mock("@app/core/payments/paydisini", async (orig) => ({
   ...(await orig<typeof import("@app/core/payments/paydisini")>()),
   createTransaction: vi.fn().mockResolvedValue({ trxId: "PD-TEST", qrString: "000", qrUrl: "https://x/pd-qr.png", checkoutUrl: null, totalBayar: "100" }),

@@ -1592,6 +1592,9 @@ describe("creditUnderpaidTopupAnyway", () => {
         method: PaymentMethod.TOKOPAY,
       }),
     );
+    // TokoPay reported Rp20.025 (a Rp25 fee) for this top-up when its
+    // transaction was created; the buyer-paid fee is taken off what arrived.
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("20025") } });
     expect(
       await markOrderUnderpaid(prisma, {
         orderId: order.id,
@@ -1603,12 +1606,12 @@ describe("creditUnderpaidTopupAnyway", () => {
 
     const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
 
-    expect(credited.toString()).toBe("18260");
+    expect(credited.toString()).toBe("18475");
     // An IDR rail returns IDR — the counterpart to the USDT case above, and
     // the reason a bare amount in the audit log is ambiguous at all.
     expect(currency).toBe("IDR");
     const buyer = await freshUser();
-    expect(new Decimal(buyer.walletBalance).toString()).toBe("18260");
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("18475");
     // Currency isolation: an IDR top-up must never touch the USDT balance.
     expect(new Decimal(buyer.walletBalanceUsdt).equals(0)).toBe(true);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
@@ -1617,17 +1620,43 @@ describe("creditUnderpaidTopupAnyway", () => {
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.reason).toBe("admin_adjust");
     expect(ledger[0]!.currency).toBe("IDR");
-    expect(new Decimal(ledger[0]!.delta).toString()).toBe("18260");
+    expect(new Decimal(ledger[0]!.delta).toString()).toBe("18475");
+  });
+
+  // The fee taken off a TokoPay top-up's received amount is the one implied by
+  // the gateway charge stored on the order (charge − total), whatever TokoPay's
+  // tariff is — Rp25 here, which no local formula would produce.
+  it("credits what arrived minus the fee implied by the stored gateway charge on a TokoPay top-up", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    expect(order.totalAmount.toString()).toBe("50000");
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+    expect(
+      await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "40025", expectedAmount: "50000" }),
+    ).toBe(true);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
+
+    const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    expect(credited.toString()).toBe("40000");
+    expect(currency).toBe("IDR");
+    expect(new Decimal((await freshUser()).walletBalance).toString()).toBe("40000");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
   });
 
   it.each([
-    [PaymentMethod.TOKOPAY, "50300", "49850"],
+    [PaymentMethod.TOKOPAY, "50000", "49975"],
     [PaymentMethod.TOKOPAY, "51000", "50000"],
     [PaymentMethod.PAYDISINI, "49800", "49800"],
     [PaymentMethod.PAYDISINI, "51000", "50000"],
   ] as const)("credits net principal on %s for received %s", async (method, received, expected) => {
     const order = await prisma.$transaction(tx => createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method }));
-    const expectedAmount = method === PaymentMethod.TOKOPAY ? "50450" : "50000";
+    // TokoPay reported Rp50.025 (a Rp25 fee) for this top-up; PayDisini stores no charge.
+    if (method === PaymentMethod.TOKOPAY) {
+      await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+    }
+    const expectedAmount = method === PaymentMethod.TOKOPAY ? "50025" : "50000";
     if (new Decimal(received).lessThan(expectedAmount)) {
       expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: method, receivedAmount: received, expectedAmount })).toBe(true);
     } else {
@@ -1644,15 +1673,17 @@ describe("creditUnderpaidTopupAnyway", () => {
     expect((await freshUser()).walletBalance.toString()).toBe(expected);
   });
 
-  it.each(["0", "449", "450"])("refuses TokoPay credit when received %s does not cover the fee", async (received) => {
+  it.each(["0", "24", "25"])("refuses TokoPay credit when received %s does not cover the fee", async (received) => {
     const order = await prisma.$transaction(tx => createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }));
+    // TokoPay reported Rp50.025 for this top-up, so the buyer-paid fee is Rp25.
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
     if (received === "0") {
-      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" })).toBe(false);
+      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50025" })).toBe(false);
       // Exercise defensive resolution of a legacy zero-evidence row.
       await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
-      await prisma.qrisUnderpaidTx.create({ data: { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" } });
+      await prisma.qrisUnderpaidTx.create({ data: { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50025" } });
     } else {
-      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50450" })).toBe(true);
+      expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: received, expectedAmount: "50025" })).toBe(true);
     }
     await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({ key: "error.underpaid_topup_fee_not_covered" });
     expect((await freshUser()).walletBalance.toString()).toBe("0");

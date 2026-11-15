@@ -217,13 +217,13 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
         reason: "unverified_amount",
       });
       if (newlyParked) {
-        logger.warn(`TokoPay reports order ${order.orderCode} as paid but without an amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`);
+        logger.warn(`TokoPay reports order ${order.orderCode} as paid but with no fee-inclusive amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`);
         nudgeOutboxDispatcher();
       }
     } catch (err) {
       logger.error(
         { err, orderId: order.id },
-        `Could not park or alert on order ${order.orderCode}, which TokoPay reports as paid but without an amount — nothing was delivered, and the next reconcile cycle will try to record it again; if every cycle fails, the order will auto-cancel with nobody told`,
+        `Could not park or alert on order ${order.orderCode}, which TokoPay reports as paid but with no fee-inclusive amount — nothing was delivered, and the next reconcile cycle will try to record it again; if every cycle fails, the order will auto-cancel with nobody told`,
       );
     }
     return "ok";

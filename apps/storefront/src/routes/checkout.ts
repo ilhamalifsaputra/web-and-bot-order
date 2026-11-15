@@ -1350,7 +1350,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         reason: "unverified_amount",
       });
       logger.warn(
-        `TokoPay's live status reports order ${order.orderCode} as paid but carries no amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
+        `TokoPay's live status reports order ${order.orderCode} as paid but carries no fee-inclusive amount, so the payment could not be verified — nothing was delivered; it is parked in the unmatched queue and the admins were alerted to check it in the TokoPay dashboard`,
       );
       return reply.send({ status: "unverified" });
     }

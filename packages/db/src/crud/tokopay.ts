@@ -65,6 +65,18 @@ export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmou
  *  buyer to pay (`readTokopayCharge`), so no payment instructions may be shown. */
 export class TokopayChargeUnavailableError extends Error {}
 
+/** How many characters of TokoPay's reported total an error message quotes. */
+const REPORTED_TOTAL_QUOTE_LIMIT = 40;
+
+/** TokoPay's `total_bayar` as an error message quotes it, so a format mismatch
+ *  can be diagnosed from the log. It is not a secret; it is quoted (so blanks
+ *  and stray characters stay visible) and capped, with its full length stated
+ *  when it is cut. */
+function describeReportedTotal(totalBayar: string): string {
+  if (totalBayar.length <= REPORTED_TOTAL_QUOTE_LIMIT) return JSON.stringify(totalBayar);
+  return `${JSON.stringify(totalBayar.slice(0, REPORTED_TOTAL_QUOTE_LIMIT))} (the first ${REPORTED_TOTAL_QUOTE_LIMIT} of ${totalBayar.length} characters)`;
+}
+
 /**
  * Cache a freshly created TokoPay transaction on its order AND record what
  * TokoPay says the buyer must pay — the figure every later paid-amount check
@@ -90,7 +102,7 @@ export async function commitTokopayGateway(
     throw new TokopayChargeUnavailableError(
       reading.kind === "missing"
         ? `TokoPay created a transaction for order ${args.order.orderCode} without reporting the total the buyer must pay, so no payment instructions were shown — the payment could not have been verified against anything`
-        : `TokoPay reported an implausible total for order ${args.order.orderCode} (order total ${new Decimal(args.order.totalAmount).toString()}), so no payment instructions were shown — check the transaction in the TokoPay dashboard`,
+        : `TokoPay reported an implausible total for order ${args.order.orderCode}: it sent ${describeReportedTotal(args.gateway.totalBayar ?? "")} against an order total of ${new Decimal(args.order.totalAmount).toString()}, so no payment instructions were shown — check the transaction in the TokoPay dashboard`,
     );
   }
   const committed = await commitGatewayResult(

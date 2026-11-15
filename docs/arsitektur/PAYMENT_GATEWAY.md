@@ -106,10 +106,58 @@ tidak bergantung pada serialisasi transaksi.
   `checkTransaction` membaca jumlah bayar hanya dari field TokoPay yang sudah
   termasuk biaya (`total_bayar`, `jumlah_bayar`, `total_dibayar`); status lunas
   tanpa field itu diparkir sebagai "unverified" (tidak ada pengiriman, admin
-  diberi tahu), bukan UNDERPAID. Pesanan yang QR-nya dibuat sebelum rilis ini
-  tidak punya charge tersimpan: dicocokkan dengan total polos dan selisih biaya
-  ditandai sebagai overpayment untuk ditinjau admin (migrasi backfill menutup baris
-  lama; TokoPay harus mati selama deploy).
+  diberi tahu), bukan UNDERPAID. Pesanan TokoPay yang dibuat sebelum rilis ini
+  diisi sekali oleh backfill `20261111090100_order_gateway_charge_amount_backfill`
+  (lihat "Deploy" di bawah): `totalBayar` yang dulu disimpan di `payment_ref`
+  bila lolos cek kewajaran yang sama dengan `readTokopayCharge`, selain itu rumus
+  lama Rp100 + 0,7% (perkiraan untuk channel non-QRIS dan order tanpa total
+  tersimpan). Hanya order yang charge-nya tetap null (misalnya dibuat setelah
+  cutoff tapi transaksinya tidak pernah tercatat) yang dicocokkan dengan total
+  polos; selisih biayanya muncul sebagai overpayment untuk ditinjau admin.
+
+### Deploy (rilis `gateway_charge_amount`)
+
+Deployment ini **tidak pernah** menjalankan `prisma migrate deploy` (database-nya
+tanpa baseline riwayat migrasi; lihat `docs/MIGRATIONS.md`). `docker-entrypoint.sh`
+menjalankan `prisma db push`, yang menambah kolom nullable `gateway_charge_amount`
+tanpa mengisi baris, lalu menjalankan file di `DATA_MIGRATIONS`, termasuk backfill
+di atas. Entrypoint menjalankan ulang daftar itu setiap start, jadi backfill ini
+dibatasi cutoff: run pertama menyimpan waktunya di setting internal
+`tokopay_gateway_charge_backfill_cutoff` (`ON CONFLICT DO NOTHING`, tidak tampil di
+halaman Settings maupun export), dan hanya order yang dibuat sebelum cutoff itu yang
+pernah diisi. Run berikutnya tidak mengubah apa pun.
+
+Urutan:
+
+1. **TokoPay tetap mati** dari sebelum deploy sampai pemeriksaan sesudah deploy lulus.
+2. **Pra-deploy, read-only, cek format:** `totalBayar` yang tersimpan pada order
+   TokoPay terbaru harus berupa angka polos. Kalau TokoPay mengirim format lain
+   (`50.025`, desimal, teks), kode baru menolak **setiap** transaksi TokoPay baru.
+   `other_format` harus 0:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml exec -T postgres \
+     psql -U bot_order -d bot_order -c "SELECT count(*) FILTER (WHERE t ~ '^\s*[0-9]+\s*\$') AS plain_digits, count(*) FILTER (WHERE t IS NOT NULL AND t !~ '^\s*[0-9]+\s*\$') AS other_format, max(created_at) AS newest FROM (SELECT created_at, CASE WHEN payment_ref IS JSON OBJECT THEN CASE WHEN payment_ref::json ->> 'gateway' = 'tokopay' THEN payment_ref::json ->> 'totalBayar' END END AS t FROM orders WHERE payment_method = 'TOKOPAY' AND created_at > NOW() - interval '30 days') AS x;"
+   ```
+3. **Pra-deploy: ambil backup database** (lihat "Backup — Postgres" di
+   `deploy/backup/README.md`).
+4. **Deploy image baru dan restart server, storefront, dan order-bot bersama-sama.**
+   Kode baru sebelum kolom ada gagal dengan `P2022`; kode lama setelah kolom ada
+   tidak terpengaruh. Pastikan log entrypoint memuat
+   `Applied the data-only migration 20261111090100_order_gateway_charge_amount_backfill`.
+5. **Pasca-deploy:** `cutoff` harus terisi dan `missing_charge` harus 0:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml exec -T postgres \
+     psql -U bot_order -d bot_order -c "SELECT (SELECT value FROM settings WHERE key = 'tokopay_gateway_charge_backfill_cutoff') AS cutoff, count(*) AS missing_charge FROM orders WHERE payment_method = 'TOKOPAY' AND currency = 'IDR' AND gateway_charge_amount IS NULL AND created_at < (SELECT value::timestamp(3) FROM settings WHERE key = 'tokopay_gateway_charge_backfill_cutoff');"
+   ```
+6. **Setelah TokoPay dinyalakan lagi:** bayar satu order QRIS kecil sungguhan lewat
+   bot dan satu lewat storefront. Total di caption / halaman bayar harus sama dengan
+   angka di aplikasi bank, order harus terkirim, dan tidak ditandai overpaid.
+7. **Hari pertama:** pantau log untuk pesan "no usable total" (TokoPay tidak memberi
+   total yang bisa dipakai, QR tidak dikirim) dan "could not be verified" (status
+   lunas tanpa jumlah yang sudah termasuk biaya, diparkir sebagai unverified).
+
+Perintah di atas memakai user/DB default `bot_order`; sesuaikan bila `.env` memakai
+nama lain.
 
 ## PayDisini (QRIS/e-wallet, IDR)
 

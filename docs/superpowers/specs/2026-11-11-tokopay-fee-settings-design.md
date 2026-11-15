@@ -41,8 +41,14 @@ lists tariffs (docs.tokopay.id, checked 2026-11-11), so the fee is only knowable
 
 `Order.gatewayChargeAmount Decimal?` (`gateway_charge_amount`) stores the fee-inclusive amount TokoPay
 says the buyer must pay. `commitGatewayResult` (`packages/db/src/crud/orders.ts`) writes it in the same
-`updateMany` that stores `paymentRef`. The migration backfills existing `TOKOPAY` orders with the old
-formula (`total_amount + ROUND(100 + total_amount * 0.007)`) so past evaluations do not change.
+`updateMany` that stores `paymentRef`. A data-only migration
+(`20261111090100_order_gateway_charge_amount_backfill`) fills existing `TOKOPAY`/IDR orders: with the
+`totalBayar` the old code cached in `payment_ref` when that figure passes `readTokopayCharge`'s
+plausibility check, otherwise with the old formula (`total_amount + ROUND(100 + total_amount * 0.007)`,
+an approximation for non-QRIS channels and orders with no cached total). It is one-shot: its first run
+stores a cutoff in the internal setting `tokopay_gateway_charge_backfill_cutoff` and only orders created
+before that cutoff are ever filled, because the deploy entrypoint re-runs it on every start and a new
+order may legitimately have no charge yet.
 
 A pure helper in core, `readTokopayCharge(totalAmount, totalBayar)`, returns:
 
@@ -116,6 +122,18 @@ warnings, recorded in `docs/REACT_DOCTOR_PHASE_1_REPORT.md`.
 
 ## Deploy
 
-1. Apply the two `order_gateway_charge_amount` migrations and restart order-bot before the new code runs.
-2. Release the server and the storefront client together.
-3. Re-enable TokoPay. Nothing has to be configured.
+This deployment never runs `prisma migrate deploy`. `docker-entrypoint.sh` runs `prisma db push`, which
+adds the nullable `gateway_charge_amount` column, then runs the data-only migrations listed in its
+`DATA_MIGRATIONS`, which now include the backfill. The backfill runs once in effect (cutoff above); later
+starts change nothing. Full checklist: `docs/arsitektur/PAYMENT_GATEWAY.md` (TokoPay, "Deploy").
+
+1. Keep TokoPay disabled from before the deploy until the post-deploy checks pass.
+2. Pre-deploy, read-only: confirm the cached `totalBayar` of recent TokoPay orders is plain digits (any
+   other format would make every new TokoPay transaction refused), and take a database backup.
+3. Deploy the new image and restart server, storefront and order-bot on it together. New code before the
+   column exists fails with P2022; old code after the column exists is harmless.
+4. Post-deploy: TOKOPAY/IDR orders created before the cutoff with a null charge must number 0.
+5. Re-enable TokoPay. Nothing has to be configured. Pay one small real QRIS order through the bot and one
+   through the storefront: the caption / pay-page total equals the banking app's figure, the order
+   delivers and is not flagged overpaid. Watch the logs for "no usable total" and "could not be
+   verified" during the first day.

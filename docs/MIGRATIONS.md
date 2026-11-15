@@ -300,10 +300,14 @@ tanpa satu pun perintah manual sesudahnya:
    `docker-entrypoint.sh`), diterapkan lewat `prisma db execute --file`. `db push`
    hanya menyinkronkan **struktur**, jadi migrasi yang mengisi/membetulkan
    **baris** harus dieksekusi terpisah atau diam-diam tidak pernah jalan. Hari ini
-   isinya dua: `20260919120000_seed_usdt_rounding_ceil_since` dan
+   isinya tiga: `20260919120000_seed_usdt_rounding_ceil_since`,
    `20261008120100_backfill_credentials_delivered_at` (menandai order stok yang
    sudah `DELIVERED` sebelum kolom `credentials_delivered_at` ada, supaya file
-   kredensialnya tidak dikirim ulang otomatis).
+   kredensialnya tidak dikirim ulang otomatis), dan
+   `20261111090100_order_gateway_charge_amount_backfill` (mengisi
+   `orders.gateway_charge_amount` untuk order TokoPay lama, dibatasi cutoff
+   `tokopay_gateway_charge_backfill_cutoff` yang ditulis sekali saat pertama
+   jalan, supaya order baru yang belum punya total TokoPay tidak ikut terisi).
 
 **Migrasi data-only wajib berhasil; kegagalan menghentikan startup.** Seed
 chart-of-accounts tetap memberi WARNING: exit non-zero juga dipakai untuk chart

@@ -121,6 +121,18 @@ describe("commitTokopayGateway", () => {
     expect(row.gatewayChargeAmount).toBeNull();
     expect(row.paymentRef).toBe(sentinel);
   });
+
+  it("names the implausible total TokoPay sent, capped at 40 characters", async () => {
+    const order = await createPendingTokopayOrder("50000");
+    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
+    await expect(
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo("50.025") }),
+    ).rejects.toThrow(`it sent "50.025" against an order total of 50000`);
+    const long = "9".repeat(45);
+    await expect(
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo(long) }),
+    ).rejects.toThrow(`it sent "${"9".repeat(40)}" (the first 40 of 45 characters) against an order total of 50000`);
+  });
 });
 
 describe("deliverPaidTokopayOrder", () => {

@@ -39,7 +39,7 @@ const game: ProductPageData = {
 };
 const preview: CheckoutData = {
   items_empty: false, items: [{ denomination_id: 1, delivery_type: "manual_with_info", additional_fields: game.denominations[0]!.additional_fields, qty: 1 }],
-  subtotal: "5078", total: "5078", bulk_discount: "0", voucher_discount: "0", qris_admin_fee: "136", qris_grand_total: "5214",
+  subtotal: "5078", total: "5078", bulk_discount: "0", voucher_discount: "0",
   total_usdt: "0.33", voucher_code: "", error_key: null, binance_enabled: false, bybit_enabled: false,
   bybit_bsc_enabled: false, idr_enabled: true, paydisini_enabled: false, nowpayments_enabled: false,
   wallet_idr: "0", wallet_usdt: "0", wallet_idr_enabled: false, wallet_usdt_enabled: false,

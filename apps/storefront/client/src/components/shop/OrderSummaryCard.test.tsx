@@ -36,8 +36,6 @@ const totals: CheckoutData = {
   bulk_discount: "0",
   voucher_discount: "0",
   total: "158000",
-  qris_admin_fee: "1206",
-  qris_grand_total: "159206",
   total_usdt: "9.88",
   voucher_code: "",
   error_key: null,
@@ -91,19 +89,20 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
     vi.clearAllMocks();
   });
 
-  // fx 16000: fee 1206 → $0.08, grand total 159206 → $9.96 (ceil, formatPriceFor).
-  it("QRIS + USD: shows the $ fee and total AND the native Rp figures the rail will charge", () => {
+  // fx 16000: total 158000 → $9.88. The QRIS admin fee is set by TokoPay when
+  // the QR is created, so before that there is no fee figure to show.
+  it("QRIS + USD: shows the plain $ total AND the Rp order total, with no fee figure", () => {
     const summary = renderCard("USD", "qris");
-    expect(summary).toHaveTextContent("$0.08");
-    expect(summary).toHaveTextContent("Rp1,206");
-    expect(summary).toHaveTextContent("$9.96");
-    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp159,206");
+    expect(summary).toHaveTextContent("$9.88");
+    expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158,000");
+    expect(summary).not.toHaveTextContent("Rp1,206");
+    expect(summary).not.toHaveTextContent("$9.96");
   });
 
   it("QRIS + USD in Indonesian uses the shared checkout.price_and_pay wording", () => {
     document.documentElement.lang = "id";
     const summary = renderCard("USD", "qris");
-    expect(summary).toHaveTextContent("Harga $9,88 · Bayar Rp159.206");
+    expect(summary).toHaveTextContent("Harga $9,88 · Bayar Rp158.000");
   });
 
   it("PayDisini + USD: shows the Rp payable (no QRIS fee) alongside the $ total", () => {
@@ -111,23 +110,22 @@ describe("OrderSummaryCard — Price · Pay on IDR rails for a USD viewer", () =
     expect(summary).toHaveTextContent("Price $9.88 · Pay Rp158,000");
   });
 
-  it("QRIS + IDR: unchanged — Rp only, no Price · Pay line", () => {
+  it("QRIS + IDR: Rp only, no Price · Pay line", () => {
     const summary = renderCard("IDR", "qris");
-    expect(summary).toHaveTextContent("Rp1,206");
-    expect(summary).toHaveTextContent("Rp159,206");
+    expect(summary).toHaveTextContent("Rp158,000");
     expect(summary).not.toHaveTextContent("Pay Rp");
-    expect(summary).not.toHaveTextContent("$0.08");
+    expect(summary).not.toHaveTextContent("$9.88");
   });
 
-  it("QRIS + no preference (null): unchanged — no Price · Pay line", () => {
+  it("QRIS + no preference (null): no Price · Pay line", () => {
     const summary = renderCard(null, "qris");
-    expect(summary).toHaveTextContent("Rp159,206");
+    expect(summary).toHaveTextContent("Rp158,000");
     expect(summary).not.toHaveTextContent("Pay Rp");
   });
 
   it("QRIS + USD but no usable rate: formatPriceFor already falls back to Rp, so no dual line", () => {
     const summary = renderCard("USD", "qris", null);
-    expect(summary).toHaveTextContent("Rp159,206");
+    expect(summary).toHaveTextContent("Rp158,000");
     expect(summary).not.toHaveTextContent("Pay Rp");
   });
 
@@ -171,9 +169,50 @@ describe("OrderSummaryCard — total emphasis", () => {
     const label = Array.from(summary.querySelectorAll("span")).find((s) => s.textContent === "Total")!;
     const row = label.parentElement!;
     const figure = row.querySelector(".text-2xl")!;
-    expect(figure).toHaveTextContent("Rp159,206");
+    expect(figure).toHaveTextContent("Rp158,000");
     expect(figure.closest(".font-display")).not.toBeNull();
     expect(row.querySelector(".text-lg")).toBeNull();
+  });
+});
+
+// No QRIS admin fee figure exists before the QR: TokoPay sets it when the
+// transaction is created, and the pay page then shows TokoPay's own figure.
+describe("OrderSummaryCard — QRIS admin fee before the QR", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  function feeRow(summary: Element): HTMLElement | null {
+    const label = Array.from(summary.querySelectorAll("span")).find((s) => s.textContent === "QRIS admin fee");
+    return label ? label.parentElement : null;
+  }
+
+  it.each([["IDR"], ["USD"], [null]] as const)("QRIS + %s: the fee row says it is added on the payment page and shows no figure", (currency) => {
+    const summary = renderCard(currency, "qris");
+    const row = feeRow(summary);
+    expect(row).not.toBeNull();
+    expect(row).toHaveTextContent("Added on the payment page");
+    expect(row!.textContent).not.toMatch(/Rp|\$|\d/);
+  });
+
+  it("QRIS in Indonesian: the fee row uses the Indonesian note", () => {
+    document.documentElement.lang = "id";
+    const summary = renderCard("IDR", "qris");
+    const label = Array.from(summary.querySelectorAll("span")).find((s) => s.textContent === "Biaya admin QRIS")!;
+    expect(label.parentElement).toHaveTextContent("Ditambahkan di halaman pembayaran");
+  });
+
+  it("QRIS: the order total is the plain checkout total", () => {
+    const summary = renderCard("IDR", "qris");
+    const label = Array.from(summary.querySelectorAll("span")).find((s) => s.textContent === "Total")!;
+    expect(label.parentElement!.querySelector(".text-2xl")).toHaveTextContent("Rp158,000");
+  });
+
+  it.each([["paydisini"], ["wallet_idr"], ["binance"]])("%s: no QRIS admin fee row at all", (method) => {
+    const summary = renderCard("IDR", method);
+    expect(feeRow(summary)).toBeNull();
+    expect(summary).not.toHaveTextContent("Added on the payment page");
   });
 });
 

@@ -18,6 +18,11 @@ vi.mock("@app/core/payments/paydisini", async () => {
   const actual = await vi.importActual<typeof import("@app/core/payments/paydisini")>("@app/core/payments/paydisini");
   return { ...actual, createTransaction: (...args: unknown[]) => mockCreateTransaction(...args) };
 });
+const mockCreateTokopayTransaction = vi.fn();
+vi.mock("@app/core/payments/tokopay", async () => {
+  const actual = await vi.importActual<typeof import("@app/core/payments/tokopay")>("@app/core/payments/tokopay");
+  return { ...actual, createTransaction: (...args: unknown[]) => mockCreateTokopayTransaction(...args) };
+});
 
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
@@ -35,9 +40,11 @@ async function loginAs(identifier: string, password: string): Promise<string> {
   return Array.isArray(c) ? c.join("; ") : String(c);
 }
 
-/** A buyer + a PENDING_PAYMENT PayDisini order, created directly (payView's
- * lazy-invoice branch only reads the order row — no cart/stock needed). */
-async function makeBuyerWithOrder() {
+/** A buyer + a PENDING_PAYMENT order (PayDisini unless told otherwise),
+ * created directly (payView's lazy-invoice branch only reads the order row —
+ * no cart/stock needed). */
+async function makeBuyerWithOrder(opts: { paymentMethod?: "PAYDISINI" | "TOKOPAY"; totalAmount?: string } = {}) {
+  const totalAmount = opts.totalAmount ?? "10000";
   userSeq += 1;
   const username = `racer${userSeq}`;
   const password = "race-pw-12345";
@@ -54,11 +61,11 @@ async function makeBuyerWithOrder() {
     data: {
       orderCode: `ORD-RACE-${userSeq}`,
       userId: user.id,
-      subtotalAmount: "10000",
-      totalAmount: "10000",
+      subtotalAmount: totalAmount,
+      totalAmount,
       status: "PENDING_PAYMENT",
       currency: "IDR",
-      paymentMethod: "PAYDISINI",
+      paymentMethod: opts.paymentMethod ?? "PAYDISINI",
       expiresAt: new Date(Date.now() + 15 * 60_000),
     },
   });
@@ -73,6 +80,9 @@ beforeAll(async () => {
   await setSetting(prisma, "paydisini_userkey", "uk-test");
   await setSetting(prisma, "paydisini_apikey", "ak-test");
   await setSetting(prisma, "paydisini_default_channel", "QRIS");
+  await setSetting(prisma, "tokopay_merchant_id", "m-test-tokopay");
+  await setSetting(prisma, "tokopay_secret", "s-test-tokopay");
+  await setSetting(prisma, "tokopay_default_channel", "QRIS");
 });
 
 afterAll(async () => {
@@ -158,5 +168,89 @@ describe("checkout gateway-invoice race (Data-2)", () => {
     expect(retried.statusCode).toBe(200);
     expect(retried.json().paydisini_gateway_error).toBe(false);
     expect(retried.json().paydisini_gateway).toMatchObject({ trxId: "PD-RETRY" });
+  });
+});
+
+// The TokoPay pay page shows TokoPay's own fee-inclusive total, stored on the
+// order when the transaction is created; there is no fee formula to fall back
+// on, so a transaction without a usable total is never shown.
+describe("TokoPay pay page shows TokoPay's own total", () => {
+  beforeEach(() => {
+    mockCreateTokopayTransaction.mockReset();
+  });
+
+  function tokopayTransaction(trxId: string, totalBayar: string | null) {
+    return {
+      trxId,
+      payUrl: "https://x/tokopay-pay",
+      qrLink: "https://x/tokopay-qr.png",
+      qrString: "000201",
+      totalBayar,
+    };
+  }
+
+  it("returns TokoPay's total and the fee derived from it, and stores the total on the order", async () => {
+    mockCreateTokopayTransaction.mockResolvedValueOnce(tokopayTransaction("TP-PAYVIEW-1", "50025"));
+    const { order, cookie } = await makeBuyerWithOrder({ paymentMethod: "TOKOPAY", totalAmount: "50000" });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/orders/${order.orderCode}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gateway_error).toBe(false);
+    expect(body.gateway).toMatchObject({ trxId: "TP-PAYVIEW-1" });
+    expect(body.order.qris_grand_total).toBe("50025");
+    expect(body.order.qris_admin_fee).toBe("25");
+
+    const persisted = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(persisted!.gatewayChargeAmount!.toString()).toBe("50025");
+  });
+
+  it("reads the cached transaction and stored total on a second visit without creating another transaction", async () => {
+    mockCreateTokopayTransaction.mockResolvedValueOnce(tokopayTransaction("TP-PAYVIEW-2", "50025"));
+    const { order, cookie } = await makeBuyerWithOrder({ paymentMethod: "TOKOPAY", totalAmount: "50000" });
+
+    const first = await app.inject({ method: "GET", url: `/api/v1/orders/${order.orderCode}/pay`, headers: { cookie } });
+    expect(first.json().order.qris_grand_total).toBe("50025");
+
+    const second = await app.inject({ method: "GET", url: `/api/v1/orders/${order.orderCode}/pay`, headers: { cookie } });
+    expect(second.statusCode).toBe(200);
+    expect(mockCreateTokopayTransaction).toHaveBeenCalledTimes(1);
+    expect(second.json().gateway).toMatchObject({ trxId: "TP-PAYVIEW-2" });
+    expect(second.json().order.qris_grand_total).toBe("50025");
+    expect(second.json().order.qris_admin_fee).toBe("25");
+  });
+
+  it("shows the gateway-error fallback and stores nothing when TokoPay reports no total", async () => {
+    mockCreateTokopayTransaction.mockResolvedValueOnce(tokopayTransaction("TP-PAYVIEW-NULL", null));
+    const { order, cookie } = await makeBuyerWithOrder({ paymentMethod: "TOKOPAY", totalAmount: "50000" });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/orders/${order.orderCode}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gateway_error).toBe(true);
+    expect(body.gateway).toBeNull();
+    expect(body.order.qris_grand_total).toBeNull();
+    expect(body.order.qris_admin_fee).toBeNull();
+
+    const persisted = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(persisted!.gatewayChargeAmount).toBeNull();
+    expect(persisted!.paymentRef).toBeNull(); // slot released for a retry
+  });
+
+  it("shows the gateway-error fallback and stores nothing when TokoPay reports a total below the order total", async () => {
+    mockCreateTokopayTransaction.mockResolvedValueOnce(tokopayTransaction("TP-PAYVIEW-3", "49000"));
+    const { order, cookie } = await makeBuyerWithOrder({ paymentMethod: "TOKOPAY", totalAmount: "50000" });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/orders/${order.orderCode}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gateway_error).toBe(true);
+    expect(body.gateway).toBeNull();
+    expect(body.order.qris_grand_total).toBeNull();
+    expect(body.order.qris_admin_fee).toBeNull();
+
+    const persisted = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(persisted!.gatewayChargeAmount).toBeNull();
+    expect(persisted!.paymentRef).toBeNull(); // slot released for a retry
   });
 });

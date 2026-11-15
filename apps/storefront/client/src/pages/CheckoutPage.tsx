@@ -654,7 +654,7 @@ function CheckoutForm({ data, idempotentPost, sessionEndedByRefetch, liveSignedI
 }
 
 function CheckoutBuyerDetails({ page, guestEmail, setGuestEmail, placeOrderErrorKey, infoItem, answers, setAnswer }: {
-  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
+  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
   guestEmail: string;
   setGuestEmail: import("react").Dispatch<import("react").SetStateAction<string>>;
   placeOrderErrorKey: string | null;
@@ -701,7 +701,7 @@ function CheckoutPaymentForm({ checkoutHint, placeOrderError, errorBannerRef, is
   placeOrderError: unknown;
   errorBannerRef: import("react").Ref<HTMLDivElement>;
   isDesktop: boolean;
-  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
+  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
   guestEmail: string;
   setGuestEmail: import("react").Dispatch<import("react").SetStateAction<string>>;
   placeOrderErrorKey: string | null;
@@ -785,7 +785,7 @@ function CheckoutMobileTotal({ checkoutHint, isDesktop, method, totals, ctx, bar
     <StickyPurchaseBar
       ariaLabel={t("web.purchase_bar")}
       priceLabel={t("web.order_total")}
-      price={formatPriceFor(method === "qris" ? totals.qris_grand_total : totals.total, ctx?.currency ?? null, ctx?.fx)}
+      price={formatPriceFor(totals.total, ctx?.currency ?? null, ctx?.fx)}
       notice={checkoutHint}
       secondaryChip={barPriceAndPay && <span className="text-xs text-ink-soft">{barPriceAndPay}</span>}
       primaryAction={{
@@ -801,7 +801,7 @@ function CheckoutMobileTotal({ checkoutHint, isDesktop, method, totals, ctx, bar
 
 function checkoutPurchaseStatus({ totals, page, answers, guestEmail, placeOrderMutation, repricing }: {
   totals: CheckoutData;
-  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; qris_admin_fee: string; qris_grand_total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
+  page: { items: import("../api/types").CheckoutItem[]; items_empty: boolean; subtotal: string; bulk_discount: string; voucher_discount: string; total: string; total_usdt: string | null; voucher_code: string; error_key: string | null; binance_enabled: boolean; bybit_enabled: boolean; bybit_bsc_enabled: boolean; idr_enabled: boolean; paydisini_enabled: boolean; nowpayments_enabled: boolean; wallet_idr: string; wallet_usdt: string; wallet_idr_enabled: boolean; wallet_usdt_enabled: boolean; is_guest: boolean; below_all_minimums: boolean; };
   answers: Record<string, string>[];
   guestEmail: string;
   placeOrderMutation: import("@tanstack/react-query").UseMutationResult<PlaceOrderResponse, Error, PlaceOrderBody, unknown>;

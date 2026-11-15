@@ -14,12 +14,10 @@ import {
   TOKOPAY_SECRET_KEY,
   TOKOPAY_ENABLED_KEY,
   TOKOPAY_CHANNEL_KEY,
-  computeQrisAdminFee,
-  qrisChargeAmount,
   type TokopayCreds,
   type TokopayOrderInfo,
 } from "@app/core/payments/tokopay";
-import { readTokopayCharge } from "@app/core/payments/tokopayCharge";
+import { expectedTokopayCharge, readTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
@@ -312,6 +310,11 @@ export async function deliverPaidTokopayOrder(
           logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
           return null;
         });
+        // What this buyer was asked to pay: TokoPay's own figure, stored on the
+        // order when its transaction was created (`expectedTokopayCharge`). The
+        // buyer-side surcharge is the difference to the order total.
+        const expectedCharge = expectedTokopayCharge(order);
+        const gatewayFee = expectedCharge.minus(order.totalAmount);
         if (order.kind === OrderKind.WALLET_TOPUP) {
           verifiedWalletPayment = order.paymentMethod === PaymentMethod.TOKOPAY;
           // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
@@ -328,18 +331,14 @@ export async function deliverPaidTokopayOrder(
           if (args.manual && !credited.greaterThan(0)) throw new ValidationError("error.order_not_pending");
           // Overpayment: same flag + admin alert the product branch below raises,
           // without changing what was credited (see flagWalletTopupOverpayment).
-          // TokoPay bills the QRIS surcharge on top of the total, so — exactly
-          // like the product branch — the comparison is against that charge.
-          // `qrisChargeAmount` is our LOCAL estimate of the fee; if TokoPay's own
-          // fee rounding lands even Rp1 above it, the top-up is flagged overpaid
-          // by that rupiah, just as a product order already is. No tolerance is
-          // added here, to stay consistent with the product branch; the admin
-          // alert shows the excess, so a Rp1 rounding case is recognisable.
+          // TokoPay bills its surcharge on top of the total, so the comparison
+          // is against what TokoPay said this buyer must pay (`expectedCharge`
+          // above), exactly like the product branch. No tolerance is added.
           await flagWalletTopupOverpayment(tx, {
             order: settled,
             credited,
             paid: args.amount,
-            expected: qrisChargeAmount(order.totalAmount),
+            expected: expectedCharge,
             rail: "TokoPay",
             markLedgerOverpaid: () =>
               tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } }),
@@ -360,30 +359,24 @@ export async function deliverPaidTokopayOrder(
             // `Payment.providerTransactionId` is reconciled on), plus the only
             // fee-shaped figures this shop has for any of its six rails.
             //
-            // `fee` is `computeQrisAdminFee(order.totalAmount)`: the QRIS
-            // surcharge the buyer pays ON TOP of the order total, so `netAmount`
-            // is the total itself — not `amount - fee`. The buyer's gross payment
-            // is `qrisChargeAmount` (total + fee, which is what the overpayment
-            // check below compares against), and the surcharge portion never
-            // becomes this shop's money at all; the total IS what the shop nets.
+            // `fee` is the surcharge the buyer pays ON TOP of the order total —
+            // the order's stored gateway charge minus its total — so
+            // `netAmount` is the total itself, not `amount - fee`. The
+            // surcharge never becomes this shop's money; the total IS what the
+            // shop nets.
             //
-            // Captured as DATA only — no `FEE` ledger posting is made from it,
-            // here or anywhere. Two reasons, and both matter: the figure is a
-            // LOCAL ESTIMATE (Rp100 + 0.70%, packages/core/src/payments/
-            // tokopay.ts) of what TokoPay will charge, not a cut TokoPay reported
-            // having deducted; and the `ORDER_PAYMENT` posting that settling this
-            // order already made (crud/ledgerPostings.ts) books
+            // Captured as DATA only — no `FEE` ledger posting is made from it.
+            // It is the BUYER-side surcharge, not a cut TokoPay reported having
+            // deducted from the shop, and the `ORDER_PAYMENT` posting that
+            // settling this order already made (crud/ledgerPostings.ts) books
             // `order.totalAmount` — the net receipt — so booking the surcharge
-            // separately would either double-count money that posting already
-            // nets out or invent a financial event from an estimate. This shop's
-            // standing rule is that ledger data and reports never contain
-            // estimated figures dressed up as real ones, so `payment_fee.idr` and
+            // separately would double-count. `payment_fee.idr` and
             // `FinancialTransactionType.FEE` stay unused until a rail reports a
-            // real fee. Pinned by a test in crud/tokopay.test.ts.
+            // real merchant fee. Pinned by a test in crud/tokopay.test.ts.
             await confirmPaymentAttempt(tx, {
               paymentId: pendingPayment.id,
               providerTransactionId: args.trxId,
-              fee: computeQrisAdminFee(order.totalAmount),
+              fee: gatewayFee,
               netAmount: order.totalAmount,
             }).catch((err) =>
               logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
@@ -419,7 +412,7 @@ export async function deliverPaidTokopayOrder(
           await confirmPaymentAttempt(tx, {
             paymentId: pendingPayment.id,
             providerTransactionId: args.trxId,
-            fee: computeQrisAdminFee(order.totalAmount),
+            fee: gatewayFee,
             netAmount: order.totalAmount,
           }).catch((err) =>
             logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
@@ -444,7 +437,6 @@ export async function deliverPaidTokopayOrder(
         // excess can be refunded/credited manually — never auto-refunded. This
         // stays unconditional — a buyer can overpay regardless of delivery type.
         const paidAmount = new Decimal(args.amount);
-        const expectedCharge = qrisChargeAmount(order.totalAmount);
         const excess = paidAmount.minus(expectedCharge);
         if (excess.greaterThan(0)) {
           await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });

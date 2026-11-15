@@ -813,8 +813,9 @@ export async function postUnderpaidTopupCreditPosting(
  * processed-transaction row, enqueues an `ADMIN_OVERPAID` DM carrying the excess,
  * and logs. **None credits the excess, and none persists it as a figure** — it is
  * derivable as the processed row's `amount` minus the order's total, except on
- * TokoPay where the comparison is against `qrisChargeAmount(total)` because that
- * rail's admin fee is a buyer-side surcharge.
+ * TokoPay where the comparison is against the gateway charge stored on the order
+ * (`expectedTokopayCharge`) because that rail's admin fee is a buyer-side
+ * surcharge.
  *
  * `creditOverpaymentToBalance` (crud/overpayments.ts) is what closes that: it
  * DERIVES the excess from whichever rail's processed row exists

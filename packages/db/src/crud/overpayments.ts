@@ -30,8 +30,9 @@
  *
  * **What the order billed is not the same expression on every rail.** Five of the
  * six compare against `order.totalAmount`. TokoPay does not: its QRIS admin fee is
- * a buyer-side surcharge, so the buyer is billed `qrisChargeAmount(total)` and its
- * own overpayment check uses that figure. Deriving a TokoPay credit from the bare
+ * a buyer-side surcharge, so the buyer is billed `expectedTokopayCharge(order)` —
+ * the gateway charge stored on the order — and its own overpayment check uses
+ * that figure. Deriving a TokoPay credit from the bare
  * total would invent an excess equal to the shop's own fee and hand it to the
  * buyer on every single QRIS order. Each rail's expectation is therefore taken
  * from the TABLE the row came from, not from `Order.paymentMethod` — the row is
@@ -53,7 +54,7 @@ import { ValidationError } from "@app/core/errors";
 import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { Decimal, ZERO } from "@app/core/money";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { PaymentMethod } from "@app/core/enums";
 import { isUniqueViolation, type Db } from "./_types";
 import { logAdminAction } from "./audit";
@@ -81,8 +82,9 @@ export interface OverpaidExcess {
   gateway: string;
   /** The amount the rail recorded as having arrived. */
   receivedAmount: Decimal;
-  /** What the order actually billed the buyer — `qrisChargeAmount(total)` on
-   *  TokoPay, the bare `totalAmount` everywhere else. */
+  /** What the order actually billed the buyer — `expectedTokopayCharge(order)`
+   *  (the gateway charge stored on the order) on TokoPay, the bare
+   *  `totalAmount` everywhere else. */
   expectedAmount: Decimal;
   /** `received − expected`, floored at zero so a stale row recording too LITTLE
    *  can never read as a negative "excess" and be credited backwards. */
@@ -109,7 +111,7 @@ export interface OverpaidExcess {
 export async function findOverpaidExcess(db: Db, orderId: number): Promise<OverpaidExcess | null> {
   const order = await db.order.findUnique({
     where: { id: orderId },
-    select: { id: true, currency: true, totalAmount: true },
+    select: { id: true, currency: true, totalAmount: true, gatewayChargeAmount: true },
   });
   if (!order) return null;
 
@@ -127,8 +129,9 @@ export async function findOverpaidExcess(db: Db, orderId: number): Promise<Overp
   /**
    * Each rail paired with the figure IT billed the buyer. TokoPay is the one
    * exception and the reason this is a table rather than a single subtraction:
-   * its admin fee is a buyer-side surcharge, so `qrisChargeAmount(total)` is what
-   * the buyer was asked for and `total` would understate it by the fee.
+   * its admin fee is a buyer-side surcharge, so `expectedTokopayCharge(order)` —
+   * the gateway charge stored on the order — is what the buyer was asked for and
+   * `total` would understate it by the fee.
    * `BYBIT` names the shared `processed_bybit_tx` row, which both the
    * internal-transfer and the BSC sub-rail write; both compare against the bare
    * total, so one entry covers them.
@@ -136,7 +139,7 @@ export async function findOverpaidExcess(db: Db, orderId: number): Promise<Overp
   const candidates: { gateway: string; amount: Decimal.Value | null; expected: Decimal }[] = [
     { gateway: PaymentMethod.BINANCE_INTERNAL, amount: binance?.amount ?? null, expected: total },
     { gateway: PaymentMethod.BYBIT, amount: bybit?.amount ?? null, expected: total },
-    { gateway: PaymentMethod.TOKOPAY, amount: tokopay?.amount ?? null, expected: q4(qrisChargeAmount(total)) },
+    { gateway: PaymentMethod.TOKOPAY, amount: tokopay?.amount ?? null, expected: q4(expectedTokopayCharge(order)) },
     { gateway: PaymentMethod.PAYDISINI, amount: paydisini?.amount ?? null, expected: total },
     { gateway: PaymentMethod.NOWPAYMENTS, amount: nowpayments?.amount ?? null, expected: total },
   ];

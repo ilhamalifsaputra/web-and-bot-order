@@ -30,7 +30,6 @@ import {
 } from "@app/db";
 import { createDenomination } from "./catalog";
 import { bulkDiscountFor } from "@app/core/bulk";
-import { computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { formatIdrFor } from "@app/core/moneyFormat";
 import { VoucherType, VoucherScope, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -148,8 +147,9 @@ describe("IDR discounts are whole rupiah (pure)", () => {
       // the displayed rows subtract to the displayed total,
       const shown = (v: Decimal) => d(formatIdrFor(v, "en").replace(/[^0-9]/g, ""));
       expect(shown(subtotal).minus(shown(bulk)).minus(shown(voucher)).equals(shown(net))).toBe(true);
-      // and the QRIS fee base is the charged amount.
-      expect(computeQrisAdminFee(net).equals(computeQrisAdminFee(net.toDecimalPlaces(0, Decimal.ROUND_HALF_UP)))).toBe(true);
+      // and the nominal handed to TokoPay — which adds its own fee on top of
+      // it and reports the total back — is that same whole-rupiah amount
+      // (asserted just above: rounding the net to 0dp leaves it unchanged).
     }
   });
 });
@@ -226,13 +226,17 @@ describe("IDR order creation: preview == charge == wallet debit", () => {
     expect(d(paid!.walletUsed).plus(paid!.totalAmount).toString()).toBe("15500");
   });
 
-  it("QRIS fee is computed on the same whole-rupiah total that is charged", async () => {
+  // TokoPay's fee is no longer derived here: TokoPay adds it on top of the
+  // nominal it is sent (the order total) and reports the fee-inclusive charge,
+  // which is stored on the order. What this file pins is that the nominal is
+  // the whole-rupiah preview the buyer saw.
+  it("the nominal TokoPay is sent is the same whole-rupiah total that was previewed", async () => {
     const p = await sku("15500");
     await upsertBulkPricing(prisma, { denominationId: p.id, minQuantity: 3, discountPercent: 12.5 });
     const order = await createOrderDirect(prisma, { channel: "bot", user: sample.user, productId: p.id, quantity: 3 });
     const preview = d(order!.subtotalAmount).minus(order!.bulkDiscountAmount).minus(order!.discountAmount);
     const paid = await finalizeOrderPayment(prisma, order!.id, { currency: OrderCurrency.IDR });
-    expect(computeQrisAdminFee(preview).equals(computeQrisAdminFee(paid!.totalAmount))).toBe(true);
+    expect(d(paid!.totalAmount).isInteger()).toBe(true);
     expect(preview.equals(paid!.totalAmount)).toBe(true);
   });
 });

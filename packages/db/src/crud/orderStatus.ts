@@ -18,7 +18,7 @@ import { emailTransaction, enqueueOrderTransitionEmails } from "./emailEvents";
 import { OrderKind, OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { enqueueNotificationSafely } from "./notificationIsolation";
@@ -294,13 +294,13 @@ export async function markOrderUnderpaid(
   if (!["TOKOPAY", "PAYDISINI", "NOWPAYMENTS"].includes(gateway)) return false;
   return db.$transaction(async (tx: Tx) => {
     await tx.$queryRaw`SELECT id FROM orders WHERE id = ${args.orderId} FOR NO KEY UPDATE`;
-    const order = await tx.order.findUnique({ where: { id: args.orderId }, select: { status: true, paymentMethod: true, currency: true, totalAmount: true, paidAt: true, paymentState: true } });
+    const order = await tx.order.findUnique({ where: { id: args.orderId }, select: { status: true, paymentMethod: true, currency: true, totalAmount: true, gatewayChargeAmount: true, paidAt: true, paymentState: true } });
     if (!order || order.status !== OrderStatus.PENDING_PAYMENT || order.paidAt || order.paymentState === "PAID" || order.paymentMethod !== gateway) return false;
     if (order.currency !== (gateway === "NOWPAYMENTS" ? "USDT" : "IDR")) return false;
     // Legacy callers recorded the base principal on TokoPay; current invoice
     // reconciliation records the fee-inclusive charge. Both demonstrate a
     // real shortfall, but an unrelated expected amount must never flag it.
-    if (!expected.equals(order.totalAmount) && !(gateway === "TOKOPAY" && expected.equals(qrisChargeAmount(order.totalAmount)))) return false;
+    if (!expected.equals(order.totalAmount) && !(gateway === "TOKOPAY" && expected.equals(expectedTokopayCharge(order)))) return false;
     const applied = await tryTransitionOrderStatus(tx, {
       orderId: args.orderId,
       from: OrderStatus.PENDING_PAYMENT,

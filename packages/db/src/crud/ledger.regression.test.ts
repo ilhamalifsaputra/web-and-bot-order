@@ -66,7 +66,6 @@ import {
   RefundStatus,
   StockActorType,
 } from "@app/core/enums";
-import { computeQrisAdminFee, qrisChargeAmount } from "@app/core/payments/tokopay";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
@@ -478,24 +477,26 @@ describe("scenario 2 — the same settlement arriving twice (a redelivered webho
       productId: sample.product.id,
       quantity: 1,
     });
+    // TokoPay reported total + Rp25 when the transaction was created.
     await prisma.order.update({
       where: { id: created!.id },
-      data: { paymentMethod: PaymentMethod.TOKOPAY },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: new Decimal(created!.totalAmount).plus(25) },
     });
     const order = (await getOrder(prisma, created!.id))!;
     const total = new Decimal(order.totalAmount).toString();
+    const charged = new Decimal(order.totalAmount).plus(25);
 
     const first = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-redelivered",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: charged,
     });
     expect(first.status).toBe("delivered");
 
     const second = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-redelivered",
-      amount: qrisChargeAmount(order.totalAmount),
+      amount: charged,
     });
     expect(second.status).toBe("already_processed");
 
@@ -935,9 +936,10 @@ describe("scenario 9 — a TokoPay order, the only rail with any fee figure", ()
       productId: sample.product.id,
       quantity: 1,
     });
+    // TokoPay reported total + Rp25 when the transaction was created.
     await prisma.order.update({
       where: { id: created!.id },
-      data: { paymentMethod: PaymentMethod.TOKOPAY },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: new Decimal(created!.totalAmount).plus(25) },
     });
     const order = (await getOrder(prisma, created!.id))!;
     const attempt = await createPaymentAttempt(prisma, {
@@ -948,9 +950,8 @@ describe("scenario 9 — a TokoPay order, the only rail with any fee figure", ()
       reference: "TOKOPAY-INV-M8",
     });
 
-    // The buyer pays the QRIS gross — the order total PLUS the surcharge.
-    const grossPaid = qrisChargeAmount(order.totalAmount);
-    expect(grossPaid.greaterThan(order.totalAmount)).toBe(true);
+    // The buyer pays the gross TokoPay reported — the order total PLUS the surcharge.
+    const grossPaid = new Decimal(order.totalAmount).plus(25);
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
       trxId: "trx-m8-fee",
@@ -962,9 +963,7 @@ describe("scenario 9 — a TokoPay order, the only rail with any fee figure", ()
     const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
     expect(confirmed.status).toBe(PaymentStatus.CONFIRMED);
     expect(confirmed.providerTransactionId).toBe("trx-m8-fee");
-    expect(new Decimal(confirmed.fee!).toString()).toBe(
-      computeQrisAdminFee(order.totalAmount).toString(),
-    );
+    expect(new Decimal(confirmed.fee!).toString()).toBe("25");
     // `netAmount` is the order total, NOT `amount - fee`: the surcharge rides on
     // top of what the buyer owed, so the total IS what the shop nets.
     expect(new Decimal(confirmed.netAmount!).toString()).toBe(
@@ -972,13 +971,13 @@ describe("scenario 9 — a TokoPay order, the only rail with any fee figure", ()
     );
 
     // ── and NO fee ledger event, anywhere ──
-    // Task 3b's resolved scope decision: `computeQrisAdminFee` is a LOCAL
-    // ESTIMATE (Rp100 + 0.70%) of what TokoPay will keep, not a cut TokoPay
-    // reported deducting. The ORDER_PAYMENT posting already books the order
-    // total, which is the shop's expected NET receipt, so a separate FEE
-    // posting would either double-count money already netted out or invent a
-    // financial event from an estimate. Re-asserted end-to-end here because
-    // this decision has to survive everything M4-M7 built on top of it.
+    // Task 3b's resolved scope decision: the captured fee is the BUYER-side
+    // surcharge (the order's stored gateway charge minus its total), not a cut
+    // TokoPay reported deducting from the shop. The ORDER_PAYMENT posting
+    // already books the order total, which is the shop's NET receipt, so a
+    // separate FEE posting would double-count money already netted out.
+    // Re-asserted end-to-end here because this decision has to survive
+    // everything M4-M7 built on top of it.
     const postings = await allPostings();
     expect(postings.map((p) => p.type)).toEqual([FinancialTransactionType.ORDER_PAYMENT]);
     expect(

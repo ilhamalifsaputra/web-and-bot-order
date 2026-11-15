@@ -39,7 +39,7 @@ import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { AMOUNT_TOLERANCE } from "@app/core/formatters";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { getOrder, type SettleResult } from "./orders";
@@ -118,8 +118,8 @@ const GATEWAY_METHODS: Record<Exclude<LedgerGateway, "binance" | "nowpayments">,
 /**
  * The least a ledger row must hold to pay `orderTotal` in full — the same
  * figure each gateway's own automatic path requires before it delivers:
- *  - TokoPay: the QRIS charge (total + surcharge), as the callback checks
- *    (apps/storefront/src/routes/checkout.ts);
+ *  - TokoPay: what TokoPay said the buyer must pay (the gateway charge stored
+ *    on the order), as the callback checks;
  *  - PayDisini: the order total, as its callback checks;
  *  - Bybit (both sub-rails): the total less `AMOUNT_TOLERANCE`, the poller's
  *    own `matchByAmount` rule. The poller's overpayment cap is NOT applied:
@@ -127,14 +127,17 @@ const GATEWAY_METHODS: Record<Exclude<LedgerGateway, "binance" | "nowpayments">,
  *    saying which order the money is for. An excess is still flagged
  *    "overpaid" and alerted by the shared settle helper.
  */
-function requiredAmount(gateway: keyof typeof GATEWAY_METHODS, orderTotal: Decimal.Value): Decimal {
+function requiredAmount(
+  gateway: keyof typeof GATEWAY_METHODS,
+  order: { totalAmount: Decimal.Value; gatewayChargeAmount?: Decimal.Value | null },
+): Decimal {
   switch (gateway) {
     case "tokopay":
-      return qrisChargeAmount(orderTotal);
+      return expectedTokopayCharge(order);
     case "paydisini":
-      return new Decimal(orderTotal);
+      return new Decimal(order.totalAmount);
     case "bybit":
-      return new Decimal(orderTotal).minus(AMOUNT_TOLERANCE);
+      return new Decimal(order.totalAmount).minus(AMOUNT_TOLERANCE);
   }
 }
 
@@ -187,7 +190,7 @@ async function assertNotUnderpaidShortPayment(
   if (row.suggestedOrderId != null) {
     const suggested = await db.order.findUnique({
       where: { id: row.suggestedOrderId },
-      select: { id: true, orderCode: true, status: true, totalAmount: true, paymentMethod: true },
+      select: { id: true, orderCode: true, status: true, totalAmount: true, gatewayChargeAmount: true, paymentMethod: true },
     });
     if (!suggested) return;
     const underpaid = await db.qrisUnderpaidTx.findFirst({ where: { orderId: suggested.id, gateway: gatewayName } });
@@ -196,7 +199,7 @@ async function assertNotUnderpaidShortPayment(
       suggested.paymentMethod != null &&
       GATEWAY_METHODS[gateway].includes(suggested.paymentMethod) &&
       row.amount != null &&
-      new Decimal(row.amount).lessThan(requiredAmount(gateway, suggested.totalAmount));
+      new Decimal(row.amount).lessThan(requiredAmount(gateway, suggested));
     if (underpaid || suggested.status === OrderStatus.UNDERPAID || shortForSuggested) {
       throw new ValidationError("error.manual_match_underpaid_payment", { orderCode: suggested.orderCode });
     }
@@ -279,7 +282,7 @@ export async function manualMatchLedgerTx(
     throw new ValidationError("error.manual_match_amount_unknown");
   }
   const received = new Decimal(row.amount);
-  const required = requiredAmount(gateway, order.totalAmount);
+  const required = requiredAmount(gateway, order);
   if (received.lessThan(required)) {
     throw new ValidationError("error.manual_match_amount_short", {
       received: received.toString(),

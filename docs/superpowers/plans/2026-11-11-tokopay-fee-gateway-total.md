@@ -2,298 +2,138 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Match TokoPay payments against the fee-inclusive total TokoPay itself reports for each order, and replace the hard-coded Rp100 + 0.7% with a built-in per-channel tariff table used for estimates only.
+**Goal:** Match TokoPay payments against the fee-inclusive total TokoPay itself reports for each order, and remove every fee formula from the code.
 
-**Architecture:** A new nullable column `Order.gatewayChargeAmount` stores TokoPay's `total_bayar` in the same write that caches the gateway result. One pure resolver, `expectedTokopayCharge(order, channel)`, returns that snapshot or, when it is null, an estimate from a built-in tariff table; every matching and bookkeeping site calls it. A drift alert tells admins when TokoPay's figure differs from the estimate.
+**Architecture:** A nullable column `Order.gatewayChargeAmount` stores TokoPay's `total_bayar` in the same write that caches the gateway result. One pure resolver, `expectedTokopayCharge(order)`, returns that snapshot (or the bare order total when none exists); every matching and bookkeeping site calls it. Before a QR exists the buyer sees no fee figure, only a note that a QRIS admin fee is added.
 
-**Tech Stack:** TypeScript, pnpm workspaces, Prisma (PostgreSQL), Fastify (storefront), grammY (order-bot), Vitest, decimal.js via `@app/core/money`.
+**Tech Stack:** TypeScript, pnpm workspaces, Prisma (PostgreSQL), Fastify (storefront), React (storefront client), grammY (order-bot), Vitest, decimal.js via `@app/core/money`.
 
-**Spec:** `docs/superpowers/specs/2026-11-11-tokopay-fee-settings-design.md`
+**Spec:** `docs/superpowers/specs/2026-11-11-tokopay-fee-settings-design.md` (revised: no tariff table, no drift alert).
+
+**Revision note:** Tasks 1 and 2 were implemented against the first version of this plan (commits `42265d4d`, `f116ef01`). Task 1 added `packages/core/src/payments/tokopayFee.ts` with a tariff table, and Task 2 added `getTokopayChannel`; both are now unneeded and Task 3 removes them. Task 2's column, migrations and `commitGatewayResult` change stand.
 
 ## Global Constraints
 
 - All money is `Decimal` from `@app/core/money`; never `number`/`parseFloat`.
 - No raw SQL in routes or handlers; database access goes in `packages/db/src/crud/*`.
-- The web (storefront, admin) never sends Telegram; it enqueues to `notification_outbox`.
+- The web (storefront, admin) never sends Telegram.
 - Pino log messages are full English sentences that say what happened and why it matters; no secrets, no truncated id lists.
 - Comparison rules do not change: paid below the expected charge is UNDERPAID, above is overpaid, no tolerance.
-- No admin setting, route or Settings UI is added for the tariff.
+- No fee formula, tariff table, tariff setting or tariff alert exists anywhere after this plan.
 - Bot message counts must not change; tests that touch a bot flow pin exact `sendMessage` / `edit*` / `deleteMessage` / `sendDocument` counts.
 - Stage files by name (`git add <path>`), never `git add -A` or `-a`: a hook regenerates `graphify-out/` during the task.
 - Commit messages end with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` and no other attribution.
 - Per task run only the affected tests (`pnpm exec vitest run <path>`) and `pnpm --filter <pkg> typecheck`. `pnpm --filter <pkg> test` runs nothing in this repo.
 - Never `git stash`, never switch branch, never `git reset --hard`.
 
-## File Structure
+---
 
-| File | Responsibility |
-|---|---|
-| `packages/core/src/payments/tokopayFee.ts` (new) | Tariff table, `estimateTokopayFee`, `estimatedTokopayCharge`, `readTokopayCharge`, `expectedTokopayCharge`. Pure. |
-| `packages/core/src/payments/tokopayFee.test.ts` (new) | Unit tests for the above. |
-| `packages/core/src/payments/tokopay.ts` | Loses `computeQrisAdminFee`, `qrisChargeAmount` and the two constants (Task 8). |
-| `prisma/schema.prisma`, `prisma/migrations/*` | `Order.gatewayChargeAmount`, backfill. |
-| `packages/db/src/crud/_tokopayChannel.ts` (new) | `getTokopayChannel(db)` leaf helper (no import cycle). |
-| `packages/db/src/crud/orders.ts` | `commitGatewayResult` writes the snapshot. |
-| `packages/db/src/crud/notifications.ts` | `enqueueAdminTokopayFeeDrift`. |
-| `packages/db/src/crud/tokopay.ts` | `commitTokopayGateway`; settlement reads the resolver. |
-| `packages/db/src/crud/{overpayments,orderStatus,manualMatch,wallet_topup}.ts` | Read the resolver. |
-| `packages/outbox-dispatcher/src/{dispatcher,templates}.ts`, `packages/core/src/enums.ts` | New admin DM event. |
-| `apps/storefront/src/routes/checkout.ts` | Preview estimate, pay page snapshot, webhook check. |
-| `apps/order-bot/src/{util/qrisCaption.ts,handlers/checkout.ts,handlers/walletTopup.ts,payments/tokopayReconcile.ts}` | Caption from snapshot, reconcile check. |
-| `packages/core/locales/{id,en}.json` | Rate-free `web.qris_admin_fee_note`. |
+### Task 1: Core tariff module — DONE (`42265d4d`), superseded by Task 3
+
+### Task 2: Order snapshot column and channel helper — DONE (`f116ef01`); the channel helper is removed in Task 3
+
+Produced and still in force:
+- `Order.gatewayChargeAmount: Decimal | null` (`gateway_charge_amount`), migrations `20261111090000_order_gateway_charge_amount` and `20261111090100_order_gateway_charge_amount_backfill`.
+- `commitGatewayResult(db: Db, orderId: number, sentinel: string, payload: unknown, gatewayChargeAmount?: Decimal.Value | null): Promise<boolean>` in `packages/db/src/crud/orders.ts`.
 
 ---
 
-### Task 1: Core tariff module
+### Task 3: Replace the tariff module with a charge reader, drop the channel helper
 
 **Files:**
-- Create: `packages/core/src/payments/tokopayFee.ts`
-- Test: `packages/core/src/payments/tokopayFee.test.ts`
+- Delete: `packages/core/src/payments/tokopayFee.ts`, `packages/core/src/payments/tokopayFee.test.ts`
+- Create: `packages/core/src/payments/tokopayCharge.ts`, `packages/core/src/payments/tokopayCharge.test.ts`
+- Modify: `packages/core/package.json` (export `./payments/tokopayFee` → `./payments/tokopayCharge`)
+- Delete: `packages/db/src/crud/_tokopayChannel.ts`
+- Modify: `packages/db/src/crud/tokopay.ts` (`getTokopayCreds` back to reading `TOKOPAY_CHANNEL_KEY` itself; remove the `getTokopayChannel` import and re-export), `packages/db/src/crud/tokopay.test.ts` (remove the `getTokopayChannel` describe block)
 
 **Interfaces:**
-- Consumes: `Decimal` from `packages/core/src/money`.
-- Produces:
-  - `TOKOPAY_FEE_TABLE: Readonly<Record<string, readonly TokopayFeeTier[]>>`
-  - `estimateTokopayFee(channel: string, amount: Decimal.Value): Decimal | null`
-  - `estimatedTokopayCharge(channel: string, totalAmount: Decimal.Value): Decimal`
-  - `readTokopayCharge(channel: string, totalAmount: Decimal.Value, totalBayar: string | null | undefined): TokopayChargeReading`
-  - `expectedTokopayCharge(order: { totalAmount: Decimal.Value; gatewayChargeAmount?: Decimal.Value | null }, channel: string): Decimal`
+- Produces (from `@app/core/payments/tokopayCharge`):
+  - `TOKOPAY_MAX_FEE_PERCENT: Decimal` (50), `TOKOPAY_MAX_FEE_FLAT: Decimal` (10000)
+  - `type TokopayChargeReading = { kind: "ok"; charge: Decimal } | { kind: "missing" } | { kind: "implausible" }`
+  - `readTokopayCharge(totalAmount: Decimal.Value, totalBayar: string | null | undefined): TokopayChargeReading`
+  - `expectedTokopayCharge(order: { totalAmount: Decimal.Value; gatewayChargeAmount?: Decimal.Value | null }): Decimal`
+- Removed: everything `tokopayFee.ts` exported, and `getTokopayChannel`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// packages/core/src/payments/tokopayFee.test.ts
+// packages/core/src/payments/tokopayCharge.test.ts
 import { describe, it, expect } from "vitest";
 import { Decimal } from "../money";
-import {
-  TOKOPAY_FEE_TABLE,
-  estimateTokopayFee,
-  estimatedTokopayCharge,
-  readTokopayCharge,
-  expectedTokopayCharge,
-} from "./tokopayFee";
-
-describe("estimateTokopayFee", () => {
-  it("charges QRIS Rp25 below Rp100.000 and Rp100 + 0.70% from Rp100.000", () => {
-    expect(estimateTokopayFee("QRIS", "50000")!.toString()).toBe("25");
-    expect(estimateTokopayFee("QRIS", "99999")!.toString()).toBe("25");
-    expect(estimateTokopayFee("QRIS", "100000")!.toString()).toBe("800");
-    expect(estimateTokopayFee("QRIS", "150000")!.toString()).toBe("1150");
-  });
-
-  it("charges QRIS_CUSTOM Rp25 below Rp100.000 and Rp250 + 0.70% from Rp100.000", () => {
-    expect(estimateTokopayFee("QRIS_CUSTOM", "99999")!.toString()).toBe("25");
-    expect(estimateTokopayFee("QRIS_CUSTOM", "100000")!.toString()).toBe("950");
-  });
-
-  it("does not apply the Rp25 rule to QRISREALTIME", () => {
-    expect(estimateTokopayFee("QRISREALTIME", "50000")!.toString()).toBe("850");
-  });
-
-  it("handles flat-only and percent-only channels", () => {
-    expect(estimateTokopayFee("BRIVA", "20000")!.toString()).toBe("3000");
-    expect(estimateTokopayFee("BCAVA", "20000")!.toString()).toBe("4200");
-    expect(estimateTokopayFee("GOPAY", "10000")!.toString()).toBe("300");
-    expect(estimateTokopayFee("TELKOMSEL", "10000")!.toString()).toBe("3200");
-  });
-
-  it("rounds half up to whole rupiah", () => {
-    // 100 + 100.050 * 0.7% = 800.35 -> 800 ; 100 + 100.072 * 0.7% = 800.504 -> 801
-    expect(estimateTokopayFee("QRIS", "100050")!.toString()).toBe("800");
-    expect(estimateTokopayFee("QRIS", "100072")!.toString()).toBe("801");
-  });
-
-  it("trims and upper-cases the channel code, and returns null for an unknown one", () => {
-    expect(estimateTokopayFee(" qris ", "50000")!.toString()).toBe("25");
-    expect(estimateTokopayFee("NOT_A_CHANNEL", "50000")).toBeNull();
-  });
-
-  it("has a well-formed table: ascending bounds and exactly the last tier open-ended", () => {
-    for (const [code, tiers] of Object.entries(TOKOPAY_FEE_TABLE)) {
-      expect(tiers.length, code).toBeGreaterThan(0);
-      tiers.forEach((tier, index) => {
-        const last = index === tiers.length - 1;
-        expect(tier.upTo === null, `${code} tier ${index}`).toBe(last);
-        expect(new Decimal(tier.flat).greaterThanOrEqualTo(0), code).toBe(true);
-        expect(new Decimal(tier.percent).greaterThanOrEqualTo(0), code).toBe(true);
-        if (index > 0 && tier.upTo !== null) {
-          expect(new Decimal(tier.upTo).greaterThan(tiers[index - 1]!.upTo!), code).toBe(true);
-        }
-      });
-    }
-  });
-});
-
-describe("estimatedTokopayCharge", () => {
-  it("adds the estimate to the total, and adds nothing for an unknown channel", () => {
-    expect(estimatedTokopayCharge("QRIS", "50000").toString()).toBe("50025");
-    expect(estimatedTokopayCharge("NOT_A_CHANNEL", "50000").toString()).toBe("50000");
-  });
-});
+import { readTokopayCharge, expectedTokopayCharge } from "./tokopayCharge";
 
 describe("readTokopayCharge", () => {
   it("accepts a whole-rupiah total at or above the order total", () => {
-    expect(readTokopayCharge("QRIS", "50000", "50025")).toEqual({ kind: "ok", charge: new Decimal("50025") });
-    expect(readTokopayCharge("QRIS", "50000", "50000")).toEqual({ kind: "ok", charge: new Decimal("50000") });
+    expect(readTokopayCharge("50000", "50025")).toEqual({ kind: "ok", charge: new Decimal("50025") });
+    expect(readTokopayCharge("50000", "50000")).toEqual({ kind: "ok", charge: new Decimal("50000") });
+    expect(readTokopayCharge("50000", " 50450 ")).toEqual({ kind: "ok", charge: new Decimal("50450") });
   });
 
   it("reports a null or blank total as missing", () => {
-    expect(readTokopayCharge("QRIS", "50000", null)).toEqual({ kind: "missing" });
-    expect(readTokopayCharge("QRIS", "50000", undefined)).toEqual({ kind: "missing" });
-    expect(readTokopayCharge("QRIS", "50000", "  ")).toEqual({ kind: "missing" });
+    expect(readTokopayCharge("50000", null)).toEqual({ kind: "missing" });
+    expect(readTokopayCharge("50000", undefined)).toEqual({ kind: "missing" });
+    expect(readTokopayCharge("50000", "  ")).toEqual({ kind: "missing" });
   });
 
-  it("rejects a total below the order total, a non-number and a fractional rupiah", () => {
-    expect(readTokopayCharge("QRIS", "50000", "49999")).toEqual({ kind: "implausible" });
-    expect(readTokopayCharge("QRIS", "50000", "abc")).toEqual({ kind: "implausible" });
-    expect(readTokopayCharge("QRIS", "50000", "50025.5")).toEqual({ kind: "implausible" });
+  it("rejects anything that is not plain digits", () => {
+    for (const bad of ["abc", "50025.5", "5e4", "0x1F", "-50025", "50 025", "50.025"]) {
+      expect(readTokopayCharge("50000", bad), bad).toEqual({ kind: "implausible" });
+    }
   });
 
-  it("caps the fee at 10% of the total plus Rp10.000 for a low-percent channel", () => {
-    expect(readTokopayCharge("QRIS", "50000", "65000").kind).toBe("ok");
-    expect(readTokopayCharge("QRIS", "50000", "65001").kind).toBe("implausible");
-    expect(readTokopayCharge("NOT_A_CHANNEL", "50000", "65001").kind).toBe("implausible");
+  it("rejects a total below the nominal sent to TokoPay", () => {
+    expect(readTokopayCharge("50000", "49999")).toEqual({ kind: "implausible" });
   });
 
-  it("widens the cap to twice the table percent for a high-percent channel", () => {
-    // TELKOMSEL is 32%: cap = 64% of 10.000 + 10.000 = 16.400
-    expect(readTokopayCharge("TELKOMSEL", "10000", "13200").kind).toBe("ok");
-    expect(readTokopayCharge("TELKOMSEL", "10000", "26400").kind).toBe("ok");
-    expect(readTokopayCharge("TELKOMSEL", "10000", "26401").kind).toBe("implausible");
+  it("compares against the rounded nominal (toFixed(0) of the order total)", () => {
+    expect(readTokopayCharge("50000.4", "50025").kind).toBe("ok");
+    expect(readTokopayCharge("50000.5", "50000").kind).toBe("implausible"); // nominal sent is 50001
   });
 
-  it("compares against the rounded nominal that is sent to TokoPay", () => {
-    expect(readTokopayCharge("QRIS", "50000.4", "50025").kind).toBe("ok");
+  it("caps the implied fee at 50% of the total plus Rp10.000", () => {
+    expect(readTokopayCharge("50000", "85000").kind).toBe("ok");
+    expect(readTokopayCharge("50000", "85001").kind).toBe("implausible");
   });
 });
 
 describe("expectedTokopayCharge", () => {
-  it("returns the stored snapshot when there is one", () => {
-    expect(expectedTokopayCharge({ totalAmount: "50000", gatewayChargeAmount: "50450" }, "QRIS").toString()).toBe("50450");
+  it("returns the stored gateway charge when there is one", () => {
+    expect(expectedTokopayCharge({ totalAmount: "50000", gatewayChargeAmount: "50025" }).toString()).toBe("50025");
+    expect(expectedTokopayCharge({ totalAmount: "50000", gatewayChargeAmount: new Decimal("50450") }).toString()).toBe("50450");
   });
 
-  it("falls back to the estimate when the snapshot is null or absent", () => {
-    expect(expectedTokopayCharge({ totalAmount: "50000", gatewayChargeAmount: null }, "QRIS").toString()).toBe("50025");
-    expect(expectedTokopayCharge({ totalAmount: "50000" }, "QRIS").toString()).toBe("50025");
+  it("returns the order total when no gateway charge was stored", () => {
+    expect(expectedTokopayCharge({ totalAmount: "50000", gatewayChargeAmount: null }).toString()).toBe("50000");
+    expect(expectedTokopayCharge({ totalAmount: "50000" }).toString()).toBe("50000");
   });
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
-Run: `pnpm exec vitest run packages/core/src/payments/tokopayFee.test.ts`
-Expected: FAIL — cannot resolve `./tokopayFee`.
+Run: `pnpm exec vitest run packages/core/src/payments/tokopayCharge.test.ts`
+Expected: FAIL — cannot resolve `./tokopayCharge`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Write the module and delete the old one**
 
 ```ts
-// packages/core/src/payments/tokopayFee.ts
+// packages/core/src/payments/tokopayCharge.ts
 /**
- * TokoPay's admin fee, per channel — for ESTIMATES only.
+ * What a buyer must pay on a TokoPay order.
  *
- * The fee is TokoPay's own cut, paid by the buyer on top of the order total.
- * What a buyer is actually charged is whatever TokoPay returns as `total_bayar`
- * when the transaction is created; that figure is stored on the order
- * (`Order.gatewayChargeAmount`) and is what payments are matched against. This
- * table is used only where that figure does not exist yet (the storefront
- * checkout preview) or was never reported (`expectedTokopayCharge` fallback).
- *
- * Source: the shop owner's TokoPay dashboard tariff list and TokoPay's merchant
- * announcement, both dated 2026-11-11 (QRIS and QRIS_CUSTOM below Rp100.000 are
- * charged 0% + Rp25; QRISREALTIME is not). TokoPay has no API that lists
- * tariffs, so a tariff change needs an edit here; payments keep matching in
- * the meantime because they use the stored gateway figure.
+ * TokoPay's admin fee is its own cut, paid by the buyer on top of the order
+ * total, and TokoPay changes it without notice (it has no API that lists
+ * tariffs). So this codebase holds NO fee formula: the figure TokoPay returns
+ * as `total_bayar` when a transaction is created is stored on the order
+ * (`Order.gatewayChargeAmount`) and every paid-amount check, overpayment check
+ * and fee figure derives from that stored figure.
  */
 import { Decimal } from "../money";
 
-export interface TokopayFeeTier {
-  /** The tier applies when `amount < upTo`. Null on the last tier only. */
-  upTo: string | null;
-  /** Whole rupiah. */
-  flat: string;
-  /** Percent of the amount, e.g. "0.7" for 0.70%. */
-  percent: string;
-}
-
-const flatFee = (rupiah: string): readonly TokopayFeeTier[] => [{ upTo: null, flat: rupiah, percent: "0" }];
-const percentFee = (percent: string): readonly TokopayFeeTier[] => [{ upTo: null, flat: "0", percent }];
-
-export const TOKOPAY_FEE_TABLE: Readonly<Record<string, readonly TokopayFeeTier[]>> = {
-  // QRIS
-  QRIS: [
-    { upTo: "100000", flat: "25", percent: "0" },
-    { upTo: null, flat: "100", percent: "0.7" },
-  ],
-  QRIS_CUSTOM: [
-    { upTo: "100000", flat: "25", percent: "0" },
-    { upTo: null, flat: "250", percent: "0.7" },
-  ],
-  QRISREALTIME: percentFee("1.7"),
-  QRIS_WK: percentFee("1.2"),
-  // Virtual account
-  BRIVA: flatFee("3000"),
-  BCAVA: flatFee("4200"),
-  BNIVA: flatFee("3500"),
-  MANDIRIVA: flatFee("3500"),
-  PERMATAVA: flatFee("2000"),
-  CIMBVA: flatFee("2500"),
-  DANAMONVA: flatFee("2500"),
-  BSIVA: flatFee("3500"),
-  BNCVA: flatFee("3000"),
-  PERMATAVAA: flatFee("3000"),
-  // E-money
-  SHOPEEPAY: percentFee("2.5"),
-  GOPAY: percentFee("3"),
-  DANA: percentFee("2.5"),
-  LINKAJA: percentFee("3"),
-  VIRGO: percentFee("2"),
-  ASTRAPAY: percentFee("2.5"),
-  OVOPUSH: percentFee("2.5"),
-  DANA_REALTIME: percentFee("3.2"),
-  SHOPEEPAY_REALTIME: percentFee("3"),
-  GOPAY_REALTIME: percentFee("3.5"),
-  OVOPUSH_REALTIME: percentFee("2.7"),
-  // E-money custom name
-  DANA_CUSTOM: percentFee("2.5"),
-  SHOPEE_CUSTOM: percentFee("2.5"),
-  OVO_CUSTOM: percentFee("2.5"),
-  LINKAJA_CUSTOM: percentFee("2.5"),
-  // Retail
-  ALFAMART: flatFee("3000"),
-  INDOMARET: flatFee("3000"),
-  // Pulsa
-  TELKOMSEL: percentFee("32"),
-  AXIS: percentFee("25"),
-  XL: percentFee("25"),
-  TRI: percentFee("25"),
-  SMARTFREN: percentFee("25"),
-};
-
-function tiersFor(channel: string): readonly TokopayFeeTier[] | undefined {
-  return TOKOPAY_FEE_TABLE[channel.trim().toUpperCase()];
-}
-
-/** The estimated admin fee for `amount` on `channel`, in whole rupiah (half-up);
- *  null when the channel code is not in the table. */
-export function estimateTokopayFee(channel: string, amount: Decimal.Value): Decimal | null {
-  const tiers = tiersFor(channel);
-  if (!tiers) return null;
-  const value = new Decimal(amount);
-  const tier = tiers.find((candidate) => candidate.upTo === null || value.lessThan(candidate.upTo));
-  if (!tier) return null;
-  return new Decimal(tier.flat)
-    .plus(value.times(tier.percent).dividedBy(100))
-    .toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-}
-
-/** `totalAmount` plus the estimated fee; an unknown channel adds nothing. */
-export function estimatedTokopayCharge(channel: string, totalAmount: Decimal.Value): Decimal {
-  return new Decimal(totalAmount).plus(estimateTokopayFee(channel, totalAmount) ?? 0);
-}
-
-/** Plausibility cap on the fee implied by TokoPay's `total_bayar`:
- *  max(10%, twice the channel's highest table percent) of the total, plus Rp10.000. */
-export const TOKOPAY_MAX_FEE_PERCENT = new Decimal(10);
+/** Guard against a broken gateway response, not a tariff: the fee implied by
+ *  `total_bayar` may be at most 50% of the order total plus Rp10.000. */
+export const TOKOPAY_MAX_FEE_PERCENT = new Decimal(50);
 export const TOKOPAY_MAX_FEE_FLAT = new Decimal(10000);
 
 export type TokopayChargeReading =
@@ -302,490 +142,87 @@ export type TokopayChargeReading =
   | { kind: "implausible" };
 
 /**
- * Read TokoPay's `total_bayar` for an order. "ok" is a whole-rupiah figure at or
- * above the nominal sent to TokoPay whose implied fee is within the cap;
- * "missing" is a null or blank value; anything else is "implausible" and must
- * not be shown to a buyer or stored.
+ * Read TokoPay's `total_bayar` for an order. "ok" is plain digits (whole
+ * rupiah), at or above the nominal sent to TokoPay, with an implied fee within
+ * the cap. "missing" is null or blank. Anything else is "implausible". Only an
+ * "ok" figure may be shown to a buyer or stored.
  */
 export function readTokopayCharge(
-  channel: string,
   totalAmount: Decimal.Value,
   totalBayar: string | null | undefined,
 ): TokopayChargeReading {
   if (totalBayar == null || totalBayar.trim() === "") return { kind: "missing" };
-  let charge: Decimal;
-  try {
-    charge = new Decimal(totalBayar.trim());
-  } catch {
-    return { kind: "implausible" };
-  }
-  if (!charge.isFinite() || !charge.isInteger()) return { kind: "implausible" };
+  const text = totalBayar.trim();
+  if (!/^\d+$/.test(text)) return { kind: "implausible" };
+  const charge = new Decimal(text);
   // createTransaction sends `nominal` as `toFixed(0)` of the order total.
   const nominal = new Decimal(new Decimal(totalAmount).toFixed(0));
   if (charge.lessThan(nominal)) return { kind: "implausible" };
-  const tiers = tiersFor(channel);
-  const highestPercent = tiers ? Decimal.max(...tiers.map((tier) => new Decimal(tier.percent))) : new Decimal(0);
-  const capPercent = Decimal.max(TOKOPAY_MAX_FEE_PERCENT, highestPercent.times(2));
-  const cap = nominal.times(capPercent).dividedBy(100).plus(TOKOPAY_MAX_FEE_FLAT);
+  const cap = nominal.times(TOKOPAY_MAX_FEE_PERCENT).dividedBy(100).plus(TOKOPAY_MAX_FEE_FLAT);
   if (charge.minus(nominal).greaterThan(cap)) return { kind: "implausible" };
   return { kind: "ok", charge };
 }
 
 /**
- * What the buyer must pay on a TokoPay order: the figure TokoPay reported when
- * the transaction was created, or — only when none was stored — the table
- * estimate. The ONE place this is decided; every paid-amount check, overpayment
- * check and fee figure derives from it (fee = charge - totalAmount).
+ * The amount the buyer was asked to pay on a TokoPay order: the figure TokoPay
+ * reported when the transaction was created. The ONE place this is decided;
+ * the buyer-side fee is always `expectedTokopayCharge(order) - order.totalAmount`.
+ *
+ * An order with no stored figure never had its TokoPay transaction recorded;
+ * the bare order total is then the least a payment must cover, so a real
+ * payment still settles and its fee portion surfaces as an overpayment for an
+ * admin to look at instead of the order getting stuck.
  */
-export function expectedTokopayCharge(
-  order: { totalAmount: Decimal.Value; gatewayChargeAmount?: Decimal.Value | null },
-  channel: string,
-): Decimal {
-  if (order.gatewayChargeAmount != null) return new Decimal(order.gatewayChargeAmount);
-  return estimatedTokopayCharge(channel, order.totalAmount);
+export function expectedTokopayCharge(order: {
+  totalAmount: Decimal.Value;
+  gatewayChargeAmount?: Decimal.Value | null;
+}): Decimal {
+  return new Decimal(order.gatewayChargeAmount ?? order.totalAmount);
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+Delete `packages/core/src/payments/tokopayFee.ts` and `tokopayFee.test.ts` with `git rm`. In `packages/core/package.json` rename the export entry `./payments/tokopayFee` to `./payments/tokopayCharge` (same shape as the neighbouring `./payments/tokopay` entry).
 
-Run: `pnpm exec vitest run packages/core/src/payments/tokopayFee.test.ts`
-Expected: PASS, all tests green.
+- [ ] **Step 4: Remove the channel helper**
 
-- [ ] **Step 5: Check the package export and typecheck**
+`git rm packages/db/src/crud/_tokopayChannel.ts`. In `packages/db/src/crud/tokopay.ts` remove its import and the `export { getTokopayChannel } ...` line, and restore `getTokopayCreds` to read the channel itself:
 
-`@app/core/payments/tokopay` is imported by subpath elsewhere. Open `packages/core/package.json` and confirm the `exports` map covers `./payments/*` by wildcard; if each file is listed individually, add `./payments/tokopayFee` beside `./payments/tokopay` in the same form.
+```ts
+  const [merchantId, secret, enabled, channel, minAmountSetting] = await Promise.all([
+    getSetting(db, TOKOPAY_MERCHANT_KEY),
+    getDecryptedSetting(db, TOKOPAY_SECRET_KEY),
+    getSetting(db, TOKOPAY_ENABLED_KEY),
+    getSetting(db, TOKOPAY_CHANNEL_KEY),
+    getSetting(db, TOKOPAY_MIN_AMOUNT_KEY),
+  ]);
+  if (!merchantId || !secret) return null;
+  if ((enabled ?? "").trim().toLowerCase() === "false") return null;
+  return {
+    merchantId,
+    secret,
+    channel: (channel ?? "QRIS").trim() || "QRIS",
+    minAmount: parseMinAmount(minAmountSetting),
+  };
+```
+(restore the `TOKOPAY_CHANNEL_KEY` import). Remove the `describe("getTokopayChannel", …)` block and its import from `packages/db/src/crud/tokopay.test.ts`.
 
-Run: `pnpm --filter @app/core typecheck`
+Run: `grep -rn "tokopayFee\|getTokopayChannel\|_tokopayChannel" apps packages --include=*.ts --include=*.tsx --include=*.json --exclude-dir=node_modules --exclude-dir=dist`
+Expected: no output.
+
+- [ ] **Step 5: Run tests and typecheck**
+
+Run: `pnpm exec vitest run packages/core/src/payments/tokopayCharge.test.ts packages/db/src/crud/tokopay.test.ts`
+Expected: PASS.
+Run: `pnpm --filter @app/core typecheck && pnpm --filter @app/db typecheck`
 Expected: exits 0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/core/src/payments/tokopayFee.ts packages/core/src/payments/tokopayFee.test.ts packages/core/package.json
-git commit -m "feat(core): TokoPay tariff table and expected-charge resolver" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
+git add packages/core/src/payments/tokopayCharge.ts packages/core/src/payments/tokopayCharge.test.ts packages/core/package.json packages/db/src/crud/tokopay.ts packages/db/src/crud/tokopay.test.ts
+git commit -m "refactor: drop the TokoPay tariff table; keep only the gateway-charge reader" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 ```
-(Leave `packages/core/package.json` out of `git add` if it was not changed.)
-
----
-
-### Task 2: Order snapshot column and channel helper
-
-**Files:**
-- Modify: `prisma/schema.prisma` (model `Order`, after `paymentRef`, about line 688)
-- Create: `prisma/migrations/20261111090000_order_gateway_charge_amount/migration.sql`
-- Create: `prisma/migrations/20261111090100_order_gateway_charge_amount_backfill/migration.sql`
-- Create: `packages/db/src/crud/_tokopayChannel.ts`
-- Modify: `packages/db/src/crud/orders.ts:373-384` (`commitGatewayResult`)
-- Modify: `packages/db/src/crud/tokopay.ts:46-62` (`getTokopayCreds` uses the helper)
-- Test: `packages/db/src/crud/orders.test.ts` (or the existing test file that covers `commitGatewayResult`; find it with `grep -rn "commitGatewayResult" packages/db/src/crud/*.test.ts`), `packages/db/src/crud/tokopay.test.ts`
-
-**Interfaces:**
-- Consumes: nothing from Task 1.
-- Produces:
-  - `Order.gatewayChargeAmount: Decimal | null`
-  - `commitGatewayResult(db: Db, orderId: number, sentinel: string, payload: unknown, gatewayChargeAmount?: Decimal.Value | null): Promise<boolean>`
-  - `getTokopayChannel(db: Db): Promise<string>` exported from `packages/db/src/crud/_tokopayChannel.ts` and re-exported from `packages/db/src/crud/tokopay.ts`
-
-- [ ] **Step 1: Write the failing tests**
-
-Add to the test file that already covers `commitGatewayResult` (use that file's existing order-creation helper and `claimGatewaySlot`):
-
-```ts
-it("stores the gateway charge together with the cached gateway result", async () => {
-  const order = await createPendingOrder(); // the file's existing helper
-  const sentinel = await claimGatewaySlot(prisma, order.id);
-  const ok = await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "tokopay", trxId: "TP1" }, new Decimal("50025"));
-  expect(ok).toBe(true);
-  const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-  expect(row.gatewayChargeAmount!.toString()).toBe("50025");
-  expect(JSON.parse(row.paymentRef!).trxId).toBe("TP1");
-});
-
-it("writes neither the cache nor the charge when the claim sentinel no longer matches", async () => {
-  const order = await createPendingOrder();
-  const ok = await commitGatewayResult(prisma, order.id, "not-the-sentinel", { gateway: "tokopay" }, new Decimal("50025"));
-  expect(ok).toBe(false);
-  const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-  expect(row.gatewayChargeAmount).toBeNull();
-});
-
-it("leaves the charge null when none is passed", async () => {
-  const order = await createPendingOrder();
-  const sentinel = await claimGatewaySlot(prisma, order.id);
-  await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "paydisini" });
-  const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-  expect(row.gatewayChargeAmount).toBeNull();
-});
-```
-
-Add to `packages/db/src/crud/tokopay.test.ts`, next to the existing `getTokopayCreds` minAmount tests (about line 846):
-
-```ts
-describe("getTokopayChannel", () => {
-  it("defaults to QRIS when the setting is absent or blank", async () => {
-    expect(await getTokopayChannel(prisma)).toBe("QRIS");
-    await setSetting(prisma, "tokopay_default_channel", "   ");
-    expect(await getTokopayChannel(prisma)).toBe("QRIS");
-  });
-
-  it("returns the trimmed configured channel", async () => {
-    await setSetting(prisma, "tokopay_default_channel", " QRISREALTIME ");
-    expect(await getTokopayChannel(prisma)).toBe("QRISREALTIME");
-  });
-});
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `pnpm exec vitest run packages/db/src/crud/tokopay.test.ts <the commitGatewayResult test file>`
-Expected: FAIL — `getTokopayChannel` is not exported; `gatewayChargeAmount` does not exist on the Order type.
-
-- [ ] **Step 3: Add the column to the schema**
-
-In `prisma/schema.prisma`, model `Order`, directly after the `paymentRef` line:
-
-```prisma
-  /// What the gateway said the buyer must pay, fee included (TokoPay's
-  /// `total_bayar`), written in the same statement that caches the gateway
-  /// result in `paymentRef`. TokoPay payments are matched against THIS figure,
-  /// so a tariff change at the gateway can never make a paid order look short.
-  /// Null = the gateway reported no total (or this is not a TokoPay order);
-  /// readers then fall back to an estimate — see `expectedTokopayCharge`
-  /// (@app/core/payments/tokopayFee).
-  gatewayChargeAmount    Decimal?  @map("gateway_charge_amount")
-```
-
-- [ ] **Step 4: Write the two migrations**
-
-`prisma/migrations/20261111090000_order_gateway_charge_amount/migration.sql`:
-
-```sql
--- The fee-inclusive amount the payment gateway said the buyer must pay.
-ALTER TABLE "orders" ADD COLUMN "gateway_charge_amount" DECIMAL(65,30);
-```
-
-`prisma/migrations/20261111090100_order_gateway_charge_amount_backfill/migration.sql`:
-
-```sql
--- Freeze every existing TokoPay order at the fee formula that was in force when
--- it was created (Rp100 + 0.70%, rounded half up to whole rupiah), so replacing
--- that formula in code does not change how past overpaid/underpaid orders are
--- evaluated. Idempotent: only rows without a stored figure are touched.
-UPDATE "orders"
-SET "gateway_charge_amount" = "total_amount" + ROUND(100 + "total_amount" * 0.007)
-WHERE "payment_method" = 'TOKOPAY'
-  AND "currency" = 'IDR'
-  AND "gateway_charge_amount" IS NULL;
-```
-
-Run: `pnpm prisma:generate`
-Then apply to the worktree's own database only (confirm `DATABASE_URL_PRISMA` in this worktree's `.env` points at it): `pnpm exec prisma db push --skip-generate`
-Expected: "Your database is now in sync with your Prisma schema."
-
-- [ ] **Step 5: Add the channel helper**
-
-```ts
-// packages/db/src/crud/_tokopayChannel.ts
-/**
- * The TokoPay channel code the shop sends as `metode` (default "QRIS").
- * A leaf module — it imports only the settings reader — so crud files that
- * crud/tokopay.ts itself imports (orderStatus.ts, wallet_topup.ts) can read
- * the channel without an import cycle.
- */
-import { TOKOPAY_CHANNEL_KEY } from "@app/core/payments/tokopay";
-import type { Db } from "./_types";
-import { getSetting } from "./settings";
-
-export async function getTokopayChannel(db: Db): Promise<string> {
-  return ((await getSetting(db, TOKOPAY_CHANNEL_KEY)) ?? "QRIS").trim() || "QRIS";
-}
-```
-
-In `packages/db/src/crud/tokopay.ts`: add `export { getTokopayChannel } from "./_tokopayChannel";` and `import { getTokopayChannel } from "./_tokopayChannel";`, then make `getTokopayCreds` use it — replace `getSetting(db, TOKOPAY_CHANNEL_KEY)` in the `Promise.all` with `getTokopayChannel(db)` and the return field with `channel,`. Remove the now-unused `TOKOPAY_CHANNEL_KEY` import if nothing else in the file uses it.
-
-- [ ] **Step 6: Extend `commitGatewayResult`**
-
-Replace the function body in `packages/db/src/crud/orders.ts`:
-
-```ts
-export async function commitGatewayResult(
-  db: Db,
-  orderId: number,
-  sentinel: string,
-  payload: unknown,
-  /** The fee-inclusive amount the gateway reported (TokoPay's `total_bayar`),
-   *  stored with the cache in ONE statement so the two can never disagree.
-   *  Omitted or null leaves `gatewayChargeAmount` untouched. */
-  gatewayChargeAmount?: Decimal.Value | null,
-): Promise<boolean> {
-  const committed = await db.order.updateMany({
-    where: { id: orderId, paymentRef: sentinel },
-    data: {
-      paymentRef: JSON.stringify(payload),
-      ...(gatewayChargeAmount != null ? { gatewayChargeAmount: new Decimal(gatewayChargeAmount) } : {}),
-    },
-  });
-  return committed.count === 1;
-}
-```
-
-Keep the existing doc comment above it. Add `import { Decimal } from "@app/core/money";` if the file does not already import it.
-
-- [ ] **Step 7: Run the tests and typecheck**
-
-Run: `pnpm exec vitest run packages/db/src/crud/tokopay.test.ts <the commitGatewayResult test file>`
-Expected: PASS.
-Run: `pnpm --filter @app/db typecheck`
-Expected: exits 0.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add prisma/schema.prisma prisma/migrations/20261111090000_order_gateway_charge_amount prisma/migrations/20261111090100_order_gateway_charge_amount_backfill packages/db/src/crud/_tokopayChannel.ts packages/db/src/crud/orders.ts packages/db/src/crud/tokopay.ts packages/db/src/crud/tokopay.test.ts <the commitGatewayResult test file>
-git commit -m "feat(db): store the gateway's fee-inclusive charge on the order" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
-```
-
----
-
-### Task 3: Tariff-drift admin alert
-
-**Files:**
-- Modify: `packages/core/src/enums.ts` (after `ADMIN_OVERPAID`, about line 559)
-- Modify: `packages/db/src/crud/notifications.ts` (after `enqueueAdminOverpaid`)
-- Modify: `packages/outbox-dispatcher/src/dispatcher.ts:106` (`ADMIN_DM_EVENTS`)
-- Modify: `packages/outbox-dispatcher/src/templates.ts` (after the `ADMIN_OVERPAID` branch, about line 836)
-- Test: `packages/db/src/crud/notifications.test.ts`, and the dispatcher's template test (find with `grep -rln "ADMIN_OVERPAID" packages/outbox-dispatcher`)
-
-**Interfaces:**
-- Produces:
-  - `NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT = "ADMIN_TOKOPAY_FEE_DRIFT"`
-  - `TOKOPAY_FEE_DRIFT_ALERTED_AT_KEY = "tokopay_fee_drift_alerted_at"`
-  - `TOKOPAY_FEE_DRIFT_ALERT_INTERVAL_MS = 86_400_000`
-  - `enqueueAdminTokopayFeeDrift(db: PrismaClient, args: { orderId: number; orderCode: string; channel: string; total: Decimal; estimated: Decimal; reported: string; reason: "drift" | "implausible" }, now?: Date): Promise<boolean>` — true when the alert was queued, false when one was already sent in the last 24 hours.
-
-- [ ] **Step 1: Write the failing tests**
-
-In `packages/db/src/crud/notifications.test.ts` (reuse the file's existing admin seeding so `resolveAdminIds` returns at least one admin):
-
-```ts
-describe("enqueueAdminTokopayFeeDrift", () => {
-  const args = {
-    orderId: 0, // replaced per test with a real order id
-    orderCode: "ORD-DRIFT",
-    channel: "QRIS",
-    total: new Decimal("50000"),
-    estimated: new Decimal("50025"),
-    reported: "50450",
-    reason: "drift" as const,
-  };
-
-  it("queues one DM per admin carrying both figures", async () => {
-    const order = await createPendingOrder(); // the file's existing helper
-    const queued = await enqueueAdminTokopayFeeDrift(prisma, { ...args, orderId: order.id });
-    expect(queued).toBe(true);
-    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT } });
-    expect(rows).toHaveLength((await resolveAdminIds(prisma)).length);
-    expect(JSON.parse(rows[0]!.payloadJson)).toMatchObject({
-      order_code: "ORD-DRIFT",
-      channel: "QRIS",
-      total: "50000",
-      estimated: "50025",
-      reported: "50450",
-      reason: "drift",
-    });
-  });
-
-  it("queues nothing a second time within 24 hours, and queues again after that", async () => {
-    const order = await createPendingOrder();
-    const t0 = new Date("2026-11-11T00:00:00Z");
-    expect(await enqueueAdminTokopayFeeDrift(prisma, { ...args, orderId: order.id }, t0)).toBe(true);
-    const almostADayLater = new Date(t0.getTime() + TOKOPAY_FEE_DRIFT_ALERT_INTERVAL_MS - 1);
-    expect(await enqueueAdminTokopayFeeDrift(prisma, { ...args, orderId: order.id }, almostADayLater)).toBe(false);
-    const aDayLater = new Date(t0.getTime() + TOKOPAY_FEE_DRIFT_ALERT_INTERVAL_MS);
-    expect(await enqueueAdminTokopayFeeDrift(prisma, { ...args, orderId: order.id }, aDayLater)).toBe(true);
-    const admins = (await resolveAdminIds(prisma)).length;
-    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT } })).toBe(admins * 2);
-  });
-});
-```
-
-In the dispatcher's template test, mirroring the existing `ADMIN_OVERPAID` case:
-
-```ts
-it("renders the TokoPay tariff-drift alert in both languages with both figures", () => {
-  const text = renderTemplate(NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT, {
-    order_code: "ORD-1", channel: "QRIS", total: "50000", estimated: "50025", reported: "50450", reason: "drift",
-  });
-  expect(text).toContain("ORD-1");
-  expect(text).toContain("50025");
-  expect(text).toContain("50450");
-  expect(text).toContain("TokoPay");
-  expect(text).toContain("tarif");
-});
-
-it("says no QR was shown when TokoPay's total was implausible", () => {
-  const text = renderTemplate(NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT, {
-    order_code: "ORD-2", channel: "QRIS", total: "50000", estimated: "50025", reported: "9999999", reason: "implausible",
-  });
-  expect(text).toContain("no QR");
-  expect(text).toContain("tidak ditampilkan");
-});
-```
-(Use the function name that file already imports for rendering if it is not `renderTemplate`.)
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `pnpm exec vitest run packages/db/src/crud/notifications.test.ts <the template test file>`
-Expected: FAIL — `ADMIN_TOKOPAY_FEE_DRIFT` and `enqueueAdminTokopayFeeDrift` do not exist.
-
-- [ ] **Step 3: Add the event**
-
-In `packages/core/src/enums.ts`, directly after the `ADMIN_OVERPAID: "ADMIN_OVERPAID",` line:
-
-```ts
-  // Admin DM (not a channel post): TokoPay's fee-inclusive total for a new
-  // order differed from the built-in tariff estimate (the tariff changed at
-  // the gateway), or was implausible and no QR was shown. At most one per 24
-  // hours. payload carries `chat_id` plus order_code/channel/total/estimated/
-  // reported/reason. Same fan-out-per-admin shape as ADMIN_OVERPAID.
-  ADMIN_TOKOPAY_FEE_DRIFT: "ADMIN_TOKOPAY_FEE_DRIFT",
-```
-
-In `packages/outbox-dispatcher/src/dispatcher.ts`, add to `ADMIN_DM_EVENTS` after the `ADMIN_OVERPAID` line:
-
-```ts
-  NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT, // admin DM (TokoPay's total differs from the built-in tariff estimate)
-```
-
-- [ ] **Step 4: Add the enqueue helper**
-
-In `packages/db/src/crud/notifications.ts`, after `enqueueAdminOverpaid` (add `import type { PrismaClient } from "../client";` and `import { isUniqueViolation } from "./_types";` if missing):
-
-```ts
-export const TOKOPAY_FEE_DRIFT_ALERTED_AT_KEY = "tokopay_fee_drift_alerted_at";
-export const TOKOPAY_FEE_DRIFT_ALERT_INTERVAL_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Tell every admin that TokoPay's fee-inclusive total for a new order is not
- * what the built-in tariff table predicts — the gateway changed its tariff —
- * or that the total was implausible and no QR was shown.
- *
- * At most one alert per 24 hours: a changed tariff makes EVERY new order
- * differ, and one message is enough to get the table updated. The limiter is a
- * timestamp under an internal settings key (not shown in the admin Settings
- * page), claimed with a compare-and-swap BEFORE the rows are written, so two
- * checkouts racing here queue one alert, not two. It is claimed outside a
- * transaction on purpose: a lost race surfaces as a unique violation, which
- * would abort an enclosing Postgres transaction.
- *
- * Returns true when the alert was queued.
- */
-export async function enqueueAdminTokopayFeeDrift(
-  db: PrismaClient,
-  args: {
-    orderId: number;
-    orderCode: string;
-    channel: string;
-    total: Decimal;
-    estimated: Decimal;
-    /** TokoPay's `total_bayar` exactly as received (it may not be a number). */
-    reported: string;
-    reason: "drift" | "implausible";
-  },
-  now: Date = new Date(),
-): Promise<boolean> {
-  const stamp = now.toISOString();
-  const prior = await db.setting.findUnique({ where: { key: TOKOPAY_FEE_DRIFT_ALERTED_AT_KEY } });
-  if (prior) {
-    const last = Date.parse(prior.value);
-    if (Number.isFinite(last) && now.getTime() - last < TOKOPAY_FEE_DRIFT_ALERT_INTERVAL_MS) return false;
-    const claimed = await db.setting.updateMany({
-      where: { key: TOKOPAY_FEE_DRIFT_ALERTED_AT_KEY, value: prior.value },
-      data: { value: stamp },
-    });
-    if (claimed.count !== 1) return false;
-  } else {
-    try {
-      await db.setting.create({ data: { key: TOKOPAY_FEE_DRIFT_ALERTED_AT_KEY, value: stamp } });
-    } catch (e) {
-      if (isUniqueViolation(e)) return false;
-      throw e;
-    }
-  }
-  for (const adminId of await resolveAdminIds(db)) {
-    await db.notificationOutbox.create({
-      data: {
-        event: NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT,
-        orderId: args.orderId,
-        payloadJson: JSON.stringify({
-          chat_id: adminId,
-          order_code: args.orderCode,
-          channel: args.channel,
-          total: args.total.toString(),
-          estimated: args.estimated.toString(),
-          reported: args.reported.slice(0, 40),
-          reason: args.reason,
-        }),
-      },
-    });
-  }
-  return true;
-}
-```
-
-- [ ] **Step 5: Add the template**
-
-In `packages/outbox-dispatcher/src/templates.ts`, directly before the `if (event === NotificationEvent.ADMIN_OVERPAID) {` branch:
-
-```ts
-  if (event === NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT) {
-    // Admin DM: TokoPay's fee-inclusive total for a new order is not what the
-    // built-in tariff table predicts. `reported` is gateway text, so it is
-    // escaped like everything else.
-    const code = escape(String(payload.order_code ?? ""));
-    const channel = escape(String(payload.channel ?? ""));
-    const total = escape(String(payload.total ?? "0"));
-    const estimated = escape(String(payload.estimated ?? "0"));
-    const reported = escape(String(payload.reported ?? ""));
-    const implausible = payload.reason === "implausible";
-    const outcomeEn = implausible
-      ? `That total is not plausible, so no QR was shown and the buyer was asked to try again. Check the TokoPay dashboard.`
-      : `The payment is processed with TokoPay's figure, so nothing is stuck. TokoPay's tariff appears to have changed: ask the developer to update the built-in estimate table so the storefront checkout shows the right fee.`;
-    const outcomeId = implausible
-      ? `Angka itu tidak wajar, jadi QR tidak ditampilkan dan pembeli diminta mencoba lagi. Cek dashboard TokoPay.`
-      : `Pembayaran diproses dengan angka TokoPay, jadi tidak ada yang tertahan. Tampaknya tarif TokoPay berubah: minta developer memperbarui tabel perkiraan supaya checkout web menampilkan biaya yang benar.`;
-    return (
-      `⚠️ <b>TokoPay total differs from the estimate — order <code>${code}</code></b>\n` +
-      `Channel: <b>${channel}</b>\n` +
-      `Order total: <b>${total} IDR</b>\n` +
-      `Our estimate: <b>${estimated} IDR</b>\n` +
-      `TokoPay says: <b>${reported} IDR</b>\n` +
-      `${outcomeEn}\n\n` +
-      `⚠️ <b>Total TokoPay berbeda dari perkiraan — pesanan <code>${code}</code></b>\n` +
-      `Channel: <b>${channel}</b>\n` +
-      `Total pesanan: <b>${total} IDR</b>\n` +
-      `Perkiraan kita: <b>${estimated} IDR</b>\n` +
-      `Angka TokoPay: <b>${reported} IDR</b>\n` +
-      `${outcomeId}`
-    );
-  }
-```
-
-If `templates.ts` or the dispatcher has an exhaustive list or switch of events (a typecheck error will say so), add the new event there in the same form as `ADMIN_OVERPAID`.
-
-- [ ] **Step 6: Run the tests and typecheck**
-
-Run: `pnpm exec vitest run packages/db/src/crud/notifications.test.ts <the template test file>`
-Expected: PASS.
-Run: `pnpm --filter @app/core typecheck && pnpm --filter @app/db typecheck && pnpm --filter @app/outbox-dispatcher typecheck`
-Expected: exits 0. (Use the package names from each `package.json` if they differ.)
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add packages/core/src/enums.ts packages/db/src/crud/notifications.ts packages/db/src/crud/notifications.test.ts packages/outbox-dispatcher/src/dispatcher.ts packages/outbox-dispatcher/src/templates.ts <the template test file>
-git commit -m "feat: admin alert when TokoPay's total differs from the tariff estimate" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
-```
+(`git rm` already staged the three deletions.)
 
 ---
 
@@ -796,128 +233,99 @@ git commit -m "feat: admin alert when TokoPay's total differs from the tariff es
 - Test: `packages/db/src/crud/tokopay.test.ts`
 
 **Interfaces:**
-- Consumes: `readTokopayCharge`, `estimatedTokopayCharge` (Task 1); `commitGatewayResult` with the fifth argument (Task 2); `enqueueAdminTokopayFeeDrift` (Task 3); `TokopayOrderInfo` from `@app/core/payments/tokopay`.
+- Consumes: `readTokopayCharge` (Task 3); `commitGatewayResult(db, orderId, sentinel, payload, gatewayChargeAmount?)` from `./orders`; `TokopayOrderInfo` from `@app/core/payments/tokopay` (`{ trxId: string; payUrl: string | null; qrLink: string | null; qrString: string | null; totalBayar: string | null }`).
 - Produces:
-  - `class TokopayImplausibleChargeError extends Error`
-  - `commitTokopayGateway(db: PrismaClient, args: { order: { id: number; orderCode: string; totalAmount: Decimal.Value }; channel: string; sentinel: string; gateway: TokopayOrderInfo }): Promise<{ committed: boolean; charge: Decimal }>` — `charge` is what to show the buyer: TokoPay's figure, or the estimate when TokoPay reported none. Throws `TokopayImplausibleChargeError` when the figure is implausible (nothing is stored).
+  - `class TokopayChargeUnavailableError extends Error`
+  - `commitTokopayGateway(db: Db, args: { order: { id: number; orderCode: string; totalAmount: Decimal.Value }; sentinel: string; gateway: TokopayOrderInfo }): Promise<{ committed: boolean; charge: Decimal }>` — stores TokoPay's total with the cached transaction and returns it. Throws `TokopayChargeUnavailableError` (storing nothing) when TokoPay's total is missing or implausible.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `packages/db/src/crud/tokopay.test.ts` (use the file's existing pending-TokoPay-order helper; totals below assume an order whose `totalAmount` is 50000 — create one with that total):
+In `packages/db/src/crud/tokopay.test.ts`, using the file's existing helper for a pending TokoPay order (create one whose `totalAmount` is 50000) and `claimGatewaySlot` from `./orders`:
 
 ```ts
 describe("commitTokopayGateway", () => {
   const gatewayInfo = (totalBayar: string | null) => ({
     trxId: "TP-COMMIT", payUrl: null, qrLink: "https://qr.example/x.png", qrString: null, totalBayar,
   });
-  const driftRows = () => prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_TOKOPAY_FEE_DRIFT } });
 
-  it("stores TokoPay's total and raises no alert when it equals the estimate", async () => {
+  it("stores TokoPay's total with the cached transaction and returns it", async () => {
     const order = await createPendingTokopayOrder("50000");
     const sentinel = (await claimGatewaySlot(prisma, order.id))!;
-    const r = await commitTokopayGateway(prisma, { order, channel: "QRIS", sentinel, gateway: gatewayInfo("50025") });
+    const r = await commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo("50025") });
     expect(r.committed).toBe(true);
     expect(r.charge.toString()).toBe("50025");
     const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(row.gatewayChargeAmount!.toString()).toBe("50025");
-    expect(await driftRows()).toBe(0);
+    expect(JSON.parse(row.paymentRef!)).toMatchObject({ gateway: "tokopay", trxId: "TP-COMMIT", totalBayar: "50025" });
   });
 
-  it("stores a total that differs from the estimate and alerts the admins", async () => {
+  it("reports committed=false and stores nothing when the claim no longer matches", async () => {
     const order = await createPendingTokopayOrder("50000");
-    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
-    const r = await commitTokopayGateway(prisma, { order, channel: "QRIS", sentinel, gateway: gatewayInfo("50450") });
-    expect(r.charge.toString()).toBe("50450");
-    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    expect(row.gatewayChargeAmount!.toString()).toBe("50450");
-    expect(await driftRows()).toBeGreaterThan(0);
-  });
-
-  it("leaves the snapshot null and returns the estimate when TokoPay reports no total", async () => {
-    const order = await createPendingTokopayOrder("50000");
-    const sentinel = (await claimGatewaySlot(prisma, order.id))!;
-    const r = await commitTokopayGateway(prisma, { order, channel: "QRIS", sentinel, gateway: gatewayInfo(null) });
-    expect(r.committed).toBe(true);
+    const r = await commitTokopayGateway(prisma, { order, sentinel: "not-the-sentinel", gateway: gatewayInfo("50025") });
+    expect(r.committed).toBe(false);
     expect(r.charge.toString()).toBe("50025");
-    const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    expect(row.gatewayChargeAmount).toBeNull();
-    expect(JSON.parse(row.paymentRef!).trxId).toBe("TP-COMMIT");
-    expect(await driftRows()).toBe(0);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).gatewayChargeAmount).toBeNull();
   });
 
-  it("stores nothing, alerts and throws when the total is below the order total", async () => {
+  it.each([
+    ["missing", null],
+    ["below the order total", "49000"],
+    ["not a number", "abc"],
+    ["absurdly high", "999999999"],
+  ])("throws and stores nothing when TokoPay's total is %s", async (_label, totalBayar) => {
     const order = await createPendingTokopayOrder("50000");
     const sentinel = (await claimGatewaySlot(prisma, order.id))!;
     await expect(
-      commitTokopayGateway(prisma, { order, channel: "QRIS", sentinel, gateway: gatewayInfo("49000") }),
-    ).rejects.toBeInstanceOf(TokopayImplausibleChargeError);
+      commitTokopayGateway(prisma, { order, sentinel, gateway: gatewayInfo(totalBayar) }),
+    ).rejects.toBeInstanceOf(TokopayChargeUnavailableError);
     const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(row.gatewayChargeAmount).toBeNull();
     expect(row.paymentRef).toBe(sentinel);
-    expect(await driftRows()).toBeGreaterThan(0);
   });
 });
 ```
+(Use the real name and argument shape of the file's order helper.)
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Run to verify they fail**
 
 Run: `pnpm exec vitest run packages/db/src/crud/tokopay.test.ts -t "commitTokopayGateway"`
 Expected: FAIL — `commitTokopayGateway` is not exported.
 
 - [ ] **Step 3: Implement**
 
-In `packages/db/src/crud/tokopay.ts`, add the imports (`readTokopayCharge`, `estimatedTokopayCharge` from `@app/core/payments/tokopayFee`; `type TokopayOrderInfo` from `@app/core/payments/tokopay`; `commitGatewayResult` from `./orders`; `enqueueAdminTokopayFeeDrift` from `./notifications`) and, after `getTokopayCreds`:
+Add the imports (`readTokopayCharge` from `@app/core/payments/tokopayCharge`; `type TokopayOrderInfo` from `@app/core/payments/tokopay`; `commitGatewayResult` from `./orders`) and, after `getTokopayCreds`:
 
 ```ts
-/** TokoPay's `total_bayar` for a new transaction failed the plausibility check
- *  (`readTokopayCharge`), so no QR may be shown for it. */
-export class TokopayImplausibleChargeError extends Error {}
+/** TokoPay created a transaction but did not report a usable total for the
+ *  buyer to pay (`readTokopayCharge`), so no payment instructions may be shown. */
+export class TokopayChargeUnavailableError extends Error {}
 
 /**
  * Cache a freshly created TokoPay transaction on its order AND record what
  * TokoPay says the buyer must pay — the figure every later paid-amount check
  * reads (`expectedTokopayCharge`). The three places that create a TokoPay
  * transaction (storefront pay page, bot checkout, bot wallet top-up) all go
- * through here so none of them can cache a transaction without its charge.
+ * through here, so none of them can cache a transaction without its charge.
  *
- * Returns the charge to SHOW the buyer: TokoPay's own figure, or the tariff
- * estimate when TokoPay reported none. Alerts the admins (rate-limited) when
- * TokoPay's figure differs from the estimate, and never lets an alert failure
- * fail the checkout.
+ * Returns that charge for the caller to print beside the QR. Throws
+ * `TokopayChargeUnavailableError`, storing nothing, when TokoPay's total is
+ * missing or implausible: without it the payment could not be verified later,
+ * so the caller must treat this exactly like a failed transaction creation.
  */
 export async function commitTokopayGateway(
-  db: PrismaClient,
+  db: Db,
   args: {
     order: { id: number; orderCode: string; totalAmount: Decimal.Value };
-    channel: string;
     sentinel: string;
     gateway: TokopayOrderInfo;
   },
 ): Promise<{ committed: boolean; charge: Decimal }> {
-  const total = new Decimal(args.order.totalAmount);
-  const estimated = estimatedTokopayCharge(args.channel, total);
-  const reading = readTokopayCharge(args.channel, total, args.gateway.totalBayar);
-  const alert = (reason: "drift" | "implausible") =>
-    enqueueAdminTokopayFeeDrift(db, {
-      orderId: args.order.id,
-      orderCode: args.order.orderCode,
-      channel: args.channel,
-      total,
-      estimated,
-      reported: args.gateway.totalBayar ?? "",
-      reason,
-    }).catch((err) => {
-      logger.error(
-        { err, orderId: args.order.id },
-        `Could not queue the admin alert that TokoPay's total for order ${args.order.orderCode} differs from the tariff estimate — the checkout itself is unaffected, but nobody was told the tariff may have changed`,
-      );
-      return false;
-    });
-
-  if (reading.kind === "implausible") {
-    await alert("implausible");
-    throw new TokopayImplausibleChargeError(
-      `TokoPay reported an implausible total for order ${args.order.orderCode} (order total ${total.toString()}), so no payment instructions were shown`,
+  const reading = readTokopayCharge(args.order.totalAmount, args.gateway.totalBayar);
+  if (reading.kind !== "ok") {
+    throw new TokopayChargeUnavailableError(
+      reading.kind === "missing"
+        ? `TokoPay created a transaction for order ${args.order.orderCode} without reporting the total the buyer must pay, so no payment instructions were shown — the payment could not have been verified against anything`
+        : `TokoPay reported an implausible total for order ${args.order.orderCode} (order total ${new Decimal(args.order.totalAmount).toString()}), so no payment instructions were shown — check the transaction in the TokoPay dashboard`,
     );
   }
   const committed = await commitGatewayResult(
@@ -925,31 +333,26 @@ export async function commitTokopayGateway(
     args.order.id,
     args.sentinel,
     { gateway: "tokopay", ...args.gateway },
-    reading.kind === "ok" ? reading.charge : null,
+    reading.charge,
   );
-  if (reading.kind === "missing") {
-    logger.warn(
-      `TokoPay created a transaction for order ${args.order.orderCode} without reporting the total the buyer must pay, so the order has no stored gateway charge — its payment will be checked against the built-in tariff estimate (${estimated.toString()}), which is only right while that table matches TokoPay's current tariff`,
-    );
-    return { committed, charge: estimated };
-  }
-  if (!reading.charge.equals(estimated)) await alert("drift");
   return { committed, charge: reading.charge };
 }
 ```
 
-- [ ] **Step 4: Run the tests and typecheck**
+- [ ] **Step 4: Run tests and typecheck**
 
 Run: `pnpm exec vitest run packages/db/src/crud/tokopay.test.ts`
-Expected: PASS (the whole file, to catch regressions in the settle tests).
+Expected: PASS (whole file).
 Run: `pnpm --filter @app/db typecheck`
 Expected: exits 0.
+
+Check how `apps/storefront` and `apps/order-bot` import `getTokopayCreds` (from `@app/db` or a subpath). If `packages/db` lists its exports by name in a barrel or in `package.json`, make `commitTokopayGateway` and `TokopayChargeUnavailableError` reachable the same way and include that file in the commit.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/db/src/crud/tokopay.ts packages/db/src/crud/tokopay.test.ts
-git commit -m "feat(db): commitTokopayGateway stores TokoPay's charge and flags tariff drift" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
+git commit -m "feat(db): commitTokopayGateway stores TokoPay's own total on the order" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 ```
 
 ---
@@ -957,209 +360,126 @@ git commit -m "feat(db): commitTokopayGateway stores TokoPay's charge and flags 
 ### Task 5: Matching and bookkeeping read the resolver (db package)
 
 **Files:**
-- Modify: `packages/db/src/crud/tokopay.ts` (`deliverPaidTokopayOrder`: lines 298, 342, 378, 403 and the comment at 313-338)
-- Modify: `packages/db/src/crud/overpayments.ts:110-142`
-- Modify: `packages/db/src/crud/orderStatus.ts:297-303`
-- Modify: `packages/db/src/crud/manualMatch.ts:130-139`, `:188-199`, `:281`
-- Modify: `packages/db/src/crud/wallet_topup.ts:1105-1110`
-- Test: `packages/db/src/crud/tokopay.test.ts`, `overpayments.test.ts`, `manualMatch.test.ts`, `wallet_topup_overpaid.test.ts`, `ledger.regression.test.ts`, `idrDiscountRounding.test.ts`, plus the test file covering `markOrderUnderpaid` and `creditUnderpaidTopupAnyway` (find with `grep -rln "markOrderUnderpaid\|creditUnderpaidTopupAnyway" packages/db/src/crud/*.test.ts`)
+- Modify: `packages/db/src/crud/tokopay.ts` (`deliverPaidTokopayOrder`: the lines using `qrisChargeAmount` / `computeQrisAdminFee` and the comments around them)
+- Modify: `packages/db/src/crud/overpayments.ts` (`findOverpaidExcess`)
+- Modify: `packages/db/src/crud/orderStatus.ts` (`markOrderUnderpaid`)
+- Modify: `packages/db/src/crud/manualMatch.ts` (`requiredAmount` and its two callers)
+- Modify: `packages/db/src/crud/wallet_topup.ts` (`creditUnderpaidTopupAnyway`)
+- Modify: `packages/db/src/crud/ledgerPostings.ts` (one comment naming the old formula)
+- Test: `packages/db/src/crud/tokopay.test.ts`, `overpayments.test.ts`, `manualMatch.test.ts`, `wallet_topup_overpaid.test.ts`, `ledger.regression.test.ts`, `idrDiscountRounding.test.ts`, and the test files covering `markOrderUnderpaid` and `creditUnderpaidTopupAnyway` (find with `grep -rln "markOrderUnderpaid\|creditUnderpaidTopupAnyway" packages/db/src/crud/*.test.ts`)
 
 **Interfaces:**
-- Consumes: `expectedTokopayCharge`, `estimatedTokopayCharge`, `estimateTokopayFee` (Task 1); `getTokopayChannel` (Task 2); `Order.gatewayChargeAmount` (Task 2).
-- Produces: no new exports. After this task no file under `packages/db/src` imports `computeQrisAdminFee` or `qrisChargeAmount`.
+- Consumes: `expectedTokopayCharge(order: { totalAmount; gatewayChargeAmount? }): Decimal` from `@app/core/payments/tokopayCharge`; `Order.gatewayChargeAmount`.
+- Produces: no new exports. After this task nothing under `packages/db/src` imports `computeQrisAdminFee` or `qrisChargeAmount`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add these cases (each uses its file's existing helpers; set the snapshot directly with `prisma.order.update({ where: { id }, data: { gatewayChargeAmount: new Decimal("50450") } })` on a TokoPay order whose `totalAmount` is 50000 — 50450 deliberately differs from the 50025 estimate):
+Each new case uses a TokoPay order with `totalAmount` 50000 and sets the snapshot directly: `await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } })`. Use each file's existing helpers and call shapes; every test must be written out in full.
 
-`packages/db/src/crud/tokopay.test.ts`:
+`tokopay.test.ts`:
+1. Paid 50025 with snapshot 50025 → result is `delivered` or `processing`; `processedTokopayTx.outcome === "matched"`; no `ADMIN_OVERPAID` outbox row.
+2. Paid 50100 with snapshot 50025 → `outcome === "overpaid"`; the `ADMIN_OVERPAID` payload has `expected: "50025"`, `excess: "75"`.
+3. Fee capture (copy the setup of the existing "fee capture (Financial Ledger M3)" test, about line 369): snapshot 50025, paid 50025 → `payment.fee.toString() === "25"`, `payment.netAmount.toString() === "50000"`.
+4. No snapshot, paid 50000 → `outcome === "matched"`, `payment.fee.toString() === "0"`.
+5. Wallet top-up order with snapshot 50025, paid 50100 → balance credited 50000, ledger `outcome === "overpaid"`.
 
-```ts
-describe("deliverPaidTokopayOrder — expected charge comes from the order's stored gateway charge", () => {
-  it("delivers without an overpaid flag when the payment equals a snapshot above the estimate", async () => {
-    const order = await createPendingTokopayOrder("50000");
-    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-    const r = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "TP-SNAP-1", amount: "50450" });
-    expect(r.status === "delivered" || r.status === "processing").toBe(true);
-    const ledger = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "TP-SNAP-1" } });
-    expect(ledger.outcome).toBe("matched");
-  });
+`overpayments.test.ts`: TokoPay order, snapshot 50025, ledger row `overpaid` with amount 50100 → `findOverpaidExcess` returns `expectedAmount "50025"`, `excess "75"`.
 
-  it("flags overpaid by the excess over the snapshot, not over the estimate", async () => {
-    const order = await createPendingTokopayOrder("50000");
-    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-    await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "TP-SNAP-2", amount: "50500" });
-    const ledger = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "TP-SNAP-2" } });
-    expect(ledger.outcome).toBe("overpaid");
-    const alert = await prisma.notificationOutbox.findFirstOrThrow({ where: { event: NotificationEvent.ADMIN_OVERPAID, orderId: order.id } });
-    expect(JSON.parse(alert.payloadJson)).toMatchObject({ expected: "50450", excess: "50" });
-  });
+`manualMatch.test.ts`: snapshot 50025; an unmatched TokoPay row of 50000 → rejects with key `error.manual_match_amount_short` and `required: "50025"`; a row of 50025 matches.
 
-  it("records Payment.fee as snapshot minus total", async () => {
-    // Mirror the existing "fee capture (Financial Ledger M3)" test's setup (a PENDING Payment row),
-    // then set gatewayChargeAmount to 50450 on a 50000 order before delivering 50450.
-    // Assert: payment.fee.toString() === "450" and payment.netAmount.toString() === "50000".
-  });
-
-  it("falls back to the tariff estimate when the order has no snapshot", async () => {
-    const order = await createPendingTokopayOrder("50000");
-    await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "TP-SNAP-4", amount: "50026" });
-    const ledger = await prisma.processedTokopayTx.findUniqueOrThrow({ where: { trxId: "TP-SNAP-4" } });
-    expect(ledger.outcome).toBe("overpaid"); // 50026 is Rp1 above the 50025 estimate
-  });
-});
-```
-Write the third test out in full using the existing M3 fee-capture test in the same file (about line 369) as the setup template; it must not stay a comment.
-
-`overpayments.test.ts` — add beside the existing TokoPay case (about line 168):
-
-```ts
-it("measures a TokoPay excess against the order's stored gateway charge", async () => {
-  // existing TokoPay overpaid setup, order total 50000, plus:
-  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-  // ledger row: outcome "overpaid", amount 50500
-  const found = await findOverpaidExcess(prisma, order.id);
-  expect(found!.expectedAmount.toString()).toBe("50450");
-  expect(found!.excess.toString()).toBe("50");
-});
-```
-
-`manualMatch.test.ts` — add:
-
-```ts
-it("requires the stored gateway charge, not the estimate, to match a TokoPay row", async () => {
-  // order total 50000 with gatewayChargeAmount 50450; unmatched ledger row of 50025
-  await expect(manualMatchLedgerTx(/* existing args shape */)).rejects.toMatchObject({ key: "error.manual_match_amount_short" });
-  // the same order with a row of 50450 matches
-});
-```
-Write it out with the file's existing arrange helpers and call shape.
-
-The `markOrderUnderpaid` test file — add:
+`markOrderUnderpaid` test file:
 
 ```ts
 it("accepts an expected amount equal to the order's stored gateway charge", async () => {
   const order = await createPendingTokopayOrder("50000");
-  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-  expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "50000", expectedAmount: "50450" })).toBe(true);
+  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+  expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "50000", expectedAmount: "50025" })).toBe(true);
 });
 
 it("refuses an expected amount that is neither the total nor the stored gateway charge", async () => {
   const order = await createPendingTokopayOrder("50000");
-  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-  expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "50000", expectedAmount: "50025" })).toBe(false);
+  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50025") } });
+  expect(await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: "50000", expectedAmount: "50450" })).toBe(false);
 });
 ```
 
-The `creditUnderpaidTopupAnyway` test file — add:
+`creditUnderpaidTopupAnyway` test file: UNDERPAID TokoPay wallet top-up, total 50000, snapshot 50025, recorded received 40025 → `credited.toString() === "40000"`.
 
-```ts
-it("deducts the fee implied by the stored gateway charge before crediting an underpaid TokoPay top-up", async () => {
-  // UNDERPAID wallet top-up, total 50000, gatewayChargeAmount 50450, received 40450
-  const r = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: admin.id });
-  expect(r.credited.toString()).toBe("40000"); // 40450 - 450
-});
-```
-
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [ ] **Step 2: Run to verify the new cases fail**
 
 Run: `pnpm exec vitest run packages/db/src/crud/tokopay.test.ts packages/db/src/crud/overpayments.test.ts packages/db/src/crud/manualMatch.test.ts <the two found test files>`
-Expected: the new cases FAIL (expected 50450, got 50025-based figures); existing cases still pass.
+Expected: new cases FAIL (figures derived from Rp100 + 0.7% instead of the snapshot).
 
 - [ ] **Step 3: `deliverPaidTokopayOrder`**
 
-In `packages/db/src/crud/tokopay.ts`, inside the `$transaction` callback, directly after the `pendingPayment` lookup (before `if (order.kind === OrderKind.WALLET_TOPUP)`), add:
+Inside the `$transaction` callback, directly after the `pendingPayment` lookup and before `if (order.kind === OrderKind.WALLET_TOPUP)`:
 
 ```ts
-        // What this buyer was asked to pay: TokoPay's own figure stored on the
-        // order when its transaction was created, or the tariff estimate for an
-        // order that has none (`expectedTokopayCharge`). The surcharge is the
-        // difference to the order total.
-        const expectedCharge = expectedTokopayCharge(order, await getTokopayChannel(tx));
+        // What this buyer was asked to pay: TokoPay's own figure, stored on the
+        // order when its transaction was created (`expectedTokopayCharge`). The
+        // buyer-side surcharge is the difference to the order total.
+        const expectedCharge = expectedTokopayCharge(order);
         const gatewayFee = expectedCharge.minus(order.totalAmount);
 ```
 
-Then:
-- line 298: `expected: qrisChargeAmount(order.totalAmount),` → `expected: expectedCharge,`
-- lines 342 and 378: `fee: computeQrisAdminFee(order.totalAmount),` → `fee: gatewayFee,`
-- line 403: delete `const expectedCharge = qrisChargeAmount(order.totalAmount);` (the outer one is now in scope).
+Then: `expected: qrisChargeAmount(order.totalAmount),` → `expected: expectedCharge,`; both `fee: computeQrisAdminFee(order.totalAmount),` → `fee: gatewayFee,`; delete the later `const expectedCharge = qrisChargeAmount(order.totalAmount);` in the product branch.
 
-Rewrite the comment block at lines 287-293 and 319-338 to match the new source. Replace the paragraph that begins "`fee` is `computeQrisAdminFee(order.totalAmount)`" through "Pinned by a test in crud/tokopay.test.ts." with:
+Rewrite the two comments that describe the old estimate:
+- The wallet top-up overpayment comment (the sentences from "TokoPay bills the QRIS surcharge on top of the total" to "a Rp1 rounding case is recognisable.") becomes:
 
 ```ts
-            // `fee` is the QRIS surcharge the buyer pays ON TOP of the order
-            // total — the order's stored gateway charge minus its total — so
-            // `netAmount` is the total itself, not `amount - fee`. The surcharge
-            // never becomes this shop's money; the total IS what the shop nets.
+          // TokoPay bills its surcharge on top of the total, so the comparison
+          // is against what TokoPay said this buyer must pay (`expectedCharge`
+          // above), exactly like the product branch. No tolerance is added.
+```
+- In the fee-capture comment, replace the paragraphs from "`fee` is `computeQrisAdminFee(order.totalAmount)`" through "Pinned by a test in crud/tokopay.test.ts." with:
+
+```ts
+            // `fee` is the surcharge the buyer pays ON TOP of the order total —
+            // the order's stored gateway charge minus its total — so
+            // `netAmount` is the total itself, not `amount - fee`. The
+            // surcharge never becomes this shop's money; the total IS what the
+            // shop nets.
             //
             // Captured as DATA only — no `FEE` ledger posting is made from it.
             // It is the BUYER-side surcharge, not a cut TokoPay reported having
             // deducted from the shop, and the `ORDER_PAYMENT` posting that
             // settling this order already made (crud/ledgerPostings.ts) books
             // `order.totalAmount` — the net receipt — so booking the surcharge
-            // separately would double-count. For an order without a stored
-            // gateway charge the figure is the tariff estimate. `payment_fee.idr`
-            // and `FinancialTransactionType.FEE` stay unused until a rail
-            // reports a real merchant fee. Pinned by a test in
-            // crud/tokopay.test.ts.
+            // separately would double-count. `payment_fee.idr` and
+            // `FinancialTransactionType.FEE` stay unused until a rail reports a
+            // real merchant fee. Pinned by a test in crud/tokopay.test.ts.
 ```
-
-and the wallet top-up overpayment comment (the sentence starting "`qrisChargeAmount` is our LOCAL estimate") with:
-
-```ts
-          // The comparison is against what TokoPay said this buyer must pay
-          // (`expectedCharge` above). No tolerance is added, to stay consistent
-          // with the product branch; the admin alert shows the excess.
-```
-
-Update the import block at the top: drop `computeQrisAdminFee, qrisChargeAmount,` and import `expectedTokopayCharge` from `@app/core/payments/tokopayFee` (merge with the Task 4 import).
+Update the imports: drop `computeQrisAdminFee, qrisChargeAmount`; import `expectedTokopayCharge` from `@app/core/payments/tokopayCharge`.
 
 - [ ] **Step 4: `overpayments.ts`**
 
-Add `gatewayChargeAmount: true` to the `select` at line 112. Before the `candidates` array add:
+Add `gatewayChargeAmount: true` to the order `select` in `findOverpaidExcess`, and change the TokoPay candidate to:
 
 ```ts
-  const tokopayChannel = tokopay ? await getTokopayChannel(db) : "QRIS";
+    { gateway: PaymentMethod.TOKOPAY, amount: tokopay?.amount ?? null, expected: q4(expectedTokopayCharge(order)) },
 ```
-
-and change the TokoPay candidate to:
-
-```ts
-    {
-      gateway: PaymentMethod.TOKOPAY,
-      amount: tokopay?.amount ?? null,
-      expected: q4(expectedTokopayCharge({ totalAmount: total, gatewayChargeAmount: order.gatewayChargeAmount }, tokopayChannel)),
-    },
-```
-
-In the doc comment above the array, replace "`qrisChargeAmount(total)` is what the buyer was asked for" with "`expectedTokopayCharge` (the order's stored gateway charge) is what the buyer was asked for". Swap the imports: remove `qrisChargeAmount`, add `expectedTokopayCharge` from `@app/core/payments/tokopayFee` and `getTokopayChannel` from `./_tokopayChannel`. Also update the comment at the top of the file (about line 32) that names the QRIS admin fee formula if it mentions `qrisChargeAmount`.
+In the comment above the array replace "`qrisChargeAmount(total)` is what the buyer was asked for" with "`expectedTokopayCharge(order)` — the gateway charge stored on the order — is what the buyer was asked for". Fix the file-header comment the same way if it names the old helper. Swap the import.
 
 - [ ] **Step 5: `orderStatus.ts`**
 
-Add `gatewayChargeAmount: true` to the `select` at line 297 and replace line 303 with:
+Add `gatewayChargeAmount: true` to the `select` in `markOrderUnderpaid`, and replace the guard line with:
 
 ```ts
-    if (
-      !expected.equals(order.totalAmount) &&
-      !(gateway === "TOKOPAY" && expected.equals(expectedTokopayCharge(order, await getTokopayChannel(tx))))
-    ) return false;
+    if (!expected.equals(order.totalAmount) && !(gateway === "TOKOPAY" && expected.equals(expectedTokopayCharge(order)))) return false;
 ```
-
-Swap the imports: remove `qrisChargeAmount`; add `expectedTokopayCharge` from `@app/core/payments/tokopayFee` and `getTokopayChannel` from `./_tokopayChannel` (NOT from `./tokopay` — that file imports this one).
+Swap the import.
 
 - [ ] **Step 6: `manualMatch.ts`**
-
-Replace `requiredAmount`:
 
 ```ts
 function requiredAmount(
   gateway: keyof typeof GATEWAY_METHODS,
   order: { totalAmount: Decimal.Value; gatewayChargeAmount?: Decimal.Value | null },
-  tokopayChannel: string,
 ): Decimal {
   switch (gateway) {
     case "tokopay":
-      return expectedTokopayCharge(order, tokopayChannel);
+      return expectedTokopayCharge(order);
     case "paydisini":
       return new Decimal(order.totalAmount);
     case "bybit":
@@ -1167,50 +487,34 @@ function requiredAmount(
   }
 }
 ```
-
-In its doc comment, change the TokoPay bullet to "TokoPay: what TokoPay said the buyer must pay (the order's stored gateway charge, or the tariff estimate when none was stored), as the callback checks".
-
-Callers:
-- In `assertNotUnderpaidShortPayment` (about line 188): add `gatewayChargeAmount: true` to the `select`, and change the comparison to `new Decimal(row.amount).lessThan(requiredAmount(gateway, suggested, gateway === "tokopay" ? await getTokopayChannel(db) : "QRIS"))`. Compute the channel once at the top of the function into a `const tokopayChannel` and use it.
-- About line 281: `const required = requiredAmount(gateway, order, gateway === "tokopay" ? await getTokopayChannel(db) : "QRIS");`
-
-Swap the imports as in Step 5 (`getTokopayChannel` from `./_tokopayChannel`).
+In its doc comment change the TokoPay bullet to "TokoPay: what TokoPay said the buyer must pay (the gateway charge stored on the order), as the callback checks". Callers: in `assertNotUnderpaidShortPayment` add `gatewayChargeAmount: true` to the `suggested` select and call `requiredAmount(gateway, suggested)`; in the main function call `requiredAmount(gateway, order)`. Swap the import.
 
 - [ ] **Step 7: `wallet_topup.ts`**
 
-Replace line 1108:
+In `creditUnderpaidTopupAnyway`:
 
 ```ts
       const fee =
         order.paymentMethod === PaymentMethod.TOKOPAY
-          ? expectedTokopayCharge(order, await getTokopayChannel(tx)).minus(order.totalAmount)
+          ? expectedTokopayCharge(order).minus(order.totalAmount)
           : ZERO;
 ```
+Swap the import. Update the doc comment near `flagWalletTopupOverpayment` (about line 924) and the one in `ledgerPostings.ts` (about line 816) if they name `computeQrisAdminFee` or "Rp100 + 0.70%": say "the fee implied by the gateway charge stored on the order".
 
-Swap the imports (`getTokopayChannel` from `./_tokopayChannel`; this file is imported by `./tokopay`). Update the doc comment near line 924 if it names `computeQrisAdminFee` or the Rp100 + 0.7% formula: say "the fee implied by the order's stored gateway charge".
+- [ ] **Step 8: Update existing tests in this package**
 
-- [ ] **Step 8: Update the existing tests in this package that used the old helpers**
-
-In `tokopay.test.ts`, `manualMatch.test.ts`, `overpayments.test.ts`, `wallet_topup_overpaid.test.ts`, `ledger.regression.test.ts`, `idrDiscountRounding.test.ts`:
-- `qrisChargeAmount(x)` → `estimatedTokopayCharge("QRIS", x)`
-- `computeQrisAdminFee(x)` → `estimateTokopayFee("QRIS", x)!`
-- import both from `@app/core/payments/tokopayFee`.
-- `tokopay.test.ts:298-300` re-derives `new Decimal(100).plus(total.times("0.007"))` inline: replace that expression with `estimateTokopayFee("QRIS", total)!`.
-
-These tests create orders without a snapshot, so the estimate is what the code under test uses too. Where a test hard-codes a rupiah figure derived from the old formula for a total below Rp100.000, recompute it with the Rp25 rule.
-
-Also update the one-line comment in `packages/db/src/crud/ledgerPostings.ts` (about line 816) that names the old formula or helper.
+The old helpers still exist in core until Task 8, but no test in this package should depend on them any more. In `tokopay.test.ts`, `manualMatch.test.ts`, `overpayments.test.ts`, `wallet_topup_overpaid.test.ts`, `ledger.regression.test.ts`, `idrDiscountRounding.test.ts`: wherever a test pays or expects `qrisChargeAmount(total)` / `computeQrisAdminFee(total)`, give the order an explicit snapshot instead (`gatewayChargeAmount = total + 25`, set with `prisma.order.update`, or through the file's order helper if it is simple to extend) and assert against that literal. A test that is about an order WITHOUT a snapshot pays and expects the bare total. Remove the old imports. `tokopay.test.ts` about line 298 re-derives `new Decimal(100).plus(total.times("0.007"))` inline: replace it with the explicit snapshot too.
 
 - [ ] **Step 9: Run the package's affected tests and typecheck**
 
 Run: `pnpm exec vitest run packages/db/src/crud/tokopay.test.ts packages/db/src/crud/overpayments.test.ts packages/db/src/crud/manualMatch.test.ts packages/db/src/crud/wallet_topup_overpaid.test.ts packages/db/src/crud/ledger.regression.test.ts packages/db/src/crud/idrDiscountRounding.test.ts <the two found test files>`
-Expected: PASS.
+Expected: PASS. Re-run a file alone if it fails only under load.
 Run: `grep -rn "qrisChargeAmount\|computeQrisAdminFee" packages/db/src`
 Expected: no output.
 Run: `pnpm --filter @app/db typecheck`
 Expected: exits 0.
 
-Report the before and after test counts of each touched test file in your summary.
+Report the before and after test counts of each touched test file.
 
 - [ ] **Step 10: Commit**
 
@@ -1221,163 +525,139 @@ git commit -m "fix(db): match TokoPay payments against the order's stored gatewa
 
 ---
 
-### Task 6: Storefront — preview, pay page, webhook
+### Task 6: Storefront — no fee figure before the QR, TokoPay's total on the pay page, webhook
 
 **Files:**
-- Modify: `apps/storefront/src/routes/checkout.ts` (imports about `:102-104`; `:293-300`; `:1094-1099`, `:1118-1125`; `:1329`)
-- Test: `apps/storefront/test/tokopay-webhook.test.ts`, `apps/storefront/test/spa-api.test.ts` or whichever storefront test covers the pay view and checkout totals (find with `grep -rln "qris_grand_total" apps/storefront/test`)
+- Modify: `apps/storefront/src/routes/checkout.ts` (`computeTotals` about `:293-315`; checkout view about `:478-479`; `payView` about `:1094-1125` and `:1251-1252`; webhook `:1329`; imports about `:102-104`)
+- Modify: `apps/storefront/client/src/api/types.ts:383-384`
+- Modify: `apps/storefront/client/src/components/shop/OrderSummaryCard.tsx:284-300`, `OrderSummaryCard.helpers.ts:18-32`
+- Modify: `apps/storefront/client/src/pages/CheckoutPage.tsx` (`:657`, `:704`, `:788`, `:804`), `apps/storefront/client/src/pages/InstantBuyPage.tsx:783`
+- Modify: `packages/core/locales/id.json`, `packages/core/locales/en.json` (`web.qris_admin_fee_note`, new `web.qris_admin_fee_at_payment`)
+- Test: `apps/storefront/test/tokopay-webhook.test.ts`, the storefront tests asserting `qris_admin_fee` / `qris_grand_total` (`grep -rln "qris_grand_total\|qris_admin_fee" apps/storefront/test`), `apps/storefront/client/src/components/shop/OrderSummaryCard.test.tsx`, `PaymentMethodSelector.test.tsx`, `pages/CheckoutPage.test.tsx`, `pages/InstantBuyPage.test.tsx`
+
+Read `.claude/skills/web-fastify-conventions/SKILL.md` and `.claude/skills/ui-development-dispatch/SKILL.md` before editing.
 
 **Interfaces:**
-- Consumes: `estimateTokopayFee`, `expectedTokopayCharge`, `estimatedTokopayCharge` (Task 1); `getTokopayChannel` (Task 2, exported from `@app/db` — check how `getTokopayCreds` is imported in this file and import `getTokopayChannel`, `commitTokopayGateway` the same way; add them to the `@app/db` barrel if exports are listed by name); `commitTokopayGateway` (Task 4).
-- Produces: no new exports. API field names (`qris_admin_fee`, `qris_grand_total`) and their string type do not change.
+- Consumes: `expectedTokopayCharge(order)` (Task 3); `commitTokopayGateway(db, { order, sentinel, gateway })` → `{ committed, charge }`, throws `TokopayChargeUnavailableError` (Task 4).
+- Produces:
+  - Checkout totals API (`computeTotals` result and the checkout / instant-buy JSON): the fields `qris_admin_fee` and `qris_grand_total` are REMOVED.
+  - Pay-page API `order.qris_admin_fee` / `order.qris_grand_total`: unchanged names; `string | null`; non-null only for a TokoPay order that has a stored gateway charge.
+  - Locale keys: `web.qris_admin_fee_note` = "+ biaya admin QRIS" (id) / "+ QRIS admin fee" (en); new `web.qris_admin_fee_at_payment` = "Ditambahkan di halaman pembayaran" (id) / "Added on the payment page" (en).
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing server tests**
 
-In `apps/storefront/test/tokopay-webhook.test.ts` (reuse `createPendingTokopayOrder` and the file's existing `checkTransaction` mock; totals of 50000):
+`apps/storefront/test/tokopay-webhook.test.ts` (reuse the file's order helper and its `checkTransaction` stub; order total 50000):
+
+1. Snapshot 50025, live `{ paid: true, amount: 50025 }` → response status `delivered` or `processing`; order is not UNDERPAID.
+2. Snapshot 50025, live amount 50000 → response `amount mismatch`; order `UNDERPAID`; `qrisUnderpaidTx.expectedAmount.toString() === "50025"`.
+3. Snapshot 50025, live amount 50100 → delivered and the ledger row `outcome === "overpaid"`.
+
+The storefront test that covers the pay view (mock `createTransaction` the way that file does):
+
+4. `createTransaction` resolves `totalBayar: "50025"` for a 50000 order → `body.order.qris_grand_total === "50025"`, `body.order.qris_admin_fee === "25"`, and the order row's `gatewayChargeAmount` is 50025.
+5. A second pay-view request reads the cache: `createTransaction` called once in total, `qris_grand_total` still `"50025"`.
+6. `createTransaction` resolves `totalBayar: null` → the gateway-error flag the existing "gateway failure" test asserts is set, no QR data is returned, `gatewayChargeAmount` is null and `paymentRef` is null (slot released).
+7. Same as 6 with `totalBayar: "49000"`.
+8. Checkout totals for a cart: the JSON has no `qris_admin_fee` and no `qris_grand_total` key.
+
+Write all eight out in full.
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `pnpm exec vitest run apps/storefront/test/tokopay-webhook.test.ts <the pay-view / checkout test files>`
+Expected: new cases FAIL.
+
+- [ ] **Step 3: Server — checkout totals**
+
+In `computeTotals` delete the "QRIS admin fee preview" comment, the `qrisAdminFee` / `qrisGrandTotal` constants and both properties from the returned object. In the checkout view (about `:478-479`) delete the `qris_admin_fee` and `qris_grand_total` lines. Typecheck will show any other reader of `totals.qrisAdminFee` / `totals.qrisGrandTotal` (the instant-buy view may be one): delete those lines too.
+
+- [ ] **Step 4: Server — pay page**
+
+Replace the comment and the two constants at about `:1094-1099` with:
 
 ```ts
-it("delivers when the live amount equals the stored gateway charge even though the tariff estimate differs", async () => {
-  const order = await createPendingTokopayOrder("ORD-SNAP-OK", "50000");
-  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-  mockLiveStatus({ paid: true, amount: "50450" }); // the file's existing way of stubbing checkTransaction
-  const res = await postSignedCallback("ORD-SNAP-OK"); // the file's existing helper
-  expect(res.json().status === "delivered" || res.json().status === "processing").toBe(true);
-  expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).not.toBe("UNDERPAID");
-});
-
-it("flags UNDERPAID when the live amount is below the stored gateway charge", async () => {
-  const order = await createPendingTokopayOrder("ORD-SNAP-SHORT", "50000");
-  await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: new Decimal("50450") } });
-  mockLiveStatus({ paid: true, amount: "50025" });
-  const res = await postSignedCallback("ORD-SNAP-SHORT");
-  expect(res.json().status).toBe("amount mismatch");
-  const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-  expect(row.status).toBe("UNDERPAID");
-  const underpaid = await prisma.qrisUnderpaidTx.findFirstOrThrow({ where: { orderId: order.id } });
-  expect(underpaid.expectedAmount.toString()).toBe("50450");
-});
-
-it("delivers a new-tariff payment (total + Rp25) on an order without a stored charge", async () => {
-  const order = await createPendingTokopayOrder("ORD-NEWTARIFF", "50000");
-  mockLiveStatus({ paid: true, amount: "50025" });
-  const res = await postSignedCallback("ORD-NEWTARIFF");
-  expect(res.json().status).not.toBe("amount mismatch");
-});
+  // What the buyer must pay on a TokoPay order is TokoPay's own figure, stored
+  // on the order when its transaction is created (commitTokopayGateway). There
+  // is no fee formula in this codebase: until that figure exists the page has
+  // no fee and no grand total to show.
+  let qrisGrandTotal: Decimal | null =
+    isQris && order.gatewayChargeAmount != null ? expectedTokopayCharge(order) : null;
 ```
 
-In the storefront test that covers the pay view (mock `createTransaction` the way that file already does):
+In the creation `try`, replace the `commitGatewayResult(...)` call and its `if (!committed)` with:
 
 ```ts
-it("shows TokoPay's own total on the pay page and stores it on the order", async () => {
-  // createTransaction resolves { trxId: "TP1", qrLink: "https://qr/x.png", qrString: null, payUrl: null, totalBayar: "50450" } for a 50000 TokoPay order
-  const body = await getPayView(order.orderCode); // the file's existing helper
-  expect(body.order.qris_grand_total).toBe("50450");
-  expect(body.order.qris_admin_fee).toBe("450");
-  expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).gatewayChargeAmount!.toString()).toBe("50450");
-});
-
-it("keeps showing the stored total on a refresh that reads the cached gateway result", async () => {
-  // call getPayView twice; createTransaction must have been called once; second body.order.qris_grand_total === "50450"
-});
-
-it("shows the contact fallback and stores nothing when TokoPay's total is implausible", async () => {
-  // createTransaction resolves totalBayar: "49000" for a 50000 order
-  // assert: the body's gateway error flag is set (same flag the existing "gateway failure" test asserts),
-  // order.gatewayChargeAmount is null, order.paymentRef is null (slot released)
-});
-
-it("previews the built-in estimate before any order exists", async () => {
-  // cart total 50000 -> totals.qris_admin_fee "25", qris_grand_total "50025"
-  // cart total 150000 -> qris_admin_fee "1150", qris_grand_total "151150"
-});
-```
-Write each of these out in full with that file's existing arrange/act helpers; none may stay a comment.
-
-- [ ] **Step 2: Run the new tests to verify they fail**
-
-Run: `pnpm exec vitest run apps/storefront/test/tokopay-webhook.test.ts <the pay-view test file>`
-Expected: the new cases FAIL.
-
-- [ ] **Step 3: Checkout preview (`computeTotals`, about line 293)**
-
-Replace the comment and the two lines:
-
-```ts
-  // QRIS admin fee preview so the checkout page can show it before the buyer
-  // has picked a payment method. No TokoPay transaction exists yet, so this is
-  // the built-in tariff ESTIMATE (@app/core/payments/tokopayFee) — the pay page
-  // shows TokoPay's own figure once the transaction is created. Based on
-  // `total` (net of bulk discount/voucher), which is the nominal sent to the
-  // gateway. An unknown channel code previews no fee.
-  const qrisAdminFee = estimateTokopayFee(await getTokopayChannel(prisma), total) ?? new Decimal(0);
-  const qrisGrandTotal = total.plus(qrisAdminFee);
-```
-
-- [ ] **Step 4: Pay page (`payView`)**
-
-Replace the comment at lines 1094-1097 and lines 1098-1099 with:
-
-```ts
-  // What the buyer must pay on a TokoPay order: TokoPay's own figure, stored on
-  // the order when its transaction was created (expectedTokopayCharge). Until
-  // that exists this is the tariff estimate; the creation branch below replaces
-  // it with the figure TokoPay just returned.
-  let qrisGrandTotal = isQris ? expectedTokopayCharge(order, await getTokopayChannel(prisma)) : null;
-```
-
-Inside the `try` at lines 1117-1125 replace the `commitGatewayResult` call and its `if (!committed)`:
-
-```ts
-            const result = await commitTokopayGateway(prisma, {
-              order,
-              channel: creds.channel,
-              sentinel: claimSentinel,
-              gateway,
-            });
+            const result = await commitTokopayGateway(prisma, { order, sentinel: claimSentinel, gateway });
             qrisGrandTotal = result.charge;
             if (!result.committed) {
               logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
             }
 ```
+and make `gateway = null;` the first statement of that `catch` block, so a transaction whose total was refused is never rendered.
 
-`commitTokopayGateway` throws `TokopayImplausibleChargeError` on an implausible total; the existing `catch` already releases the slot and sets `gatewayError = true`. In that `catch`, set `gateway = null;` as its first statement so a QR from the rejected response is never rendered.
-
-Directly after the closing brace of the `if (isQris && state === "waiting") { ... }` block add:
+Directly after the closing brace of the `if (isQris && state === "waiting") { … }` block add:
 
 ```ts
   const qrisAdminFee = qrisGrandTotal ? qrisGrandTotal.minus(order.totalAmount) : null;
 ```
 
-- [ ] **Step 5: Webhook (line 1329)**
+- [ ] **Step 5: Server — webhook and imports**
 
-```ts
-    const expectedCharge = expectedTokopayCharge(order, creds.channel);
+`:1329` → `const expectedCharge = expectedTokopayCharge(order);`
+
+Remove `computeQrisAdminFee` and `qrisChargeAmount` from the `@app/core/payments/tokopay` import; add `import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";`; import `commitTokopayGateway` where `getTokopayCreds` is imported. Keep `commitGatewayResult` (PayDisini and NOWPayments use it).
+
+- [ ] **Step 6: Locale**
+
+`packages/core/locales/id.json`: set `"web.qris_admin_fee_note": "+ biaya admin QRIS"` and add `"web.qris_admin_fee_at_payment": "Ditambahkan di halaman pembayaran"` directly after it.
+`packages/core/locales/en.json`: `"web.qris_admin_fee_note": "+ QRIS admin fee"` and `"web.qris_admin_fee_at_payment": "Added on the payment page"`.
+
+- [ ] **Step 7: Write the failing client tests**
+
+`OrderSummaryCard.test.tsx`: with `method="qris"`, the row labelled `web.qris_admin_fee` shows the text of `web.qris_admin_fee_at_payment` and no currency figure, and the order total shows `totals.total`. With another method the row is absent. Remove `qris_admin_fee` / `qris_grand_total` from the fixtures.
+`CheckoutPage.test.tsx`, `InstantBuyPage.test.tsx`: remove the two fields from fixtures; the pay button / purchase price for QRIS shows the plain total (update the assertions that expected the fee-inclusive `159206` / `20240` to the plain totals `158000` / `20000` — check the fixture's own `total`).
+`PaymentMethodSelector.test.tsx`: remove the two fields from fixtures.
+
+Run: `pnpm exec vitest run apps/storefront/client/src/components/shop/OrderSummaryCard.test.tsx apps/storefront/client/src/pages/CheckoutPage.test.tsx apps/storefront/client/src/pages/InstantBuyPage.test.tsx apps/storefront/client/src/components/shop/PaymentMethodSelector.test.tsx`
+Expected: the changed assertions FAIL.
+
+- [ ] **Step 8: Client**
+
+- `api/types.ts:383-384`: delete `qris_admin_fee: string;` and `qris_grand_total: string;` from the checkout data type (keep the nullable pair on the pay-page order type at `:525-526`).
+- `OrderSummaryCard.tsx`: the QRIS row becomes
+
+```tsx
+    {method === "qris" && (
+      <div className="flex justify-between gap-3 py-2">
+        <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
+        <span className="text-right text-ink-soft">{t("web.qris_admin_fee_at_payment")}</span>
+      </div>
+    )}
 ```
+and the total becomes `<Price value={totals.total} fx={fx} size="text-2xl" />`. Remove props/variables that are now unused (for example `priceAndPay` or `formatIdr` if nothing else in the file uses them).
+- `OrderSummaryCard.helpers.ts`: the payable is `totals.total` for every IDR method; narrow the `Pick` to `"total"` and update the doc comment (QRIS no longer has a fee-inclusive figure before payment).
+- `CheckoutPage.tsx:788` and `InstantBuyPage.tsx:783`: use `totals.total` unconditionally. Remove `qris_admin_fee: string; qris_grand_total: string;` from the inline `page` prop types at `CheckoutPage.tsx:657`, `:704`, `:804`.
 
-- [ ] **Step 6: Imports**
+Do not add suppressions or disable lint rules.
 
-Remove `computeQrisAdminFee` and `qrisChargeAmount` from the `@app/core/payments/tokopay` import. Add `import { estimateTokopayFee, expectedTokopayCharge } from "@app/core/payments/tokopayFee";` and import `getTokopayChannel`, `commitTokopayGateway` where `getTokopayCreds` is imported. Remove the `commitGatewayResult` import only if the PayDisini/NOWPayments branches no longer use it (they do — keep it).
+- [ ] **Step 9: Update remaining storefront server tests that used the old helpers**
 
-- [ ] **Step 7: Update existing tests that used the old helpers**
+In `apps/storefront/test/tokopay-webhook.test.ts`: tests that paid `qrisChargeAmount(total)` now set an explicit snapshot on the order (`gatewayChargeAmount = total + 25`) and pay that literal; remove the old imports; recompute the literals at about `:225` / `:229`. Fix any other storefront server test that asserted a server-computed checkout fee (`grep -n "qris_admin_fee\|qris_grand_total" apps/storefront/test/*.ts`).
 
-In `apps/storefront/test/tokopay-webhook.test.ts`: `qrisChargeAmount(x)` → `estimatedTokopayCharge("QRIS", x)`, `computeQrisAdminFee(x)` → `estimateTokopayFee("QRIS", x)!`, imported from `@app/core/payments/tokopayFee`. The literals at about `:225` and `:229` (`"70590"`, `"70800"`) come from the old formula on a 70000-ish total: recompute them with the Rp25 rule (for example total 70000 → fee 25 → 70025) and keep the test's intent.
+- [ ] **Step 10: Run tests, typecheck, lint, doctor**
 
-Check `apps/storefront/test/checkout-minimums.test.ts`, `spa-api.test.ts`, `pages-context-business.test.ts` and `wallet-topup-api.test.ts` for fee literals: `grep -n "qris_admin_fee\|qris_grand_total\|1206\|\"240\"" apps/storefront/test/*.ts` and fix any that assert a server-computed fee.
-
-- [ ] **Step 8: Run the tests and typecheck**
-
-Run: `pnpm exec vitest run apps/storefront/test/tokopay-webhook.test.ts <the pay-view test file> <any other storefront test file you changed>`
+Run: `pnpm exec vitest run apps/storefront/test/tokopay-webhook.test.ts <other storefront server tests you changed> apps/storefront/client/src/components/shop/OrderSummaryCard.test.tsx apps/storefront/client/src/pages/CheckoutPage.test.tsx apps/storefront/client/src/pages/InstantBuyPage.test.tsx apps/storefront/client/src/components/shop/PaymentMethodSelector.test.tsx packages/core/src/locales.test.ts`
 Expected: PASS.
-Run: `grep -n "qrisChargeAmount\|computeQrisAdminFee" apps/storefront/src -r`
+Run: `grep -rn "qrisChargeAmount\|computeQrisAdminFee" apps/storefront/src; grep -rn "qris_grand_total\|qris_admin_fee" apps/storefront/client/src --include=*.ts --include=*.tsx | grep -v "\.test\." | grep -v PayPage | grep -v "types.ts"`
 Expected: no output.
-Run: `pnpm --filter <storefront package name from apps/storefront/package.json> typecheck`
-Expected: exits 0.
+Run: typecheck for the storefront server package and the storefront client package (names from their `package.json`), the storefront lint script (see root `package.json` `lint`), and `pnpm doctor:changed`.
+Expected: all exit 0; doctor reports 0 errors and 0 warnings for the changed files. Paste the doctor summary into your report.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add apps/storefront/src/routes/checkout.ts <every storefront test file you changed, by name> <packages/db barrel file if you added exports>
-git commit -m "fix(storefront): pay page and webhook use TokoPay's own total" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
+git add apps/storefront/src/routes/checkout.ts apps/storefront/client/src/api/types.ts apps/storefront/client/src/components/shop/OrderSummaryCard.tsx apps/storefront/client/src/components/shop/OrderSummaryCard.helpers.ts apps/storefront/client/src/pages/CheckoutPage.tsx apps/storefront/client/src/pages/InstantBuyPage.tsx packages/core/locales/id.json packages/core/locales/en.json <every test file you changed, by name>
+git commit -m "fix(storefront): show TokoPay's own total; no fee estimate before the QR" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1386,73 +666,53 @@ git commit -m "fix(storefront): pay page and webhook use TokoPay's own total" -m
 
 **Files:**
 - Modify: `apps/order-bot/src/util/qrisCaption.ts`
-- Modify: `apps/order-bot/src/handlers/checkout.ts:2038-2041`, `:2063-2072`, `:2108-2111`
-- Modify: `apps/order-bot/src/handlers/walletTopup.ts:678-679`, `:687-693`, `:709-715`
+- Modify: `apps/order-bot/src/handlers/checkout.ts` (TokoPay branch, about `:2038-2111`)
+- Modify: `apps/order-bot/src/handlers/walletTopup.ts` (TokoPay branch, about `:678-715`)
 - Modify: `apps/order-bot/src/payments/tokopayReconcile.ts:184`
-- Test: `apps/order-bot/test/qris-caption.test.ts`, `tokopay-reconcile.test.ts`, `handlers.test.ts`, `wallet-topup.test.ts`, `display-currency.test.ts`, `game-topup-e2e.test.ts`, `payment-idempotency-matrix.test.ts`
+- Test: `apps/order-bot/test/qris-caption.test.ts`, `tokopay-reconcile.test.ts`, `handlers.test.ts`, `wallet-topup.test.ts`, `display-currency.test.ts`, `game-topup-e2e.test.ts`, `payment-idempotency-matrix.test.ts`, and every bot test that mocks `createTransaction` with a `totalBayar`
 
 Read `.claude/skills/bot-ux-grammy/SKILL.md` ("Message budget") before editing the handlers.
 
 **Interfaces:**
-- Consumes: `commitTokopayGateway`, `TokopayImplausibleChargeError` (Task 4); `expectedTokopayCharge`, `estimatedTokopayCharge`, `estimateTokopayFee` (Task 1).
-- Produces: `qrisCaptionAmounts(order: QrisCaptionOrder, lang: string | null | undefined, chargeAmount: Decimal.Value): QrisCaptionAmounts` — third argument is now required; `adminFee` in the result is `chargeAmount − total`.
+- Consumes: `commitTokopayGateway`, `TokopayChargeUnavailableError` (Task 4); `expectedTokopayCharge` (Task 3).
+- Produces: `qrisCaptionAmounts(order: QrisCaptionOrder, lang: string | null | undefined, chargeAmount: Decimal.Value): QrisCaptionAmounts` — third argument required; `adminFee` in the result is `chargeAmount − total` (never below zero).
 
 - [ ] **Step 1: Write the failing tests**
 
-`apps/order-bot/test/qris-caption.test.ts` — change every existing call to pass the charge as the third argument (`estimatedTokopayCharge("QRIS", order.totalAmount)`), and add:
+`qris-caption.test.ts` — pass the charge as the third argument in every existing call (order total + 25), and add:
 
 ```ts
 it("prints the charge it is given and derives the fee row from it", () => {
   const rows = qrisCaptionAmounts(
     { subtotalAmount: "50000", bulkDiscountAmount: "0", discountAmount: "0", walletUsed: "0", totalAmount: "50000" },
     "id",
-    "50450",
+    "50025",
   );
-  expect(rows.chargeAmount.toString()).toBe("50450");
-  expect(rows.adminFee.toString()).toBe("450");
-  expect(rows.fee).toBe(formatIdrFor(new Decimal("450"), "id"));
-  expect(rows.amount).toBe(formatIdrFor(new Decimal("50450"), "id"));
+  expect(rows.chargeAmount.toString()).toBe("50025");
+  expect(rows.adminFee.toString()).toBe("25");
+  expect(rows.fee).toBe(formatIdrFor(new Decimal("25"), "id"));
+  expect(rows.amount).toBe(formatIdrFor(new Decimal("50025"), "id"));
 });
 ```
 
-`apps/order-bot/test/tokopay-reconcile.test.ts` — add, beside the existing "delivers a pending TOKOPAY order the gateway reports paid" case (about line 121), using the same mocks:
+`tokopay-reconcile.test.ts` (same mocks as the existing "delivers a pending TOKOPAY order" case; order total 50000, snapshot 50025):
+1. `checkTransaction` → `{ paid: true, amount: 50025 }` → the order leaves PENDING_PAYMENT, is not UNDERPAID, no admin underpaid alert is sent.
+2. `checkTransaction` → `{ paid: true, amount: 50000 }` → order `UNDERPAID`; `qrisUnderpaidTx.expectedAmount.toString() === "50025"`.
 
-```ts
-it("delivers when TokoPay reports the stored gateway charge even though the tariff estimate differs", async () => {
-  // pending TokoPay order, total 50000, gatewayChargeAmount 50450; checkTransaction -> { paid: true, amount: 50450 }
-  // assert: order leaves PENDING_PAYMENT (delivered/processing), status is not UNDERPAID, no admin underpaid alert was sent
-});
+`handlers.test.ts` (existing TokoPay checkout test, about line 4304): make `createTransaction` return `totalBayar: "50025"` for a 50000 order and assert the caption contains `formatIdrFor(new Decimal("50025"), lang)` and `formatIdrFor(new Decimal("25"), lang)`, the order row's `gatewayChargeAmount` is 50025, and the exact Telegram call counts that test already pins are unchanged. Add a case with `totalBayar: null`: no photo is sent, the order ends CANCELLED with reason `gateway_create_failed`, and the buyer's bubble is edited once to `checkout.payment_unavailable` (assert exact `sendPhoto` / `sendMessage` / `editMessageText` counts with that file's spies).
 
-it("flags UNDERPAID against the stored gateway charge", async () => {
-  // same order; checkTransaction -> { paid: true, amount: 50025 }
-  // assert: order.status === "UNDERPAID"; qrisUnderpaidTx.expectedAmount === "50450"
-});
-```
+`wallet-topup.test.ts`: the same two cases for the IDR TokoPay top-up.
 
-`apps/order-bot/test/handlers.test.ts` — in the existing TokoPay checkout test (about line 4304) make the `createTransaction` mock return `totalBayar: "50450"` for a 50000 order and assert:
+Write every case out in full.
 
-```ts
-expect(caption).toContain(formatIdrFor(new Decimal("50450"), lang));       // the payable shown beside the QR
-expect(caption).toContain(formatIdrFor(new Decimal("450"), lang));         // the fee row
-expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).gatewayChargeAmount!.toString()).toBe("50450");
-// message budget unchanged — keep (or add) the exact counts this test already pins:
-expect(api.sendPhoto).toHaveBeenCalledTimes(1);
-expect(api.sendMessage).toHaveBeenCalledTimes(0);
-```
-and add a case where `totalBayar` is `"49000"`: no photo is sent, the order ends CANCELLED with reason `gateway_create_failed`, and the buyer's bubble is edited once to `checkout.payment_unavailable` (assert the exact `editMessageText`/`sendPhoto`/`sendMessage` counts using the same spies that test file already uses).
-
-`apps/order-bot/test/wallet-topup.test.ts` — same two cases for the IDR TokoPay top-up path.
-
-Write each of these out in full with the file's existing helpers; none may stay a comment.
-
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [ ] **Step 2: Run to verify they fail**
 
 Run: `pnpm exec vitest run apps/order-bot/test/qris-caption.test.ts apps/order-bot/test/tokopay-reconcile.test.ts apps/order-bot/test/handlers.test.ts apps/order-bot/test/wallet-topup.test.ts`
-Expected: the new cases FAIL.
+Expected: new cases FAIL.
 
 - [ ] **Step 3: `qrisCaption.ts`**
 
-Remove the `computeQrisAdminFee` import. Change the signature and the two lines that derive the fee:
+Remove the `computeQrisAdminFee` import; new signature and fee derivation:
 
 ```ts
 /**
@@ -1474,71 +734,49 @@ export function qrisCaptionAmounts(
   const charge = new Decimal(chargeAmount);
   const adminFee = Decimal.max(ZERO, charge.minus(total));
 ```
-
-and return `chargeAmount: charge` with `amount: formatIdrFor(charge, l)`. Update the header example row from `+Rp660` / `Rp80.660` to `+Rp25` / `Rp80.025`.
+Return `amount: formatIdrFor(charge, l)` and `chargeAmount: charge`. In the header example change `+Rp660` / `Rp80.660` to `+Rp25` / `Rp80.025`.
 
 - [ ] **Step 4: `handlers/checkout.ts`**
 
-Delete lines 2038-2041 (the comment and the `adminFee` / `chargeAmount` constants). Change `let gateway;` to:
+Delete the comment and the `adminFee` / `chargeAmount` constants above the claim (about `:2038-2041`). Change `let gateway;` to `let gateway;` plus `let chargeAmount: Decimal;`. In the `try`, replace the `commitGatewayResult(...)` call and its `if (!committed)` with:
 
 ```ts
-  let gateway;
-  let chargeAmount: Decimal;
-```
-
-Inside the `try`, replace the `commitGatewayResult` call and its `if (!committed)` with:
-
-```ts
-    // Stores TokoPay's own total on the order with the cached transaction, and
-    // hands back the figure to print beside the QR. Throws (caught below, which
-    // cancels the order shell) when that total is implausible.
-    const result = await commitTokopayGateway(prisma, { order, channel: creds.channel, sentinel: claimSentinel, gateway });
+    // Stores TokoPay's own total on the order together with the cached
+    // transaction (tagged `gateway: "tokopay"` for the storefront's cache
+    // reader) and hands back the figure to print beside the QR. Throws when
+    // TokoPay reported no usable total; the catch below then cancels the order
+    // shell exactly as for a failed transaction creation.
+    const result = await commitTokopayGateway(prisma, { order, sentinel: claimSentinel, gateway });
     chargeAmount = result.charge;
     if (!result.committed) {
       logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
     }
 ```
-
-Keep the comment about the `gateway: "tokopay"` tag only if it still reads true; `commitTokopayGateway` adds that tag itself, so shorten it to say so.
-
-Change line 2111 to `const rows = qrisCaptionAmounts(order, lang, chargeAmount);`. `payText` (line 2108) keeps using `chargeAmount`.
-
-If typecheck reports another use of the removed `adminFee` constant further down this function, replace it with `rows.adminFee`.
-
-Imports: remove `computeQrisAdminFee`; add `commitTokopayGateway` where `getTokopayCreds` / `commitGatewayResult` are imported (keep `commitGatewayResult`; the NOWPayments and PayDisini branches use it).
+Change the caption rows call to `qrisCaptionAmounts(order, lang, chargeAmount)`. `payText` keeps using `chargeAmount`. Replace any later use of the removed `adminFee` with `rows.adminFee`. Imports: remove `computeQrisAdminFee`; add `commitTokopayGateway` beside `getTokopayCreds`; keep `commitGatewayResult` (other rails use it).
 
 - [ ] **Step 5: `handlers/walletTopup.ts`**
 
-Same change: delete lines 678-679; `let gateway; let chargeAmount: Decimal;`; replace the `commitGatewayResult` call at line 690 and its warning with the `commitTokopayGateway` block from Step 4 (message text says "wallet top-up order"); line 709 becomes `const rows = qrisCaptionAmounts(order, ctx.session.lang, chargeAmount);`. Fix imports the same way.
+The same change in the TokoPay top-up function: delete the two constants at about `:678-679`; `let gateway; let chargeAmount: Decimal;`; replace the `commitGatewayResult` call at about `:690` and its warning with the `commitTokopayGateway` block (message says "wallet top-up order"); `qrisCaptionAmounts(order, ctx.session.lang, chargeAmount)`. Fix the imports the same way.
 
 - [ ] **Step 6: `payments/tokopayReconcile.ts`**
 
-Line 184:
+`:184` → `const expectedCharge = expectedTokopayCharge(order);` and replace the `qrisChargeAmount` import with `import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";`. If `PendingOrder` is a hand-written type, add `gatewayChargeAmount: Decimal | null`.
 
-```ts
-  const expectedCharge = expectedTokopayCharge(order, creds.channel);
-```
+- [ ] **Step 7: Update existing bot tests**
 
-Replace the `qrisChargeAmount` import with `import { expectedTokopayCharge } from "@app/core/payments/tokopayFee";`. `order` comes from `listPendingTokopayOrders`, which returns full rows, so `gatewayChargeAmount` is present; if `PendingOrder` is a hand-written type, add `gatewayChargeAmount: Decimal | null` to it.
+- Tests that used `qrisChargeAmount(x)` / `computeQrisAdminFee(x)` (`handlers.test.ts`, `display-currency.test.ts`, `game-topup-e2e.test.ts`, `payment-idempotency-matrix.test.ts`, `tokopay-reconcile.test.ts`, `qris-caption.test.ts`): give the order an explicit snapshot (`gatewayChargeAmount = total + 25`) or have the `createTransaction` mock return that figure as `totalBayar`, and assert against the literal. Remove the old imports.
+- Many bot tests mock `createTransaction` with a `totalBayar` below their order total (for example `"100"`) or null; that is now refused and no QR is sent. Find them with `grep -rn "totalBayar" apps/order-bot/test` and make each mock return `String(orderTotal + 25)` for its order. Files include `wallet-topup`, `tiered-pricing-bot`, `nickname-check`, `handlers`, `game-account-input`, `display-currency`, `customer-info`, `back-navigation`, `game-topup-e2e`.
 
-- [ ] **Step 7: Update existing bot tests that used the old helpers**
+- [ ] **Step 8: Run tests and typecheck**
 
-In `handlers.test.ts`, `display-currency.test.ts`, `game-topup-e2e.test.ts`, `payment-idempotency-matrix.test.ts`, `tokopay-reconcile.test.ts`, `qris-caption.test.ts`: `qrisChargeAmount(x)` → `estimatedTokopayCharge("QRIS", x)`, `computeQrisAdminFee(x)` → `estimateTokopayFee("QRIS", x)!`, imported from `@app/core/payments/tokopayFee`.
-
-Many bot tests mock `createTransaction` with a fixed `totalBayar` such as `"100"` that is BELOW their order total; with this change that is an implausible total and the checkout is refused. Find them with `grep -rn "totalBayar" apps/order-bot/test` and change each mock to return a plausible figure for its order — `totalBayar: null` when the test does not care about the fee, or `estimatedTokopayCharge("QRIS", total).toString()` when it asserts the payable. Affected files include `wallet-topup`, `tiered-pricing-bot`, `nickname-check`, `handlers`, `game-account-input`, `display-currency`, `customer-info`, `back-navigation` and `game-topup-e2e`.
-
-- [ ] **Step 8: Run the affected tests and typecheck**
-
-Run: `pnpm exec vitest run apps/order-bot/test/qris-caption.test.ts apps/order-bot/test/tokopay-reconcile.test.ts apps/order-bot/test/handlers.test.ts apps/order-bot/test/wallet-topup.test.ts apps/order-bot/test/display-currency.test.ts apps/order-bot/test/game-topup-e2e.test.ts apps/order-bot/test/payment-idempotency-matrix.test.ts <every other bot test file whose mock you changed>`
-Expected: PASS. If a file fails only under load (timeouts), re-run it alone before treating it as a regression.
-Run: `pnpm exec vitest run apps/order-bot/test/money-input-guard.test.ts apps/order-bot/test/keyboard-label-guard.test.ts`
-Expected: PASS.
+Run: `pnpm exec vitest run apps/order-bot/test/qris-caption.test.ts apps/order-bot/test/tokopay-reconcile.test.ts apps/order-bot/test/handlers.test.ts apps/order-bot/test/wallet-topup.test.ts apps/order-bot/test/display-currency.test.ts apps/order-bot/test/game-topup-e2e.test.ts apps/order-bot/test/payment-idempotency-matrix.test.ts <every other bot test file whose mock you changed> apps/order-bot/test/money-input-guard.test.ts apps/order-bot/test/keyboard-label-guard.test.ts`
+Expected: PASS. Re-run a file alone if it fails only under load.
 Run: `grep -rn "qrisChargeAmount\|computeQrisAdminFee" apps/order-bot/src`
 Expected: no output.
-Run: `pnpm --filter <order-bot package name from apps/order-bot/package.json> typecheck`
+Run: `pnpm --filter <order-bot package name> typecheck`
 Expected: exits 0.
 
-Report the before and after test counts of each touched test file in your summary.
+Report the before and after test counts of each touched test file.
 
 - [ ] **Step 9: Commit**
 
@@ -1549,59 +787,47 @@ git commit -m "fix(bot): QR caption and reconcile use TokoPay's own total" -m "C
 
 ---
 
-### Task 8: Remove the hard-coded formula, fix buyer copy and docs
+### Task 8: Remove the hard-coded formula, update docs
 
 **Files:**
-- Modify: `packages/core/src/payments/tokopay.ts:90-123` (delete), `packages/core/src/payments/tokopay.test.ts:95-121` (delete the formula tests)
-- Modify: `packages/core/locales/id.json:1091`, `packages/core/locales/en.json:1091`
-- Modify: `apps/web-admin/test/payments-mutations-idempotency.test.ts` (old helper uses)
-- Modify: `docs/arsitektur/FINANCE_ARCHITECTURE.md` (about lines 1061-1064 and 1192), `docs/arsitektur/PAYMENT_GATEWAY.md`, `docs/CHANGELOG.md`
-- Test: `packages/core/src/locales.test.ts` (existing, must stay green)
+- Modify: `packages/core/src/payments/tokopay.ts:90-123` (delete), `packages/core/src/payments/tokopay.test.ts` (delete the formula tests, about `:95-121`)
+- Modify: `apps/web-admin/test/payments-mutations-idempotency.test.ts`
+- Modify: `docs/arsitektur/FINANCE_ARCHITECTURE.md` (about `:1061-1064`, `:1192`), `docs/arsitektur/PAYMENT_GATEWAY.md`, `docs/CHANGELOG.md`, `docs/REACT_DOCTOR_PHASE_1_REPORT.md`
 
 **Interfaces:**
-- Consumes: everything above.
 - Produces: `computeQrisAdminFee`, `qrisChargeAmount`, `QRIS_ADMIN_FEE_FLAT`, `QRIS_ADMIN_FEE_PERCENT` no longer exist.
 
-- [ ] **Step 1: Confirm nothing in `src` still uses the old helpers**
+- [ ] **Step 1: Confirm no source file still uses the old helpers**
 
-Run: `grep -rn "qrisChargeAmount\|computeQrisAdminFee\|QRIS_ADMIN_FEE_" apps packages --include=*.ts --include=*.tsx --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=static`
-Expected: matches only in `packages/core/src/payments/tokopay.ts`, `packages/core/src/payments/tokopay.test.ts`, `apps/web-admin/test/payments-mutations-idempotency.test.ts`, and comments. Any other source file is a missed caller: migrate it to `expectedTokopayCharge` / `estimatedTokopayCharge` as in Tasks 5-7 before continuing.
+Run: `grep -rn "qrisChargeAmount\|computeQrisAdminFee\|QRIS_ADMIN_FEE_" apps packages tests --include=*.ts --include=*.tsx --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=static`
+Expected: matches only in `packages/core/src/payments/tokopay.ts`, `packages/core/src/payments/tokopay.test.ts`, `apps/web-admin/test/payments-mutations-idempotency.test.ts`, and comments. Any other source file is a missed caller: switch it to `expectedTokopayCharge(order)` before continuing, and say so in your report.
 
-- [ ] **Step 2: Delete the old helpers**
+- [ ] **Step 2: Delete**
 
-In `packages/core/src/payments/tokopay.ts` delete lines 90-123 (the "QRIS admin-fee constants" comment, both constants, `computeQrisAdminFee`, `qrisChargeAmount`). Remove the `Decimal` import only if nothing else in the file uses it (`createTransaction` does — keep it). In the comment inside `checkTransaction` that says the bare order total "is BELOW the fee-inclusive charge callers compare against", leave the wording; it is still true.
+In `packages/core/src/payments/tokopay.ts` delete the "QRIS admin-fee constants" comment, both constants, `computeQrisAdminFee` and `qrisChargeAmount` (lines 90-123). Keep the `Decimal` import (`createTransaction` uses it). In `tokopay.test.ts` delete the describe block(s) for those helpers and their imports. In `apps/web-admin/test/payments-mutations-idempotency.test.ts` replace each `qrisChargeAmount(total)` with an explicit snapshot on the order (`gatewayChargeAmount = total + 25`) and that literal; remove the import. Fix comments elsewhere that still name the deleted helpers.
 
-In `packages/core/src/payments/tokopay.test.ts` delete the `describe` block(s) for `computeQrisAdminFee` / `qrisChargeAmount` (about lines 95-121) and their imports. `tokopayFee.test.ts` covers the replacement.
+- [ ] **Step 3: Docs**
 
-In `apps/web-admin/test/payments-mutations-idempotency.test.ts`: `qrisChargeAmount(x)` → `estimatedTokopayCharge("QRIS", x)`, imported from `@app/core/payments/tokopayFee`.
+- `docs/arsitektur/FINANCE_ARCHITECTURE.md`: replace the description of `computeQrisAdminFee` (Rp100 + 0.70%) with: the buyer-side QRIS surcharge is `Order.gatewayChargeAmount − Order.totalAmount`, where `gatewayChargeAmount` is TokoPay's `total_bayar` stored when the transaction is created; `expectedTokopayCharge` (`packages/core/src/payments/tokopayCharge.ts`) is the one resolver; there is no fee formula in code.
+- `docs/arsitektur/PAYMENT_GATEWAY.md`: in the TokoPay section add an "Admin fee" paragraph with the same facts, plus: TokoPay has no tariff API (checked 2026-11-11); before the QR exists the buyer sees only a note that a fee is added; a transaction without a usable `total_bayar` shows no QR.
+- `docs/CHANGELOG.md`: under the newest heading: "TokoPay QRIS: payments are matched against the total TokoPay reports per order; the hard-coded Rp100 + 0.7% is gone and the checkout no longer shows a fee estimate. Deploy: apply the two `order_gateway_charge_amount` migrations and restart order-bot before the new code runs; release server and storefront client together."
+- `docs/REACT_DOCTOR_PHASE_1_REPORT.md`: add a dated entry for this change with the results of the three doctor runs in Step 4.
 
-- [ ] **Step 3: Buyer copy**
+- [ ] **Step 4: Checks**
 
-`packages/core/locales/id.json`: `"web.qris_admin_fee_note": "+ biaya admin QRIS",`
-`packages/core/locales/en.json`: `"web.qris_admin_fee_note": "+ QRIS admin fee",`
-
-Run: `grep -rn "0,7%\|0\.7%\|Rp100 &" apps/storefront/client/src apps/web-admin/client/src packages/core/locales`
-Expected: no output. If a client test asserts the old note text, update the expected string; if client SOURCE has to change, say so in your summary (it triggers the React Doctor gate).
-
-- [ ] **Step 4: Docs**
-
-- `docs/arsitektur/FINANCE_ARCHITECTURE.md` (about 1061-1064 and 1192): replace the description of `computeQrisAdminFee` (Rp100 + 0.70%) with: the buyer-side QRIS surcharge is `Order.gatewayChargeAmount − Order.totalAmount`, where `gatewayChargeAmount` is TokoPay's `total_bayar` stored when the transaction is created; `expectedTokopayCharge` (`packages/core/src/payments/tokopayFee.ts`) is the one resolver; the built-in tariff table there is an estimate used only before a transaction exists or when TokoPay reported no total.
-- `docs/arsitektur/PAYMENT_GATEWAY.md`: in the TokoPay section add a short "Admin fee" paragraph with the same facts, plus: TokoPay has no tariff API (checked 2026-11-11), admins get one `ADMIN_TOKOPAY_FEE_DRIFT` DM per 24 hours when TokoPay's total differs from the estimate, and an implausible total shows no QR.
-- `docs/CHANGELOG.md`: add an entry under the newest heading: "TokoPay QRIS: payments are matched against the total TokoPay reports per order instead of a hard-coded Rp100 + 0.7%; QRIS below Rp100.000 is estimated at Rp25. Deploy: apply the two `order_gateway_charge_amount` migrations and restart order-bot before the new code runs."
-
-- [ ] **Step 5: Run the checks**
-
-Run: `pnpm exec vitest run packages/core/src/payments/tokopay.test.ts packages/core/src/payments/tokopayFee.test.ts packages/core/src/locales.test.ts apps/web-admin/test/payments-mutations-idempotency.test.ts`
+Run: `pnpm exec vitest run packages/core/src/payments/tokopay.test.ts packages/core/src/payments/tokopayCharge.test.ts apps/web-admin/test/payments-mutations-idempotency.test.ts`
 Expected: PASS.
 Run: `pnpm typecheck`
-Expected: exits 0 (this is the first point where every caller must be migrated).
+Expected: exits 0.
+Run: `pnpm doctor:changed`, `pnpm doctor:bugs`, `pnpm doctor:full`
+Expected: 0 errors and 0 warnings across both clients. Fix any finding at its cause (no suppressions) and re-run until clean; record the final figures in the report file above.
 Run: `pnpm test:changed`
-Expected: PASS. The locale JSON change makes this run the whole suite; if a file fails only in the full run, re-run that file alone before calling it a regression.
+Expected: PASS (the locale change from Task 6 makes this run the whole suite; re-run a file alone if it fails only in the full run).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add packages/core/src/payments/tokopay.ts packages/core/src/payments/tokopay.test.ts packages/core/locales/id.json packages/core/locales/en.json apps/web-admin/test/payments-mutations-idempotency.test.ts docs/arsitektur/FINANCE_ARCHITECTURE.md docs/arsitektur/PAYMENT_GATEWAY.md docs/CHANGELOG.md <any other file you changed, by name>
+git add packages/core/src/payments/tokopay.ts packages/core/src/payments/tokopay.test.ts apps/web-admin/test/payments-mutations-idempotency.test.ts docs/arsitektur/FINANCE_ARCHITECTURE.md docs/arsitektur/PAYMENT_GATEWAY.md docs/CHANGELOG.md docs/REACT_DOCTOR_PHASE_1_REPORT.md <any other file you changed, by name>
 git commit -m "refactor: remove the hard-coded TokoPay fee formula" -m "Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 ```
 
@@ -1611,12 +837,11 @@ git commit -m "refactor: remove the hard-coded TokoPay fee formula" -m "Co-Autho
 
 1. `git fetch` and rebase onto latest `master` (the branch is not pushed).
 2. `pnpm typecheck && pnpm test` — full, once.
-3. Only if client React source changed: `pnpm doctor:changed`, `pnpm doctor:bugs`, `pnpm doctor:full` at 0 errors and 0 warnings; record in `docs/REACT_DOCTOR_PHASE_1_REPORT.md`.
-4. Verify the backfill SQL by hand on the worktree database: insert one TOKOPAY/IDR order with `total_amount = 50000` and a null `gateway_charge_amount`, run the backfill statement, expect `50450`; run it again, expect no change.
-5. Whole-branch review on Opus (money-critical).
+3. Verify the backfill SQL by hand on the worktree database: one TOKOPAY/IDR order with `total_amount = 50000` and a null `gateway_charge_amount`; run the backfill statement, expect `50450`; run it again, expect no change.
+4. Whole-branch review on Opus (money-critical).
 
 ## Deploy notes
 
 1. Apply both migrations and restart order-bot before the new code runs.
 2. Release the server and the storefront client together.
-3. Re-enable TokoPay. Nothing has to be configured in Settings.
+3. Re-enable TokoPay. Nothing has to be configured.

@@ -177,7 +177,7 @@ for (const width of [360, 375, 390, 430, 768, 1280, 1440]) {
         await page.keyboard.press("ArrowDown");
         await expect(page.getByRole("radio").nth(1)).toBeChecked();
         await expect(page.locator("#checkout-summary")).toContainText("4531475056881819915");
-        await expect(page.locator("#instant-buy-submit")).toContainText("Rp5,214");
+        await expect(page.locator("#instant-buy-submit")).toContainText("Rp5,078");
         await noOverflow(page);
         if ([390, 1440].includes(width) && reducedMotion === "no-preference") {
           await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));

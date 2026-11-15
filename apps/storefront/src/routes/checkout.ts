@@ -64,6 +64,7 @@ import {
   getSetting,
   getTokopayCreds,
   commitTokopayGateway,
+  TokopayChargeUnavailableError,
   resolveBybitConfig,
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
@@ -1115,7 +1116,14 @@ export async function payView(order: OrderRow) {
           } catch (err) {
             gateway = null;
             await releaseGatewaySlot(prisma, order.id, claimSentinel);
-            logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+            if (err instanceof TokopayChargeUnavailableError) {
+              logger.error(
+                { err },
+                `TokoPay created a transaction for order ${order.orderCode} but reported no usable total for the buyer to pay, so no QR code is shown and the buyer sees the contact fallback instead. The gateway slot was released, so a later visit to the pay page can create the transaction again.`,
+              );
+            } else {
+              logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+            }
             gatewayError = true;
           }
         } else {

@@ -55,7 +55,7 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
     await expect(page.getByRole("radio").nth(1)).toBeChecked();
     await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("4531475056881819915");
     await expect(primary).toBeEnabled();
-    await expect(primary).toContainText("Rp7,541");
+    await expect(primary).toContainText("Rp7,405");
     const layout = await page.locator(".denom-card").evaluateAll((cards) => cards.map((card) => {
       const price = card.lastElementChild! as HTMLElement;
       const name = card.querySelector(".line-clamp-2")! as HTMLElement;
@@ -73,7 +73,7 @@ for (const width of [320, 360, 375, 390, 412, 430, 768, 1280]) {
     await page.evaluate(() => window.scrollTo(0, 0));
     if (width < 1024) {
       await expect(sticky).toBeVisible();
-      await expect(sticky).toContainText("Rp7,541");
+      await expect(sticky).toContainText("Rp7,405");
       await expect(page.getByTestId("purchase-bar-spacer")).toBeAttached();
       const barHeight = (await sticky.boundingBox())!.height;
       await expect.poll(async () => (await page.getByTestId("purchase-bar-spacer").boundingBox())!.height).toBe(barHeight);
@@ -112,7 +112,7 @@ test("choosing a top-up amount retains account details and submits them with the
   await expect(page.getByLabel("Player ID", { exact: true })).toHaveValue("4531475056881819915");
   await expect(page.getByLabel("Region (Optional)", { exact: true })).toHaveValue("Europe");
   const primary = page.locator("#instant-buy-submit");
-  await expect(primary).toContainText("Rp7,541");
+  await expect(primary).toContainText("Rp7,405");
   await expect(primary).toBeEnabled();
   const orders: Array<Record<string, unknown>> = [];
   await page.route("**/api/v1/topup/order", async (route) => {

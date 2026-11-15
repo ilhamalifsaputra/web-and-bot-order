@@ -27,7 +27,6 @@ import {
 } from "@app/db";
 import { logger } from "@app/core/logger";
 import { PaymentMethod } from "@app/core/enums";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { routeOrderToDigiflazz } from "../../../tests/helpers/digiflazzRouting";
 
 // The instant Digiflazz dispatch is observed, not run: the manual-match test
@@ -515,12 +514,12 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
 
   async function makePendingTokopayOrder() {
     const order = (await createOrderDirect(prisma, { channel: "web", user: sample.user, productId: sample.product.id, quantity: 1 }))!;
-    return prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.TOKOPAY, currency: "IDR" } });
+    return prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.TOKOPAY, currency: "IDR", gatewayChargeAmount: order.totalAmount.plus(25) } });
   }
 
   it("matches an unmatched TokoPay row named by gateway, settles the order and audits the gateway by name", async () => {
     const order = await makePendingTokopayOrder();
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-1", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-1", amount: order.gatewayChargeAmount! });
 
     const res = await matchWith({ binance_tx_id: "tp-route-1", order_code: order.orderCode, gateway: "tokopay" });
     expect(res.statusCode).toBe(200);
@@ -539,7 +538,7 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
 
   it("still answers success when the match committed but its audit row could not be written, and logs an error saying so", async () => {
     const order = await makePendingTokopayOrder();
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-audit-fail", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-audit-fail", amount: order.gatewayChargeAmount! });
     vi.mocked(logAdminAction).mockRejectedValueOnce(new Error("audit table unavailable"));
     const errorSpy = vi.spyOn(logger, "error");
     try {
@@ -557,7 +556,7 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
 
   it("puts the storefront order link in the buyer's delivery DM of a QRIS match", async () => {
     const order = await makePendingTokopayOrder();
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-link", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-link", amount: order.gatewayChargeAmount! });
     const cfg = config as { SHOP_PUBLIC_URL?: string | null };
     const saved = cfg.SHOP_PUBLIC_URL;
     cfg.SHOP_PUBLIC_URL = "https://shop.example/";
@@ -573,7 +572,7 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
 
   it("resolves a TokoPay reference without a gateway (the server looks it up across the ledgers)", async () => {
     const order = await makePendingTokopayOrder();
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-nogw", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-nogw", amount: order.gatewayChargeAmount! });
 
     const res = await matchWith({ binance_tx_id: "tp-route-nogw", order_code: order.orderCode });
     expect(res.statusCode).toBe(200);
@@ -584,7 +583,10 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
     const order = await prisma.$transaction((tx) =>
       createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
     );
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-topup", amount: qrisChargeAmount(order.totalAmount) });
+    // TokoPay's own fee-inclusive total for the top-up: the stored snapshot plus Rp25.
+    const charge = order.totalAmount.plus(25);
+    await prisma.order.update({ where: { id: order.id }, data: { gatewayChargeAmount: charge } });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-topup", amount: charge });
 
     const res = await matchWith({ binance_tx_id: "tp-route-topup", order_code: order.orderCode, gateway: "tokopay" });
     expect(res.statusCode).toBe(200);
@@ -610,7 +612,7 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
 
   it("rejects an unknown gateway with 400 before touching any ledger row", async () => {
     const order = await makePendingTokopayOrder();
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-badgw", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-badgw", amount: order.gatewayChargeAmount! });
 
     const res = await matchWith({ binance_tx_id: "tp-route-badgw", order_code: order.orderCode, gateway: "paypal" });
     expect(res.statusCode).toBe(400);
@@ -635,7 +637,7 @@ describe("POST /api/payments/match and /dismiss — every gateway", () => {
 
   it("replays a gateway match for the same key and body, and 409s when only the gateway differs", async () => {
     const order = await makePendingTokopayOrder();
-    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-idem", amount: qrisChargeAmount(order.totalAmount) });
+    await recordUnmatchedTokopayTx(prisma, { trxId: "tp-route-idem", amount: order.gatewayChargeAmount! });
     const key = "match-gateway-key";
     const body = { binance_tx_id: "tp-route-idem", order_code: order.orderCode, gateway: "tokopay" };
 

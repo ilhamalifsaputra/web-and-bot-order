@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyCallback, checkTransaction, createTransaction, computeQrisAdminFee, qrisChargeAmount, RateLimitedError } from "./tokopay";
+import { verifyCallback, checkTransaction, createTransaction, RateLimitedError } from "./tokopay";
 
 const CREDS = { merchantId: "MERCH", secret: "s3cr3t" };
 const FULL_CREDS = { merchantId: "MERCH", secret: "s3cr3t", channel: "QRIS" };
@@ -89,35 +89,6 @@ describe("verifyCallback", () => {
     const result = verifyCallback(body, CREDS);
     expect(result).not.toBeNull();
     expect(result?.paid).toBe(false);
-  });
-});
-
-describe("computeQrisAdminFee", () => {
-  it("is Rp100 flat on a zero amount", () => {
-    expect(computeQrisAdminFee(0).toFixed(0)).toBe("100");
-  });
-
-  it("adds 0.70% of the amount on top of the flat fee", () => {
-    expect(computeQrisAdminFee(10000).toFixed(0)).toBe("170"); // 100 + 70
-  });
-
-  it("rounds a .5 fraction half-up to the nearest Rupiah", () => {
-    // 500 * 0.007 = 3.5 -> 100 + 3.5 = 103.5 -> 104
-    expect(computeQrisAdminFee(500).toFixed(0)).toBe("104");
-  });
-});
-
-describe("qrisChargeAmount", () => {
-  it("adds the fee computed on totalAmount itself to the order total (H-1 fix)", () => {
-    // totalAmount=1000 -> fee = 100 + 0.007*1000 = 107
-    expect(qrisChargeAmount(1000).toFixed(0)).toBe("1107");
-  });
-
-  it("bases the fee on the discounted total, not a separate pre-discount subtotal", () => {
-    // A discounted order: gateway only ever sees totalAmount as `nominal`, so
-    // the fee it actually adds is 0.7% of totalAmount, never the gross subtotal.
-    // totalAmount=500 -> fee = 100 + 0.007*500 = 103.5 -> 104 (half-up)
-    expect(qrisChargeAmount(500).toFixed(0)).toBe("604");
   });
 });
 

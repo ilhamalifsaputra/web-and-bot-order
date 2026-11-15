@@ -142,6 +142,11 @@ tag git yang sungguhan sampai dokumen ini ditulis.
   `ab1411a` (2026-07-06).
 
 ### Changed
+- **TokoPay QRIS: pembayaran dicocokkan dengan total yang dilaporkan TokoPay
+  per pesanan** (`Order.gatewayChargeAmount`); rumus tetap Rp100 + 0,7% dihapus
+  dan checkout tidak lagi menampilkan perkiraan biaya. Deploy: terapkan kedua
+  migrasi `order_gateway_charge_amount` dan restart order-bot sebelum kode baru
+  berjalan; rilis server dan klien storefront bersamaan.
 - **Jendela bayar bawaan per rail dipersingkat: TokoPay QRIS / PayDisini 10,
   Binance Pay 10, Bybit UID 10, Bybit BSC 30, NOWPayments 30 menit** (sebelumnya
   30/15/30/15/30 untuk `PAYMENT_WINDOW_MINUTES`, `INTERNAL_PAYMENT_WINDOW_MINUTES`,

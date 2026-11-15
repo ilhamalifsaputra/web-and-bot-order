@@ -94,6 +94,23 @@ tidak bergantung pada serialisasi transaksi.
   `ProcessedTokopayTx` (UNIQUE `trxId`) — lihat doc comment `verifyCallback`
   di `tokopay.ts`.
 
+- **Biaya admin:** biaya admin TokoPay dibebankan ke pembeli di atas total
+  pesanan. Surcharge-nya adalah `Order.gatewayChargeAmount − Order.totalAmount`;
+  `gatewayChargeAmount` adalah `total_bayar` dari TokoPay sendiri, disimpan saat
+  transaksi dibuat. `expectedTokopayCharge`
+  (`packages/core/src/payments/tokopayCharge.ts`) adalah satu-satunya resolver;
+  tidak ada rumus biaya di kode. TokoPay tidak punya API tarif (dicek
+  2026-11-11). Sebelum QR terbit, pembeli hanya melihat catatan bahwa biaya
+  ditambahkan, tanpa angka. Transaksi tanpa `total_bayar` yang bisa dipakai tidak
+  menampilkan QR (storefront: kontak admin; bot: pesanan dibatalkan).
+  `checkTransaction` membaca jumlah bayar hanya dari field TokoPay yang sudah
+  termasuk biaya (`total_bayar`, `jumlah_bayar`, `total_dibayar`); status lunas
+  tanpa field itu diparkir sebagai "unverified" (tidak ada pengiriman, admin
+  diberi tahu), bukan UNDERPAID. Pesanan yang QR-nya dibuat sebelum rilis ini
+  tidak punya charge tersimpan: dicocokkan dengan total polos dan selisih biaya
+  ditandai sebagai overpayment untuk ditinjau admin (migrasi backfill menutup baris
+  lama; TokoPay harus mati selama deploy).
+
 ## PayDisini (QRIS/e-wallet, IDR)
 
 - **Buat transaksi:** `GET {API_BASE}/v1/transaction` dengan

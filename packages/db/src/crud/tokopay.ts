@@ -13,6 +13,7 @@ import {
   TOKOPAY_MERCHANT_KEY,
   TOKOPAY_SECRET_KEY,
   TOKOPAY_ENABLED_KEY,
+  TOKOPAY_CHANNEL_KEY,
   computeQrisAdminFee,
   qrisChargeAmount,
   type TokopayCreds,
@@ -29,7 +30,6 @@ import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount, TOKOPAY_MIN_AMOUNT_KEY } from "./_minAmount";
-import { getTokopayChannel } from "./_tokopayChannel";
 import { settleWalletTopup, isLateSettleableWalletTopup, flagWalletTopupOverpayment, preservePaidWalletCreditFailure } from "./wallet_topup";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
@@ -41,7 +41,6 @@ import { ValidationError } from "@app/core/errors";
 // orderMinimums.ts can read all six rails' keys without importing this
 // file — see that module's own comment for the import cycle that avoids.
 export { TOKOPAY_MIN_AMOUNT_KEY } from "./_minAmount";
-export { getTokopayChannel } from "./_tokopayChannel";
 
 /** Read TokoPay gateway credentials from Settings; null = the IDR/QRIS path is off. */
 export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmount: Decimal | null }) | null> {
@@ -49,7 +48,7 @@ export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmou
     getSetting(db, TOKOPAY_MERCHANT_KEY),
     getDecryptedSetting(db, TOKOPAY_SECRET_KEY),
     getSetting(db, TOKOPAY_ENABLED_KEY),
-    getTokopayChannel(db),
+    getSetting(db, TOKOPAY_CHANNEL_KEY),
     getSetting(db, TOKOPAY_MIN_AMOUNT_KEY),
   ]);
   if (!merchantId || !secret) return null;
@@ -57,7 +56,7 @@ export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmou
   return {
     merchantId,
     secret,
-    channel,
+    channel: (channel ?? "QRIS").trim() || "QRIS",
     minAmount: parseMinAmount(minAmountSetting),
   };
 }

@@ -23,7 +23,6 @@ import {
   deliverPaidTokopayOrder,
   recordUnmatchedTokopayTx,
   getTokopayCreds,
-  getTokopayChannel,
   listPendingTokopayOrders,
   setSetting,
   deleteSetting,
@@ -858,20 +857,6 @@ describe("getTokopayCreds — minAmount", () => {
     expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
     await setSetting(prisma, "tokopay_min_amount", "-1");
     expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
-  });
-});
-
-describe("getTokopayChannel", () => {
-  it("defaults to QRIS when the setting is absent or blank", async () => {
-    await deleteSetting(prisma, "tokopay_default_channel");
-    expect(await getTokopayChannel(prisma)).toBe("QRIS");
-    await setSetting(prisma, "tokopay_default_channel", "   ");
-    expect(await getTokopayChannel(prisma)).toBe("QRIS");
-  });
-
-  it("returns the trimmed configured channel", async () => {
-    await setSetting(prisma, "tokopay_default_channel", " QRISREALTIME ");
-    expect(await getTokopayChannel(prisma)).toBe("QRISREALTIME");
   });
 });
 

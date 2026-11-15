@@ -38,6 +38,7 @@ import {
   usdtFromIdr,
 } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
+import { expectedTokopayCharge } from "@app/core/payments/tokopayCharge";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { resolveTieredPrice, tiersFromLegacyRule } from "@app/core/bulk";
 import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
@@ -108,6 +109,7 @@ import {
 import { logAdminAction } from "./audit";
 import { ensureFulfillmentMessage, wakeFulfillmentMessage, reserveTransactionMessage, transactionMessageCancelNotice } from "./fulfillmentMessages";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
+import { findUnderpaidReceived } from "./_underpaid";
 import { enqueueNotificationSafely } from "./notificationIsolation";
 
 /**
@@ -2261,6 +2263,9 @@ export type CreditOrderToBalanceResult = {
   wasAlreadyCancelled: boolean;
   /** Gateway ledger rows this credit re-tagged `credited_to_balance`. */
   evidenceRowsConsumed: number;
+  /** The order was an ADMIN_OVERRIDE (delivered on a short payment) and the
+   *  credit was cut down to the amount the buyer actually sent. */
+  limitedToReceived: boolean;
 };
 
 export async function creditOrderToBalance(
@@ -2404,7 +2409,22 @@ async function creditOrderToBalanceLocked(
   }
 
   const currency: "IDR" | "USDT" = order.currency === "USDT" ? "USDT" : "IDR";
-  const amount = q4(Decimal.max(ZERO, new Decimal(args.amount ?? order.totalAmount)));
+  let amount = q4(Decimal.max(ZERO, new Decimal(args.amount ?? order.totalAmount)));
+
+  // An ADMIN_OVERRIDE order was fulfilled on a SHORT payment ("Deliver anyway"
+  // on an UNDERPAID order; its payment facts stay UNDERPAID). Crediting its
+  // total would hand the buyer back more than they ever sent, so the credit is
+  // capped at what provably arrived. The `walletUsed` the order consumed is not
+  // part of this figure: `releaseOrderHolds` below returns it separately,
+  // unchanged.
+  let limitedToReceived = false;
+  if (order.completionMode === "ADMIN_OVERRIDE") {
+    const cap = await overrideCreditCap(db, order, args.binanceTxId ?? null);
+    if (amount.greaterThan(cap)) {
+      amount = cap;
+      limitedToReceived = true;
+    }
+  }
 
   // One timestamp for both money events this function records (the credit and
   // the hold release), so the two postings share the occurredAt of the single
@@ -2443,7 +2463,9 @@ async function creditOrderToBalanceLocked(
   await db.order.update({
     where: { id: order.id },
     data: {
-      adminNote: `${order.adminNote ?? ""}\n[credit_to_balance] ${amount.toString()} ${currency} by admin_id=${args.adminId}`,
+      adminNote:
+        `${order.adminNote ?? ""}\n[credit_to_balance] ${amount.toString()} ${currency} by admin_id=${args.adminId}` +
+        (limitedToReceived ? " (override order: limited to the amount received)" : ""),
     },
   });
   if (!wasAlreadyCancelled) {
@@ -2459,9 +2481,46 @@ async function creditOrderToBalanceLocked(
   await wakeFulfillmentMessage(db, order.id, now, { correctFinishedOutcome: true });
 
   logger.info(
-    `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance — approved by admin ${args.adminId}`,
+    `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance — approved by admin ${args.adminId}` +
+      (limitedToReceived
+        ? ". The order was delivered on an admin override of a short payment, so the credit was limited to the amount the buyer actually sent."
+        : ""),
   );
-  return { credited: amount, currency, wasAlreadyCancelled, evidenceRowsConsumed };
+  return { credited: amount, currency, wasAlreadyCancelled, evidenceRowsConsumed, limitedToReceived };
+}
+
+/**
+ * The most an ADMIN_OVERRIDE order may be credited: the amount its rail
+ * recorded as arriving (`findUnderpaidReceived`; nothing recorded counts as
+ * zero), never above the order total.
+ *
+ * TokoPay's recorded figure is fee-inclusive: the buyer pays TokoPay's admin
+ * fee on top of the order total and that fee is TokoPay's, not the shop's, so
+ * it is deducted first — the same deduction `creditUnderpaidTopupAnyway`
+ * (./wallet_topup) makes. PayDisini compares the received principal against the
+ * bare total, and the Binance/Bybit/NOWPayments figures are in the order's own
+ * currency with no buyer-side fee, so nothing is deducted for them.
+ *
+ * A Binance transfer passed as evidence (`binanceTxId`, already consumed and
+ * linked to this order by the caller) is a separate payment that provably
+ * arrived as well, so its amount is added on top.
+ */
+async function overrideCreditCap(
+  db: Db,
+  order: { id: number; totalAmount: Decimal.Value; gatewayChargeAmount: Decimal.Value | null; paymentMethod: string | null },
+  binanceTxId: string | null,
+): Promise<Decimal> {
+  let received = (await findUnderpaidReceived(db, order.id)) ?? ZERO;
+  if (order.paymentMethod === PaymentMethod.TOKOPAY) {
+    const fee = Decimal.max(ZERO, expectedTokopayCharge(order).minus(order.totalAmount));
+    received = received.minus(fee);
+  }
+  let cap = Decimal.max(ZERO, Decimal.min(received, order.totalAmount));
+  if (binanceTxId) {
+    const transfer = await db.processedBinanceTx.findUnique({ where: { binanceTxId }, select: { amount: true } });
+    if (transfer?.amount != null) cap = cap.plus(Decimal.max(ZERO, new Decimal(transfer.amount)));
+  }
+  return q4(cap);
 }
 
 export async function rejectOrder(

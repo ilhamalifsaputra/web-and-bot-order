@@ -142,6 +142,18 @@ tag git yang sungguhan sampai dokumen ini ditulis.
   `ab1411a` (2026-07-06).
 
 ### Changed
+- **Override order UNDERPAID di halaman Payments berbeda untuk Game Top Up dan
+  Premium Apps.** "Deliver anyway" pada order UNDERPAID yang dirutekan ke
+  Digiflazz sekarang meneruskan order ke Digiflazz (saldo supplier langsung
+  terpakai), bukan memarkirnya untuk dipenuhi manual; status pembayaran tetap
+  UNDERPAID dan override tercatat di audit. Kredit ke saldo untuk order
+  override dibatasi sebesar yang benar-benar dibayar pembeli (dikurangi biaya
+  admin TokoPay); ditolak bila tidak ada pembayaran tercatat, dan order
+  dibiarkan utuh. Dialog override berbeda untuk Game Top Up (produk, target
+  pemain, total) dan Premium Apps (akun/paket). Order yang sudah terparkir oleh
+  perilaku lama tidak dikirim ulang otomatis; penuhi manual atau kredit.
+  Deploy: server admin dan klien admin dirilis bersamaan; tidak ada perubahan
+  skema.
 - **TokoPay QRIS: pembayaran dicocokkan dengan total yang dilaporkan TokoPay
   per pesanan** (`Order.gatewayChargeAmount`); rumus tetap Rp100 + 0,7% dihapus
   dan checkout tidak lagi menampilkan perkiraan biaya. Deploy: entrypoint

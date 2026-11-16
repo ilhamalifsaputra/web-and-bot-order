@@ -28,6 +28,7 @@ import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
+import { fulfillmentProviderFor, type FulfillmentProvider } from "@app/core/orderFulfillment";
 import type { Prisma, ProcessedBinanceTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { ServiceChannel } from "@app/core/services";
@@ -935,13 +936,25 @@ export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null;
 
 /**
  * Resolve UNDERPAID by delivering anyway (operator eats the shortfall).
- * Records an audited override, then uses the normal stock/manual fulfillment
- * route. Provider payment facts stay UNDERPAID even once delivery completes.
+ * Records an audited override, then uses the normal stock / manual / supplier
+ * fulfilment route: a stock order is delivered now, a manual order is queued
+ * for hand-fulfilment, and a Digiflazz-routed order is left PROCESSING as a
+ * dispatch candidate. Provider payment facts stay UNDERPAID even once delivery
+ * completes.
+ *
+ * The caller must call `triggerDigiflazzDispatch(order.id)` after this resolves
+ * with kind "processing" (outside any transaction); the recovery cron is only
+ * the backstop. `dispatchTriggerGuard.test.ts` enforces that.
  */
 export async function deliverUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number; reason: string },
-): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
+): Promise<{
+  order: NonNullable<Awaited<ReturnType<typeof getOrder>>>;
+  credentials: string[];
+  kind: SettleResult["kind"];
+  provider: FulfillmentProvider;
+}> {
   const reason = args.reason.trim();
   if (!reason) throw new ValidationError("error.override_reason_required");
   return db.$transaction(async (tx: Tx) => {
@@ -950,6 +963,9 @@ export async function deliverUnderpaidOrder(
     if (order.status !== OrderStatus.UNDERPAID) {
       throw new ValidationError("error.order_not_underpaid");
     }
+    // Same resolution settlePaidOrder uses (stored column, else the SKU), read
+    // before settling so the audit sentence and the caller know which route ran.
+    const provider = fulfillmentProviderFor(order);
     await tx.order.update({
       where: { id: args.orderId },
       data: { paymentState: "UNDERPAID", completionMode: "ADMIN_OVERRIDE", completionReason: reason },
@@ -974,14 +990,20 @@ export async function deliverUnderpaidOrder(
         language: result.order.user.language,
       });
     }
+    const outcome = result.kind === "delivered"
+      ? "delivered"
+      : provider === "DIGIFLAZZ" ? "forwarded to Digiflazz" : "queued for manual fulfilment";
     await logAdminAction(tx, {
       adminId: args.adminId, action: "underpaid_deliver", targetType: "order", targetId: args.orderId,
-      details: `Admin override for underpaid order ${order.orderCode}: ${reason}. Payment remains UNDERPAID; fulfillment ${result.kind}.`,
+      details: `Admin override for underpaid order ${order.orderCode}: ${reason}. Payment remains UNDERPAID; fulfillment ${outcome}.`,
     });
-    const delivered = (await getOrder(tx, args.orderId))!;
+    const settled = (await getOrder(tx, args.orderId))!;
     const credentials = result.credentials;
-    logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin ${args.adminId} — operator absorbed the shortfall`);
-    return { order: delivered, credentials };
+    logger.info(
+      `Admin ${args.adminId} overrode underpaid order ${settled.orderCode}; fulfillment ${outcome}. ` +
+        `The shop absorbs the shortfall and the payment stays recorded as UNDERPAID.`,
+    );
+    return { order: settled, credentials, kind: result.kind, provider };
   });
 }
 

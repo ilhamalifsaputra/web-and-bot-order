@@ -13,6 +13,7 @@ export * from "./crud/stockEvents";
 export * from "./crud/cart";
 export * from "./crud/vouchers";
 export * from "./crud/orders";
+export * from "./crud/underpaidOverride";
 export * from "./crud/orderStatus";
 export * from "./crud/referrals";
 export * from "./crud/reviews";

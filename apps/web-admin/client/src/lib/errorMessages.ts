@@ -75,6 +75,8 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This cancelled order has already been refunded, so its payment can't also be credited to balance. Refresh the page to see the current state.",
   "error.order_never_paid":
     "This cancelled order was never paid, so there's nothing to credit to the buyer's balance. Refresh the page to see the current state.",
+  "error.override_credit_nothing_received":
+    "No payment is recorded for this override order, so there is nothing to credit. Check its payment transaction first.",
   "error.transfer_already_used":
     "This transfer has already been matched, credited, or dismissed, or belongs to another order, so it can't be credited here. Refresh the page to see the current state.",
   // `{paymentCurrency}`/`{orderCurrency}` from crud/payments.ts and

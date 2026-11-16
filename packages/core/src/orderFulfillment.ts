@@ -132,6 +132,18 @@ export function progressForPhase(phase: CustomerProgressPhase): number | null {
 }
 
 /**
+ * The product family an order belongs to: the category group of its items (`GAME_TOPUP`
+ * or `PREMIUM_APPS`), or `WALLET_TOPUP` for a wallet top-up. A legacy order whose category has no
+ * group counts as a game top-up only when Digiflazz fulfils it. The one rule shared by the buyer's
+ * progress message and the admin's underpaid-override screen.
+ */
+export function orderTransactionFamily(order: FulfillmentOrder): "WALLET_TOPUP" | "GAME_TOPUP" | "PREMIUM_APPS" {
+  if (order.kind === "WALLET_TOPUP") return "WALLET_TOPUP";
+  const group = order.items.map(i => i.product.product?.category?.group).find(Boolean);
+  return group === "GAME_TOPUP" || (!group && fulfillmentProviderFor(order) === "DIGIFLAZZ") ? "GAME_TOPUP" : "PREMIUM_APPS";
+}
+
+/**
  * Pure projection of durable order state onto the buyer's progress message.
  * The order status decides first, so a payment that is only detected is never
  * rendered as paid even when `paidAt` is already stamped. Manual queues and
@@ -147,8 +159,7 @@ export function progressForPhase(phase: CustomerProgressPhase): number | null {
  */
 export function customerProgressPhase(order: FulfillmentOrder, opts: { messageSent?: boolean; credited?: boolean; credentialsDelivered?: boolean } = {}): CustomerProgress {
   const provider = fulfillmentProviderFor(order);
-  const group = order.items.map(i => i.product.product?.category?.group).find(Boolean);
-  const transactionType = order.kind === "WALLET_TOPUP" ? "WALLET_TOPUP" : group === "GAME_TOPUP" || (!group && provider === "DIGIFLAZZ") ? "GAME_TOPUP" : "PREMIUM_APPS";
+  const transactionType = orderTransactionFamily(order);
   const topUp = transactionType === "GAME_TOPUP";
   const status = order.status.toUpperCase();
   const prefix = transactionType === "WALLET_TOPUP" ? "wallet" : topUp ? "game" : "premium";

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { parsePositiveId, parsePageParam } from "../../lib/params";
 import { normalizeIdempotencyKey } from "../../lib/idempotencyKey";
-import { OrderStatus, OrderKind, StockActorType } from "@app/core/enums";
+import { OrderKind, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { errorBody } from "@app/core/errorBody";
 import type { Decimal } from "@app/core/money";
@@ -27,6 +27,7 @@ import {
   getProcessedBinanceTx,
   creditOrderToBalance,
   listOrders,
+  listUnderpaidOrdersForAdmin,
   listPendingInternalOrders,
   getOrderByCode,
   cancelOrder,
@@ -148,7 +149,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       countLedgerRowsToday(prisma),
       ledgerOutcomeCountsForView(prisma, actionable),
       getBinancePollHealth(prisma),
-      listOrders(prisma, { status: OrderStatus.UNDERPAID, limit: 50 }),
+      listUnderpaidOrdersForAdmin(prisma, { limit: 50 }),
       // The list above is capped at 50; the badge needs the real total, the
       // same `countUnderpaid` the dashboard shows.
       countUnderpaid(prisma),
@@ -172,8 +173,21 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       processedAtDisplay: displayDateTime(r.createdAt),
     }));
     const isReadonly = req.admin!.role === "readonly";
-    const underpaidWithDisplay = underpaid.map((o) =>
-      isReadonly ? readonlyUnderpaidOrder(o) : { ...o, createdAtDisplay: displayDateTime(o.createdAt) },
+    // The override fields (family, provider, product, target) are for admins who can act on the row; a
+    // wallet top-up has none (its only action is crediting the balance).
+    const underpaidWithDisplay = underpaid.map(({ override, ...o }) =>
+      isReadonly
+        ? readonlyUnderpaidOrder(o)
+        : {
+            ...o,
+            createdAtDisplay: displayDateTime(o.createdAt),
+            ...(override && {
+              overrideFamily: override.family,
+              overrideProvider: override.provider,
+              overrideProductName: override.productName,
+              overrideTarget: override.target,
+            }),
+          },
     );
     const pendingInternalWithDisplay = pendingInternal.map((o) =>
       isReadonly ? readonlyPendingInternalOrder(o) : { ...o, expiresAtDisplay: displayDateTime(o.expiresAt) },
@@ -251,17 +265,28 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(statusCode).send(body);
     };
 
+    let result: Awaited<ReturnType<typeof deliverUnderpaidOrder>>;
     try {
-      await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId, reason });
+      result = await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId, reason });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
-    // Committed: deliver the queued buyer DM (credentials file or "being
-    // prepared" note) now instead of on the dispatcher's next poll.
+    // Committed. A Digiflazz-routed override is now a dispatch candidate:
+    // place the supplier request right away instead of waiting for the
+    // recovery cron (the trigger ignores non-Digiflazz orders and never throws).
+    if (result.kind === "processing") triggerDigiflazzDispatch(result.order.id);
+    // Deliver the queued buyer DM (credentials file or "being prepared" note)
+    // now instead of on the dispatcher's next poll.
     nudgeOutboxDispatcher();
-    logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
-    return respond(200, { ok: true });
+    const outcome = result.kind === "delivered"
+      ? "delivered"
+      : result.provider === "DIGIFLAZZ" ? "forwarded_to_supplier" : "queued_manual";
+    logger.info(
+      `Admin ${req.admin!.userId} overrode underpaid order ${result.order.orderCode} via the web panel; ` +
+        `the outcome is ${outcome.replace(/_/g, " ")} and the payment stays recorded as UNDERPAID.`,
+    );
+    return respond(200, { ok: true, outcome });
   });
 
   app.post("/api/payments/order/:orderId/refund", { preHandler: csrfProtect }, async (req, reply) => {
@@ -670,18 +695,22 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         // consumed atomically — by creditOrderToBalance itself.
         const ledger = await getProcessedBinanceTx(tx, binanceTxId);
         if (!ledger) throw new NotFoundError("Transfer not found.");
-        const { credited, currency } = await creditOrderToBalance(tx, {
+        const { credited, currency, limitedToReceived, orderTotal } = await creditOrderToBalance(tx, {
           orderId: target.id,
           amount: ledger.amount ?? undefined,
           adminId: req.admin!.userId,
           binanceTxId,
         });
+        let details = `Credited transfer ${binanceTxId} (${credited.toString()} ${currency}) to order ${target.orderCode}'s buyer balance.`;
+        if (limitedToReceived) {
+          details += ` The credit was limited to the amount the buyer actually paid on this underpaid order (order total ${orderTotal.toString()} ${currency}).`;
+        }
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "tx_credit_balance",
           targetType: "order",
           targetId: target.id,
-          details: `Credited transfer ${binanceTxId} (${credited.toString()} ${currency}) to order ${target.orderCode}'s buyer balance.`,
+          details,
         });
       });
       logger.info(`Admin ${req.admin!.userId} credited Binance transfer ${binanceTxId} to order ${orderCode}'s buyer balance via the web panel`);

@@ -695,3 +695,201 @@ describe("creditOrderToBalance on an already-CANCELLED order", () => {
     }, 60_000);
   });
 });
+
+// An admin "Deliver anyway" on an UNDERPAID order marks it ADMIN_OVERRIDE with
+// payment facts still UNDERPAID. If its fulfilment later fails and the admin
+// credits it to balance, the buyer must never get back more than they sent.
+describe("creditOrderToBalance — ADMIN_OVERRIDE orders are capped at the amount received", () => {
+  /** A PROCESSING order whose fulfilment failed after an admin override (or, with
+   *  `completionMode: null`, an ordinary paid PROCESSING order) of `total` IDR. */
+  async function processingOrder(opts: {
+    total: string;
+    completionMode?: "ADMIN_OVERRIDE" | null;
+    paymentMethod?: string;
+    gatewayChargeAmount?: string | null;
+    walletUsed?: string;
+    currency?: "IDR" | "USDT";
+  }) {
+    const { user, product } = sample;
+    const created = (await createOrderDirect(prisma, {
+      channel: "bot",
+      user: { id: user.id, role: user.role },
+      productId: product.id,
+      quantity: 1,
+    }))!;
+    const override = opts.completionMode !== null;
+    await prisma.order.update({
+      where: { id: created.id },
+      data: {
+        status: "PROCESSING",
+        paidAt: new Date(),
+        totalAmount: new Decimal(opts.total),
+        currency: opts.currency ?? "IDR",
+        paymentMethod: opts.paymentMethod ?? PaymentMethod.PAYDISINI,
+        gatewayChargeAmount: opts.gatewayChargeAmount == null ? null : new Decimal(opts.gatewayChargeAmount),
+        walletUsed: new Decimal(opts.walletUsed ?? "0"),
+        ...(override
+          ? { paymentState: "UNDERPAID", completionMode: "ADMIN_OVERRIDE", completionReason: "buyer short by a little" }
+          : { paymentState: "PAID" }),
+      },
+    });
+    return (await getOrder(prisma, created.id))!;
+  }
+
+  /** The row `markOrderUnderpaid` writes for a QRIS short payment. */
+  async function recordQrisShortPayment(orderId: number, gateway: string, received: string, expected: string) {
+    await prisma.qrisUnderpaidTx.create({
+      data: { orderId, gateway, receivedAmount: new Decimal(received), expectedAmount: new Decimal(expected) },
+    });
+  }
+
+  const creditRow = (orderId: number) =>
+    prisma.walletTransaction.findFirst({ where: { orderId, reason: "unfulfilled_credit" } });
+
+  it("credits only the 40000 received on a 50000 override order and says the credit was limited", async () => {
+    const order = await processingOrder({ total: "50000" });
+    await recordQrisShortPayment(order.id, "PayDisini", "40000", "50000");
+    const before = await balances(sample.user.id);
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    expect(res.credited.toString()).toBe("40000");
+    expect(res.limitedToReceived).toBe(true);
+    const row = await creditRow(order.id);
+    expect(new Decimal(row!.delta).toString()).toBe("40000");
+    const after = await balances(sample.user.id);
+    expect(new Decimal(after.walletBalance).minus(before.walletBalance).toString()).toBe("40000");
+    const saved = (await getOrder(prisma, order.id))!;
+    expect(saved.status).toBe("CANCELLED");
+    expect(saved.adminNote).toContain("limited to the amount received");
+  });
+
+  it("TokoPay: deducts the gateway's buyer-side fee from the received amount (50025 charge, 40025 received → 40000)", async () => {
+    const order = await processingOrder({ total: "50000", paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: "50025" });
+    await recordQrisShortPayment(order.id, "TokoPay", "40025", "50025");
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    expect(res.credited.toString()).toBe("40000");
+    expect(res.limitedToReceived).toBe(true);
+    expect(new Decimal((await creditRow(order.id))!.delta).toString()).toBe("40000");
+  });
+
+  /** Everything a refused credit must leave exactly as it was. */
+  async function snapshot(orderId: number) {
+    const o = (await getOrder(prisma, orderId))!;
+    return {
+      status: o.status,
+      adminNote: o.adminNote,
+      walletUsed: new Decimal(o.walletUsed).toString(),
+      balance: new Decimal((await balances(sample.user.id)).walletBalance).toString(),
+      walletTxCount: await prisma.walletTransaction.count({ where: { userId: sample.user.id } }),
+    };
+  }
+
+  async function expectRefusedUntouched(orderId: number) {
+    const before = await snapshot(orderId);
+    const err = await creditOrderToBalance(prisma, { orderId, adminId }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).key).toBe("error.override_credit_nothing_received");
+    expect(await creditRow(orderId)).toBeNull();
+    expect(await snapshot(orderId)).toEqual(before);
+  }
+
+  it("TokoPay: a received amount below the fee is refused with error.override_credit_nothing_received, nothing changed", async () => {
+    const order = await processingOrder({ total: "50000", paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: "50025", walletUsed: "1000" });
+    await recordQrisShortPayment(order.id, "TokoPay", "20", "50025");
+    await expectRefusedUntouched(order.id);
+  });
+
+  it("TokoPay: a received amount exactly equal to the fee is refused the same way, nothing changed", async () => {
+    const order = await processingOrder({ total: "50000", paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: "50025", walletUsed: "1000" });
+    await recordQrisShortPayment(order.id, "TokoPay", "25", "50025");
+    await expectRefusedUntouched(order.id);
+  });
+
+  it("with no recorded receipt is refused with error.override_credit_nothing_received, order untouched (not cancelled, holds kept)", async () => {
+    const order = await processingOrder({ total: "50000", walletUsed: "1000" });
+    await expectRefusedUntouched(order.id);
+  });
+
+  it("caps an explicit amount above the received figure at the received figure", async () => {
+    const order = await processingOrder({ total: "50000" });
+    await recordQrisShortPayment(order.id, "PayDisini", "40000", "50000");
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, amount: "45000", adminId });
+
+    expect(res.credited.toString()).toBe("40000");
+    expect(res.limitedToReceived).toBe(true);
+  });
+
+  it("uses an explicit amount below the received figure as given", async () => {
+    const order = await processingOrder({ total: "50000" });
+    await recordQrisShortPayment(order.id, "PayDisini", "40000", "50000");
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, amount: "30000", adminId });
+
+    expect(res.credited.toString()).toBe("30000");
+    expect(res.limitedToReceived).toBe(false);
+    expect((await getOrder(prisma, order.id))!.adminNote).not.toContain("limited to the amount received");
+  });
+
+  it("a non-override PROCESSING order of 50000 still credits the full 50000", async () => {
+    const order = await processingOrder({ total: "50000", completionMode: null });
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    expect(res.credited.toString()).toBe("50000");
+    expect(res.limitedToReceived).toBe(false);
+  });
+
+  it("returns the walletUsed the override order consumed exactly as for a non-override order", async () => {
+    const override = await processingOrder({ total: "50000", walletUsed: "1500" });
+    await recordQrisShortPayment(override.id, "PayDisini", "40000", "50000");
+    const plain = await processingOrder({ total: "50000", walletUsed: "1500", completionMode: null });
+
+    const before = await balances(sample.user.id);
+    await creditOrderToBalance(prisma, { orderId: override.id, adminId });
+    const mid = await balances(sample.user.id);
+    await creditOrderToBalance(prisma, { orderId: plain.id, adminId });
+    const after = await balances(sample.user.id);
+
+    const refundOf = (orderId: number) =>
+      prisma.walletTransaction.findFirstOrThrow({ where: { orderId, reason: "order_refund" } });
+    expect(new Decimal((await refundOf(override.id)).delta).toString()).toBe("1500");
+    expect(new Decimal((await refundOf(plain.id)).delta).toString()).toBe("1500");
+    // Override: 40000 received + 1500 wallet; plain: 50000 total + 1500 wallet.
+    expect(new Decimal(mid.walletBalance).minus(before.walletBalance).toString()).toBe("41500");
+    expect(new Decimal(after.walletBalance).minus(mid.walletBalance).toString()).toBe("51500");
+  });
+
+  it("Binance underpaid receipt caps a USDT override order at what arrived", async () => {
+    const order = await processingOrder({ total: "5", currency: "USDT", paymentMethod: PaymentMethod.BINANCE_INTERNAL });
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "UNDER-OVR", orderId: order.id, amount: new Decimal("3.5"), outcome: "underpaid" },
+    });
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    expect(res.currency).toBe("USDT");
+    expect(res.credited.toString()).toBe("3.5");
+  });
+
+  it("a separate Binance transfer passed as evidence counts as received too, so its amount is not cut to the short payment", async () => {
+    const order = await processingOrder({ total: "5", currency: "USDT", paymentMethod: PaymentMethod.BINANCE_INTERNAL });
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "UNDER-OVR2", orderId: order.id, amount: new Decimal("3.5"), outcome: "underpaid" },
+    });
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "EXTRA-OVR2", amount: new Decimal("5"), outcome: "unmatched" },
+    });
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, amount: "5", adminId, binanceTxId: "EXTRA-OVR2" });
+
+    expect(res.credited.toString()).toBe("5");
+    expect(res.limitedToReceived).toBe(false);
+  });
+});

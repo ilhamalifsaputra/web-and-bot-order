@@ -558,7 +558,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       if (orderId === null) return reply.code(400).send({ error: "Invalid order id." });
       try {
         await prisma.$transaction(async (tx) => {
-          const { credited, currency, wasAlreadyCancelled, evidenceRowsConsumed } = await creditOrderToBalance(tx, {
+          const { credited, currency, wasAlreadyCancelled, evidenceRowsConsumed, limitedToReceived, orderTotal } = await creditOrderToBalance(tx, {
             orderId,
             adminId: req.admin!.userId,
           });
@@ -566,6 +566,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
           let details = wasAlreadyCancelled
             ? `Credited already-cancelled order ${orderId}'s paid amount (${paid}) to the buyer's balance, recovering a payment that arrived but was never delivered.`
             : `Credited order ${orderId}'s paid amount (${paid}) to the buyer's balance.`;
+          if (limitedToReceived) {
+            details += ` The credit was limited to the amount the buyer actually paid on this underpaid order (order total ${orderTotal.toString()} ${currency}).`;
+          }
           if (evidenceRowsConsumed > 1) {
             details += ` ${evidenceRowsConsumed} gateway payment records linked to this order were closed out by this credit.`;
           }

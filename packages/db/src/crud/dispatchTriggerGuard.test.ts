@@ -50,6 +50,7 @@ export const SETTLE_FUNCTIONS = new Set([
   "settleClaimedBybitBscDeposit",
   "manualMatchBybit",
   "manualMatchLedgerTx",
+  "deliverUnderpaidOrder",
 ]);
 
 const TRIGGER = "triggerDigiflazzDispatch";
@@ -60,10 +61,7 @@ const TRIGGER = "triggerDigiflazzDispatch";
  * A stale entry (one that no longer matches a call site
  * that would otherwise fail) makes the guard fail too, so this list cannot rot.
  */
-export const ALLOWLIST = new Map<string, string>([
-  ["packages/db/src/crud/binance_internal.ts#deliverUnderpaidOrder",
-    "Audited ADMIN_OVERRIDE retains UNDERPAID payment facts. Supplier orders require manual resolution; settlePaidOrder parks them in review and automatic Digiflazz dispatch must stay disabled."],
-]);
+export const ALLOWLIST = new Map<string, string>([]);
 
 /** Directories scanned, relative to the repo root. */
 const SCAN_DIRS = ["apps", "packages", "scripts"];

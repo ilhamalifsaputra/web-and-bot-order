@@ -372,3 +372,8 @@ Historical Phase 1 changed-file inventory, before integration with the newer mas
 
 - Final gate on branch `worktree-tokopay-fee-settings`: `pnpm doctor:full` **704 files, 0 errors and 0 warnings across both clients and all categories** ("No issues found!"); `pnpm doctor:bugs` 704 files, "No issues found in category Bugs"; `pnpm doctor:changed` 9 files, "No issues found in category Bugs". No suppressions, exclusions or dummy changes. `pnpm typecheck` exit 0.
 - This last task changed no React source (it deleted the server-side fee helpers and updated docs and one server test); the clients' earlier tasks on this branch dropped the checkout fee estimate. Not exercised in a browser.
+
+## Underpaid override per product family, final review fixes - 16 November 2026
+
+- Admin client (`apps/web-admin/client`): the Payments override copy distinguishes Game Top Up delivered from stock ("A code is taken from stock and sent now.") from the manual queue, a row without a family now gets neutral wording naming neither family, and the Digiflazz success toast reads "Order sent to Digiflazz for fulfilment."
+- `pnpm doctor:changed`: 4 files, "No issues found in category Bugs", 0 errors and 0 warnings. `pnpm doctor:bugs`: 705 files, "No issues found in category Bugs". `pnpm doctor:full`: **705 files, 0 errors and 0 warnings across both clients and all categories** ("No issues found!"). No suppressions, exclusions or dummy changes. Admin server, admin client and `@app/db` typecheck exit 0. Not exercised in a browser.

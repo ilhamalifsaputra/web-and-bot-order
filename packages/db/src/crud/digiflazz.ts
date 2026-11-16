@@ -1314,8 +1314,9 @@ function emptyDigiflazzDispatchSummary(): DigiflazzDispatchSummary {
  * autoDeliverySource when no provider was recorded), and either never
  * dispatched (and not terminally failed) or a due recheck. Only a pre-filter:
  * the atomic claim in processDigiflazzOrder re-checks the same conditions in
- * its own UPDATE and is what actually prevents a duplicate request. */
-function digiflazzCandidateWhere(now: Date): Prisma.OrderWhereInput {
+ * its own UPDATE and is what actually prevents a duplicate request.
+ * Exported so tests can assert an order is (or is not) a dispatch candidate. */
+export function digiflazzCandidateWhere(now: Date): Prisma.OrderWhereInput {
   return {
     status: OrderStatus.PROCESSING,
     AND: [{ OR: [

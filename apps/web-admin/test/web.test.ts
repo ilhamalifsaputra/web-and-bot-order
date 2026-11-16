@@ -1070,6 +1070,53 @@ describe("orders", () => {
     );
   });
 
+  /** A PROCESSING order of 50000 IDR an admin delivered anyway on a short payment. */
+  async function makeOverrideOrder(received: string | null): Promise<number> {
+    const orderId = await makePendingOrder();
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: "PROCESSING",
+        paidAt: new Date(),
+        currency: "IDR",
+        totalAmount: new Decimal("50000"),
+        walletUsed: new Decimal("0"),
+        paymentMethod: PaymentMethod.PAYDISINI,
+        paymentState: "UNDERPAID",
+        completionMode: "ADMIN_OVERRIDE",
+        completionReason: "buyer short by a little",
+      },
+    });
+    if (received !== null) {
+      await prisma.qrisUnderpaidTx.create({
+        data: { orderId, gateway: "PayDisini", receivedAmount: new Decimal(received), expectedAmount: new Decimal("50000") },
+      });
+    }
+    return orderId;
+  }
+
+  it("credit-balance on an override order says the credit was limited to what the buyer paid", async () => {
+    const orderId = await makeOverrideOrder("40000");
+    const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "order_credit_balance", targetId: orderId } });
+    expect(audit.details).toBe(
+      `Credited order ${orderId}'s paid amount (40000 IDR) to the buyer's balance. ` +
+        "The credit was limited to the amount the buyer actually paid on this underpaid order (order total 50000 IDR).",
+    );
+  });
+
+  it("credit-balance on an override order with no recorded payment is refused with 422 and changes nothing", async () => {
+    const orderId = await makeOverrideOrder(null);
+    const balanceBefore = new Decimal((await getUser(prisma, seed.customerId))!.walletBalance).toString();
+    const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(422);
+    expect(JSON.stringify(res.json())).toContain("error.override_credit_nothing_received");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
+    expect(new Decimal((await getUser(prisma, seed.customerId))!.walletBalance).toString()).toBe(balanceBefore);
+    expect(await prisma.auditLog.count({ where: { action: "order_credit_balance", targetId: orderId } })).toBe(0);
+  });
+
   it("credit-balance on a cancelled order with two linked gateway records says both were closed out", async () => {
     const orderId = await makePendingOrder();
     await prisma.processedTokopayTx.create({

@@ -2266,6 +2266,8 @@ export type CreditOrderToBalanceResult = {
   /** The order was an ADMIN_OVERRIDE (delivered on a short payment) and the
    *  credit was cut down to the amount the buyer actually sent. */
   limitedToReceived: boolean;
+  /** The order's total in its own currency, for the audit sentence naming the cap. */
+  orderTotal: Decimal;
 };
 
 export async function creditOrderToBalance(
@@ -2424,6 +2426,13 @@ async function creditOrderToBalanceLocked(
       amount = cap;
       limitedToReceived = true;
     }
+    // An override order always came from UNDERPAID, so a zero cap means the
+    // payment record is missing (or only covers the gateway's own fee), not
+    // that the buyer paid nothing. Cancelling it with a zero credit would
+    // silently lose their money and cannot be undone, so refuse instead. This
+    // runs before the hold release, status change, wallet row and ledger
+    // posting; the transaction also rolls back the evidence rows consumed above.
+    if (amount.isZero()) throw new ValidationError("error.override_credit_nothing_received");
   }
 
   // One timestamp for both money events this function records (the credit and
@@ -2486,7 +2495,14 @@ async function creditOrderToBalanceLocked(
         ? ". The order was delivered on an admin override of a short payment, so the credit was limited to the amount the buyer actually sent."
         : ""),
   );
-  return { credited: amount, currency, wasAlreadyCancelled, evidenceRowsConsumed, limitedToReceived };
+  return {
+    credited: amount,
+    currency,
+    wasAlreadyCancelled,
+    evidenceRowsConsumed,
+    limitedToReceived,
+    orderTotal: q4(new Decimal(order.totalAmount)),
+  };
 }
 
 /**

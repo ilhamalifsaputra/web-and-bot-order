@@ -775,30 +775,45 @@ describe("creditOrderToBalance — ADMIN_OVERRIDE orders are capped at the amoun
     expect(new Decimal((await creditRow(order.id))!.delta).toString()).toBe("40000");
   });
 
-  it("TokoPay: a received amount that does not even cover the fee credits nothing", async () => {
-    const order = await processingOrder({ total: "50000", paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: "50025" });
+  /** Everything a refused credit must leave exactly as it was. */
+  async function snapshot(orderId: number) {
+    const o = (await getOrder(prisma, orderId))!;
+    return {
+      status: o.status,
+      adminNote: o.adminNote,
+      walletUsed: new Decimal(o.walletUsed).toString(),
+      balance: new Decimal((await balances(sample.user.id)).walletBalance).toString(),
+      walletTxCount: await prisma.walletTransaction.count({ where: { userId: sample.user.id } }),
+    };
+  }
+
+  async function expectRefusedUntouched(orderId: number) {
+    const before = await snapshot(orderId);
+    const err = await creditOrderToBalance(prisma, { orderId, adminId }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).key).toBe("error.override_credit_nothing_received");
+    expect(await creditRow(orderId)).toBeNull();
+    expect(await snapshot(orderId)).toEqual(before);
+  }
+
+  it("TokoPay: a received amount below the fee is refused with error.override_credit_nothing_received, nothing changed", async () => {
+    const order = await processingOrder({ total: "50000", paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: "50025", walletUsed: "1000" });
     await recordQrisShortPayment(order.id, "TokoPay", "20", "50025");
-
-    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
-
-    expect(res.credited.toString()).toBe("0");
-    expect(await creditRow(order.id)).toBeNull();
+    await expectRefusedUntouched(order.id);
   });
 
-  it("with no recorded receipt credits nothing, and leaves the order as any zero credit does (CANCELLED, holds released)", async () => {
+  it("TokoPay: a received amount exactly equal to the fee is refused the same way, nothing changed", async () => {
+    const order = await processingOrder({ total: "50000", paymentMethod: PaymentMethod.TOKOPAY, gatewayChargeAmount: "50025", walletUsed: "1000" });
+    await recordQrisShortPayment(order.id, "TokoPay", "25", "50025");
+    await expectRefusedUntouched(order.id);
+  });
+
+  it("with no recorded receipt is refused with error.override_credit_nothing_received, order untouched (not cancelled, holds kept)", async () => {
     const order = await processingOrder({ total: "50000", walletUsed: "1000" });
-    const before = await balances(sample.user.id);
-
-    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
-
-    expect(res.credited.toString()).toBe("0");
-    expect(res.limitedToReceived).toBe(true);
-    expect(await creditRow(order.id)).toBeNull();
-    // The existing zero-credit outcome: no unfulfilled_credit row, the order's
-    // holds released (walletUsed returned) and the order CANCELLED.
-    const after = await balances(sample.user.id);
-    expect(new Decimal(after.walletBalance).minus(before.walletBalance).toString()).toBe("1000");
-    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+    await expectRefusedUntouched(order.id);
   });
 
   it("caps an explicit amount above the received figure at the received figure", async () => {

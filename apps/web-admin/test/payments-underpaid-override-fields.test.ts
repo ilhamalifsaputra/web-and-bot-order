@@ -146,6 +146,27 @@ describe("GET /api/payments — underpaid rows carry the override family fields"
     expect(rows[0]).toMatchObject({ overrideFamily: "GAME_TOPUP", overrideTarget: null });
   });
 
+  it("a misconfigured encryption key gives that row no target instead of failing the whole list", async () => {
+    const order = await underpaidGameOrder({ group: "GAME_TOPUP" });
+    const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+    try {
+      const { rows, raw } = await listRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: order.id,
+        overrideFamily: "GAME_TOPUP",
+        overrideProvider: "DIGIFLAZZ",
+        overrideProductName: sample.product.name,
+        overrideTarget: null,
+      });
+      expect(raw).not.toContain("123456789");
+    } finally {
+      if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+    }
+  });
+
   it("a wallet top-up row carries none of the override fields", async () => {
     const topup = await prisma.$transaction((tx) =>
       createWalletTopupOrder(tx, { userId: sample.user.id, amount: "10", currency: "USDT", method: PaymentMethod.BINANCE_INTERNAL, rate: "16000" }),

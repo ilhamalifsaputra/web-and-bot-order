@@ -1139,12 +1139,12 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByText("Deliver account"));
+    await user.click(within(menu).getByText("Deliver anyway"));
 
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByRole("button", { name: "Deliver account" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Deliver anyway" })).toBeDisabled();
     await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", { reason: "Approved shortfall" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
@@ -1223,7 +1223,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Credit to balance anyway")).toBeInTheDocument();
     expect(within(menu).getByText("Cancel order")).toBeInTheDocument();
-    expect(within(menu).queryByText("Deliver account")).not.toBeInTheDocument();
+    expect(within(menu).queryByText("Deliver anyway")).not.toBeInTheDocument();
     expect(within(menu).queryByText("Refund")).not.toBeInTheDocument();
 
     await user.click(within(menu).getByText("Credit to balance anyway"));
@@ -1273,7 +1273,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    expect(within(menu).getByText("Deliver account")).toBeInTheDocument();
+    expect(within(menu).getByText("Deliver anyway")).toBeInTheDocument();
     expect(within(menu).getByText("Refund")).toBeInTheDocument();
     expect(within(menu).getByText("Cancel order")).toBeInTheDocument();
     expect(within(menu).queryByText("Credit to balance anyway")).not.toBeInTheDocument();
@@ -1336,16 +1336,16 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByText("Deliver account"));
+    await user.click(within(menu).getByText("Deliver anyway"));
 
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
     expect(await screen.findByText("Order is no longer underpaid.")).toBeInTheDocument();
   });
 
-  // P2. "Deliver account" on a manual-delivery SKU runs `approveOrder`'s stock
+  // P2. "Deliver anyway" on a manual-delivery SKU runs `approveOrder`'s stock
   // allocation, which refuses with `error.cannot_deliver_out_of_stock` naming the
   // product (crud/orders.ts) — see crud/binance_internal.ts's own comment on
   // `deliverUnderpaidOrder`, which calls this the expected failure for that SKU.
@@ -1366,11 +1366,11 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByText("Deliver account"));
+    await user.click(within(menu).getByText("Deliver anyway"));
 
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
     expect(
       await screen.findByText(
@@ -1656,7 +1656,7 @@ describe("PaymentsPage — underpaid override wording per product family", () =>
     fireEvent.click(confirm);
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", { reason: "Approved shortfall" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
-    expect(await screen.findByText("Order forwarded to Digiflazz.")).toBeInTheDocument();
+    expect(await screen.findByText("Order sent to Digiflazz for fulfilment.")).toBeInTheDocument();
   });
 
   it("Game Top Up with no stored target says so instead of showing an empty line", async () => {
@@ -1702,13 +1702,26 @@ describe("PaymentsPage — underpaid override wording per product family", () =>
     expect(dialog.textContent).not.toMatch(/Digiflazz|supplier|target|player|game|stock/i);
   });
 
-  it("a row without the new fields (older server) gets the Premium Apps wording and a neutral body", async () => {
-    const { dialog, labels } = await openOverride({ ...UNDERPAID, kind: "PRODUCT" }, "Deliver account");
+  it("Game Top Up from stock: a code is sent now, with no manual-queue, account or supplier wording", async () => {
+    const { user, dialog, labels } = await openOverride({ ...GAME_DIGIFLAZZ, overrideProvider: "STOCK" }, "Fulfil anyway");
 
-    expect(labels).toContain("Deliver account");
-    expect(within(dialog).getByText("Deliver this account anyway?")).toBeInTheDocument();
-    expect(within(dialog).getByText("The order was underpaid. The order is fulfilled the usual way. Payment remains incomplete.")).toBeInTheDocument();
-    expect(dialog.textContent).not.toMatch(/Digiflazz|supplier|target|player|game|stock/i);
+    expect(labels).toContain("Fulfil anyway");
+    expect(within(dialog).getByText("The order was underpaid. A code is taken from stock and sent now. Payment remains incomplete.")).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/manual queue|account|Digiflazz|supplier/i);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, outcome: "delivered" });
+    await user.type(within(dialog).getByLabelText("Override reason"), "ok");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Fulfil anyway" }));
+    expect(await screen.findByText("Order delivered.")).toBeInTheDocument();
+  });
+
+  it("a row without the new fields (older server) gets neutral wording that names neither family", async () => {
+    const { dialog, labels } = await openOverride({ ...UNDERPAID, kind: "PRODUCT" }, "Deliver anyway");
+
+    expect(labels).toContain("Deliver anyway");
+    expect(within(dialog).getByText("Deliver this order anyway?")).toBeInTheDocument();
+    expect(within(dialog).getByText("Order ORD-UP1 was underpaid. Accept the shortfall and fulfil this order. Payment remains incomplete.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Deliver anyway" })).toBeInTheDocument();
+    expect(`${labels.join(" ")} ${dialog.textContent}`).not.toMatch(/account|plan|stock|Digiflazz|supplier|target|player|game/i);
   });
 
   it("falls back to 'Order delivered.' when the response names no outcome", async () => {

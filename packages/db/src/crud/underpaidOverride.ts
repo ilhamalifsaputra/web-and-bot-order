@@ -6,12 +6,14 @@
  * The family comes from `orderTransactionFamily` (the category group, the same rule the buyer's progress
  * message uses) and never from a product name. The target comes from the buyer's stored answers, which are
  * encrypted at rest: the order is read with the display-only decrypting reader, so an unreadable value
- * yields no target (plus a warning naming only the order) rather than failing the whole list. The raw
+ * yields no target (plus a warning naming only the order) rather than failing the whole list, and so does a
+ * misconfigured encryption key. The raw
  * column is stripped from every row; only the one display string leaves this function.
  */
 import { orderTransactionFamily, fulfillmentProviderFor, type FulfillmentProvider } from "@app/core/orderFulfillment";
 import { OrderStatus } from "@app/core/enums";
 import { tryDecryptCustomerData } from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 import type { Db } from "./_types";
 import { ORDER_USER_SELECT, withoutDeliveredContent } from "./orders";
 import { buildDigiflazzCustomerNo } from "./digiflazz";
@@ -41,11 +43,14 @@ export async function listUnderpaidOrdersForAdmin(db: Db, opts: { limit?: number
       const item = order.items[0];
       let target: string | null = null;
       if (family === "GAME_TOPUP" && item) {
-        const answers = tryDecryptCustomerData(order.customerData, { orderId: order.id, purpose: "the underpaid-order override screen" });
         try {
+          const answers = tryDecryptCustomerData(order.customerData, { orderId: order.id, purpose: "the underpaid-order override screen" });
           target = buildDigiflazzCustomerNo(item.product, answers, order.inputConfigSnapshot) || null;
         } catch {
+          // Any failure, a misconfigured encryption key included, costs this row its target and nothing else:
+          // the Payments page must still list every underpaid order. No value, key or raw column is logged.
           target = null;
+          logger.warn(`The target of underpaid order ${order.id} could not be read because its stored answers could not be decrypted.`);
         }
       }
       override = { family, provider: fulfillmentProviderFor(order), productName: item?.product.name ?? "", target };

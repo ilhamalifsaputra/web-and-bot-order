@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customerProgressPhase, getOrderFulfillment, toBuyerDigiflazzStatus, DIGIFLAZZ_STATUS_UNRESOLVED } from "./orderFulfillment";
+import { customerProgressPhase, getOrderFulfillment, orderTransactionFamily, toBuyerDigiflazzStatus, DIGIFLAZZ_STATUS_UNRESOLVED } from "./orderFulfillment";
 
 const order = { status: "PROCESSING", paidAt: new Date(), fulfillmentProvider: "DIGIFLAZZ", items: [{ product: { autoDeliverySource: "digiflazz", deliveryType: "manual_with_info" } }] };
 describe("canonical fulfillment state", () => {
@@ -112,5 +112,24 @@ describe("customerProgressPhase (Telegram progress message)", () => {
   });
   it("never shows an underpaid order as a payment still being verified", () => {
     expect(customerProgressPhase({ ...order, status: "UNDERPAID", paidAt: null })).toMatchObject({ phase: "UNDERPAID", spinner: false, progress: null, topUp: true });
+  });
+});
+
+describe("orderTransactionFamily", () => {
+  const item = (group?: string, autoDeliverySource?: string) => ({ product: { autoDeliverySource, deliveryType: "auto", product: group ? { category: { group } } : {} } });
+  it("uses the category group when there is one", () => {
+    expect(orderTransactionFamily({ status: "PAID", fulfillmentProvider: "DIGIFLAZZ", items: [item("PREMIUM_APPS", "digiflazz")] })).toBe("PREMIUM_APPS");
+    expect(orderTransactionFamily({ status: "PAID", fulfillmentProvider: "MANUAL", items: [item("GAME_TOPUP")] })).toBe("GAME_TOPUP");
+  });
+  it("treats a legacy order with no group as a game top-up only when Digiflazz fulfils it", () => {
+    expect(orderTransactionFamily({ status: "PAID", fulfillmentProvider: "DIGIFLAZZ", items: [item()] })).toBe("GAME_TOPUP");
+    expect(orderTransactionFamily({ status: "PAID", fulfillmentProvider: "STOCK", items: [item()] })).toBe("PREMIUM_APPS");
+  });
+  it("reports a wallet top-up as its own family", () => {
+    expect(orderTransactionFamily({ status: "PAID", kind: "WALLET_TOPUP", items: [] })).toBe("WALLET_TOPUP");
+  });
+  it("agrees with customerProgressPhase's transactionType", () => {
+    const o = { status: "PAID", paidAt: new Date(), fulfillmentProvider: "DIGIFLAZZ", items: [item()] };
+    expect(customerProgressPhase(o).transactionType).toBe(orderTransactionFamily(o));
   });
 });

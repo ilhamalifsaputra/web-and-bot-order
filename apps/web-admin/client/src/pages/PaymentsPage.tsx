@@ -52,6 +52,7 @@ import { sendSequentially, toastBulkOutcome, withoutSucceeded, type BulkFailureL
 import { describeError } from "../lib/errorMessages";
 import { HEALTH_DOT } from "../lib/healthDot";
 import { visibleSelection } from "../lib/selection";
+import { underpaidOverrideCopy, overrideSuccessMessage, type OverrideFamily, type OverrideProvider, type OverrideOutcome } from "../lib/underpaidOverrideCopy";
 
 /** Which payment rail a ledger row came from. "bybit" covers BOTH Bybit
  *  sub-rails (off-chain Internal Transfer and on-chain BSC deposit) — they
@@ -144,6 +145,18 @@ interface UnderpaidOrderRow {
   createdAtDisplay: string | null;
   user: OrderPartyRow | null;
   kind: string;
+  /** Present for a product order when the admin may act on it (apps/web-admin/src/routes/api/payments.ts);
+   *  absent on a wallet top-up, for a readonly admin, and from a server that predates them. */
+  overrideFamily?: OverrideFamily;
+  overrideProvider?: OverrideProvider;
+  overrideProductName?: string;
+  /** Game Top Up only: the player target the supplier will receive; null when none is stored. */
+  overrideTarget?: string | null;
+}
+/** Shape of POST /api/payments/order/:orderId/deliver's success body: what happened to the order. */
+interface DeliverAnywayResult {
+  ok: boolean;
+  outcome?: OverrideOutcome;
 }
 /** Shape of POST /api/payments/order/:orderId/credit-anyway's success body
  *  (apps/web-admin/src/routes/api/payments.ts). `credited` is a decimal string
@@ -688,7 +701,7 @@ function PaymentsUnderpaidOrders({ underpaid, underpaidTotal, setPendingCreditAn
                         <>
                           <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setDeliverReason(""); setPendingDeliver(o); }}>
                             <PackageCheck className="h-4 w-4" />
-                            Deliver anyway
+                            {underpaidOverrideCopy(o).menuLabel}
                           </DropdownMenuItem>
                           <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingRefund(o); }}>
                             <Undo2 className="h-4 w-4" />
@@ -1061,10 +1074,10 @@ function useUnderpaidActions({ idempotentPost, deliverReason, qc }: {
   qc: import("@tanstack/react-query").QueryClient;
 }) {
   const deliverAnyway = useMutation({
-    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/deliver`, { reason: deliverReason.trim() }),
-    onSuccess: () => {
+    mutationFn: (orderId: number) => idempotentPost<DeliverAnywayResult>(`/api/payments/order/${orderId}/deliver`, { reason: deliverReason.trim() }),
+    onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Order delivered.");
+      toast.success(overrideSuccessMessage(res.outcome));
     },
     onError: (e: Error) => toast.error(describeError(e)),
   });
@@ -1208,10 +1221,30 @@ function PaymentOverrideDialog({ pendingDeliver, setPendingDeliver, deliverReaso
   setDeliverReason: import("react").Dispatch<import("react").SetStateAction<string>>;
   deliverAnyway: ReturnType<typeof useUnderpaidActions>["deliverAnyway"];
 }) {
+  const copy = underpaidOverrideCopy(pendingDeliver);
+  const hasFamily = pendingDeliver.overrideFamily !== undefined;
   return (<Dialog open onOpenChange={(open) => { if (!open) setPendingDeliver(null); }}>
     <DialogContent>
-      <DialogHeader><DialogTitle>Deliver this order anyway?</DialogTitle></DialogHeader>
-      <p className="text-sm text-muted-foreground">Order {pendingDeliver.orderCode} was underpaid. Accept the shortfall and fulfill this order. Payment remains incomplete.</p>
+      <DialogHeader><DialogTitle>{copy.title}</DialogTitle></DialogHeader>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">Order</dt>
+        <dd className="font-mono">{pendingDeliver.orderCode}</dd>
+        {hasFamily && (
+          <>
+            <dt className="text-muted-foreground">{copy.productLabel}</dt>
+            <dd className="break-words">{pendingDeliver.overrideProductName}</dd>
+            {copy.showsTarget && (
+              <>
+                <dt className="text-muted-foreground">Target</dt>
+                <dd className="break-all font-mono">{pendingDeliver.overrideTarget ?? "Not recorded"}</dd>
+              </>
+            )}
+          </>
+        )}
+        <dt className="text-muted-foreground">Order total</dt>
+        <dd className="font-mono">{formatCurrencyDisplay(pendingDeliver.totalAmount, pendingDeliver.currency as "IDR" | "USDT" | "USD")}</dd>
+      </dl>
+      <p className="text-sm text-muted-foreground">{copy.sentences.join(" ")}</p>
       <label className="space-y-2 text-sm">Override reason
         <Input aria-label="Override reason" value={deliverReason} onChange={(e) => setDeliverReason(e.target.value)} placeholder="Why is the shortfall being accepted?" />
       </label>
@@ -1219,7 +1252,7 @@ function PaymentOverrideDialog({ pendingDeliver, setPendingDeliver, deliverReaso
         <Button variant="outline" onClick={() => setPendingDeliver(null)}>Cancel</Button>
         <Button pending={deliverAnyway.isPending} disabled={!deliverReason.trim()} onClick={() => {
           deliverAnyway.mutate(pendingDeliver.id, { onSuccess: () => setPendingDeliver(null) });
-        }}>Deliver anyway</Button>
+        }}>{copy.confirmLabel}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>);
@@ -1280,7 +1313,7 @@ function PaymentsPagination({ data, page, setPage }: {
 function PaymentsRefundToTheBuyerS({ pendingRefund, setPendingRefund, refundUnderpaid }: {
   pendingRefund: UnderpaidOrderRow | null;
   setPendingRefund: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
-  refundUnderpaid: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["refundUnderpaid"];
+  refundUnderpaid: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<DeliverAnywayResult, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["refundUnderpaid"];
 }) {
   return (pendingRefund && (
     <ConfirmDialog
@@ -1298,7 +1331,7 @@ function PaymentsRefundToTheBuyerS({ pendingRefund, setPendingRefund, refundUnde
 function PaymentsCancelThisOrder({ pendingCancel, setPendingCancel, cancelUnderpaid }: {
   pendingCancel: UnderpaidOrderRow | null;
   setPendingCancel: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
-  cancelUnderpaid: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["cancelUnderpaid"];
+  cancelUnderpaid: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<DeliverAnywayResult, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["cancelUnderpaid"];
 }) {
   return (pendingCancel && (
     <ConfirmDialog
@@ -1315,7 +1348,7 @@ function PaymentsCancelThisOrder({ pendingCancel, setPendingCancel, cancelUnderp
 function PaymentsCreditThisTopUpTo({ pendingCreditAnyway, setPendingCreditAnyway, creditAnyway }: {
   pendingCreditAnyway: UnderpaidOrderRow | null;
   setPendingCreditAnyway: import("react").Dispatch<import("react").SetStateAction<UnderpaidOrderRow | null>>;
-  creditAnyway: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["creditAnyway"];
+  creditAnyway: NonNullable<{ deliverAnyway: import("@tanstack/react-query").UseMutationResult<DeliverAnywayResult, Error, number, unknown>; refundUnderpaid: import("@tanstack/react-query").UseMutationResult<RefundUnderpaidResult, Error, UnderpaidOrderRow, unknown>; cancelUnderpaid: import("@tanstack/react-query").UseMutationResult<unknown, Error, number, unknown>; creditAnyway: import("@tanstack/react-query").UseMutationResult<CreditAnywayResult, Error, UnderpaidOrderRow, unknown>; }>["creditAnyway"];
 }) {
   return (pendingCreditAnyway && (
     <ConfirmDialog

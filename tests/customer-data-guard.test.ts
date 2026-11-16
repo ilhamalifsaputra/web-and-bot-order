@@ -56,6 +56,7 @@ const READER_FILES: Record<string, string> = {
   "apps/web-admin/src/routes/api/orders.ts": "order from getOrder (decrypted)",
   "packages/db/src/crud/digiflazz.ts": "raw rows, each decrypted with decryptCustomerData before use",
   "packages/db/src/crud/orders.ts": "the decrypting choke points themselves, plus args.customerData (new answers to encrypt)",
+  "packages/db/src/crud/underpaidOverride.ts": "raw rows, decrypted with tryDecryptCustomerData before use; only the derived target string leaves, never the column",
   "packages/db/src/crud/wallet_checkout.ts": "args.customerData is the buyer's new answers, passed on to the order writers",
   "packages/outbox-dispatcher/src/fulfillmentMessages.ts": "raw row, decrypted with tryDecryptCustomerData before use",
 };

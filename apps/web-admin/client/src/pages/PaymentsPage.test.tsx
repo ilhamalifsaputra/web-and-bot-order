@@ -1139,12 +1139,12 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByText("Deliver anyway"));
+    await user.click(within(menu).getByText("Deliver account"));
 
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByRole("button", { name: "Deliver anyway" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Deliver account" })).toBeDisabled();
     await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", { reason: "Approved shortfall" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
@@ -1223,7 +1223,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Credit to balance anyway")).toBeInTheDocument();
     expect(within(menu).getByText("Cancel order")).toBeInTheDocument();
-    expect(within(menu).queryByText("Deliver anyway")).not.toBeInTheDocument();
+    expect(within(menu).queryByText("Deliver account")).not.toBeInTheDocument();
     expect(within(menu).queryByText("Refund")).not.toBeInTheDocument();
 
     await user.click(within(menu).getByText("Credit to balance anyway"));
@@ -1273,7 +1273,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    expect(within(menu).getByText("Deliver anyway")).toBeInTheDocument();
+    expect(within(menu).getByText("Deliver account")).toBeInTheDocument();
     expect(within(menu).getByText("Refund")).toBeInTheDocument();
     expect(within(menu).getByText("Cancel order")).toBeInTheDocument();
     expect(within(menu).queryByText("Credit to balance anyway")).not.toBeInTheDocument();
@@ -1336,16 +1336,16 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByText("Deliver anyway"));
+    await user.click(within(menu).getByText("Deliver account"));
 
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
 
     expect(await screen.findByText("Order is no longer underpaid.")).toBeInTheDocument();
   });
 
-  // P2. "Deliver anyway" on a manual-delivery SKU runs `approveOrder`'s stock
+  // P2. "Deliver account" on a manual-delivery SKU runs `approveOrder`'s stock
   // allocation, which refuses with `error.cannot_deliver_out_of_stock` naming the
   // product (crud/orders.ts) — see crud/binance_internal.ts's own comment on
   // `deliverUnderpaidOrder`, which calls this the expected failure for that SKU.
@@ -1366,11 +1366,11 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
     const menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByText("Deliver anyway"));
+    await user.click(within(menu).getByText("Deliver account"));
 
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
 
     expect(
       await screen.findByText(
@@ -1615,5 +1615,118 @@ describe("PaymentsPage — search resets the page", () => {
     expect(requestedPage(listPaths.at(-1)!)).toBe("1");
     expect(listPaths.filter((p) => p.includes("q=binance") && requestedPage(p) === "2")).toHaveLength(0);
     await waitFor(() => expect(screen.getByText("TXPAGE1")).toBeInTheDocument());
+  });
+});
+
+describe("PaymentsPage — underpaid override wording per product family", () => {
+  const GAME_DIGIFLAZZ = { ...UNDERPAID, kind: "PRODUCT", overrideFamily: "GAME_TOPUP", overrideProvider: "DIGIFLAZZ", overrideProductName: "Mobile Legends 86 Diamonds", overrideTarget: "123456789 (2001)" };
+  const GAME_MANUAL = { ...GAME_DIGIFLAZZ, overrideProvider: "MANUAL" };
+  const PREMIUM_STOCK = { ...UNDERPAID, kind: "PRODUCT", overrideFamily: "PREMIUM_APPS", overrideProvider: "STOCK", overrideProductName: "Netflix Premium 1 Month", overrideTarget: null };
+  const PREMIUM_MANUAL = { ...PREMIUM_STOCK, overrideProvider: "MANUAL" };
+
+  async function openOverride(row: object, menuLabel: string) {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [row], pendingInternal: [] });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    const labels = within(menu).getAllByRole("menuitem").map((i) => i.textContent);
+    await user.click(within(menu).getByText(menuLabel));
+    const dialog = await screen.findByRole("dialog");
+    return { user, dialog, labels };
+  }
+
+  it("Game Top Up via Digiflazz: forwards to Digiflazz, showing the product, target and total, with no account wording", async () => {
+    const { user, dialog, labels } = await openOverride(GAME_DIGIFLAZZ, "Forward to Digiflazz");
+
+    expect(labels).toContain("Forward to Digiflazz");
+    expect(labels.join(" ")).not.toMatch(/account|Deliver|Fulfil/i);
+    expect(within(dialog).getByText("Forward this top-up to Digiflazz?")).toBeInTheDocument();
+    expect(within(dialog).getByText("Mobile Legends 86 Diamonds")).toBeInTheDocument();
+    expect(within(dialog).getByText("123456789 (2001)")).toBeInTheDocument();
+    expect(within(dialog).getByText("Rp45.000")).toBeInTheDocument();
+    expect(within(dialog).getByText("The order was underpaid. Digiflazz will be charged from your supplier balance. Payment remains incomplete.")).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/account|plan|stock/i);
+    const confirm = within(dialog).getByRole("button", { name: "Forward to Digiflazz" });
+    expect(confirm).toBeDisabled();
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, outcome: "forwarded_to_supplier" });
+    await user.type(within(dialog).getByLabelText("Override reason"), "Approved shortfall");
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", { reason: "Approved shortfall" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+    expect(await screen.findByText("Order forwarded to Digiflazz.")).toBeInTheDocument();
+  });
+
+  it("Game Top Up with no stored target says so instead of showing an empty line", async () => {
+    const { dialog } = await openOverride({ ...GAME_DIGIFLAZZ, overrideTarget: null }, "Forward to Digiflazz");
+    expect(within(dialog).getByText("Not recorded")).toBeInTheDocument();
+  });
+
+  it("Game Top Up not via Digiflazz: 'Fulfil anyway' sends it to the manual queue, still no account wording", async () => {
+    const { user, dialog, labels } = await openOverride(GAME_MANUAL, "Fulfil anyway");
+
+    expect(labels).toContain("Fulfil anyway");
+    expect(labels.join(" ")).not.toMatch(/account|Digiflazz/i);
+    expect(within(dialog).getByText("The order was underpaid. The order goes to the manual queue. Payment remains incomplete.")).toBeInTheDocument();
+    expect(within(dialog).getByText("123456789 (2001)")).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/account|Digiflazz|supplier/i);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, outcome: "queued_manual" });
+    await user.type(within(dialog).getByLabelText("Override reason"), "ok");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Fulfil anyway" }));
+
+    expect(await screen.findByText("Order queued for manual fulfilment.")).toBeInTheDocument();
+  });
+
+  it("Premium Apps from stock: delivers an account, names the plan, and shows no game or supplier wording", async () => {
+    const { user, dialog, labels } = await openOverride(PREMIUM_STOCK, "Deliver account");
+
+    expect(labels).toContain("Deliver account");
+    expect(labels.join(" ")).not.toMatch(/Digiflazz|Forward|Fulfil/i);
+    expect(within(dialog).getByText("Deliver this account anyway?")).toBeInTheDocument();
+    expect(within(dialog).getByText("Netflix Premium 1 Month")).toBeInTheDocument();
+    expect(within(dialog).getByText("The order was underpaid. An account is taken from stock and sent now. Payment remains incomplete.")).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/Digiflazz|supplier|target|player|game/i);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, outcome: "delivered" });
+    await user.type(within(dialog).getByLabelText("Override reason"), "ok");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
+
+    expect(await screen.findByText("Order delivered.")).toBeInTheDocument();
+  });
+
+  it("Premium Apps for the manual queue: says so, with no game or supplier wording", async () => {
+    const { dialog } = await openOverride(PREMIUM_MANUAL, "Deliver account");
+
+    expect(within(dialog).getByText("The order was underpaid. The order goes to the manual queue. Payment remains incomplete.")).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/Digiflazz|supplier|target|player|game|stock/i);
+  });
+
+  it("a row without the new fields (older server) gets the Premium Apps wording and a neutral body", async () => {
+    const { dialog, labels } = await openOverride({ ...UNDERPAID, kind: "PRODUCT" }, "Deliver account");
+
+    expect(labels).toContain("Deliver account");
+    expect(within(dialog).getByText("Deliver this account anyway?")).toBeInTheDocument();
+    expect(within(dialog).getByText("The order was underpaid. The order is fulfilled the usual way. Payment remains incomplete.")).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/Digiflazz|supplier|target|player|game|stock/i);
+  });
+
+  it("falls back to 'Order delivered.' when the response names no outcome", async () => {
+    const { user, dialog } = await openOverride(PREMIUM_STOCK, "Deliver account");
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    await user.type(within(dialog).getByLabelText("Override reason"), "ok");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver account" }));
+    expect(await screen.findByText("Order delivered.")).toBeInTheDocument();
+  });
+
+  it("a wallet top-up row is unchanged: credit to balance, no override wording", async () => {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [{ ...UNDERPAID, kind: "WALLET_TOPUP" }], pendingInternal: [] });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Credit to balance anyway")).toBeInTheDocument();
+    expect(menu.textContent).not.toMatch(/Digiflazz|Deliver|Fulfil/i);
   });
 });
